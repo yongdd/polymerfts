@@ -328,13 +328,18 @@ def input_checks(root):
     assert not rk2_warnings(lambda p: p["smearing"].update(a_int=0.2))
     assert not rk2_warnings(lambda p: p.update(numerical_method="rqm4"))
     assert not rk2_warnings(lambda p: p["recording"].update(pressure=False))
-    # A random block of C (1.0) and D (1.5) has the step 1.27 sqrt(ds) = 0.180 < 0.19, while D alone would
-    # have 0.212: only the effective segment length counts
-    def random_block(p):
-        p["segment_lengths"].update(D=1.5)
-        p["polymers"][1]["blocks"] = [{"type": "R", "length": 1.0, "monomer_fractions": {"C": 0.5, "D": 0.5}}]
-        p["smearing"] = {"type": "gaussian", "a_int": 0.19}
-    assert not rk2_warnings(random_block, charged=False)
+    # A random block R of C (1.0) and D (1.5) has the step 1.27 sqrt(ds) = 0.180, while D alone would have
+    # 0.212: only the effective segment length counts, so a_int = 0.19 gives no warning and a_int = 0.17
+    # names R (and B, 0.184), not D
+    def random_block(a_int):
+        def change(p):
+            p["segment_lengths"].update(D=1.5)
+            p["polymers"][1]["blocks"] = [{"type": "R", "length": 1.0, "monomer_fractions": {"C": 0.5, "D": 0.5}}]
+            p["smearing"] = {"type": "gaussian", "a_int": a_int}
+        return change
+    assert not rk2_warnings(random_block(0.19), charged=False)
+    messages = rk2_warnings(random_block(0.17), charged=False)
+    assert len(messages) == 1 and "R: step" in messages[0] and "D: step" not in messages[0], messages
 
 
 def main():
