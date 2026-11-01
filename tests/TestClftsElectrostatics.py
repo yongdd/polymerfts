@@ -44,7 +44,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError
-from polymerfts.utils import validate_checkpoint, _measurement_key
+from polymerfts.checkpoint import validate_checkpoint, _measurement_key
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C

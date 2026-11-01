@@ -157,6 +157,7 @@ copy; the installed package keeps providing the C++ core and the shared modules.
    from polymerfts.propagator_solver import PropagatorSolver
    from polymerfts.validation import validate_system_params, ValidationError
    from polymerfts.utils import (...)
+   from polymerfts.checkpoint import (...)
    from polymerfts.smearing import Smearing
    ```
 3. Use the copy in your script:

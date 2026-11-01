@@ -12,7 +12,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
-from polymerfts.utils import atomic_savemat, extension_state
+from polymerfts.checkpoint import extension_state
+from polymerfts.utils import atomic_savemat
 from TestFtsReliability import parameters, fields, expect_error
 
 

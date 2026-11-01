@@ -564,6 +564,13 @@ def validate_electrostatics(params: Dict[str, Any]) -> None:
                               + ("; add point ions ('electrostatics.ions') as counterions" if not ions else ""))
 
 
+def reference_segments(params: Dict[str, Any], default: Any = None) -> Any:
+    """Segments N of the reference chain: 1/ds of discrete chains, given for continuous chains."""
+    if str(params["chain_model"]).lower() == "discrete":
+        return round(1.0 / params["ds"])
+    return (params.get("electrostatics") or {}).get("n_segments", default)
+
+
 def _chain_charge(params: Dict[str, Any], polymer: Dict[str, Any], charges: Dict[str, float]) -> float:
     """Net charge of a chain per segment of the reference chain, Σ_blocks z_i α_i (zero within round-off)."""
     lengths = polymer_block_lengths(params, polymer)

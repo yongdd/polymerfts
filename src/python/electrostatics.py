@@ -71,6 +71,13 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
+def coulomb_coupling(params, n_segments, nbar):
+    """E of the `electrostatics` input: `coupling`, or 4π l_B N² √N̄ from `bjerrum_length`."""
+    if "coupling" in params:
+        return float(params["coupling"])
+    return 4.0 * np.pi * float(params["bjerrum_length"]) * n_segments ** 2 * np.sqrt(nbar)
+
+
 def homogeneous_potential(polymer_charge, ions, coupling, kappa_sq, n_segments):
     """Uniform ψ₀ of the homogeneous state with the net polymer charge Σ_i z_i φ_i per segment.
 
@@ -154,10 +161,7 @@ class Electrostatics:
     def __init__(self, params, monomer_types, smearing, n_segments, langevin, bit_generator, *, fourier,
                  ion_concentrations=None, open_charges=False):
         self.charges = {name: float(params["charges"].get(name, 0.0)) for name in monomer_types}
-        if "coupling" in params:
-            self.coupling = float(params["coupling"])
-        else:
-            self.coupling = 4.0 * np.pi * float(params["bjerrum_length"]) * n_segments ** 2 * np.sqrt(langevin["nbar"])
+        self.coupling = coulomb_coupling(params, n_segments, langevin["nbar"])
         self.psi_dt_scaling = float(params.get("psi_dt_scaling", 1.0))
         self.nx = list(smearing.nx)
         self.k_sq = np.reshape(smearing.k_sq, self.nx)

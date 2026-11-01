@@ -58,10 +58,10 @@ import numpy as np
 from scipy.io import loadmat
 
 from .clfts import CLFTS
-from .electrostatics import homogeneous_potential, point_ions
+from .electrostatics import coulomb_coupling, homogeneous_potential, point_ions
 from .utils import json_ready, input_hash
 from .validation import (ValidationError, _chain_charge, normalize_params, open_charges, parse_chi_n, point_ion_concentrations,
-                         polymer_block_lengths, validate_gibbs_params, validate_lfts_params)
+                         polymer_block_lengths, reference_segments, validate_gibbs_params, validate_lfts_params)
 
 
 def cell_volume(lx, angles=None):
@@ -125,14 +125,10 @@ class GibbsEnsemble:
         self.ion_names = [name for name, ion in ions.items() if "concentration" in ion]
         # Every point ion in the input order, which the chemical potentials of the boxes follow
         self.point_ion_names = list(ions)
-        self.n_segments = None
-        if self.ion_names:
-            self.n_segments = (round(1.0 / params["ds"]) if str(params["chain_model"]).lower() == "discrete"
-                               else float(es["n_segments"]))
+        self.n_segments = reference_segments(params) if self.ion_names else None
         charges = (es or {}).get("charges", {})
         # Charge of a chain, N Σ_i z_i (length of type i), in the units of the ion valences
-        n_segments = (round(1.0 / params["ds"]) if str(params["chain_model"]).lower() == "discrete"
-                      else (es or {}).get("n_segments", 1.0))
+        n_segments = reference_segments(params, default=1.0)
         # Cancellation roundoff must not turn a neutral chain into a charged species:
         # the exchange projection would constrain it regardless of how small its charge is.
         chain_charges = [n_segments * _chain_charge(params, polymer, charges) for polymer in params["polymers"]]
@@ -226,9 +222,8 @@ class GibbsEnsemble:
         es = params.get("electrostatics")
         if es is None:
             return w, 0.0
-        n_segments = (round(1.0 / params["ds"]) if str(params["chain_model"]).lower() == "discrete" else es.get("n_segments"))
-        coupling = (float(es["coupling"]) if "coupling" in es else
-                    4.0 * np.pi * float(es["bjerrum_length"]) * n_segments ** 2 * np.sqrt(params["langevin"]["nbar"]))
+        n_segments = reference_segments(params)
+        coupling = coulomb_coupling(es, n_segments, params["langevin"]["nbar"])
         kappa_sq = 0.0 if es.get("screening_length") is None else 1.0 / float(es["screening_length"]) ** 2
         ions = point_ions(es, {name: ion.get("concentration") for name, ion in (es.get("ions") or {}).items()})
         polymer_charge = sum(float(es["charges"].get(name, 0.0)) * value for name, value in zip(types, fractions))

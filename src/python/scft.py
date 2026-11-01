@@ -14,7 +14,7 @@ from . import _core
 from .polymer_field_theory import SymmetricPolymerTheory
 from .propagator_solver import PropagatorSolver
 from .validation import (normalize_params, validate_scft_params, ValidationError, parse_chi_n,
-                         point_ion_concentrations, open_charges)
+                         point_ion_concentrations, open_charges, reference_segments)
 from .utils import (
     load_config,
     process_polymer_blocks,
@@ -477,10 +477,7 @@ class SCFT:
             # A fixed charge is given in the axis order of nx, like the initial fields
             if self._axis_perm is not None and params["electrostatics"].get("fixed_charge") is not None:
                 params["electrostatics"]["fixed_charge"] = self._to_standard_axes(params["electrostatics"]["fixed_charge"])
-            # Segments N of the reference chain: 1/ds of discrete chains, given for continuous chains
-            n_segments = (round(1.0 / params["ds"]) if params["chain_model"].lower() == "discrete"
-                          else params["electrostatics"].get("n_segments"))
-            self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, n_segments,
+            self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, reference_segments(params),
                                                           self.prop_solver.fourier,
                                                           ion_concentrations=point_ion_concentrations(params),
                                                           open_charges=open_charges(params))

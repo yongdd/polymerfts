@@ -94,6 +94,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   points, which differs from the pressure at fixed grid spacing when the smearing is not
   resolved; comparisons with BioFTS (with the corrections of its issue 1, which removes the
   time-step dependence the structure-function comparison reported) and polycomp.
+- `polymerfts.checkpoint` holds what a run saves and restores (2026-11-01): `validate_checkpoint`,
+  `restore_recording_state`, `checkpoint_data` and the functions of the extension state left
+  `polymerfts.utils`. `LFTS` and `CLFTS` keep their structure-function code in methods beside `_run`.
 - Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
   of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and

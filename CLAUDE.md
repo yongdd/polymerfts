@@ -194,7 +194,8 @@ Keep each simulation class readable from top to bottom:
 - Keep one topic per file. Duplication among `scft.py`, `lfts.py` and `clfts.py`
   is acceptable when it keeps the loops self-contained.
 - Put shared parameter validation and legacy-name normalization in `validation.py`;
-  keep common mechanical helpers in `utils.py`.
+  keep common mechanical helpers in `utils.py` and what a run saves and restores
+  in `checkpoint.py`.
 - `scft.py` owns SCFT iteration and optional cell relaxation; `lfts.py` owns
   saddle-constrained Langevin sampling and its field compressors; `clfts.py`
   evolves complex auxiliary fields.

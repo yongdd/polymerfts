@@ -24,14 +24,16 @@ from .utils import (
     atomic_savemat,
     mat_ready,
     simulation_metadata,
+    write_run_status,
+    fields_hash,
+    notify_callbacks,
+)
+from .checkpoint import (
     checkpoint_data,
     validate_checkpoint,
     restore_recording_state,
-    write_run_status,
-    fields_hash,
     initialize_extensions,
     restore_extensions,
-    notify_callbacks,
     extension_object_state,
 )
 from .smearing import Smearing
@@ -1026,51 +1028,11 @@ class LFTS:
                     
             # Calculate structure function
             if langevin_step % self.recording["sample_interval"] == 0:
-                # Perform Fourier transforms (all densities in one call, all fields in another).
-                # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
-                # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>
-                kept = [k for k in range(M-1) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
-                phi_k = self._rfft_fields([phi[name] for name in self.monomer_types])/self.prop_solver.n_grid
-                w_k = self._rfft_fields(w_aux[kept])/self.prop_solver.n_grid if kept else None
-                mu_fourier = {}
-                phi_fourier = {}
-                for i in range(M):
-                    key = self.monomer_types[i]
-                    phi_fourier[key] = phi_k[i]
-                    mu_fourier[key] = np.zeros_like(phi_fourier[key], np.complex128)
-                    for j, k in enumerate(kept):
-                        mu_fourier[key] += w_k[j]*self.mpt.matrix_a[i,k]/self.mpt.eigenvalues[k]
-                # Accumulate S_ij(K), assuming that <mu(k)>*<phi(-k)> is zero
-                for key in sf_average:
-                    monomer_pair = sorted(key.split(","))
-                    sf_average[key] += mu_fourier[monomer_pair[0]]* np.conj( phi_fourier[monomer_pair[1]])
+                self._add_structure_function_sample(w_aux, phi, sf_average)
 
             # Save structure function
             if langevin_step % self.recording["statistics_save_interval"] == 0:
-                # Make a dictionary for chi_n
-                chi_n_mat = {}
-                for key in self.chi_n:
-                    monomer_pair = sorted(key.split(","))
-                    chi_n_mat[monomer_pair[0] + "," + monomer_pair[1]] = self.chi_n[key]
-                mdic = {"dim":self.prop_solver.dim, "nx":self.prop_solver.nx, "lx":self.prop_solver.get_lx(),
-                        "chi_n":chi_n_mat, "chain_model":self.chain_model, "ds":self.ds,
-                        "dt":self.langevin["dt"], "nbar":self.langevin["nbar"], "initial_params":mat_ready(self.params)}
-                # Add structure functions to the dictionary
-                for key in sf_average:
-                    sf_average[key] *= 1.0/max(sf_sample_count, 1)* \
-                            self.prop_solver.get_volume()*np.sqrt(self.langevin["nbar"])
-                    # With smearing the fields couple to the smeared densities, so <μ φ> = Γ(k) S(k):
-                    # divide by Γ to record S(k) of the densities (modes the smeared interaction
-                    # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
-                    # basis while S(k) is a Fourier transform, so it is recorded as it is.
-                    if self.smearing.enabled and self.smearing.periodic:
-                        gamma = self.smearing.fourier[..., :self.prop_solver.nx[-1]//2+1]
-                        sf_average[key] = np.divide(sf_average[key], gamma, out=np.zeros_like(sf_average[key]), where=gamma > 1e-12)
-                    monomer_pair = sorted(key.split(","))
-                    mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1]] = sf_average[key]
-                mdic["sample_count"] = sf_sample_count
-                mdic["simulation_metadata_json"] = json.dumps(self.metadata)
-                atomic_savemat(os.path.join(self.recording["dir"], "structure_function_%06d.mat" % (langevin_step)), mdic, long_field_names=True, do_compression=True)
+                self._save_structure_functions(langevin_step, sf_average, sf_sample_count)
                 # Reset arrays
                 for key in sf_average:
                     sf_average[key][:] = 0.0
@@ -1099,6 +1061,55 @@ class LFTS:
         total_saddle_iter += self._intermediate_saddle_iterations
         print("Total iterations for saddle points: %d, Iterations per Langevin step: %f" %
             (total_saddle_iter, total_saddle_iter/n_steps))
+
+    def _add_structure_function_sample(self, w_aux, phi, sf_average):
+        """Add the current state to the sums of the structure functions."""
+        M = len(self.monomer_types)
+        # Perform Fourier transforms (all densities in one call, all fields in another).
+        # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
+        # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>
+        kept = [k for k in range(M-1) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
+        phi_k = self._rfft_fields([phi[name] for name in self.monomer_types])/self.prop_solver.n_grid
+        w_k = self._rfft_fields(w_aux[kept])/self.prop_solver.n_grid if kept else None
+        mu_fourier = {}
+        phi_fourier = {}
+        for i in range(M):
+            key = self.monomer_types[i]
+            phi_fourier[key] = phi_k[i]
+            mu_fourier[key] = np.zeros_like(phi_fourier[key], np.complex128)
+            for j, k in enumerate(kept):
+                mu_fourier[key] += w_k[j]*self.mpt.matrix_a[i,k]/self.mpt.eigenvalues[k]
+        # Accumulate S_ij(K), assuming that <mu(k)>*<phi(-k)> is zero
+        for key in sf_average:
+            monomer_pair = sorted(key.split(","))
+            sf_average[key] += mu_fourier[monomer_pair[0]]* np.conj( phi_fourier[monomer_pair[1]])
+
+    def _save_structure_functions(self, langevin_step, sf_average, sf_sample_count):
+        """Write the means of the interval to structure_function_NNNNNN.mat."""
+        # Make a dictionary for chi_n
+        chi_n_mat = {}
+        for key in self.chi_n:
+            monomer_pair = sorted(key.split(","))
+            chi_n_mat[monomer_pair[0] + "," + monomer_pair[1]] = self.chi_n[key]
+        mdic = {"dim":self.prop_solver.dim, "nx":self.prop_solver.nx, "lx":self.prop_solver.get_lx(),
+                "chi_n":chi_n_mat, "chain_model":self.chain_model, "ds":self.ds,
+                "dt":self.langevin["dt"], "nbar":self.langevin["nbar"], "initial_params":mat_ready(self.params)}
+        # Add structure functions to the dictionary
+        for key in sf_average:
+            sf_average[key] *= 1.0/max(sf_sample_count, 1)* \
+                    self.prop_solver.get_volume()*np.sqrt(self.langevin["nbar"])
+            # With smearing the fields couple to the smeared densities, so <μ φ> = Γ(k) S(k):
+            # divide by Γ to record S(k) of the densities (modes the smeared interaction
+            # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
+            # basis while S(k) is a Fourier transform, so it is recorded as it is.
+            if self.smearing.enabled and self.smearing.periodic:
+                gamma = self.smearing.fourier[..., :self.prop_solver.nx[-1]//2+1]
+                sf_average[key] = np.divide(sf_average[key], gamma, out=np.zeros_like(sf_average[key]), where=gamma > 1e-12)
+            monomer_pair = sorted(key.split(","))
+            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1]] = sf_average[key]
+        mdic["sample_count"] = sf_sample_count
+        mdic["simulation_metadata_json"] = json.dumps(self.metadata)
+        atomic_savemat(os.path.join(self.recording["dir"], "structure_function_%06d.mat" % (langevin_step)), mdic, long_field_names=True, do_compression=True)
 
     def evaluate_force(self, fields, *, w_aux, step):
         """dH/dw at intermediate active fields, with a saddle solve and fixed bias.

@@ -28,7 +28,7 @@ from .smearing import Smearing
 from .electrostatics import Electrostatics
 from .propagator_solver import PropagatorSolver
 from .validation import (normalize_params, validate_lfts_params, ValidationError, parse_chi_n, point_ion_concentrations,
-                         open_charges)
+                         open_charges, reference_segments)
 from .utils import (
     process_polymer_blocks,
     process_random_copolymer,
@@ -39,17 +39,19 @@ from .utils import (
     atomic_savemat,
     mat_ready,
     simulation_metadata,
-    checkpoint_data,
-    validate_checkpoint,
-    restore_recording_state,
     write_run_status,
     fields_hash,
-    initialize_extensions,
-    extension_state,
-    restore_extensions,
     notify_callbacks,
     DriftTailSummary,
     PartitionRatioSummary,
+)
+from .checkpoint import (
+    checkpoint_data,
+    validate_checkpoint,
+    restore_recording_state,
+    initialize_extensions,
+    extension_state,
+    restore_extensions,
 )
 
 # OpenMP environment variables
@@ -275,11 +277,8 @@ class CLFTS:
         # charged types as z_i ψ, fluctuates next to the auxiliary fields (electrostatics.py)
         self.electrostatics = None
         if params.get("electrostatics", None) is not None:
-            # Segments N of the reference chain: 1/ds of discrete chains, given for continuous chains
-            n_segments = (round(1.0 / params["ds"]) if params["chain_model"].lower() == "discrete"
-                          else params["electrostatics"].get("n_segments"))
             self.electrostatics = Electrostatics(params["electrostatics"], self.monomer_types, self.smearing,
-                                                 n_segments, self.langevin, self.random_bg.jumped(),
+                                                 reference_segments(params), self.langevin, self.random_bg.jumped(),
                                                  fourier=self.prop_solver.fourier,
                                                  ion_concentrations=point_ion_concentrations(params),
                                                  open_charges=open_charges(params))
@@ -1279,138 +1278,12 @@ class CLFTS:
 
             # Calculate structure function
             if langevin_step % self.recording["sample_interval"] == 0:
-                # Perform Fourier transforms (full FFT for complex fields).
-                # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
-                # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>. All fields
-                # fluctuate in CL-FTS; only the incompressible pressure field (λ = 0) is left out.
-                # The fields are complex, so φ(-k) is not the conjugate of φ(k):
-                # φ(-k) = conj(FFT[conj φ](k)).
-                # All densities are transformed in one call, all fields in another
-                kept = [k for k in range(M) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
-                phi_mk = np.conj(self._fft_fields(np.conj([phi[name] for name in self.monomer_types]))) / self.prop_solver.n_grid
-                w_k = self._fft_fields(w_aux[kept]) / self.prop_solver.n_grid if kept else None
-                mu_fourier = {}
-                phi_fourier = {}   # φ(-k)
-                for i in range(M):
-                    key = self.monomer_types[i]
-                    phi_fourier[key] = phi_mk[i]
-                    mu_fourier[key] = np.zeros_like(phi_fourier[key], np.complex128)
-                    for j, k in enumerate(kept):
-                        mu_fourier[key] += w_k[j] * self.mpt.matrix_a[i, k] / self.mpt.eigenvalues[k]
-                # Zero-eigenvalue modes along u: μ_i += u_i [((k² + κ²)/E) ψ(k) - Σ_l z_l μ_l(k)] / |u|²
-                if self._psi_probe is not None:
-                    es = self.electrostatics
-                    probe = es.psi_k * es.screened_k_sq / es.coupling / self.prop_solver.n_grid
-                    # ψ measures the charge of the point ions and the fixed charge as well: remove them
-                    if es.ions:
-                        probe -= np.reshape(self._fft_fields(es.ion_charge())[0], probe.shape) / self.prop_solver.n_grid
-                    if es.fixed_charge is not None:
-                        probe -= np.reshape(self._fft_fields(es.fixed_charge)[0], probe.shape) / self.prop_solver.n_grid
-                    # k = 0 is not a structure function in the canonical ensemble; with screening
-                    # κ²ψ(0)/E would carry a net charge there
-                    probe[(0,) * len(self.prop_solver.nx)] = 0.0
-                    for name in self.monomer_types:
-                        probe -= es.charges[name] * mu_fourier[name]
-                    for i, name in enumerate(self.monomer_types):
-                        mu_fourier[name] = mu_fourier[name] + self._psi_probe[i] * probe
-                # Accumulate S_ij(K) = <μ_i(k) φ_j(-k)>
-                for key in sf_average:
-                    monomer_pair = sorted(key.split(","))
-                    sf_average[key] += mu_fourier[monomer_pair[0]] * phi_fourier[monomer_pair[1]]
-                if charge_sums is not None:
-                    es = self.electrostatics
-                    n_grid, nx = self.prop_solver.n_grid, self.prop_solver.nx
-                    norm = self.prop_solver.get_volume() * np.sqrt(self.langevin["nbar"])
-                    psi_k = es.psi_k / n_grid
-                    psi_mk = es.psi_minus_k() / n_grid
-                    # c(-k) = Σ_i z_i Γ_i(k) φ_i(-k) from the φ_i(-k) above (Γ_i is even in k), and the
-                    # smeared charge of the point ions
-                    charge_mk = sum(z * self.smearing.kernel(name) * phi_fourier[name]
-                                    for name, z in es.charges.items() if z != 0.0)
-                    if es.ions:
-                        ion_mk = np.conj(self._fft_fields(np.conj(es.ion_charge()))[0]) / n_grid
-                        charge_mk = charge_mk + np.reshape(ion_mk, np.shape(psi_k))
-                    if es.fixed_charge is not None:
-                        fixed_mk = np.conj(self._fft_fields(es.fixed_charge)[0]) / n_grid
-                        charge_mk = charge_mk + np.reshape(fixed_mk, np.shape(psi_k))
-                    rate = es.screened_k_sq / es.coupling
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        mixed = rate * norm * psi_k * charge_mk
-                        difference = rate ** 2 * (norm * psi_k * psi_mk + 1.0 / rate) - mixed
-                    mixed[(0,) * len(nx)] = 0.0
-                    difference[(0,) * len(nx)] = 0.0
-                    charge_sums["charge_mixed"] += mixed
-                    charge_sums["charge_difference"] += difference
-                    charge_sums["charge_mixed_difference"] += mixed.real * difference.real
-                    charge_sums["charge_difference_squared"] += difference.real ** 2
+                self._add_structure_function_sample(w_aux, phi, sf_average, charge_sums)
 
             # Save structure function
             if langevin_step % self.recording["statistics_save_interval"] == 0:
-                # Make a dictionary for chi_n
-                chi_n_mat = {}
-                for key in self.chi_n:
-                    monomer_pair = sorted(key.split(","))
-                    chi_n_mat[monomer_pair[0] + "," + monomer_pair[1]] = self.chi_n[key]
-                mdic = {
-                    "dim": self.prop_solver.dim,
-                    "nx": self.prop_solver.nx,
-                    "lx": self.prop_solver.get_lx(),
-                    "chi_n": chi_n_mat,
-                    "chain_model": self.chain_model,
-                    "ds": self.ds,
-                    "dt": self.langevin["dt"],
-                    "nbar": self.langevin["nbar"],
-                    "initial_params": mat_ready(self.params)
-                }
-                # Add structure functions to the dictionary
-                for key in sf_average:
-                    sf_scaled = (
-                        sf_average[key] *
-                        1.0 / max(sf_sample_count, 1) *
-                        self.prop_solver.get_volume() * np.sqrt(self.langevin["nbar"])
-                    )
-                    # With smearing the fields couple to the smeared densities, so <μ_i φ_j> = Γ_i(k) S_ij(k):
-                    # divide by Γ_i to record S(k) of the densities (modes the smeared interaction
-                    # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
-                    # basis while S(k) is a Fourier transform, so it is recorded as it is.
-                    monomer_pair = sorted(key.split(","))
-                    if self.smearing.enabled and self.smearing.periodic:
-                        gamma = self.smearing.kernel(monomer_pair[0])
-                        sf_scaled = np.divide(sf_scaled, gamma, out=np.zeros_like(sf_scaled), where=gamma > 1e-12)
-                    mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_real"] = np.real(sf_scaled)
-                    mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_imag"] = np.imag(sf_scaled)
-                # Structure function of the smeared charge density c = Σ_i z_i Γ_i φ_i: <M> + w <D>
-                # with the weight w = -Cov(M, D)/Var(D) of least variance at each wavevector (w = 0:
-                # the mixed form, w = 1: the field-field form). Both forms are recorded too: in the
-                # Gaussian regime the combination follows from the linear response of the chains
-                # and does not show how well ψ is sampled (docs/theory/StructureFunctionEstimators.md)
-                if charge_sums is not None:
-                    count = max(sf_sample_count, 1)
-                    mixed = charge_sums["charge_mixed"] / count
-                    difference = charge_sums["charge_difference"] / count
-                    covariance = charge_sums["charge_mixed_difference"].real / count - mixed.real * difference.real
-                    variance = charge_sums["charge_difference_squared"].real / count - difference.real ** 2
-                    weight = np.divide(-covariance, variance, out=np.zeros_like(variance), where=variance > 0)
-                    s_charge = mixed + weight * difference
-                    mdic["charge_structure_function_real"] = np.real(s_charge)
-                    mdic["charge_structure_function_imag"] = np.imag(s_charge)
-                    mdic["charge_structure_function_weight"] = weight
-                    for form, s_form in (("mixed", mixed), ("field_field", mixed + difference)):
-                        mdic["charge_structure_function_" + form + "_real"] = np.real(s_form)
-                        mdic["charge_structure_function_" + form + "_imag"] = np.imag(s_form)
-                # Mean concentrations on the grid, shaped like nx
-                for key, total in concentration_sums.items():
-                    mean = np.reshape(total, self.prop_solver.nx) / max(concentration_steps[0], 1)
-                    mdic[key + "_real"] = np.real(mean)
-                    mdic[key + "_imag"] = np.imag(mean)
-                if concentration_sums:
-                    mdic["concentration_step_count"] = int(concentration_steps[0])
-                mdic["sample_count"] = sf_sample_count
-                mdic["simulation_metadata_json"] = json.dumps(self.metadata)
-                atomic_savemat(
-                    os.path.join(self.recording["dir"], "structure_function_%06d.mat" % langevin_step),
-                    mdic, long_field_names=True, do_compression=True
-                )
+                self._save_structure_functions(langevin_step, sf_average, charge_sums, concentration_sums, concentration_steps,
+                                               sf_sample_count)
                 # Reset arrays
                 for key in recorded:
                     recorded[key][:] = 0.0
@@ -1449,3 +1322,140 @@ class CLFTS:
         print("total time: %f, time per step: %f" % (time_duration, time_duration / n_steps))
         drift_tail.report()
         ratio_summary.report()
+
+    def _add_structure_function_sample(self, w_aux, phi, sf_average, charge_sums):
+        """Add the current state to the sums of the structure functions."""
+        M = len(self.monomer_types)
+        # Perform Fourier transforms (full FFT for complex fields).
+        # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
+        # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>. All fields
+        # fluctuate in CL-FTS; only the incompressible pressure field (λ = 0) is left out.
+        # The fields are complex, so φ(-k) is not the conjugate of φ(k):
+        # φ(-k) = conj(FFT[conj φ](k)).
+        # All densities are transformed in one call, all fields in another
+        kept = [k for k in range(M) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
+        phi_mk = np.conj(self._fft_fields(np.conj([phi[name] for name in self.monomer_types]))) / self.prop_solver.n_grid
+        w_k = self._fft_fields(w_aux[kept]) / self.prop_solver.n_grid if kept else None
+        mu_fourier = {}
+        phi_fourier = {}   # φ(-k)
+        for i in range(M):
+            key = self.monomer_types[i]
+            phi_fourier[key] = phi_mk[i]
+            mu_fourier[key] = np.zeros_like(phi_fourier[key], np.complex128)
+            for j, k in enumerate(kept):
+                mu_fourier[key] += w_k[j] * self.mpt.matrix_a[i, k] / self.mpt.eigenvalues[k]
+        # Zero-eigenvalue modes along u: μ_i += u_i [((k² + κ²)/E) ψ(k) - Σ_l z_l μ_l(k)] / |u|²
+        if self._psi_probe is not None:
+            es = self.electrostatics
+            probe = es.psi_k * es.screened_k_sq / es.coupling / self.prop_solver.n_grid
+            # ψ measures the charge of the point ions and the fixed charge as well: remove them
+            if es.ions:
+                probe -= np.reshape(self._fft_fields(es.ion_charge())[0], probe.shape) / self.prop_solver.n_grid
+            if es.fixed_charge is not None:
+                probe -= np.reshape(self._fft_fields(es.fixed_charge)[0], probe.shape) / self.prop_solver.n_grid
+            # k = 0 is not a structure function in the canonical ensemble; with screening
+            # κ²ψ(0)/E would carry a net charge there
+            probe[(0,) * len(self.prop_solver.nx)] = 0.0
+            for name in self.monomer_types:
+                probe -= es.charges[name] * mu_fourier[name]
+            for i, name in enumerate(self.monomer_types):
+                mu_fourier[name] = mu_fourier[name] + self._psi_probe[i] * probe
+        # Accumulate S_ij(K) = <μ_i(k) φ_j(-k)>
+        for key in sf_average:
+            monomer_pair = sorted(key.split(","))
+            sf_average[key] += mu_fourier[monomer_pair[0]] * phi_fourier[monomer_pair[1]]
+        if charge_sums is not None:
+            es = self.electrostatics
+            n_grid, nx = self.prop_solver.n_grid, self.prop_solver.nx
+            norm = self.prop_solver.get_volume() * np.sqrt(self.langevin["nbar"])
+            psi_k = es.psi_k / n_grid
+            psi_mk = es.psi_minus_k() / n_grid
+            # c(-k) = Σ_i z_i Γ_i(k) φ_i(-k) from the φ_i(-k) above (Γ_i is even in k), and the
+            # smeared charge of the point ions
+            charge_mk = sum(z * self.smearing.kernel(name) * phi_fourier[name]
+                            for name, z in es.charges.items() if z != 0.0)
+            if es.ions:
+                ion_mk = np.conj(self._fft_fields(np.conj(es.ion_charge()))[0]) / n_grid
+                charge_mk = charge_mk + np.reshape(ion_mk, np.shape(psi_k))
+            if es.fixed_charge is not None:
+                fixed_mk = np.conj(self._fft_fields(es.fixed_charge)[0]) / n_grid
+                charge_mk = charge_mk + np.reshape(fixed_mk, np.shape(psi_k))
+            rate = es.screened_k_sq / es.coupling
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mixed = rate * norm * psi_k * charge_mk
+                difference = rate ** 2 * (norm * psi_k * psi_mk + 1.0 / rate) - mixed
+            mixed[(0,) * len(nx)] = 0.0
+            difference[(0,) * len(nx)] = 0.0
+            charge_sums["charge_mixed"] += mixed
+            charge_sums["charge_difference"] += difference
+            charge_sums["charge_mixed_difference"] += mixed.real * difference.real
+            charge_sums["charge_difference_squared"] += difference.real ** 2
+
+    def _save_structure_functions(self, langevin_step, sf_average, charge_sums, concentration_sums, concentration_steps,
+                                  sf_sample_count):
+        """Write the means of the interval to structure_function_NNNNNN.mat."""
+        # Make a dictionary for chi_n
+        chi_n_mat = {}
+        for key in self.chi_n:
+            monomer_pair = sorted(key.split(","))
+            chi_n_mat[monomer_pair[0] + "," + monomer_pair[1]] = self.chi_n[key]
+        mdic = {
+            "dim": self.prop_solver.dim,
+            "nx": self.prop_solver.nx,
+            "lx": self.prop_solver.get_lx(),
+            "chi_n": chi_n_mat,
+            "chain_model": self.chain_model,
+            "ds": self.ds,
+            "dt": self.langevin["dt"],
+            "nbar": self.langevin["nbar"],
+            "initial_params": mat_ready(self.params)
+        }
+        # Add structure functions to the dictionary
+        for key in sf_average:
+            sf_scaled = (
+                sf_average[key] *
+                1.0 / max(sf_sample_count, 1) *
+                self.prop_solver.get_volume() * np.sqrt(self.langevin["nbar"])
+            )
+            # With smearing the fields couple to the smeared densities, so <μ_i φ_j> = Γ_i(k) S_ij(k):
+            # divide by Γ_i to record S(k) of the densities (modes the smeared interaction
+            # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
+            # basis while S(k) is a Fourier transform, so it is recorded as it is.
+            monomer_pair = sorted(key.split(","))
+            if self.smearing.enabled and self.smearing.periodic:
+                gamma = self.smearing.kernel(monomer_pair[0])
+                sf_scaled = np.divide(sf_scaled, gamma, out=np.zeros_like(sf_scaled), where=gamma > 1e-12)
+            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_real"] = np.real(sf_scaled)
+            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_imag"] = np.imag(sf_scaled)
+        # Structure function of the smeared charge density c = Σ_i z_i Γ_i φ_i: <M> + w <D>
+        # with the weight w = -Cov(M, D)/Var(D) of least variance at each wavevector (w = 0:
+        # the mixed form, w = 1: the field-field form). Both forms are recorded too: in the
+        # Gaussian regime the combination follows from the linear response of the chains
+        # and does not show how well ψ is sampled (docs/theory/StructureFunctionEstimators.md)
+        if charge_sums is not None:
+            count = max(sf_sample_count, 1)
+            mixed = charge_sums["charge_mixed"] / count
+            difference = charge_sums["charge_difference"] / count
+            covariance = charge_sums["charge_mixed_difference"].real / count - mixed.real * difference.real
+            variance = charge_sums["charge_difference_squared"].real / count - difference.real ** 2
+            weight = np.divide(-covariance, variance, out=np.zeros_like(variance), where=variance > 0)
+            s_charge = mixed + weight * difference
+            mdic["charge_structure_function_real"] = np.real(s_charge)
+            mdic["charge_structure_function_imag"] = np.imag(s_charge)
+            mdic["charge_structure_function_weight"] = weight
+            for form, s_form in (("mixed", mixed), ("field_field", mixed + difference)):
+                mdic["charge_structure_function_" + form + "_real"] = np.real(s_form)
+                mdic["charge_structure_function_" + form + "_imag"] = np.imag(s_form)
+        # Mean concentrations on the grid, shaped like nx
+        for key, total in concentration_sums.items():
+            mean = np.reshape(total, self.prop_solver.nx) / max(concentration_steps[0], 1)
+            mdic[key + "_real"] = np.real(mean)
+            mdic[key + "_imag"] = np.imag(mean)
+        if concentration_sums:
+            mdic["concentration_step_count"] = int(concentration_steps[0])
+        mdic["sample_count"] = sf_sample_count
+        mdic["simulation_metadata_json"] = json.dumps(self.metadata)
+        atomic_savemat(
+            os.path.join(self.recording["dir"], "structure_function_%06d.mat" % langevin_step),
+            mdic, long_field_names=True, do_compression=True
+        )

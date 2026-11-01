@@ -30,7 +30,8 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, ValidationError
-from polymerfts.utils import atomic_savemat, validate_checkpoint
+from polymerfts.checkpoint import validate_checkpoint
+from polymerfts.utils import atomic_savemat
 from TestClftsElectrostatics import parameters as charged_parameters, initial_fields
 
 M = 3   # monomer types A, B, C: three auxiliary fields
