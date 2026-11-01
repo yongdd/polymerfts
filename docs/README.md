@@ -17,6 +17,7 @@
 | [ChainPropagators.md](theory/ChainPropagators.md) | Chain propagators, partition functions, and concentrations |
 | [PolymerFieldTheory.md](theory/PolymerFieldTheory.md) | Field theory formulations (monomer, auxiliary fields), smeared and electrostatic interactions |
 | [SelfConsistentFieldTheory.md](theory/SelfConsistentFieldTheory.md) | SCFT saddle-point equations and iterative methods |
+| [ElectrostaticCorrelations.md](theory/ElectrostaticCorrelations.md) | SCFT with electrostatic correlations: the self-energy of charged species from a Gaussian variational reference, with corrections to the published equations |
 | [LangevinFieldTheoreticSimulation.md](theory/LangevinFieldTheoreticSimulation.md) | What L-FTS and CL-FTS share: Langevin dynamics, observables and output files, structure functions, renormalization and calibration |
 | [PartialSaddlePointApproximation.md](theory/PartialSaddlePointApproximation.md) | L-FTS: partial saddle-point approximation, saddle-point iteration and the `LFTS` class |
 | [ComplexLangevinSimulation.md](theory/ComplexLangevinSimulation.md) | CL-FTS: complex Langevin dynamics, correct convergence, stabilization, charged systems, thermodynamic operators and the Gibbs ensemble |

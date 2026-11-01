@@ -66,7 +66,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `examples/charged/scft/BrushMultivalentIons.py` (2026-11-01): a brush with multivalent ions and the
   ion self-energy of Duan, Agrawal and Wang (2025), with `cn-adi2`, in the box of their Fig. 2 and in
   the solution of the experiment of Yu et al. (2016) with a closed cell.
-  docs/validation/MultivalentBrush.md says what differs from the paper, and why.
+  docs/validation/MultivalentBrush.md says what differs from the paper, and why, and
+  docs/theory/ElectrostaticCorrelations.md derives the equations with corrections to the published ones.
 - `examples/charged/scft/SaltDopedLamella.py` (2026-10-29): a salt that the B block of a lamella
   solvates, with the ions as molecules of one segment that carry their own chi, and the
   Coulomb interaction dragging the weakly selective anion after the cation.
