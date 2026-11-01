@@ -2,8 +2,8 @@
 """SCFT.run progress callback (on_iteration) and IterationInfo.
 
 Runs a small 1D lamellar SCFT with box relaxation on the CPU. A callback that
-returns False must stop the run at that iteration; a callback that returns
-None must let the run converge. Every IterationInfo must carry the iteration
+returns False, or the NumPy False of a comparison, must stop the run at that
+iteration; a callback that returns None or True must let the run converge. Every IterationInfo must carry the iteration
 number, the errors, the partition functions and the box size.
 """
 
@@ -65,6 +65,25 @@ def main():
                 and info.lx is not None and len(info.lx) == 1 and info.angles is None):
             failed.append(f"incomplete IterationInfo: {info}")
             break
+
+    # The result of a comparison stops it too, as a NumPy False
+    calls = []
+    def stop_with_numpy(info):
+        calls.append(info.iteration)
+        return np.int64(info.iteration) < 3
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        calc = SCFT(lamella_params())
+        calc.run(initial_fields=initial_fields(), on_iteration=stop_with_numpy)
+    if calls != [1, 2, 3] or calc.iter != 3:
+        failed.append(f"stop with a NumPy False: {len(calls)} calls, calc.iter {calc.iter}")
+
+    # A callback returning True keeps it going
+    with contextlib.redirect_stdout(io.StringIO()):
+        calc = SCFT(lamella_params())
+        calc.run(initial_fields=initial_fields(), on_iteration=lambda info: True)
+    if calc.error_level >= 1e-8:
+        failed.append(f"callback returning True: error {calc.error_level}")
 
     # A callback returning None lets the run converge
     count = []

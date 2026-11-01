@@ -435,6 +435,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `SCFT.run` stops when `on_iteration` returns the NumPy False of a comparison, as for
+  `return info.error_level > 1e-3` (2026-11-02). It stopped only for the Python `False`, and such a
+  callback let the run go on without a message. `None` still continues.
 - `LFTS` with the `lr` and `lram` compressors no longer stops with `A multiplier must be finite`
   (2026-11-02). A uniform shift of the incompressible pressure field changes no concentration, so
   J(0) is zero; the measured value was rounding, and exactly zero on some small 1-D grids. The setup

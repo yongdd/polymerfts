@@ -606,7 +606,8 @@ class SCFT:
         on_iteration : callable, optional
             Callback function called after each iteration.
             Signature: on_iteration(info: IterationInfo) -> Optional[bool]
-            If callback returns False, iteration stops early.
+            If callback returns False or another false value, such as the
+            NumPy False of a comparison, iteration stops early; None continues.
             Use for monitoring, checkpointing, or custom stopping criteria.
         return_result : bool, optional
             If True, return an SCFTResult object with the fields on the full
@@ -719,7 +720,8 @@ class SCFT:
 
             # Call progress callback if provided
             if on_iteration is not None:
-                if on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions)) is False:
+                keep_going = on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions))
+                if keep_going is not None and not keep_going:
                     if self.relax_cell and not stress_is_current:
                         stress_array = self.cell.stress(w, phi)
                         error_level = field_error_level + self.cell.error(stress_array)
