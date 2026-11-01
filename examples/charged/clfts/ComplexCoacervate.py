@@ -1,7 +1,7 @@
 """CL-FTS of the salt-free polycation/polyanion solution of Lee, Popov & Fredrickson,
 J. Chem. Phys. 128, 224908 (2008): the structure factors of their Figs. 4 and 5, and the chemical
 potential and pressures at the same state point against the one-loop theory. The phase diagram of
-their Fig. 6 is not reproduced (docs/internals/ExampleValidation.md).
+their Fig. 6 is not reproduced (docs/validation/ComplexCoacervate.md).
 
 Lee's model: n polycations and n polyanions, discrete Gaussian chains of N_L bonds (N_L + 1 beads) with the
 charge +-z per bead, in an implicit good solvent with the Edwards excluded volume (u0/2) int rho^2 and the

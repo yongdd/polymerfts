@@ -71,7 +71,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   solvates, with the ions as molecules of one segment that carry their own chi, and the
   Coulomb interaction dragging the weakly selective anion after the cation.
   docs/references/Parameters.md and the theory pages describe how ions get chi this way
-  (point ions have none). docs/internals/ExampleValidation.md records the check against the
+  (point ions have none). docs/validation/ExampleValidation.md records the check against the
   locally neutral limit: as E grows, the lamella approaches that of one neutral salt molecule
   with the mean chi, linearly in 1/E.
 - Reproductions of published results as examples and validation records (2026-10-28):
@@ -81,8 +81,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `PolyampholyteSolution.py` (McCarty et al. 2019), `ComplexCoacervate.py` (Lee, Popov and
   Fredrickson 2008), `examples/block_copolymer/clfts/SoftBeadDiblockMelt.py` (Lequieu 2024) and
   `examples/blend/clfts/HomopolymerSolutionBook.py` (Fredrickson and Delaney 2023).
-  docs/internals/NumericalValidation.md lists the papers and codes (PSCF, BioFTS, polycomp)
-  that polymerfts reproduces, and docs/internals/ExampleValidation.md gives the compared numbers, including
+  docs/validation/NumericalValidation.md lists the papers and codes (PSCF, BioFTS, polycomp)
+  that polymerfts reproduces, and docs/validation/ExampleValidation.md gives the compared numbers, including
   exact Monte Carlo checks of the CL-FTS of point ions and the results that are not reproduced
   (the phase diagram of Lee et al.; the converged dense branch of Danielsen et al., 3.4–5 %
   below the paper, a difference that the paper's contour step Δs = 0.01 mostly explains).
@@ -93,8 +93,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   points, which differs from the pressure at fixed grid spacing when the smearing is not
   resolved; comparisons with BioFTS (with the corrections of its issue 1, which removes the
   time-step dependence the structure-function comparison reported) and polycomp.
+- Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
+  of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and
-  `docs/internals/ExampleValidation.md` holds what the tests and validation runs check for each
+  `docs/validation/ExampleValidation.md` holds what the tests and validation runs check for each
   example, with the compared numbers and figures (2026-10-29).
 - Documentation: a system of point ions alone takes a neutral solvent of one segment as the
   reference chain, with `zeta_n: 0` so that it has no field (2026-10-29). With ζN > 0 the

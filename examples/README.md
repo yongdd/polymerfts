@@ -13,7 +13,7 @@ Example scripts, grouped first by physical system and then by simulation method:
 | [Charged systems](#charged-systems-charged) | `charged/scft/` | — | `charged/clfts/` |
 | [Tools](#tools-tools) | `tools/` (transforms and extension APIs) | | |
 
-What the tests and validation runs check for each example, with the compared numbers and figures, is in [Validation of the Examples](../docs/internals/ExampleValidation.md). [Numerical Validation](../docs/internals/NumericalValidation.md) covers the validation of the library as a whole: the regression tests, the published results and other codes that polymerfts reproduces, and the differences from them.
+What the tests and validation runs check for each example, with the compared numbers and figures, is in [Validation of the Examples](../docs/validation/ExampleValidation.md). [Numerical Validation](../docs/validation/NumericalValidation.md) covers the validation of the library as a whole: the regression tests, the published results and other codes that polymerfts reproduces, and the differences from them.
 
 ## Block copolymers (`block_copolymer/`)
 
@@ -34,7 +34,7 @@ What the tests and validation runs check for each example, with the compared num
 | `lfts/Gyroid.py` | Gyroid with fluctuations (discrete chains) |
 | `lfts/ABC_Triblock_Sphere3D.py` | ABC triblock with fluctuations |
 | `clfts/Lamella.py` | Lamellar phase from complex Langevin dynamics; stabilization options in `DYNAMICAL_STABILIZATION.md` and `SMEARING.md` |
-| `clfts/SoftBeadDiblockMelt.py` | Pressure and chemical potential of a soft-bead diblock melt (Lequieu 2024) |
+| `clfts/SoftBeadDiblockMelt.py` | Pressure and chemical potential of a soft-bead diblock melt (Lequieu 2024) ([validation](../docs/validation/SoftBeadModels.md)) |
 
 **Phase library** (`scft/phases/`, space-group symmetry):
 
@@ -51,7 +51,7 @@ What the tests and validation runs check for each example, with the compared num
 | `scft/MixtureBlockRandom.py` | Blend of a block copolymer and a random copolymer |
 | `scft/CanonicalCoexistence.py` | Binodal of a homopolymer blend (`find_binary_coexistence`) |
 | `lfts/MixtureBlockRandom.py` | The same blend with fluctuations |
-| `clfts/GibbsEnsemble.py` | Coexisting phases of a blend from two CL-FTS boxes (`GibbsEnsemble`) |
+| `clfts/GibbsEnsemble.py` | Coexisting phases of a blend from two CL-FTS boxes (`GibbsEnsemble`) ([validation](../docs/validation/BlendGibbsEnsemble.md)) |
 | `clfts/HomopolymerSolutionBook.py` | Homopolymer in good solvent: chemical potential and pressure (Fredrickson and Delaney 2023) |
 
 ## Charged systems (`charged/`)
@@ -64,14 +64,14 @@ Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS.
 | `scft/SaltDopedLamella.py` | Salt-doped diblock lamella: ions of one segment with χ, solvated by one block |
 | `scft/PolyelectrolyteBrush.py` | Charged brush on a charged wall of a closed box with point ions (`cn-adi2`) |
 | `scft/BrushMultivalentIons.py` | Brush with multivalent ions and the ion self-energy, in the box of a published figure and in the solution of the experiment with a closed cell ([validation](../docs/validation/MultivalentBrush.md)) |
-| `scft/CounterionsBetweenPlates.py` | Poisson-Boltzmann counterions between charged plates (Netz 2001) |
+| `scft/CounterionsBetweenPlates.py` | Poisson-Boltzmann counterions between charged plates (Netz 2001) ([validation](../docs/validation/Electrolytes.md)) |
 | `clfts/ChargedDiblock.py` | Charged diblock melt with counterions |
 | `clfts/SaltReservoir.py` | Charged melt in contact with a salt reservoir (grand-canonical point ions) |
-| `clfts/CounterionsBetweenPlates.py` | Counterions between charged plates beyond Poisson-Boltzmann (Netz 2001) |
-| `clfts/SmearedSaltSelfEnergy.py` | Self-energy and screening of smeared point ions (Wang 2010; Agrawal and Wang 2022) |
+| `clfts/CounterionsBetweenPlates.py` | Counterions between charged plates beyond Poisson-Boltzmann (Netz 2001) ([validation](../docs/validation/Electrolytes.md)) |
+| `clfts/SmearedSaltSelfEnergy.py` | Self-energy and screening of smeared point ions (Wang 2010; Agrawal and Wang 2022) ([validation](../docs/validation/Electrolytes.md)) |
 | `clfts/PolyampholyteSolution.py` | Polyampholyte in implicit solvent (McCarty et al. 2019); maps an implicit-solvent model onto the compressible model |
-| `clfts/ComplexCoacervate.py` | Salt-free polycation/polyanion solution (Lee, Popov and Fredrickson 2008) |
-| `clfts/CoacervateGibbs.py` | Coexistence of a coacervate and its supernatant, with and without salt (`GibbsEnsemble`) |
+| `clfts/ComplexCoacervate.py` | Salt-free polycation/polyanion solution (Lee, Popov and Fredrickson 2008) ([validation](../docs/validation/ComplexCoacervate.md)) |
+| `clfts/CoacervateGibbs.py` | Coexistence of a coacervate and its supernatant, with and without salt (`GibbsEnsemble`) ([validation](../docs/validation/CoacervateGibbs.md)) |
 
 ## Tools (`tools/`)
 

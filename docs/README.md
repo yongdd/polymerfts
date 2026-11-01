@@ -35,9 +35,19 @@
 | [PropagatorSystem.md](internals/PropagatorSystem.md) | Propagator identification and scheduling |
 | [MemoryManagement.md](internals/MemoryManagement.md) | Memory optimization and checkpointing |
 | [CudaMPS.md](internals/CudaMPS.md) | CUDA Multi-Process Service (MPS) for running multiple simulations on one GPU |
-| [NumericalValidation.md](internals/NumericalValidation.md) | Regression coverage, comparisons with published results and other codes, differences and limits |
-| [ExampleValidation.md](internals/ExampleValidation.md) | What is validated for each example, with the compared numbers and figures |
+
+## Validation
+
+| Document | Description |
+|----------|-------------|
+| [NumericalValidation.md](validation/NumericalValidation.md) | Regression coverage, comparisons with published results and other codes, differences and limits |
+| [ExampleValidation.md](validation/ExampleValidation.md) | What is validated for each example, with the compared numbers and figures |
+| [BlendGibbsEnsemble.md](validation/BlendGibbsEnsemble.md) | Gibbs ensemble of a blend against Flory-Huggins theory, canonical CL-FTS and Fredrickson and Delaney (2023), Fig. 7.2 |
+| [CoacervateGibbs.md](validation/CoacervateGibbs.md) | Gibbs ensemble of a coacervate against one-loop theory and canonical CL-FTS |
+| [ComplexCoacervate.md](validation/ComplexCoacervate.md) | Salt-free coacervate against Lee, Popov and Fredrickson (2008) and Danielsen et al. (2019) |
+| [Electrolytes.md](validation/Electrolytes.md) | Point ions against Netz (2001), one-loop theory and exact Monte Carlo |
 | [MultivalentBrush.md](validation/MultivalentBrush.md) | Brush with multivalent ions against Duan, Agrawal and Wang (2025) and Yu et al. (2016) |
+| [SoftBeadModels.md](validation/SoftBeadModels.md) | Soft-bead models against Lequieu (2024) |
 
 ## References
 

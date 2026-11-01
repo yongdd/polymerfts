@@ -177,7 +177,7 @@ multistage force calls, failed-proposal handling, and uninterrupted/split-run
 equivalence including extension state. New scientific methods also need their
 own time-step refinement and statistical validation; the runnable predictor–corrector example
 does not certify sampling correctness for every physical model. See
-[NumericalValidation.md](NumericalValidation.md).
+[NumericalValidation.md](../validation/NumericalValidation.md).
 
 ## Propagator methods (MDE and discrete chains)
 

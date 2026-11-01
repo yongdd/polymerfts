@@ -157,7 +157,7 @@ validation needs error estimates and effective sample size. Same-backend restart
 checks can require bitwise equality; comparisons across backends need suitable
 numerical or statistical tolerances.
 
-See [Numerical Validation](docs/internals/NumericalValidation.md) for regression
+See [Numerical Validation](docs/validation/NumericalValidation.md) for regression
 coverage and sampling studies. Relevant tests include `TestParameterNames`,
 `TestFtsReliability`, `TestCheckpointValidation`, `TestExtensions`,
 `TestPropagatorAnalytic`, `TestConvergenceOrderLite` and `TestSamplingStatistics`.
