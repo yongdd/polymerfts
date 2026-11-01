@@ -37,6 +37,7 @@
 | [CudaMPS.md](internals/CudaMPS.md) | CUDA Multi-Process Service (MPS) for running multiple simulations on one GPU |
 | [NumericalValidation.md](internals/NumericalValidation.md) | Regression coverage, comparisons with published results and other codes, differences and limits |
 | [ExampleValidation.md](internals/ExampleValidation.md) | What is validated for each example, with the compared numbers and figures |
+| [MultivalentBrush.md](validation/MultivalentBrush.md) | Brush with multivalent ions against Duan, Agrawal and Wang (2025) and Yu et al. (2016) |
 
 ## References
 

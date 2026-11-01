@@ -63,6 +63,7 @@ Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS.
 | `scft/ChargedDiblockLamella.py` | Charged diblock lamella with point counterions over a range of salt |
 | `scft/SaltDopedLamella.py` | Salt-doped diblock lamella: ions of one segment with χ, solvated by one block |
 | `scft/PolyelectrolyteBrush.py` | Charged brush on a charged wall of a closed box with point ions (`cn-adi2`) |
+| `scft/BrushMultivalentIons.py` | Brush with multivalent ions and the ion self-energy, in the box of a published figure and in the solution of the experiment with a closed cell ([validation](../docs/validation/MultivalentBrush.md)) |
 | `scft/CounterionsBetweenPlates.py` | Poisson-Boltzmann counterions between charged plates (Netz 2001) |
 | `clfts/ChargedDiblock.py` | Charged diblock melt with counterions |
 | `clfts/SaltReservoir.py` | Charged melt in contact with a salt reservoir (grand-canonical point ions) |

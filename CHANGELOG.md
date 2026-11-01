@@ -53,6 +53,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   of a run prints its smallest value and the fractions of steps below 0.1 and 0.01,
   `scripts/analysis/drift_tail.py` summarizes the records, and checkpoints keep the pending
   steps (NaN for the steps of a checkpoint without the record).
+- `examples/charged/scft/BrushMultivalentIons.py` (2026-11-01): a brush with multivalent ions and the
+  ion self-energy of Duan, Agrawal and Wang (2025), with `cn-adi2`, in the box of their Fig. 2 and in
+  the solution of the experiment of Yu et al. (2016) with a closed cell.
+  docs/validation/MultivalentBrush.md says what differs from the paper, and why.
 - `examples/charged/scft/SaltDopedLamella.py` (2026-10-29): a salt that the B block of a lamella
   solvates, with the ions as molecules of one segment that carry their own chi, and the
   Coulomb interaction dragging the weakly selective anion after the cation.
