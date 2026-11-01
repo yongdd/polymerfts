@@ -21,6 +21,8 @@ from .integrators import checked_fields, force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from .polymer_field_theory import SymmetricPolymerTheory
+from .chains import read_chains, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from .file_formats import load_config
 from .smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from .electrostatics import Electrostatics
@@ -28,12 +30,8 @@ from .propagator_solver import PropagatorSolver
 from .validation import (normalize_params, validate_lfts_params, ValidationError, point_ion_concentrations,
                          open_charges, reference_segments)
 from .utils import (
-    read_chains,
     display_system,
-    draw_polymer_architectures,
-    report_partition_consistency,
     calculate_sigma,
-    load_config,
     atomic_savemat,
     simulation_metadata,
     write_run_status,
@@ -94,7 +92,7 @@ class CLFTS:
     def from_file(cls, path, random_seed=None, *, integrator=None, callbacks=None, **overrides):
         """Create a simulation from a YAML or JSON parameter file.
 
-        Reads the file with utils.load_config, applies the keyword overrides
+        Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
         params = normalize_params(load_config(path))
@@ -281,46 +279,12 @@ class CLFTS:
         elapsed_time : dict
             Dictionary of timing information.
         """
-        M = len(self.monomer_types)
-        elapsed_time = {}
-
-        # Convert auxiliary fields to monomer fields
-        w = self.mpt.to_monomer_fields(w_aux)
-
-        # Make a dictionary for input fields
-        w_input = {self.monomer_types[i]: w[i] for i in range(M)}
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            w_input[random_polymer_name] = np.zeros(self.prop_solver.n_grid, dtype=np.complex128)
-            for monomer_type, fraction in random_fraction.items():
-                w_input[random_polymer_name] += w_input[monomer_type] * fraction
-
-        # Charged types feel the electrostatic potential: w_i + z_i ψ
+        # The fields of the chains: charged types feel the electrostatic potential, w_i + z_i ψ
+        w_input = chain_fields(self, self.mpt.to_monomer_fields(w_aux))
         if self.electrostatics is not None:
             self.electrostatics.add_potential(w_input)
 
-        # Apply smearing to fields before computing propagators
-        # Following Matsen et al., J. Chem. Phys. 164, 014905 (2026), the fields
-        # are smeared before computing the Boltzmann weights in the propagator.
-        w_input_for_propagator = self.smearing.apply_to_dict(w_input)
-
-        # For the given fields, compute propagators
-        time_solver_start = time.time()
-        self.prop_solver.compute_propagators(w_input_for_propagator)
-        elapsed_time["solver"] = time.time() - time_solver_start
-
-        # Compute concentrations for each monomer type
-        time_phi_start = time.time()
-        phi = {}
-        self.prop_solver.compute_concentrations()
-        for monomer_type in self.monomer_types:
-            phi[monomer_type] = self.prop_solver.get_concentration(monomer_type)
-
-        # Add random copolymer concentration to each monomer type
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            phi[random_polymer_name] = self.prop_solver.get_concentration(random_polymer_name)
-            for monomer_type, fraction in random_fraction.items():
-                phi[monomer_type] += phi[random_polymer_name] * fraction
-        elapsed_time["phi"] = time.time() - time_phi_start
+        phi, elapsed_time = solve_chains(self, w_input)
 
         # Material conservation of the canonical chains: mean(sum phi) stays at their total volume
         # fraction, 1 without grand-canonical chains (a numerical blow-up shows up here first)
@@ -335,12 +299,7 @@ class CLFTS:
                 phi[monomer_type] = phi[monomer_type] + self.prop_solver.get_concentration_gce(
                     self.fugacities[p], p, monomer_type)
 
-        # Partition consistency check (forward vs backward propagators), once per run
-        if not getattr(self, "_partition_checked", False):
-            self._partition_checked = True
-            if not report_partition_consistency(self.prop_solver):
-                raise ValidationError("Partition consistency check failed (forward/backward mismatch).")
-
+        check_partition_once(self)
         return phi, elapsed_time
 
     def _prepare_integrator(self):

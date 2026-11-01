@@ -51,7 +51,8 @@ from .validation import ValidationError, SaddlePointError
 from .scft_results import SCFTResult, IterationInfo
 from .phase_equilibrium import coexistence_quantities, homogeneous_thermodynamics, find_binary_coexistence
 from .saddle import LR, LRAM
-from .utils import load_config, ConfigError, save_vtk, draw_polymer_architectures
+from .chains import draw_polymer_architectures
+from .file_formats import load_config, ConfigError, save_vtk
 
 # Submodules
 from . import utils

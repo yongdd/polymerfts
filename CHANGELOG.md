@@ -113,6 +113,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `checkpoint.RunRecord` replaces `restore_recording_state` and the lists of the loops: a new recorded
   quantity needs one entry in its series and one `add()`, and a checkpoint without it gives NaN for
   its pending samples. Results do not change.
+- `chains.py` holds the polymer chains (2026-11-02): reading them, their drawings, and through
+  `chain_fields` and `solve_chains` what the three `compute_concentrations` share, so that the
+  methods keep only what is their own. `file_formats.py` holds `load_config` and `save_vtk`. Both
+  moved out of `polymerfts.utils`, and with them `process_polymer_blocks`, `process_random_copolymer`,
+  `read_chains`, `mean_concentrations` and the drawing functions; the package still exports
+  `load_config`, `ConfigError`, `save_vtk` and `draw_polymer_architectures`. The timings that
+  `SCFT.compute_concentrations` returns now have the keys of the Langevin classes: `solver` for the
+  propagators instead of `pseudo`, and `phi` for all of the concentration integration.
 - Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
   of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and

@@ -617,6 +617,8 @@ When adding new computational features, you must implement them for both platfor
 | Cell relaxation and stress of SCFT | `src/python/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes | `src/python/scft_results.py` |
 | What a Langevin run records, saves and restores | `src/python/checkpoint.py` (`RunRecord`) |
+| Reading, drawing and solving the polymer chains | `src/python/chains.py` |
+| Parameter files and VTK fields | `src/python/file_formats.py` |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid

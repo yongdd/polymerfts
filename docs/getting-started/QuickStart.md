@@ -160,6 +160,7 @@ and the shared modules.
    from polymerfts.propagator_solver import PropagatorSolver
    from polymerfts.validation import validate_system_params, ValidationError
    from polymerfts.utils import (...)
+   from polymerfts.chains import (...)
    from polymerfts.checkpoint import (...)
    from polymerfts.smearing import Smearing
    ```

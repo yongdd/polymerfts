@@ -10,16 +10,14 @@ from .propagator_solver import PropagatorSolver
 from .validation import (normalize_params, validate_scft_params, ValidationError,
                          point_ion_concentrations, open_charges, reference_segments)
 from .utils import (
-    load_config,
-    read_chains,
-    display_system,
-    mean_concentrations,
-    draw_polymer_architectures,
     report_partition_consistency,
+    display_system,
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
 from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results
+from .chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from .file_formats import load_config
 from .smearing import smearing_of
 from .electrostatics import MeanFieldElectrostatics
 
@@ -393,58 +391,22 @@ class SCFT:
         elapsed_time : dict
             Timing information:
 
-            - 'pseudo' : float
+            - 'solver' : float
                 Time (seconds) for propagator computation.
             - 'phi' : float
                 Time (seconds) for concentration integration.
         """
-        M = len(self.monomer_types)
-        elapsed_time = {}
-
         # Field optimizer operates on irreducible grid when space group is set.
         if self.sg is not None:
             w = self.sg.irreducible_to_reduced(w)
 
-        # Make a dictionary for input fields
-        w_input = {}
-        for i in range(M):
-            w_input[self.monomer_types[i]] = w[i]
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            w_input[random_polymer_name] = np.zeros(self.prop_solver.n_grid, dtype=np.float64)
-            for monomer_type, fraction in random_fraction.items():
-                w_input[random_polymer_name] += w_input[monomer_type]*fraction
-
-        # Charged types feel w_i + z_i ψ with the current ψ (self.psi)
+        # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ (self.psi)
+        w_input = chain_fields(self, w)
         if self.electrostatics is not None:
             self.electrostatics.add_potential(w_input, self.psi)
 
-        # Apply smearing to fields before computing propagators
-        w_input_for_propagator = self.smearing.apply_to_dict(w_input)
-
-        # For the given fields, compute the polymer statistics
-        time_p_start = time.time()
-        self.prop_solver.compute_propagators(w_input_for_propagator, q_init=q_init)
-        self.prop_solver.compute_concentrations()
-        elapsed_time["pseudo"] = time.time() - time_p_start
-
-        # Partition consistency check (forward vs backward propagators), once per run
-        if not getattr(self, "_partition_checked", False):
-            self._partition_checked = True
-            if not report_partition_consistency(self.prop_solver):
-                raise ValidationError("Partition consistency check failed (forward/backward mismatch).")
-
-        # Compute total concentration for each monomer type
-        phi = {}
-        time_phi_start = time.time()
-        for monomer_type in self.monomer_types:
-            phi[monomer_type] = self.prop_solver.get_concentration(monomer_type)
-        elapsed_time["phi"] = time.time() - time_phi_start
-
-        # Add random copolymer concentration to each monomer type
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            phi[random_polymer_name] = self.prop_solver.get_concentration(random_polymer_name)
-            for monomer_type, fraction in random_fraction.items():
-                phi[monomer_type] += phi[random_polymer_name]*fraction
+        phi, elapsed_time = solve_chains(self, w_input, q_init)
+        check_partition_once(self)
 
         # Convert concentrations back to irreducible grid for optimizer.
         if self.sg is not None:

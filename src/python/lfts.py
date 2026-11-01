@@ -9,13 +9,8 @@ from .propagator_solver import PropagatorSolver
 from .integrators import checked_fields
 from .validation import normalize_params, validate_lfts_params, ValidationError, SaddlePointError
 from .utils import (
-    read_chains,
     display_system,
-    mean_concentrations,
-    draw_polymer_architectures,
-    report_partition_consistency,
     calculate_sigma,
-    load_config,
     atomic_savemat,
     simulation_metadata,
     write_run_status,
@@ -29,6 +24,8 @@ from .checkpoint import (
     initialize_extensions,
     restore_extensions,
 )
+from .chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from .file_formats import load_config
 from .saddle import SaddlePointSearch
 from .smearing import smearing_of
 from .structure_functions import LftsStructureFunctions
@@ -90,7 +87,7 @@ class LFTS:
     def from_file(cls, path, random_seed=None, *, integrator=None, callbacks=None, **overrides):
         """Create a simulation from a YAML or JSON parameter file.
 
-        Reads the file with utils.load_config, applies the keyword overrides
+        Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
         params = normalize_params(load_config(path))
@@ -258,52 +255,14 @@ class LFTS:
             - 'phi' : float
                 Time (seconds) for concentration integration.
         """
-        M = len(self.monomer_types)
-        elapsed_time = {}
-
-        # Convert auxiliary fields to monomer fields
-        w = self.mpt.to_monomer_fields(w_aux)
-
-        # Make a dictionary for input fields
-        w_input = {self.monomer_types[i]: w[i] for i in range(M)}
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            w_input[random_polymer_name] = np.zeros(self.prop_solver.n_grid, dtype=np.float64)
-            for monomer_type, fraction in random_fraction.items():
-                w_input[random_polymer_name] += w_input[monomer_type]*fraction
-
-        # Apply smearing to fields before computing propagators
-        w_input_for_propagator = self.smearing.apply_to_dict(w_input)
-
-        # For the given fields, compute propagators
-        time_solver_start = time.time()
-        self.prop_solver.compute_propagators(w_input_for_propagator)
-        elapsed_time["solver"] = time.time() - time_solver_start
-
-        # Compute concentrations for each monomer type
-        time_phi_start = time.time()
-        phi = {}
-        self.prop_solver.compute_concentrations()
-        for monomer_type in self.monomer_types:
-            phi[monomer_type] = self.prop_solver.get_concentration(monomer_type)
-
-        # Add random copolymer concentration to each monomer type
-        for random_polymer_name, random_fraction in self.random_fraction.items():
-            phi[random_polymer_name] = self.prop_solver.get_concentration(random_polymer_name)
-            for monomer_type, fraction in random_fraction.items():
-                phi[monomer_type] += phi[random_polymer_name]*fraction
-        elapsed_time["phi"] = time.time() - time_phi_start
+        phi, elapsed_time = solve_chains(self, chain_fields(self, self.mpt.to_monomer_fields(w_aux)))
 
         # Material conservation: mean(sum phi) must stay 1 (a numerical blow-up shows up here first)
         mass_error = self.prop_solver.mean(sum(phi[m] for m in self.monomer_types) - 1.0)
         if not abs(mass_error) <= 5e-8:
             raise ValidationError(f"Material conservation failed: mean(sum(phi) - 1) = {mass_error:.3e}")
 
-        # Partition consistency check (forward vs backward propagators), once per run
-        if not getattr(self, "_partition_checked", False):
-            self._partition_checked = True
-            if not report_partition_consistency(self.prop_solver):
-                raise ValidationError("Partition consistency check failed (forward/backward mismatch).")
-
+        check_partition_once(self)
         return phi, elapsed_time
 
     def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):

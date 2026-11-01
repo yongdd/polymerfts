@@ -278,7 +278,7 @@ def test_polymer_figures():
     except ValidationError as exc:
         check("polymer_figure_dir" in str(exc), "polymer_figure_dir must be a path")
 
-    from polymerfts.utils import create_monomer_color_dict
+    from polymerfts.chains import create_monomer_color_dict
     types = {name: 1.0 for name in "ABCDEFGH"}
     np.random.seed(7)
     colors = create_monomer_color_dict(types)
