@@ -1,5 +1,5 @@
 {
-"note": "Inputs of duan_scft_check.py. digitized: pixel readings of Figs. 2-3 of the paper, not author data. scan: archived L = 200 nm SCFT scan. extended_box: SCFT with a flat far region; warm_run is the archived run that started it. layer: stored output of the layer command. grounded_box: SCFT in a real box of length L with psi(L) = 0. box_scan: SCFT stepped through box lengths, direction up or down. background_scan: fixed 1:1 background c1 in M instead of canonical C. common_box: direct solutions at L = 6500 nm with graft widths 0.5 and 0.125 nm. experiment_solution: z = 3 at the solutions of Yu et al. 2016 (NaNO3 + Y(NO3)3 at ionic strength 6 mM); figure7 is read by eye from their Fig. 7, about +/-0.02. figure7: multivalent symbols of Fig. 2 of the paper, read by eye from Fig. 7 of Yu et al. 2016, about +/-0.02. ionic_series: z = 3 at ionic strength 6 mM, 1:1 background c1 = 0.006 - 6 rho, height 2<z> and outer edge of the model phi at 0.03, 0.05, 0.09; series reference (N = 100, 1:1 salt only; N = 730, rho = 1e-10), n100 (dz 0.125, box 200 nm), ladder (fixed rho, chain raised in 5 % steps, dz 0.25, box max(200, 1.1 N)), walk730 (N = 730, rho raised, box 800 nm, dz 0.25), onset_up and onset_down (fixed N, rho in 2 % steps). plus_excess is Y per nm^2, dense the thickness with phi > 0.4. ionic_profiles: phi against z/N.",
+"note": "Inputs of duan_scft_check.py. digitized: pixel readings of Figs. 2-3 of the paper, not author data. scan: archived L = 200 nm SCFT scan. extended_box: SCFT with a flat far region; warm_run is the archived run that started it. layer: stored output of the layer command. grounded_box: SCFT in a real box of length L with psi(L) = 0. box_scan: SCFT stepped through box lengths, direction up or down. background_scan: fixed 1:1 background c1 in M instead of canonical C. common_box: direct solutions at L = 6500 nm with graft widths 0.5 and 0.125 nm. experiment_solution: z = 3 at the solutions of Yu et al. 2016 (NaNO3 + Y(NO3)3 at ionic strength 6 mM); figure7 is read by eye from their Fig. 7, about +/-0.02. figure7: multivalent symbols of Fig. 2 of the paper, read by eye from Fig. 7 of Yu et al. 2016, about +/-0.02. ionic_series: z = 3 at ionic strength 6 mM, 1:1 background c1 = 0.006 - 6 rho, height 2<z> and outer edge of the model phi at 0.03, 0.05, 0.09; series reference (N = 100, 1:1 salt only; N = 730, rho = 1e-10), n100 (dz 0.125, box 200 nm), ladder (fixed rho, chain raised in 5 % steps, dz 0.25, box max(200, 1.1 N)), walk730 (N = 730, rho raised, box 800 nm, dz 0.25), onset_up and onset_down (fixed N, rho in 2 % steps). plus_excess is Y per nm^2, dense the thickness with phi > 0.4. ionic_profiles: phi against z/N. mean_field_6mM: SCFT without the self-energy at ionic strength 6 mM, N = 100, relative to the row at rho = 1e-14. uniform_6mM: log10(h/h6) of the uniform layer of the command uniform6. fixed_salt_box: z = 3 at ionic strength 6 mM, N = 100, box length in nm.",
 "digitized": {
 "method": "Color-separated pixel groups in +/-3 pixel windows. Fig. 2 groups selected using recorded image-only pixel guides; experimental symbols excluded.",
 "limitation": "Selected interior raster points; uncertainties are approximate reading ranges, not statistical errors or author data.",
@@ -25945,5 +25945,392 @@
 ]
 }
 ]
+},
+"mean_field_6mM": [
+{
+"rho": 1e-10,
+"h_moment": 58.25944069223357,
+"plus_excess": 0.000345033666752178,
+"phi_max": 0.2237228432163842
+},
+{
+"rho": 1e-14,
+"h_moment": 58.261886849598696,
+"plus_excess": 3.4514131480038075e-08,
+"phi_max": 0.2237110850322804
+},
+{
+"rho": 0.0001,
+"h_moment": 39.52975554034092,
+"plus_excess": 2.7524244897320576,
+"phi_max": 0.3238669297671606
+},
+{
+"rho": 1e-05,
+"h_moment": 44.07402419630511,
+"plus_excess": 2.0546616724419926,
+"phi_max": 0.29950212962097095
+},
+{
+"rho": 1e-06,
+"h_moment": 50.73277704113408,
+"plus_excess": 1.0756084257194005,
+"phi_max": 0.2625443468769852
+},
+{
+"rho": 1e-07,
+"h_moment": 56.3665154716413,
+"plus_excess": 0.2681551255599719,
+"phi_max": 0.23281988873012946
+},
+{
+"rho": 1e-08,
+"h_moment": 58.02460311251241,
+"plus_excess": 0.03348006263707248,
+"phi_max": 0.22485166808324764
+},
+{
+"rho": 1e-09,
+"h_moment": 58.237493357811616,
+"plus_excess": 0.0034406875568630314,
+"phi_max": 0.2238283362916275
+},
+{
+"rho": 3e-10,
+"h_moment": 58.254552744149954,
+"plus_excess": 0.0010344558471581744,
+"phi_max": 0.2237463377661546
+},
+{
+"rho": 0.0003,
+"h_moment": 37.9615219834621,
+"plus_excess": 3.011931534345321,
+"phi_max": 0.3325187195141536
+},
+{
+"rho": 3e-05,
+"h_moment": 41.63425079391886,
+"plus_excess": 2.4238572310527533,
+"phi_max": 0.31259193317713607
+},
+{
+"rho": 3e-06,
+"h_moment": 47.368068564482044,
+"plus_excess": 1.5663273052297884,
+"phi_max": 0.2814923535436499
+},
+{
+"rho": 3e-07,
+"h_moment": 54.16398721724222,
+"plus_excess": 0.5819060076285536,
+"phi_max": 0.24337688411188865
+},
+{
+"rho": 3e-08,
+"h_moment": 57.589679478014446,
+"plus_excess": 0.09491331715576769,
+"phi_max": 0.2269423691587564
+},
+{
+"rho": 3e-09,
+"h_moment": 58.18916239613658,
+"plus_excess": 0.010258503786494762,
+"phi_max": 0.22406064956022023
+},
+{
+"rho": 0.0005,
+"h_moment": 37.28854623846243,
+"plus_excess": 3.1312473300035735,
+"phi_max": 0.3364139898300427
 }
+],
+"uniform_6mM": [
+{
+"rho": 1e-10,
+"mean_field": -1.7042996460195645e-05,
+"correlated": -0.0006856211761891002
+},
+{
+"rho": 1.4198724032234032e-10,
+"mean_field": -2.4197174302782052e-05,
+"correlated": -0.0009746825268309338
+},
+{
+"rho": 2.0160376414354107e-10,
+"mean_field": -3.435273488747645e-05,
+"correlated": -0.0013862997845312012
+},
+{
+"rho": 2.862516210933738e-10,
+"mean_field": -4.876738045629978e-05,
+"correlated": -0.0019731542572301313
+},
+{
+"rho": 4.064407771684454e-10,
+"mean_field": -6.922435771526866e-05,
+"correlated": -0.002811323022394521
+},
+{
+"rho": 5.770940430461482e-10,
+"mean_field": -9.825055922488582e-05,
+"correlated": -0.004011463589452275
+},
+{
+"rho": 8.193999057858479e-10,
+"mean_field": -0.00013942361742246443,
+"correlated": -0.00573620698953072
+},
+{
+"rho": 1.163443313429182e-09,
+"mean_field": -0.00019780276873424823,
+"correlated": -0.008228172187138108
+},
+{
+"rho": 1.6519410534528985e-09,
+"mean_field": -0.0002805303028414582,
+"correlated": -0.01185730867733273
+},
+{
+"rho": 2.3455455135495673e-09,
+"mean_field": -0.0003976650172029898,
+"correlated": -0.01720638089873723
+},
+{
+"rho": 3.3303753451934954e-09,
+"mean_field": -0.0005633250341267192,
+"correlated": -0.025240456169612468
+},
+{
+"rho": 4.728708045015879e-09,
+"mean_field": -0.0007972308777797054,
+"correlated": -0.03769302604368997
+},
+{
+"rho": 6.714162056018564e-09,
+"mean_field": -0.0011267422068491914,
+"correlated": -0.058169362875357546
+},
+{
+"rho": 9.533253414110464e-09,
+"mean_field": -0.001589455655513362,
+"correlated": -0.09709318611438834
+},
+{
+"rho": 1.3536003435630738e-08,
+"mean_field": -0.0022363458005451977,
+"correlated": -0.4314757701992917
+},
+{
+"rho": 1.9219397728189337e-08,
+"mean_field": -0.0031352385313329193,
+"correlated": -0.47669252745631463
+},
+{
+"rho": 2.728909244083061e-08,
+"mean_field": -0.00437404890517351,
+"correlated": -0.4992053488459748
+},
+{
+"rho": 3.874702926574792e-08,
+"mean_field": -0.006062663803460923,
+"correlated": -0.5139698759900202
+},
+{
+"rho": 5.5015837561325034e-08,
+"mean_field": -0.00833168871541443,
+"correlated": -0.5246660473959925
+},
+{
+"rho": 7.811546949354711e-08,
+"mean_field": -0.011325841905604308,
+"correlated": -0.5328404170572606
+},
+{
+"rho": 1.109139993987274e-07,
+"mean_field": -0.015190211426685765,
+"correlated": -0.5393014969742057
+},
+{
+"rho": 1.574837268773905e-07,
+"mean_field": -0.020049559320167696,
+"correlated": -0.5445281992329211
+},
+{
+"rho": 2.2360679774997896e-07,
+"mean_field": -0.02598425585888051,
+"correlated": -0.5488284274291252
+},
+{
+"rho": 3.1749312129835276e-07,
+"mean_field": -0.03300961550459329,
+"correlated": -0.5524119965720287
+},
+{
+"rho": 4.507997211447925e-07,
+"mean_field": -0.04106583673600218,
+"correlated": -0.5554282380280169
+},
+{
+"rho": 6.400780834342965e-07,
+"mean_field": -0.05002227409706559,
+"correlated": -0.5579870851847872
+},
+{
+"rho": 9.088292065764882e-07,
+"mean_field": -0.05969428344123515,
+"correlated": -0.5601716780401227
+},
+{
+"rho": 1.290421509661377e-06,
+"mean_field": -0.06986682361929689,
+"correlated": -0.5620462896870493
+},
+{
+"rho": 1.8322338900940752e-06,
+"mean_field": -0.08031828879764608,
+"correlated": -0.5636615206603008
+},
+{
+"rho": 2.6015383367952447e-06,
+"mean_field": -0.09083997997673156,
+"correlated": -0.5650578214698943
+},
+{
+"rho": 3.693852490343287e-06,
+"mean_field": -0.10124931258736893,
+"correlated": -0.5662679516948137
+},
+{
+"rho": 5.244799212616486e-06,
+"mean_field": -0.11139692429742983,
+"correlated": -0.5673187401563207
+},
+{
+"rho": 7.446945662441998e-06,
+"mean_field": -0.12116891121412773,
+"correlated": -0.5682323728579741
+},
+{
+"rho": 1.057371263440564e-05,
+"mean_field": -0.13048570186393849,
+"correlated": -0.5690273544014697
+},
+{
+"rho": 1.5013322769207229e-05,
+"mean_field": -0.13929893236027224,
+"correlated": -0.5697192395297459
+},
+{
+"rho": 2.131700268068295e-05,
+"mean_field": -0.14758738032847374,
+"correlated": -0.570321201155189
+},
+{
+"rho": 3.026742382574109e-05,
+"mean_field": -0.15535269524049458,
+"correlated": -0.5708444825915047
+},
+{
+"rho": 4.297587980683638e-05,
+"mean_field": -0.16261538969956696,
+"correlated": -0.571298770948814
+},
+{
+"rho": 6.1020265741972896e-05,
+"mean_field": -0.16941134563858043,
+"correlated": -0.5716925240321686
+},
+{
+"rho": 8.664099136438594e-05,
+"mean_field": -0.17578893718027094,
+"correlated": -0.5720332843419716
+},
+{
+"rho": 0.00012301915262620902,
+"mean_field": -0.1818067668252544,
+"correlated": -0.5723280220301754
+},
+{
+"rho": 0.0001746714998818824,
+"mean_field": -0.1875319412518425,
+"correlated": -0.5725835666292449
+},
+{
+"rho": 0.00024801124231192527,
+"mean_field": -0.19303876623144603,
+"correlated": -0.5728072198399747
+},
+{
+"rho": 0.0003521443186478558,
+"mean_field": -0.1984077083404179,
+"correlated": -0.5730076961013719
+},
+{
+"rho": 0.0005,
+"mean_field": -0.2037244486026594,
+"correlated": -0.5731966243598913
+}
+],
+"fixed_salt_box": [
+{
+"rho": 1e-08,
+"box": 200,
+"h_moment": 33.41504975219872
+},
+{
+"rho": 1e-08,
+"box": 400,
+"h_moment": 33.41504975219872
+},
+{
+"rho": 1e-08,
+"box": 800,
+"h_moment": 33.41504975219872
+},
+{
+"rho": 1e-08,
+"box": 1600,
+"h_moment": 33.41504975219872
+},
+{
+"rho": 1e-07,
+"box": 200,
+"h_moment": 20.726074250059327
+},
+{
+"rho": 1e-07,
+"box": 400,
+"h_moment": 20.726074250059327
+},
+{
+"rho": 1e-07,
+"box": 800,
+"h_moment": 20.726074250059327
+},
+{
+"rho": 1e-07,
+"box": 1600,
+"h_moment": 20.726074250059327
+},
+{
+"rho": 1e-05,
+"box": 200,
+"h_moment": 14.101475137588144
+},
+{
+"rho": 1e-05,
+"box": 400,
+"h_moment": 14.101475137588144
+},
+{
+"rho": 1e-05,
+"box": 800,
+"h_moment": 14.101475137588144
+},
+{
+"rho": 1e-05,
+"box": 1600,
+"h_moment": 14.101475137588144
+}
+]
 }

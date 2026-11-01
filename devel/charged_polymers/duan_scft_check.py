@@ -6,7 +6,8 @@ Run from this folder. Each line is one configuration; anything over a minute bel
   python duan_scft_check.py correlation                    # u^ex, S1(k), two-particle factor 2, RPA pressure
   python duan_scft_check.py layer 3 2000 corr [--out DIR]  # one z, L, closure (corr or mf) of the uniform layer
   python duan_scft_check.py tables [--layer-dir DIR]       # Figs. 2-3 against the equations, box-length tables
-  python duan_scft_check.py figures [--layer-dir DIR]      # the eight figures of the report
+  python duan_scft_check.py figures [--layer-dir DIR]      # the eleven figures of the report
+  python duan_scft_check.py uniform6                       # uniform layer at ionic strength 6 mM, with and without the self-energy
   python duan_scft_check.py saved --scan-dir DIR           # independent check of the archived SCFT solutions
   python duan_scft_check.py code --scan-dir DIR            # chain floor and nonlocal quadrature of models/duan_scft.py
   python duan_scft_check.py scft 2 0.001 2000 WARM OUT_DIR # one extended-box SCFT point, WARM = a profiles.npz
@@ -521,6 +522,78 @@ def best_depth(curve, height, nominal, measured, fresh=False):
     return Ds[e.argmin()], e.min(), ok[0], ok[-1]
 
 
+class SolutionLayer:
+    """Uniform brush layer in a neutral solution of Na, Y and NO3 at ionic strength 6 mM, with or without the self-energy."""
+    def __init__(self, rho, corr):
+        self.c = {1: (0.006 - 6 * rho) * MOLAR, 3: rho * MOLAR, -1: (0.006 - 3 * rho) * MOLAR}
+        self.corr = corr
+        self.Ib = sum(k * k * v for k, v in self.c.items())
+        self.wb = w(self.Ib) if corr else 0.0
+
+    def rho(self, psi, I):
+        dw = w(I) - self.wb if self.corr else 0.0
+        return {k: v * np.exp(-k * psi - k * k * dw) for k, v in self.c.items()}
+
+    def solve(self, x):
+        def eq(y):
+            r = self.rho(y[0], np.exp(y[1]))
+            return [(sum(k * v for k, v in r.items()) - x) / (x + self.Ib), (sum(k * k * v for k, v in r.items()) + x) / np.exp(y[1]) - 1]
+        for p0 in [-1, -2, -3, -4, -6, -8, -0.3, 0]:
+            for I0 in [self.Ib + x, self.Ib + 2 * x, self.Ib + 4 * x, 2 * x]:
+                y, _, ok, _ = fsolve(eq, (p0, np.log(I0)), full_output=True, xtol=1e-12)
+                if ok == 1 and max(abs(np.array(eq(y)))) < 1e-9:
+                    return y
+        raise RuntimeError("no layer solution")
+
+    def pressure(self, x):
+        psi, lnI = self.solve(x)
+        I = np.exp(lnI)
+        p = sum(self.rho(psi, I).values()) - sum(self.c.values())
+        if self.corr:
+            p += I * w(I) - f_corr(I) - (self.Ib * self.wb - f_corr(self.Ib))
+        return p
+
+    def net(self, h):
+        phi = sigma * N / h
+        return -np.log1p(-phi) - phi - chi * phi ** 2 + self.pressure(phi) - 3 * sigma * h / (N * b * b)
+
+    def height(self):
+        """Stable root of the balance with the lowest free energy."""
+        hs = sigma * N / np.geomspace(0.97, 0.02, 160)
+        v = np.array([self.net(h) for h in hs])
+        roots = [brentq(self.net, hs[i], hs[i + 1]) for i in range(len(hs) - 1) if v[i] > 0 > v[i + 1]]
+        return roots[int(np.argmin([-np.trapezoid(v[hs <= r], hs[hs <= r]) for r in roots]))]
+
+
+def uniform6():
+    """Heights of the uniform layer at ionic strength 6 mM, relative to the same layer in 6 mM 1:1 salt, N = 100."""
+    ys = np.geomspace(1e-10, 5e-4, 45)
+    ref = {c: SolutionLayer(1e-14, c).height() for c in [False, True]}
+    print(f"  Reference [nm]: no self-energy {ref[False]:.1f}, with self-energy {ref[True]:.1f}")
+    rows = []
+    for y in ys:
+        rows.append(dict(rho=float(y), mean_field=float(np.log10(SolutionLayer(y, False).height() / ref[False])), correlated=float(np.log10(SolutionLayer(y, True).height() / ref[True]))))
+        print(f"  {y:.2e} {rows[-1]['mean_field']:+.3f} {rows[-1]['correlated']:+.3f}")
+    return rows
+
+
+def mean_field_curve(data):
+    """Uptake and height of SCFT without the self-energy at ionic strength 6 mM, in the form of ionic_curves."""
+    rows = sorted(data["mean_field_6mM"], key=lambda r: r["rho"])
+    return dict(rho=np.array([r["rho"] for r in rows]), f=np.array([3 * r["plus_excess"] / (sigma * N) for r in rows]), h=np.log10([r["h_moment"] / rows[0]["h_moment"] for r in rows]))
+
+
+def converted_box(data):
+    """The z = 3 runs at L = 6.5 um: Y in the box at potential psi_far, and the Y at c = 6 mM with the same exchange, rho / c^3."""
+    out = []
+    h6 = next(r["h_moment"] for r in data["ionic_series"] if r["series"] == "reference" and r["N"] == 100)
+    for r in sorted((q for q in data["common_box"] if q["z"] == 3 and q["graft"] == 0.5 and 1e-9 < q["rho"] <= 1e-3), key=lambda q: q["rho"]):
+        c = r["c_far"] / MOLAR
+        box = r["rho"] * np.exp(-3 * r["psi_far"])
+        out.append(dict(rho=r["rho"], c=c, psi=r["psi_far"], box=box, same=box * (0.006 / c) ** 3, h=np.log10(r["h_moment"] / h6)))
+    return out
+
+
 def reading_depth(curve, nominal, measured):
     """For each reading alone: added Y, bulk rho in M, uptake f and the depth D in mm that puts the height on it."""
     out = []
@@ -895,6 +968,44 @@ def tables(layer_dir):
         if k in [1, 3, 10, 30, 100]:
             print(f"  {k:4d} {r:.2e} {f:.3f} {y:+.3f}")
 
+    print("\n== V. Cross-checks at ionic strength 6 mM, N = 100: heights relative to 6 mM 1:1 salt")
+    mean_field = sorted(data["mean_field_6mM"], key=lambda r: r["rho"])
+    mf_rho = np.array([r["rho"] for r in mean_field])
+    mf_h, mf_f = np.log10([r["h_moment"] / mean_field[0]["h_moment"] for r in mean_field]), np.array([3 * r["plus_excess"] / (sigma * N) for r in mean_field])
+    flat = data["uniform_6mM"]
+    print("  Y[M]    Fig. 7   SCFT mean field  layer mean field  SCFT with self-energy  layer with self-energy")
+    for r in data["experiment_solution"]:
+        q = np.log(r["rho"])
+        print(f"  {r['rho']:.0e} {r['figure7']:+.3f} {np.interp(q, np.log(mf_rho), mf_h):+.3f} {np.interp(q, np.log([x['rho'] for x in flat]), [x['mean_field'] for x in flat]):+.3f} {np.interp(q, np.log(short['rho']), short['h']):+.3f} {np.interp(q, np.log([x['rho'] for x in flat]), [x['correlated'] for x in flat]):+.3f}")
+    half = [np.exp(np.interp(0.6, c, np.log(x))) for c, x in [(mf_f, mf_rho), (short["f"], short["rho"])]]
+    print(f"  Y at uptake f = 0.6: mean field {half[0]:.2e} M, with self-energy {half[1]:.2e} M, ratio {half[0] / half[1]:.0f}, {np.log(half[0] / half[1]):.1f} kT per Y")
+    print("  Calculation of Fig. 2 at L = 6.5 um, z = 3: rho_b[M], c_far[mM], psi_far, Y in the box[M], same exchange at c = 6 mM[M], height, 6 mM curve at that Y")
+    for r in converted_box(data):
+        on_curve = f"{np.interp(np.log(r['same']), np.log(short['rho']), short['h']):+.3f}" if r["same"] <= 1e-3 else "more Y than ionic strength 6 mM holds"
+        print(f"  {r['rho']:.1e} {r['c'] * 1e3:6.3f} {r['psi']:6.3f} {r['box']:.2e} {r['same']:.2e} {r['h']:+.3f} {on_curve}")
+
+    print("\n== X. Closed cell with and without the self-energy against the Y symbols: depth D[mm], volume over a 3 inch wafer[mL], model, rms, rms of the two lowest")
+    without = mean_field_curve(data)
+    for name, curve in [("with self-energy, N = 730", long), ("without self-energy", without)]:
+        D, e, lo, hi = best_depth(curve, curve["h"], nominal, measured)
+        print(f"  {name}: best D {D / 1e6:.3g} mm, rms {e:.3f}")
+        for D in [0.3, 1.2, 3, 7, 20, 100]:
+            y = np.array([q[1] for q in closed_cell(curve, curve["h"], nominal, D * 1e6)])
+            print(f"  {D:6.1f} {D * 4.56:6.1f}  " + " ".join(f"{q:+.3f}" for q in y) + f"  {np.sqrt(np.mean((y - measured) ** 2)):.3f} {np.sqrt(np.mean((y[:2] - measured[:2]) ** 2)):.3f}")
+
+    print("\n== W. Box length: fixed 6 mM solution against C conserved in the box, z = 3, height [nm] or log10(h/50.91)")
+    print("  Fixed solution: rho[M], height at box 200, 400, 800, 1600 nm")
+    for rho in sorted({r["rho"] for r in data["fixed_salt_box"]}):
+        print(f"  {rho:.0e} " + " ".join(f"{r['h_moment']:.6f}" for r in sorted((q for q in data["fixed_salt_box"] if q["rho"] == rho), key=lambda q: q["box"])))
+    print("  C conserved: rho[M], L[um] where the height is within 0.01 of the value at 64 um, height at 6.5 um and at 64 um")
+    scanned = [r for r in data["box_scan"] if r["direction"] == "up" and r["z"] == 3]
+    for rho in sorted({r["rho"] for r in scanned}):
+        some = sorted((r for r in scanned if r["rho"] == rho), key=lambda r: r["L"])
+        y = np.log10([r["h_moment"] / SCAN_H0 for r in some])
+        x = np.array([r["L"] for r in some]) / 1000
+        i = np.flatnonzero(abs(y - y[-1]) <= 0.01)[0]
+        print(f"  {rho:7.1e} {'over 64' if i == len(y) - 1 else f'{x[i]:7.2f}'} {np.interp(np.log(6.5), np.log(x), y):+.3f} {y[-1]:+.3f}")
+
 
 def figures(layer_dir):
     import matplotlib
@@ -972,6 +1083,68 @@ def figures(layer_dir):
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="outside lower center", ncol=5)
     fig.savefig(FIGURE_DIR / "self_energy_on_off.png", dpi=200)
+
+    short, long = ionic_curves(data)
+    without = mean_field_curve(data)
+    nominal = [r["rho"] for r in data["experiment_solution"]]
+    measured = np.array([r["figure7"] for r in data["experiment_solution"]])
+    depth = best_depth(long, long["h"], nominal, measured)[0]
+    added = np.geomspace(1e-7, 1e-3, 241)
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.9), constrained_layout=True)
+    ax = axes[0]
+    ax.plot(added, [q[1] for q in closed_cell(long, long["h"], added, depth)], color=box[2000], label="With self-energy")
+    ax.plot(added, [q[1] for q in closed_cell(without, without["h"], added, depth)], color=orange, label="No self-energy")
+    ax.plot(nominal, measured, ls="", marker="o", ms=6, color=ink, label="Experiment", zorder=5)
+    ax.set_xscale("log")
+    ax.set_xlim(1e-7, 1e-3)
+    ax.set_ylim(-0.7, 0.06)
+    ax.set_xlabel(r"${\rm Y}^{3+}$ added [M]")
+    ax.set_ylabel(r"$\log_{10}(h/h_6)$")
+    ax.set_title(f"6 mM and a closed cell {depth / 1e6:.1f} mm deep", fontsize=10)
+    ax.legend(loc="lower left", fontsize=8)
+    ax = axes[1]
+    depths = np.geomspace(0.1, 100, 61)
+    ax.axvspan(1 / 4.56, 10 / 4.56, color="#efeee9", lw=0)
+    ax.text(0.7, 0.34, "1 to 10 mL\nover the wafer", ha="center", va="top", color=ink, fontsize=8)
+    for state, col, name in [(long, box[2000], "With self-energy"), (without, orange, "No self-energy")]:
+        ax.plot(depths, [np.sqrt(np.mean((np.array([q[1] for q in closed_cell(state, state["h"], nominal, D * 1e6)]) - measured) ** 2)) for D in depths], color=col, label=name)
+    ax.set_xscale("log")
+    ax.set_xlim(0.1, 100)
+    ax.set_ylim(0, 0.35)
+    ax.set_xlabel("Solution depth D [mm]")
+    ax.set_ylabel("rms against the four symbols")
+    ax.set_title("Only the self-energy gives the fall", fontsize=10)
+    ax.legend(loc="lower right", fontsize=8)
+    fig.savefig(FIGURE_DIR / "closed_cell_self_energy.png", dpi=200)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.9), constrained_layout=True)
+    ax = axes[0]
+    scanned = [r for r in data["box_scan"] if r["direction"] == "up" and r["z"] == 3]
+    ax.axvline(6.6, color=grid, lw=1, ls=(0, (4, 3)))
+    ax.text(6.9, 0.03, "L of Fig. 2", color=ink, va="top")
+    for rho, name, col in [(1e-2, "10 mM", "#86b6ef"), (1e-3, "1 mM", "#3987e5"), (1e-4, "100 µM", "#1c5cab"), (1e-5, "10 µM", "#0d366b"), (10 ** -6.2, "0.63 µM", orange)]:
+        some = sorted((r for r in scanned if abs(r["rho"] / rho - 1) < 1e-6), key=lambda r: r["L"])
+        ax.plot([r["L"] / 1000 for r in some], np.log10([r["h_moment"] / SCAN_H0 for r in some]), color=col, label=name)
+    ax.set_xscale("log")
+    ax.set_xlim(0.2, 64)
+    ax.set_ylim(-0.7, 0.06)
+    ax.set_xlabel("Box length L [µm]")
+    ax.set_ylabel(r"$\log_{10}(h/h_0)$")
+    ax.set_title("C conserved in the box: saturates late", fontsize=10)
+    ax.legend(loc="lower left", fontsize=8)
+    ax = axes[1]
+    ref6 = [r for r in data["ionic_series"] if r["series"] == "reference" and r["N"] == 100][0]["h_moment"]
+    for rho, name, col in [(1e-8, "10 nM", "#86b6ef"), (1e-7, "100 nM", "#1c5cab"), (1e-5, "10 µM", "#0d366b")]:
+        some = sorted((r for r in data["fixed_salt_box"] if r["rho"] == rho), key=lambda r: r["box"])
+        ax.plot([r["box"] / 1000 for r in some], np.log10([r["h_moment"] / ref6 for r in some]), color=col, marker="o", ms=4, label=name)
+    ax.set_xscale("log")
+    ax.set_xlim(0.2, 64)
+    ax.set_ylim(-0.7, 0.06)
+    ax.set_xlabel("Box length [µm]")
+    ax.set_ylabel(r"$\log_{10}(h/h_6)$")
+    ax.set_title("Fixed 6 mM solution: no dependence", fontsize=10)
+    ax.legend(loc="lower right", fontsize=8)
+    fig.savefig(FIGURE_DIR / "box_length_saturation.png", dpi=200)
 
     short, long = ionic_curves(data)
     nominal = [r["rho"] for r in data["experiment_solution"]]
@@ -1055,6 +1228,38 @@ def figures(layer_dir):
         ax.set_ylabel(r"$\phi$")
     axes[0].legend()
     fig.savefig(FIGURE_DIR / "chain_length_scaling.png", dpi=200)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.2), constrained_layout=True)
+    ax = axes[0]
+    mean_field = sorted(data["mean_field_6mM"], key=lambda r: r["rho"])
+    flat = data["uniform_6mM"]
+    ax.plot(short["rho"], short["h"], color=box[2000], label="With self-energy, SCFT")
+    ax.plot([q["rho"] for q in flat], [q["correlated"] for q in flat], color=box[2000], ls=(0, (4, 3)), label="With self-energy, uniform layer")
+    ax.plot([r["rho"] for r in mean_field[1:]], np.log10([r["h_moment"] / mean_field[0]["h_moment"] for r in mean_field[1:]]), color=orange, label="No self-energy, SCFT")
+    ax.plot([q["rho"] for q in flat], [q["mean_field"] for q in flat], color=orange, ls=(0, (4, 3)), label="No self-energy, uniform layer")
+    ax.plot(nominal, measured, ls="", marker="o", ms=6, color=ink, label="Experiment", zorder=5)
+    ax.set_xscale("log")
+    ax.set_xlim(1e-9, 1e-3)
+    ax.set_ylim(-0.7, 0.06)
+    ax.set_xlabel(r"${\rm Y}^{3+}$ in solution [M]")
+    ax.set_ylabel(r"$\log_{10}(h/h_6)$")
+    ax.set_title("SCFT and the uniform layer agree", fontsize=10)
+    ax.legend(loc="center right", bbox_to_anchor=(1, 0.44), fontsize=8)
+    ax = axes[1]
+    ax.plot(short["rho"], short["h"], color=box[2000], label="SCFT at 6 mM")
+    moved = [r for r in converted_box(data) if r["same"] <= 1e-3]  # A solution of ionic strength 6 mM holds at most 1 mM Y
+    for r in moved:
+        ax.annotate("", xy=(r["same"], r["h"]), xytext=(r["rho"], r["h"]), arrowprops=dict(arrowstyle="->", color=grid, lw=1))
+    ax.plot([r["rho"] for r in moved], [r["h"] for r in moved], ls="", marker="o", ms=6, mfc="white", mec=grid, mew=1.4, label=r"Fig. 2 calculation at its $\rho_b$")
+    ax.plot([r["same"] for r in moved], [r["h"] for r in moved], ls="", marker="o", ms=6, color=ink, label=r"The same, moved to the exchange at 6 mM", zorder=5)
+    ax.set_xscale("log")
+    ax.set_xlim(1e-10, 1e-2)
+    ax.set_ylim(-0.7, 0.06)
+    ax.set_xlabel(r"${\rm Y}^{3+}$ [M]")
+    ax.set_ylabel(r"$\log_{10}(h/h_6)$")
+    ax.set_title("The Fig. 2 axis is not the solution", fontsize=10)
+    ax.legend(loc="lower left", fontsize=8)
+    fig.savefig(FIGURE_DIR / "cross_check_6mM.png", dpi=200)
 
     fig, axes = plt.subplots(1, 2, figsize=(8.6, 3.7), constrained_layout=True)
     ax = axes[0]
@@ -1397,7 +1602,7 @@ def pb_background(s, rhoP, nC_total=None, n_newton=300):
     raise RuntimeError("PB did not converge")
 
 
-def scft(zp, rho, Leff, warm, out, grounded=False, background=None, graft=0.5, dz=0.125, stretch=1.0):
+def scft(zp, rho, Leff, warm, out, grounded=False, background=None, graft=0.5, dz=0.125, stretch=1.0, mean_field=False):
     from scipy.optimize import NoConvergence
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1405,6 +1610,7 @@ def scft(zp, rho, Leff, warm, out, grounded=False, background=None, graft=0.5, d
     s = make_scft(zp, rho * MOLAR, nz=int(round(Leff / dz)), L=Leff, graft=graft) if grounded else make_scft(zp, rho * MOLAR, graft=graft)
     s.Vres = Leff - s.L
     s.grounded = grounded
+    s.corr = not mean_field
     s._solve_pb = MethodType(pb_ext, s)
     if background is not None:
         s.with_counterions = False
@@ -1455,7 +1661,7 @@ def scft(zp, rho, Leff, warm, out, grounded=False, background=None, graft=0.5, d
     return res
 
 
-def walk(zp, rho, warm, out, values, background=False, graft=0.5, step_seconds=1500, box=200.0, dz=0.125, stretch=1.0):
+def walk(zp, rho, warm, out, values, background=False, graft=0.5, step_seconds=1500, box=200.0, dz=0.125, stretch=1.0, mean_field=False):
     """Take one (z, rho) through box lengths, or background densities in M. Each solve starts from the last converged one;
     a failed step is retried from a point halfway on a log scale, up to three times."""
     def stop(*_):
@@ -1468,7 +1674,7 @@ def walk(zp, rho, warm, out, values, background=False, graft=0.5, step_seconds=1
             v = tries[0]
             run = Path(out) / f"v{v:g}"
             signal.alarm(step_seconds)
-            res = scft(zp, rho, box if background else v, warm, run, grounded=background, background=v if background else None, graft=graft, dz=dz, stretch=stretch)
+            res = scft(zp, rho, box if background else v, warm, run, grounded=background, background=v if background else None, graft=graft, dz=dz, stretch=stretch, mean_field=mean_field)
             stretch = 1.0 if res["status"] == "completed" else stretch
             signal.alarm(0)
             if res["status"] == "completed":
@@ -1484,6 +1690,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("analytic")
+    sub.add_parser("uniform6")
     sub.add_parser("correlation")
     q = sub.add_parser("layer")
     q.add_argument("z", type=int, choices=[1, 2, 3])
@@ -1511,12 +1718,15 @@ def main():
     q.add_argument("--graft", type=float, default=0.5)
     q.add_argument("--chain", type=int, default=N, help="chain length; --stretch then scales the starting profile")
     q.add_argument("--stretch", type=float, default=1.0)
+    q.add_argument("--mean-field", action="store_true", help="no self-energy")
     q.add_argument("--box", type=float, default=200.0, help="box length with --background, nm")
     q.add_argument("--dz", type=float, default=0.125)
     q.add_argument("--step-seconds", type=int, default=1500)
     args = p.parse_args()
     if args.command == "analytic":
         analytic()
+    elif args.command == "uniform6":
+        uniform6()
     elif args.command == "correlation":
         correlation()
     elif args.command == "layer":
@@ -1532,7 +1742,7 @@ def main():
     elif args.command == "walk":
         globals()["N"] = args.chain
         walk(args.z, args.rho_molar, args.warm, args.out, [float(v) for v in args.values.split(",")], args.background, args.graft,
-             args.step_seconds, args.box, args.dz, args.stretch)
+             args.step_seconds, args.box, args.dz, args.stretch, args.mean_field)
     else:
         scft(args.z, args.rho_molar, args.L, args.warm, args.out, args.grounded)
 
