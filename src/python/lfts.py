@@ -73,15 +73,14 @@ class LR:
         Box dimensions in units of a_Ref * N_Ref^(1/2).
     jk : ndarray
         Jacobian (Hessian) matrix in Fourier space. Precomputed from
-        finite difference of δH/δw. Shape: the coefficients of fourier when it
-        is given, the rfftn half spectrum of nx in a periodic box, or nx with axis_bc.
+        finite difference of δH/δw. Shape: the coefficients of fourier, or nx with axis_bc.
     fourier : FourierTransform, optional
         PropagatorSolver.fourier of real fields (FFT in a periodic box, cosine series in
-        a box with reflecting walls), which applies 1/J(k) (on the GPU with CUDA);
-        without it the update uses numpy.fft or, with axis_bc, scipy.fft.
+        a box with reflecting walls), which applies 1/J(k) (on the GPU with CUDA).
     axis_bc : list of str, optional
         "periodic" or "wall" for each axis of a box that mixes periodic axes and
-        reflecting walls (no fourier there): FFT and cosine series (orthonormal).
+        reflecting walls, which fourier cannot transform: FFT and cosine series
+        (orthonormal) with scipy.fft. Give either fourier or axis_bc.
 
     Attributes
     ----------
@@ -93,6 +92,8 @@ class LR:
         Jacobian in Fourier space.
     """
     def __init__(self, nx, lx, jk, fourier=None, axis_bc=None):
+        if (fourier is None) == (axis_bc is None):
+            raise ValidationError("LR needs either fourier or axis_bc.")
         self.nx = nx
         self.lx = lx
         self.jk = jk.copy()
@@ -131,17 +132,10 @@ class LR:
         """
         if self._fourier is not None:
             w_diff = self._fourier.apply([(self._inverse, np.reshape(negative_h_deriv, -1))])
-            return w_current + np.reshape(w_diff, np.shape(w_current))
-        nx = self.nx
-        if self.axis_bc is not None:
-            w_diff_k = _axis_transform(np.reshape(negative_h_deriv, nx), self.axis_bc)/self.jk
+        else:
+            w_diff_k = _axis_transform(np.reshape(negative_h_deriv, self.nx), self.axis_bc)/self.jk
             w_diff = np.real(_axis_transform(w_diff_k, self.axis_bc, inverse=True))
-            return w_current + np.reshape(w_diff, np.shape(w_current))
-        negative_h_deriv_k = np.fft.rfftn(np.reshape(negative_h_deriv, nx))/np.prod(nx)
-        w_diff_k = negative_h_deriv_k/self.jk
-        w_diff = np.reshape(np.fft.irfftn(w_diff_k, nx, axes=tuple(range(len(nx))))*np.prod(nx), np.shape(w_current))
-
-        return w_current + w_diff
+        return w_current + np.reshape(w_diff, np.shape(w_current))
 
 class LRAM:
     """Linear Response + Anderson Mixing (LRAM) field compressor.
@@ -420,22 +414,22 @@ class LFTS:
             # jk = (h(w_pert) - h(0)) / w_pert  (correct finite difference)
             h_deriv_diff = h_deriv_perturbed - h_deriv_zero
             nx = self.prop_solver.nx
-            if periodic_box:
-                w_aux_perturbed_k = np.fft.rfftn(np.reshape(w_aux_perturbed[M-1], nx))/np.prod(nx)
-                h_deriv_diff_k = np.fft.rfftn(np.reshape(h_deriv_diff, nx))/np.prod(nx)
-                jk_numeric = np.real(h_deriv_diff_k/w_aux_perturbed_k)
-                lr = LR(nx, self.prop_solver.get_lx(), jk_numeric, fourier=self.prop_solver.fourier)
-            elif not mixed_box:
-                # Reflecting walls only: the cosine series of PropagatorSolver.fourier
-                fourier = self.prop_solver.fourier
-                jk_numeric = np.real(fourier.forward(np.reshape(h_deriv_diff, -1))/fourier.forward(w_aux_perturbed[M-1]))
-                lr = LR(nx, self.prop_solver.get_lx(), jk_numeric, fourier=fourier)
-            else:
+            fourier, axis_bc = None, None
+            if mixed_box:
                 # Periodic axes and reflecting walls: FFT and cosine series with scipy.fft
                 axis_bc = ["periodic" if periodic else "wall" for periodic in periodic_sides[::2]]
                 jk_numeric = np.real(_axis_transform(np.reshape(h_deriv_diff, nx), axis_bc)
                                      /_axis_transform(np.reshape(w_aux_perturbed[M-1], nx), axis_bc))
-                lr = LR(nx, self.prop_solver.get_lx(), jk_numeric, axis_bc=axis_bc)
+            else:
+                # The FFT or the cosine series of PropagatorSolver.fourier
+                fourier = self.prop_solver.fourier
+                jk_numeric = np.real(fourier.forward(np.reshape(h_deriv_diff, -1))/fourier.forward(w_aux_perturbed[M-1]))
+            # Incompressible: a uniform shift of the pressure field changes no concentration, so
+            # J(0) = 0 and the value above is rounding, exactly zero on some small grids. J(0) = 1
+            # keeps 1/J finite, and the gauge fix of the saddle search removes the uniform mode
+            if self.zeta_n is None:
+                jk_numeric.flat[0] = 1.0
+            lr = LR(nx, self.prop_solver.get_lx(), jk_numeric, fourier=fourier, axis_bc=axis_bc)
 
         if params["compressor"]["name"] == "am":
             self.compressor = am

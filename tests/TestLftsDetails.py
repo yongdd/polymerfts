@@ -271,6 +271,35 @@ def test_lr_walls(root):
     check(refused, "lr refused in a box with absorbing walls")
 
 
+def test_lr_uniform_mode(root):
+    """An incompressible melt does not respond to a uniform shift of the pressure field: the
+    measured J(0) is rounding, exactly zero on the first two grids (cpu-fftw), where 1/J(0) stopped
+    the constructor. The setup takes J(0) = 1 in every kind of box. The compressible pressure-like
+    field does respond, with J(0) = 2/λ from the quadratic term of H."""
+    R, P = "reflecting", "periodic"
+    work = os.path.join(root, "lr_uniform_mode")
+    for nx, lx, extra in (([12], [3.0], {"ds": 0.1, "bc": [P] * 2}),
+                          ([16], [2.0], {"ds": 0.05, "bc": [R] * 2}),
+                          ([8, 8], [2.0, 2.0], {"bc": [P, P, R, R], "numerical_method": "cn-adi2"})):
+        for name in ("lr", "lram"):
+            p = params(work, nx, lx, 2, **extra)
+            p["compressor"]["name"] = name
+            sim = quiet(LFTS, p, random_seed=1)
+            lr = sim.compressor.lr if name == "lram" else sim.compressor
+            n = int(np.prod(nx))
+            w = np.zeros([2, n])
+            w[0] = np.random.default_rng(5).normal(0.0, 2.0, n)
+            _, _, iterations, error = quiet(sim.find_saddle_point, w)
+            check(lr.jk.flat[0] == 1.0 and error < 1e-4,
+                  f"{name} {extra['bc'][::2]} nx {nx}: J(0) = {lr.jk.flat[0]}, saddle point in {iterations} iterations ({error:.1e})")
+    p = params(work, [16, 16], [3.0, 3.0], 2, zeta_n=100.0)
+    p["compressor"]["name"] = "lr"
+    sim = quiet(LFTS, p, random_seed=1)
+    expected = 2.0/sim.mpt.eigenvalues[sim.mpt.aux_fields_imag_idx[0]]
+    check(np.isclose(sim.compressor.jk.flat[0], expected, rtol=1e-6),
+          f"lr with zeta_n: J(0) = {sim.compressor.jk.flat[0]:.6e} measured, 2/lambda = {expected:.6e}")
+
+
 def test_file_permissions(root):
     """Checkpoints and run_status.json get the permissions of any new file (0666 less the
     umask), not the 0600 of a temporary file; a umask of 022 tells the two apart."""
@@ -298,6 +327,7 @@ def main():
         test_saddle_failure(root)
         test_compressible_mean(root)
         test_lr_walls(root)
+        test_lr_uniform_mode(root)
         test_file_permissions(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)

@@ -12,7 +12,7 @@ import sys
 
 import numpy as np
 
-from polymerfts import LR, LRAM, PlatformSelector
+from polymerfts import LR, LRAM, PlatformSelector, PropagatorSolver, ValidationError
 
 
 def cpu_platform():
@@ -43,15 +43,26 @@ def main():
     def anderson():
         return factory.create_anderson_mixing(m, 20, 1e-1, 0.1, 0.1)
 
+    solver = PropagatorSolver(nx=nx, lx=lx, ds=0.1, bond_lengths={"A": 1.0}, bc=["periodic"]*6,
+                              chain_model="continuous", platform=cpu_platform())
+
+    # LR transforms with fourier or with axis_bc, not with both or neither
+    for transforms in ({}, {"fourier": solver.fourier, "axis_bc": ["periodic"]*3}):
+        try:
+            LR(nx, lx, jk, **transforms)
+            failed.append(f"LR accepted the transforms {sorted(transforms)}")
+        except ValidationError:
+            pass
+
     # LR with the exact J(k) is exact in one step, for both shapes
-    lr = LR(nx, lx, jk)
+    lr = LR(nx, lx, jk, fourier=solver.fourier)
     for w0 in (np.zeros(m), np.zeros((1, m))):
         w1 = lr.calculate_new_fields(w0, residual(w0), 1.0, 1.0)
         if np.shape(w1) != np.shape(w0) or not np.allclose(np.ravel(w1), w_star, atol=1e-12):
             failed.append(f"LR step for input shape {np.shape(w0)}")
 
     # LRAM = Anderson mixing of the LR step
-    lr_approx = LR(nx, lx, 0.8*jk)
+    lr_approx = LR(nx, lx, 0.8*jk, fourier=solver.fourier)
     w0 = rng.normal(size=(1, m))
     lram = LRAM(lr_approx, anderson())
     w_lram = lram.calculate_new_fields(w0, residual(w0), 1.0, 1.0)

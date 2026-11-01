@@ -77,7 +77,7 @@ Uses linear response theory to predict the saddle-point directly:
 \Omega_+^* \approx \Omega_+^{(0)} + \chi_{\Omega_+}^{-1} \cdot (\phi_+ - 1)
 ```
 
-where $`\chi_{\Omega_+}`$ is the response function. It is measured once, at $`\Omega = 0`$, from a small kick of $`\Omega_+`$ at one grid point, and applied in the Fourier basis that makes it diagonal: the FFT in a periodic box and the cosine series (DCT-II) along reflecting walls, where the box is half of a periodic box of twice its size that holds the mirror image of the kick. Next to absorbing walls the concentrations at $`\Omega = 0`$ are not uniform, so no Fourier basis makes the response diagonal; `lr` and `lram` are refused there.
+where $`\chi_{\Omega_+}`$ is the response function. It is measured once, at $`\Omega = 0`$, from a small kick of $`\Omega_+`$ at one grid point, and applied in the Fourier basis that makes it diagonal: the FFT in a periodic box and the cosine series (DCT-II) along reflecting walls, where the box is half of a periodic box of twice its size that holds the mirror image of the kick. Next to absorbing walls the concentrations at $`\Omega = 0`$ are not uniform, so no Fourier basis makes the response diagonal; `lr` and `lram` are refused there. An incompressible melt does not respond to a uniform $`\Omega_+`$, so the measured value at $`k = 0`$ is rounding and the compressor uses 1 there; the gauge fix of the pressure field removes the uniform mode after each saddle-point search.
 
 ### 3.4 Available Compressors
 

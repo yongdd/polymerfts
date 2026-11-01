@@ -283,6 +283,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- `LR` takes `fourier` or `axis_bc` (2026-11-02): the update without either, with NumPy, is gone.
+  `LFTS` measures J(k) of a periodic box with `PropagatorSolver.fourier`, as it did with
+  reflecting walls.
 - `GibbsEnsemble` runs both boxes in the fixed cell `lx` (2026-11-01;
   docs/theory/ComplexLangevinSimulation.md, Section 8). The amounts and volumes count the material
   for the lever rule; `boxes[].lx` is gone, the top-level `lx` is required as for `CLFTS`, and the
@@ -416,6 +419,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `LFTS` with the `lr` and `lram` compressors no longer stops with `A multiplier must be finite`
+  (2026-11-02). A uniform shift of the incompressible pressure field changes no concentration, so
+  J(0) is zero; the measured value was rounding, and exactly zero on some small 1-D grids. The setup
+  now takes J(0) = 1, as the first LR code did. With `zeta_n`, J(0) stays measured.
 - Numerical and Python API corrections (2026-10-30):
   - Contour lengths are compared at relative roundoff precision and never merged across
     different segment counts. Polymer construction and contour mapping share the rounding
