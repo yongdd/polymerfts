@@ -71,8 +71,9 @@ def test_browser_cell_controls_and_export():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is needed to exercise the browser event handlers")
+    # Only a guard against a hang: the script needs well below a second, but a CI runner can be much slower
     result = subprocess.run([node, str(Path(__file__).with_name("check_simulation_cells.cjs"))],
-                            check=True, capture_output=True, text=True, timeout=20)
+                            check=True, capture_output=True, text=True, timeout=120)
     for exported in json.loads(result.stdout):
         form = MODEL["values"]()
         form["model"] = exported["model"]
