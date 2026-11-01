@@ -58,9 +58,9 @@ import numpy as np
 from scipy.io import loadmat
 
 from .clfts import CLFTS
-from .electrostatics import coulomb_coupling, homogeneous_potential, point_ions
-from .utils import json_ready, input_hash
-from .validation import (ValidationError, _chain_charge, normalize_params, open_charges, parse_chi_n, point_ion_concentrations,
+from ..theory.electrostatics import coulomb_coupling, homogeneous_potential, point_ions
+from ..utils.common import json_ready, input_hash
+from ..utils.validation import (ValidationError, _chain_charge, normalize_params, open_charges, parse_chi_n, point_ion_concentrations,
                          polymer_block_lengths, reference_segments, validate_gibbs_params, validate_lfts_params)
 
 

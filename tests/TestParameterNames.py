@@ -12,8 +12,8 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
-from polymerfts.utils import atomic_savemat, input_hash, settings_json
-from polymerfts.validation import normalize_params, validate_lfts_params
+from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
+from polymerfts.utils.validation import normalize_params, validate_lfts_params
 from TestFtsReliability import parameters, fields, expect_error
 from TestParams import base_params
 

@@ -14,8 +14,8 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 
-from .utils import report_partition_consistency
-from .validation import ValidationError, parse_chi_n
+from ..utils.common import report_partition_consistency
+from ..utils.validation import ValidationError, parse_chi_n
 
 DEFAULT_MONOMER_COLORS: List[str] = [
     "red", "blue", "green", "cyan", "magenta", "yellow"

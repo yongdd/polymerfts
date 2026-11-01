@@ -6,7 +6,7 @@ matrices to obtain auxiliary field representations.
 """
 
 import numpy as np
-from .validation import ValidationError
+from ..utils.validation import ValidationError
 
 class SymmetricPolymerTheory:
     """Symmetric polymer field theory for multi-monomer systems.

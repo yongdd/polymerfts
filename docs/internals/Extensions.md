@@ -73,7 +73,7 @@ sim = LFTS(params, integrator=PredictorCorrector(), callbacks={"variance": obser
 ```
 
 The actual LM and Euler equations are together in
-[integrators.py](../../src/python/integrators.py). A custom method needs a stable
+[integrators.py](../../src/python/fts/integrators.py). A custom method needs a stable
 nonempty `name` and this method:
 
 ```python

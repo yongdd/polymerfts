@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from polymerfts.chains import chain_fields
+from polymerfts.theory.chains import chain_fields
 
 
 def main():

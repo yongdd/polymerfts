@@ -11,9 +11,9 @@ hills (see WTMD.update_statistics).
 import numpy as np
 import scipy.signal
 
-from ._core import _periodic_metric
-from .utils import atomic_savemat
-from .validation import ValidationError, _finite_number
+from .._core import _periodic_metric
+from ..utils.common import atomic_savemat
+from ..utils.validation import ValidationError, _finite_number
 
 
 class WTMD:

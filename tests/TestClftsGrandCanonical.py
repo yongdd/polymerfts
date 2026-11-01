@@ -37,7 +37,7 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
-from polymerfts.validation import validate_scft_params
+from polymerfts.utils.validation import validate_scft_params
 from cuda_part import cuda_part_missing
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20

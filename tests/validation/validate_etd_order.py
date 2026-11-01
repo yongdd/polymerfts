@@ -34,7 +34,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 from scipy.integrate import quad
 from polymerfts import PlatformSelector, PropagatorSolver
-from polymerfts.integrators import EulerMaruyama, ExponentialTimeDifferencing, LeimkuhlerMatthews
+from polymerfts.fts.integrators import EulerMaruyama, ExponentialTimeDifferencing, LeimkuhlerMatthews
 
 B = 2.0          # strength of the bounded nonlinear part b tanh(x)
 GROUPS = 20      # groups of chains for the standard error

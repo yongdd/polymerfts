@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import yaml
 
-from .utils import atomic_savemat, json_ready, mat_ready, simulation_metadata
+from ..utils.common import atomic_savemat, json_ready, mat_ready, simulation_metadata
 
 
 @dataclass

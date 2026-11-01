@@ -14,8 +14,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import CLFTS, PlatformSelector, PropagatorSolver
-from polymerfts.smearing import Smearing
-from polymerfts.wtmd import WTMD
+from polymerfts.theory.smearing import Smearing
+from polymerfts.fts.wtmd import WTMD
 from cuda_part import cuda_part_missing
 
 

@@ -4,11 +4,11 @@ import pathlib
 import copy
 import json
 import numpy as np
-from .polymer_field_theory import SymmetricPolymerTheory
-from .propagator_solver import PropagatorSolver
+from ..theory.symmetric_formulation import SymmetricPolymerTheory
+from ..theory.propagator_solver import PropagatorSolver
 from .integrators import checked_fields
-from .validation import normalize_params, validate_lfts_params, ValidationError, SaddlePointError
-from .utils import (
+from ..utils.validation import normalize_params, validate_lfts_params, ValidationError, SaddlePointError
+from ..utils.common import (
     display_system,
     calculate_sigma,
     atomic_savemat,
@@ -16,7 +16,7 @@ from .utils import (
     write_run_status,
     notify_callbacks,
 )
-from .checkpoint import (
+from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     start_run_status,
@@ -24,10 +24,10 @@ from .checkpoint import (
     initialize_extensions,
     restore_extensions,
 )
-from .chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
-from .file_formats import load_config
+from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..utils.file_formats import load_config
 from .saddle import SaddlePointSearch
-from .smearing import smearing_of
+from ..theory.smearing import smearing_of
 from .structure_functions import LftsStructureFunctions
 from .wtmd import WTMD
 

@@ -8,7 +8,7 @@ with the screening length 1/κ (screening_length); it is the Debye length of tha
 alone, and explicit ions screen in addition through ψ.
 The interaction is decoupled with an electrostatic potential ψ on the rotated contour:
 like the pressure field it is an imaginary-type field, and type i feels z_i ψ, so the
-propagator input is Γ_i * (w_i + z_i ψ). Per reference chain (as in polymer_field_theory.py),
+propagator input is Γ_i * (w_i + z_i ψ). Per reference chain (as in symmetric_formulation.py),
 
     βH_el / (C V/R₀³) = (1/(2E V)) ∫ ψ (∇² - κ²) ψ dr,   δH/δψ = (∇² - κ²)ψ/E + c,
 
@@ -55,7 +55,7 @@ import json
 
 import numpy as np
 
-from .validation import ValidationError
+from ..utils.validation import ValidationError
 
 
 def point_ions(params, ion_concentrations):

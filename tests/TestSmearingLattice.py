@@ -59,9 +59,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import _core, scft, LFTS, CLFTS
-from polymerfts.smearing import Smearing
-from polymerfts.utils import calculate_sigma
-from polymerfts.propagator_solver import PropagatorSolver
+from polymerfts.theory.smearing import Smearing
+from polymerfts.utils.common import calculate_sigma
+from polymerfts.theory.propagator_solver import PropagatorSolver
 
 n_pass = 0
 n_fail = 0

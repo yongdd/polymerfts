@@ -28,7 +28,7 @@ from scipy.io.matlab import MatReadError
 
 
 # Reuse input aliases and validation without importing the compiled package.
-_VALIDATION = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/validation.py"))
+_VALIDATION = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/validation.py"))
 
 
 def real(value):

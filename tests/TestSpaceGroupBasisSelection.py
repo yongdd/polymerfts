@@ -63,7 +63,7 @@ def main():
 
     # The physical basis is frozen once a solver holds the group (the computation
     # box and the solvers snapshot the reduced-basis sizes and maps)
-    from polymerfts.propagator_solver import PropagatorSolver
+    from polymerfts.theory.propagator_solver import PropagatorSolver
     cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")][0]
     sg_used = _core.SpaceGroup(nx, hall_nums[0])
     solver = PropagatorSolver(nx=nx, lx=[2.0, 2.0, 2.0], ds=0.1, bond_lengths={"A": 1.0},

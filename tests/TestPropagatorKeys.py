@@ -28,7 +28,7 @@ import contextlib
 
 import numpy as np
 from polymerfts import _core
-from polymerfts.propagator_solver import PropagatorSolver
+from polymerfts.theory.propagator_solver import PropagatorSolver
 
 n_pass = 0
 n_fail = 0

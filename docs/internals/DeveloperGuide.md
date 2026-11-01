@@ -64,7 +64,7 @@ src/
 ### One SCFT Iteration Through the Layers
 
 ```
-SCFT.run (src/python/scft.py)
+SCFT.run (src/python/scft/scft.py)
 ├─ PropagatorSolver.compute_propagators(w)      → ComputationContinuous::compute_propagators
 │   ├─ set_fields: check w and q_init, keep w for solvents, backend.update_dw → solver Boltzmann factors
 │   ├─ for each scheduler group, its propagators concurrently (OpenMP thread i uses stream i):
@@ -160,7 +160,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 
 **Notes:**
 
-- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
+- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
 - The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
@@ -610,15 +610,15 @@ When adding new computational features, you must implement them for both platfor
 | Which propagators are computed, aggregation | `PropagatorComputationOptimizer`, `PropagatorAggregator` |
 | Concurrent groups | `Scheduler` |
 | Which objects a platform creates | the factories |
-| Flow of each method and its parameters | `src/python/scft.py`, `lfts.py`, `clfts.py` |
-| Saddle point search and compressors of L-FTS | `src/python/saddle.py` (`sim.saddle`) |
-| Structure functions of L-FTS and CL-FTS | `src/python/structure_functions.py` (`sim.structure_functions`) |
-| Thermodynamic operators of CL-FTS | `src/python/thermodynamics.py` (`sim.thermodynamics`) |
-| Cell relaxation and stress of SCFT | `src/python/cell_relaxation.py` (`sim.cell`) |
-| What SCFT returns and writes | `src/python/scft_results.py` |
-| What a Langevin run records, saves and restores | `src/python/checkpoint.py` (`RunRecord`) |
-| Reading, drawing and solving the polymer chains | `src/python/chains.py` |
-| Parameter files and VTK fields | `src/python/file_formats.py` |
+| Flow of each method and its parameters | `src/python/scft/scft.py`, `src/python/fts/lfts.py`, `src/python/fts/clfts.py` |
+| Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
+| Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
+| Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
+| Cell relaxation and stress of SCFT | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
+| What SCFT returns and writes | `src/python/scft/scft_results.py` |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`) |
+| Reading, drawing and solving the polymer chains | `src/python/theory/chains.py` |
+| Parameter files and VTK fields | `src/python/utils/file_formats.py` |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid

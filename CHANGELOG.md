@@ -121,6 +121,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `load_config`, `ConfigError`, `save_vtk` and `draw_polymer_architectures`. The timings that
   `SCFT.compute_concentrations` returns now have the keys of the Langevin classes: `solver` for the
   propagators instead of `pseudo`, and `phi` for all of the concentration integration.
+- `src/python` has four folders (2026-11-02): `scft`, `fts`, `theory` and `utils`. User scripts keep
+  `from polymerfts import scft, lfts, clfts` and the names the package exports. Submodules are
+  imported with their folder: `polymerfts.utils.common` (formerly `polymerfts.utils`), `.checkpoint`,
+  `.validation` and `.file_formats`; `polymerfts.theory.propagator_solver`, `.symmetric_formulation`
+  (formerly `polymer_field_theory`), `.smearing`, `.electrostatics` and `.chains`; `polymerfts.fts.lfts`, `.clfts`, `.integrators`, `.wtmd`, `.gibbs_ensemble`,
+  `.saddle`, `.structure_functions` and `.thermodynamics`; `polymerfts.scft.scft`, `.scft_results`,
+  `.cell_relaxation` and `.phase_equilibrium`. `python_source_sha256` in the metadata covers all folders.
 - Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
   of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and

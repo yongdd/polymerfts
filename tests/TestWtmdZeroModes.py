@@ -14,8 +14,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import LFTS, PlatformSelector, PropagatorSolver, ValidationError
-from polymerfts.validation import validate_lfts_params
-from polymerfts.wtmd import WTMD
+from polymerfts.utils.validation import validate_lfts_params
+from polymerfts.fts.wtmd import WTMD
 from cuda_part import cuda_part_missing
 
 

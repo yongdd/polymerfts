@@ -46,7 +46,7 @@ import contextlib
 import warnings
 
 import numpy as np
-from polymerfts.polymer_field_theory import SymmetricPolymerTheory
+from polymerfts.theory.symmetric_formulation import SymmetricPolymerTheory
 
 n_pass = 0
 n_fail = 0

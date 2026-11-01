@@ -16,8 +16,8 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import (LFTS, CLFTS, PropagatorSolver, PlatformSelector,
                         LeimkuhlerMatthews, EulerMaruyama, ValidationError, SaddlePointError)
-from polymerfts.utils import atomic_savemat, settings_json, input_hash
-from polymerfts.integrators import checked_fields
+from polymerfts.utils.common import atomic_savemat, settings_json, input_hash
+from polymerfts.fts.integrators import checked_fields
 from TestFtsReliability import parameters, fields, expect_error, FailingLFTS
 from cuda_part import cuda_part_missing
 

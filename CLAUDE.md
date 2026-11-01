@@ -201,12 +201,16 @@ Keep each simulation class readable from top to bottom:
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.
 - Put shared parameter validation and legacy-name normalization in `validation.py`;
-  keep common mechanical helpers in `utils.py`, what a run saves and restores in
+  keep common mechanical helpers in `utils/common.py`, what a run saves and restores in
   `checkpoint.py`, the polymer chains in `chains.py` and parameter and VTK files in
   `file_formats.py`. `RunRecord` in `checkpoint.py` holds the measurements of a run:
   a new quantity needs an entry in its series and an `add()`. `chains.py` holds what
   the three `compute_concentrations` share; change the concentrations there, and
   keep in each method only what is its own.
+- `src/python` has four folders: `scft/`, `fts/` (L-FTS, CL-FTS and what their loops
+  use), `theory/` (the polymer field theory all methods share) and `utils/` (checks,
+  checkpoints, files). `from polymerfts import scft, lfts, clfts` stays the entry of user scripts;
+  submodules are imported with their folder, as `polymerfts.utils.checkpoint`.
 - `scft.py`, `lfts.py` and `clfts.py` hold the flow of each method. The details live
   in objects with one topic each, as the loop's own words say: `self.saddle`
   (`saddle.py`: compressors, saddle search and retries), `self.structure_functions`
@@ -216,7 +220,7 @@ Keep each simulation class readable from top to bottom:
 - `integrators.py` implements built-in LM and Euler steps. Use the existing
   `integrator=` interface for additional methods and named `callbacks=` for
   observables. Preserve accepted-step ordering and checkpoint contracts.
-- `propagator_solver.py` wraps the native solver API; `polymer_field_theory.py`
+- `propagator_solver.py` wraps the native solver API; `symmetric_formulation.py`
   handles monomer/auxiliary-field transformations. `smearing.py`, `wtmd.py`,
   `electrostatics.py` and `phase_equilibrium.py` contain their respective physical
   operations.

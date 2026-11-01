@@ -11,10 +11,10 @@ import weakref
 import numpy as np
 import scipy.fft
 
-from .checkpoint import extension_object_state
+from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
-from .utils import check_partition_functions
-from .validation import ValidationError, SaddlePointError
+from ..utils.common import check_partition_functions
+from ..utils.validation import ValidationError, SaddlePointError
 
 
 def _axis_transform(field, axis_bc, inverse=False):

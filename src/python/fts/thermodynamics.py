@@ -9,7 +9,7 @@ import weakref
 
 import numpy as np
 
-from .validation import ValidationError
+from ..utils.validation import ValidationError
 
 
 class ThermodynamicOperators:

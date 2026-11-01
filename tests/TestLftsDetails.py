@@ -40,9 +40,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import _core, LFTS, ValidationError
-from polymerfts.utils import atomic_savemat
-from polymerfts.wtmd import WTMD
-from polymerfts.smearing import Smearing
+from polymerfts.utils.common import atomic_savemat
+from polymerfts.fts.wtmd import WTMD
+from polymerfts.theory.smearing import Smearing
 
 n_pass = 0
 n_fail = 0

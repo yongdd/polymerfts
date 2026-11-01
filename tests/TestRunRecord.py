@@ -10,7 +10,7 @@ and the sums, which restart from zero when the checkpoint's run did not use them
 
 import numpy as np
 
-from polymerfts.checkpoint import RunRecord, _measurement_key
+from polymerfts.utils.checkpoint import RunRecord, _measurement_key
 
 
 def checkpoint_of(record):

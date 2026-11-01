@@ -12,7 +12,7 @@ import pytest
 def validation(monkeypatch):
     monkeypatch.setitem(sys.modules, "polymerfts", None)
     monkeypatch.setitem(sys.modules, "polymerfts._core", None)
-    return runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/validation.py"))
+    return runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/validation.py"))
 
 
 def parameters():

@@ -69,10 +69,11 @@ def fields_hash(fields):
 
 @lru_cache(maxsize=1)
 def _package_hashes():
-    from . import _core
+    from .. import _core
     source = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        source.update(path.name.encode())
+    package = Path(__file__).parents[1]
+    for path in sorted(package.rglob("*.py")):
+        source.update(path.relative_to(package).as_posix().encode())
         source.update(path.read_bytes())
     native = hashlib.sha256()
     with open(_core.__file__, "rb") as stream:
@@ -125,7 +126,7 @@ def write_run_status(sim):
 
 def report_partition_consistency(prop_solver):
     """Print the forward/backward partition error of each polymer; True if all are within tolerance."""
-    from . import _core
+    from .. import _core
     errors = prop_solver.partition_errors()
     print("Relative contour partition error of each polymer: " +
           ", ".join(f"{p}: {error:.3e}" for p, error in enumerate(errors)))
@@ -157,7 +158,7 @@ def check_partition_functions(prop_solver, state):
 def simulation_metadata(sim, random_seed=None):
     """Build provenance comes from the loaded extension, never the current cwd."""
     import scipy
-    from . import _core
+    from .. import _core
     solver = sim.prop_solver
     metadata = {
         "schema_version": 1, "build": dict(getattr(_core, "build_info", {})),

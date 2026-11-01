@@ -35,9 +35,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, PlatformSelector, ValidationError
-from polymerfts.checkpoint import _measurement_key
-from polymerfts.utils import atomic_savemat
-from polymerfts.validation import validate_lfts_params
+from polymerfts.utils.checkpoint import _measurement_key
+from polymerfts.utils.common import atomic_savemat
+from polymerfts.utils.validation import validate_lfts_params
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2

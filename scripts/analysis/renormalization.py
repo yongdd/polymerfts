@@ -33,7 +33,7 @@ def _smearing_number(smearing, key, default=None):
 
 
 def smearing_function(k2, smearing):
-    """Gamma(k) of polymerfts smearing (src/python/smearing.py); 1 without smearing."""
+    """Gamma(k) of polymerfts smearing (src/python/theory/smearing.py); 1 without smearing."""
     if not smearing:
         return np.ones_like(k2)
     kind = str(smearing.get("type", "gaussian")).lower()

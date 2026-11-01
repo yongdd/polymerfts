@@ -14,8 +14,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError, SaddlePointError
-from polymerfts.utils import atomic_savemat
-from polymerfts.validation import validate_lfts_params
+from polymerfts.utils.common import atomic_savemat
+from polymerfts.utils.validation import validate_lfts_params
 
 
 def parameters(directory, steps=4):

@@ -139,30 +139,32 @@ If SCFT doesn't converge, reduce the mixing parameters:
 The simulations are written so that one file is enough to change. `scft.py`,
 `lfts.py` and `clfts.py` hold the flow of each method, and one object in its own
 file holds each topic: `saddle.py`, `structure_functions.py`, `thermodynamics.py`
-and `cell_relaxation.py`. To try a different iteration scheme, a new observable,
+and `cell_relaxation.py`. The files lie in the folders `scft`, `fts`, `theory` and
+`utils` of `src/python`. To try a different iteration scheme, a new observable,
 or an extra term in the free energy, copy the file you want to change next to
 your script and edit the copy; the installed package keeps providing the C++ core
 and the shared modules.
 
 1. Copy the file:
    ```bash
-   cp src/python/scft.py ~/my_project/my_scft.py
+   cp src/python/scft/scft.py ~/my_project/my_scft.py
    ```
 2. In the copy, point the imports at the installed package instead of the
-   relative `.`:
+   relative `.` and `..`. This is for a file of the folder `scft`; for another
+   folder, write its name in place of `scft` in the last expression:
    ```bash
-   sed -i -E 's/^( *)from \. import _core/\1from polymerfts import _core/; s/^( *)from \.([a-z_]+) import/\1from polymerfts.\2 import/' ~/my_project/my_scft.py
+   sed -i -E 's/^( *)from \.\. import _core/\1from polymerfts import _core/; s/^( *)from \.\.([a-z_.]+) import/\1from polymerfts.\2 import/; s/^( *)from \.([a-z_]+) import/\1from polymerfts.scft.\2 import/' ~/my_project/my_scft.py
    ```
    The result looks like
    ```python
    from polymerfts import _core
-   from polymerfts.polymer_field_theory import SymmetricPolymerTheory
-   from polymerfts.propagator_solver import PropagatorSolver
-   from polymerfts.validation import validate_system_params, ValidationError
-   from polymerfts.utils import (...)
-   from polymerfts.chains import (...)
-   from polymerfts.checkpoint import (...)
-   from polymerfts.smearing import Smearing
+   from polymerfts.theory.symmetric_formulation import SymmetricPolymerTheory
+   from polymerfts.theory.propagator_solver import PropagatorSolver
+   from polymerfts.utils.validation import (...)
+   from polymerfts.utils.common import (...)
+   from polymerfts.scft.cell_relaxation import CellRelaxation
+   from polymerfts.scft.scft_results import (...)
+   from polymerfts.theory.chains import (...)
    ```
 3. Use the copy in your script:
    ```python

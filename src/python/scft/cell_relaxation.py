@@ -7,7 +7,7 @@ import weakref
 
 import numpy as np
 
-from .validation import ValidationError
+from ..utils.validation import ValidationError
 
 
 # Which lattice parameters may vary during box relaxation (relax_cell=True):

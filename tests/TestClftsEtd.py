@@ -42,7 +42,7 @@ import numpy as np
 import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
-from polymerfts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
+from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C

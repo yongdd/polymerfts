@@ -15,7 +15,7 @@ import warnings
 import numpy as np
 from scipy.io import loadmat
 
-from .utils import fields_hash, input_hash, json_ready, mat_ready, settings_json
+from .common import fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .validation import normalize_params, ValidationError
 
 
@@ -457,7 +457,7 @@ class RunRecord:
 
 
 def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=True):
-    from .integrators import make_integrator
+    from ..fts.integrators import make_integrator
     sim.integrator = make_integrator(integrator)
     if callbacks is not None and not isinstance(callbacks, dict):
         raise ValidationError("callbacks must be a dictionary of stable names to callables")

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import numpy as np
 from numpy.typing import NDArray
 
-from . import _core
+from .. import _core
 
 
 class PropagatorSolver:

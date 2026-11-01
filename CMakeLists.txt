@@ -708,7 +708,7 @@ TARGET_INCLUDE_DIRECTORIES(_core PRIVATE ${CMAKE_BINARY_DIR}/generated)
 # Stage an importable 'polymerfts' package inside the build tree on every
 # build. The Python tests put this directory on PYTHONPATH so they always
 # exercise the code that was just built, never a stale site-packages install.
-# (cmake/stage_python.cmake also removes modules that no longer exist in src/python.)
+# (cmake/stage_python.cmake keeps the folders of src/python and removes modules that no longer exist there.)
 SET(POLYMERFTS_STAGE_DIR "${CMAKE_BINARY_DIR}/python/polymerfts")
 ADD_CUSTOM_TARGET(polymerfts_stage ALL
     COMMAND ${CMAKE_COMMAND}
@@ -748,7 +748,7 @@ IF(POLYMERFTS_INSTALL_PYTHON)
             LIBRARY DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             ARCHIVE DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             COMPONENT python)
-    # Pure-Python files (__init__.py, scft.py, lfts.py, ...)
+    # Pure-Python files (__init__.py and the folders scft, fts, theory and utils)
     INSTALL(DIRECTORY src/python/
             DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             COMPONENT python

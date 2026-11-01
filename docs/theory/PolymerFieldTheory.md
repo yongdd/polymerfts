@@ -152,7 +152,7 @@ Field residuals (Section 1.3 with $`\kappa = \chi N / 2`$ for $`\chi N \geq 1`$)
 
 ## 2. Incompressible Model
 
-The incompressible model uses auxiliary fields to decouple the interaction terms. This formulation is implemented in `polymer_field_theory.py` and used by both `scft.py` and `lfts.py`.
+The incompressible model uses auxiliary fields to decouple the interaction terms. This formulation is implemented in `symmetric_formulation.py` and used by both `scft.py` and `lfts.py`.
 
 ### 2.1 Partition Function
 
@@ -240,7 +240,7 @@ so that $`\Phi_- = \phi_A - \phi_B`$ and $`\Phi_+ = \phi_A + \phi_B`$, consisten
 
 ## 3. Compressible Model
 
-The compressible model includes a finite compressibility parameter $`\zeta`$. This formulation is implemented in `polymer_field_theory.py` and may be used for complex Langevin FTS.
+The compressible model includes a finite compressibility parameter $`\zeta`$. This formulation is implemented in `symmetric_formulation.py` and may be used for complex Langevin FTS.
 
 ### 3.1 Interaction Energy
 

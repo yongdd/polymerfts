@@ -4,22 +4,22 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Callable, Union
 
-from . import _core
-from .polymer_field_theory import SymmetricPolymerTheory
-from .propagator_solver import PropagatorSolver
-from .validation import (normalize_params, validate_scft_params, ValidationError,
+from .. import _core
+from ..theory.symmetric_formulation import SymmetricPolymerTheory
+from ..theory.propagator_solver import PropagatorSolver
+from ..utils.validation import (normalize_params, validate_scft_params, ValidationError,
                          point_ion_concentrations, open_charges, reference_segments)
-from .utils import (
+from ..utils.common import (
     report_partition_consistency,
     display_system,
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
 from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results
-from .chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
-from .file_formats import load_config
-from .smearing import smearing_of
-from .electrostatics import MeanFieldElectrostatics
+from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..utils.file_formats import load_config
+from ..theory.smearing import smearing_of
+from ..theory.electrostatics import MeanFieldElectrostatics
 
 # OpenMP environment variables
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override

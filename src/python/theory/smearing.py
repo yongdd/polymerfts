@@ -7,7 +7,7 @@ interactions by convolving fields with a smearing function in Fourier space.
 import numpy as np
 import scipy.fft
 
-from ._core import _periodic_metric
+from .._core import _periodic_metric
 
 
 class Smearing:

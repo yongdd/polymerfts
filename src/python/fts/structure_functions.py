@@ -12,8 +12,8 @@ import weakref
 
 import numpy as np
 
-from .checkpoint import system_data
-from .utils import atomic_savemat
+from ..utils.checkpoint import system_data
+from ..utils.common import atomic_savemat
 
 
 class LftsStructureFunctions:

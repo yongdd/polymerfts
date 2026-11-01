@@ -15,7 +15,7 @@ from scipy.io import savemat
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = runpy.run_path(str(ROOT / "scripts" / "gui" / "simulation_gui.py"))
-VALIDATION = runpy.run_path(str(ROOT / "src" / "python" / "validation.py"))
+VALIDATION = runpy.run_path(str(ROOT / "src" / "python" / "utils" / "validation.py"))
 
 
 def execute_export(values, tmp_path, monkeypatch):

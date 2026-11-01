@@ -20,16 +20,16 @@ import numpy as np
 from .integrators import checked_fields, force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
-from .polymer_field_theory import SymmetricPolymerTheory
-from .chains import read_chains, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
-from .file_formats import load_config
-from .smearing import smearing_of
+from ..theory.symmetric_formulation import SymmetricPolymerTheory
+from ..theory.chains import read_chains, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..utils.file_formats import load_config
+from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
-from .electrostatics import Electrostatics
-from .propagator_solver import PropagatorSolver
-from .validation import (normalize_params, validate_lfts_params, ValidationError, point_ion_concentrations,
+from ..theory.electrostatics import Electrostatics
+from ..theory.propagator_solver import PropagatorSolver
+from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, point_ion_concentrations,
                          open_charges, reference_segments)
-from .utils import (
+from ..utils.common import (
     display_system,
     calculate_sigma,
     atomic_savemat,
@@ -39,7 +39,7 @@ from .utils import (
     DriftTailSummary,
     PartitionRatioSummary,
 )
-from .checkpoint import (
+from ..utils.checkpoint import (
     RunRecord,
     fields_data,
     load_checkpoint,

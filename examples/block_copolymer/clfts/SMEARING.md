@@ -137,7 +137,7 @@ params = {
 
 ## Implementation Details
 
-The `Smearing` class in `src/python/smearing.py` handles all smearing operations:
+The `Smearing` class in `src/python/theory/smearing.py` handles all smearing operations:
 
 ```python
 from polymerfts import Smearing
@@ -195,5 +195,5 @@ When smearing is specified in the simulation parameters, the `SCFT`, `LFTS`, and
 ## See Also
 
 - [DYNAMICAL_STABILIZATION.md](DYNAMICAL_STABILIZATION.md) - Dynamical stabilization for CL-FTS
-- `src/python/smearing.py` - Smearing class implementation
+- `src/python/theory/smearing.py` - Smearing class implementation
 - [examples/README.md](../../README.md) - Example scripts by physical system and simulation method

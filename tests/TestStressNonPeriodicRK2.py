@@ -17,7 +17,7 @@ os.environ["OMP_MAX_ACTIVE_LEVELS"] = "0"
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import _core
-from polymerfts.propagator_solver import PropagatorSolver
+from polymerfts.theory.propagator_solver import PropagatorSolver
 from cuda_part import cuda_part_missing
 
 DS = 0.01

@@ -38,21 +38,21 @@ for _stream in (_sys.stdout, _sys.stderr):
 from ._core import *
 
 # High-level Python classes
-from .polymer_field_theory import SymmetricPolymerTheory
-from .propagator_solver import PropagatorSolver
-from .smearing import Smearing
-from .integrators import LeimkuhlerMatthews, EulerMaruyama
-from .scft import SCFT
-from .lfts import LFTS
-from .clfts import CLFTS
-from .gibbs_ensemble import GibbsEnsemble
-from .wtmd import WTMD
-from .validation import ValidationError, SaddlePointError
-from .scft_results import SCFTResult, IterationInfo
-from .phase_equilibrium import coexistence_quantities, homogeneous_thermodynamics, find_binary_coexistence
-from .saddle import LR, LRAM
-from .chains import draw_polymer_architectures
-from .file_formats import load_config, ConfigError, save_vtk
+from .theory.symmetric_formulation import SymmetricPolymerTheory
+from .theory.propagator_solver import PropagatorSolver
+from .theory.smearing import Smearing
+from .fts.integrators import LeimkuhlerMatthews, EulerMaruyama
+from .scft import SCFT, SCFTResult, IterationInfo
+from .fts import lfts, clfts
+from .fts.lfts import LFTS
+from .fts.clfts import CLFTS
+from .fts.gibbs_ensemble import GibbsEnsemble
+from .fts.wtmd import WTMD
+from .utils.validation import ValidationError, SaddlePointError
+from .scft.phase_equilibrium import coexistence_quantities, homogeneous_thermodynamics, find_binary_coexistence
+from .fts.saddle import LR, LRAM
+from .theory.chains import draw_polymer_architectures
+from .utils.file_formats import load_config, ConfigError, save_vtk
 
 # Submodules
 from . import utils

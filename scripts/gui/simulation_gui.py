@@ -294,7 +294,7 @@ def imaginary_exchange_fields(types, chi_n):
     """Number of imaginary auxiliary fields besides the pressure field of an incompressible
     model: the positive eigenvalues of chi N on compositions with zero sum. By Sylvester's law
     of inertia the basis e_i - e_last gives the same count as the orthonormal one of
-    polymer_field_theory; the eigenvalues come from cyclic Jacobi rotations."""
+    symmetric_formulation; the eigenvalues come from cyclic Jacobi rotations."""
     chi = lambda a, b: 0.0 if a == b else chi_n.get(f"{a},{b}", chi_n.get(f"{b},{a}", 0.0))
     last, rest = types[-1], types[:-1]
     m = [[chi(a, b) - chi(a, last) - chi(last, b) for b in rest] for a in rest]

@@ -17,7 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, PlatformSelector, SCFT, ValidationError
-from polymerfts.validation import (net_polymer_charge, open_charges, point_ion_concentrations,
+from polymerfts.utils.validation import (net_polymer_charge, open_charges, point_ion_concentrations,
                                    polymer_block_lengths, validate_scft_params)
 from cuda_part import cuda_part_missing
 
