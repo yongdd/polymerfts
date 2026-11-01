@@ -1,11 +1,14 @@
 """Gibbs-ensemble complex Langevin simulation of two coexisting phases.
 
-Two CL-FTS boxes, one per phase, exchange chains, point ions and volume while the totals stay
-fixed (Riggleman & Fredrickson, J. Chem. Phys. 132, 024104 (2010)). Every box keeps the
-reference density on average (the volume fractions of its polymers sum to 1), so its volume
-follows from its chains: V_b = Σ_p α_p n_p^b, with the numbers of chains n_p^b in units of
-C/R₀³ = ρ₀/N per unit volume (and of ions, n_s^b = N c_s^b V_b). Moving one chain of p from box
-II to box I changes the free energy by μ̃_p^I - μ̃_p^II, with the exchange potential
+Two phases exchange chains, point ions and volume while the totals stay fixed (Riggleman &
+Fredrickson, J. Chem. Phys. 132, 024104 (2010)). Every phase keeps the reference density on
+average (the volume fractions of its polymers sum to 1), so its volume follows from its chains:
+V_b = Σ_p α_p n_p^b, with the numbers of chains n_p^b in units of C/R₀³ = ρ₀/N per unit volume
+(and of ions, n_s^b = N c_s^b V_b). The amounts and volumes are bookkeeping for the lever rule:
+each phase is one CL-FTS box at the composition n^b/V_b in the cell `lx`, the same cell for both
+phases, which stays fixed (the intensive Gibbs ensemble of Mester, Lynd & Fredrickson, Soft Matter
+9, 11288 (2013)). Both boxes are therefore one model on one lattice. Moving one chain of p from
+box II to box I changes the free energy by μ̃_p^I - μ̃_p^II, with the exchange potential
 
     μ̃_p = βμ_p - α_p βΠR₀³/C,
 
@@ -16,8 +19,13 @@ difference,
 
     Δn^I = -r M_P (μ̃^I - μ̃^II),   Δn^II = -Δn^I,
 
-with the rate r (exchange_rate) and the mobility M = diag(n^I n^II/(n^I + n^II)), which makes
-the steps relative to the amounts. A step moves at most half of the smaller amount of a
+with the rate r (exchange_rate) and the mobility M = (H^I + H^II + λ D)⁻¹. H^b is the Hessian of the
+free energy of the ideal mixture at the reference density, F^b = Σ_i n_i ln(n_i/V_b) with V_b from
+the amounts, so that for λ → 0 r is the relaxation rate of every mode of an ideal mixture, including
+the slow exchange of volume along a tie line, which has to move a solvent much shorter than the chains.
+Each H^b vanishes along the amounts of its box, so H^I + H^II is singular for equal compositions;
+the small λ D, with D = diag(1/n^I + 1/n^II), keeps the boxes from drifting in volume there and slows
+the softest mode of similar boxes (M = diag(n^I n^II/(n^I + n^II))/λ for large λ). A step moves at most half of the smaller amount of a
 species. With charged species, no screening and only canonical ions each box stays neutral:
 M_P = M - M z zᵀM/(zᵀMz) moves only neutral combinations, and the arbitrary uniform potential of
 each box drops out of the step. Grand-canonical point ions have the same chemical potential in both
@@ -27,10 +35,9 @@ their canonical charge. At coexistence μ̃ is the same in the boxes (in every n
 when only those move); the pressures need not agree.
 
 Each cycle builds the two boxes from the input (polymers, electrostatics, ...) with their
-volume fractions, ion concentrations (counterion: None) and box lengths, which scale with
-V_b^(1/d) from the given ones at the same grid. A box continues from the fields, ψ and the
-previous noises of the Leimkuhler-Matthews step at the end of its previous cycle (its fields
-file, at the same grid values) with a random seed of its own for each cycle. Every species needs
+volume fractions and ion concentrations (counterion: None). A box continues from the fields, ψ
+and the previous noises of the Leimkuhler-Matthews step at the end of its previous cycle (its
+fields file) with a random seed of its own for each cycle. Every species needs
 a positive amount in both boxes, since an absent species could not enter a box. The uniform modes of the fields move
 with the homogeneous saddle point, w_i = Σ_j χ_ij N φ_j and ψ₀ (electrostatics.py,
 homogeneous_potential), when the composition changes: in canonical CL-FTS the uniform mode of
@@ -60,7 +67,7 @@ from .validation import (ValidationError, _chain_charge, normalize_params, open_
 def cell_volume(lx, angles=None):
     """Volume of a cell with the lengths lx and the angles [alpha, beta, gamma] (or [gamma] in 2D) in degrees."""
     lx = [float(v) for v in lx]
-    if not angles:
+    if angles is None or len(angles) == 0:
         return float(np.prod(lx))
     if len(lx) == 2:
         gamma = np.deg2rad(angles[0] if len(angles) == 1 else angles[2])
@@ -76,18 +83,22 @@ class GibbsEnsemble:
     Parameters
     ----------
     params : dict
-        CL-FTS input with the section `gibbs_ensemble`: `boxes` (two dicts with `lx`,
-        `volume_fractions` of the polymers and optionally `ion_concentrations` of the canonical
-        point ions, by default those of `electrostatics` with the counterions), `cycles`,
-        `cycle_steps` (Langevin steps of each box per cycle), `exchange_rate` (default 0.2) and
-        `skip_steps` (steps at the start of each cycle left out of the averages, default 0).
-        `recording.dir` holds the boxes and the history; `recording.sample_interval` sets the
-        samples of the averages. The volume fractions of `polymers` are not used.
+        CL-FTS input with the section `gibbs_ensemble`: `boxes` (two dicts with
+        `volume_fractions` of the polymers and optionally `volume`, the starting volume of the
+        phase, by default that of the cell `lx`, and `ion_concentrations` of the canonical point
+        ions, by default those of `electrostatics` with the counterions), `cycles`, `cycle_steps`
+        (Langevin steps of each box per cycle), `exchange_rate` (default 0.2) and `skip_steps`
+        (steps at the start of each cycle left out of the averages, default 0). `lx` is the cell
+        of both boxes. `recording.dir` holds the boxes and the history;
+        `recording.sample_interval` sets the samples of the averages. The volume fractions of
+        `polymers` are not used.
     random_seed : int, optional
         Seed of the noise of both boxes in all cycles; drawn and recorded if omitted.
     """
 
     HISTORY = "gibbs_history.json"
+
+    MOBILITY_RIDGE = 0.03   # λ of the mobility: small enough for the tie line, large enough for equal boxes
 
     def __init__(self, params, random_seed=None):
         params = normalize_params(copy.deepcopy(params))
@@ -104,8 +115,6 @@ class GibbsEnsemble:
         self.directory = str(params["recording"]["dir"])
         self.sample_interval = int(params["recording"].get("sample_interval", 1))
         self.random_seed = int(np.random.SeedSequence().entropy % (2 ** 63)) if random_seed is None else int(random_seed)
-        self.dim = len(params["nx"])
-        self.angles = params.get("angles")
 
         # Species that move between the boxes: the polymers, then the canonical point ions
         self.block_lengths = tuple(polymer_block_lengths(params, polymer) for polymer in params["polymers"])
@@ -133,11 +142,9 @@ class GibbsEnsemble:
                         and bool(np.any(self.charges != 0.0)))
 
         # Amounts of every species in each box from the given volume fractions and concentrations
-        self.lx0 = [[float(v) for v in box["lx"]] for box in gibbs["boxes"]]
-        self.volume0 = [cell_volume(lx, self.angles) for lx in self.lx0]
         amounts = []
-        for b, box in enumerate(gibbs["boxes"]):
-            volume = self.volume0[b]
+        for box in gibbs["boxes"]:
+            volume = float(box.get("volume", cell_volume(params["lx"], params.get("angles"))))
             chains = [phi * volume / alpha for phi, alpha in zip(box["volume_fractions"], self.alphas)]
             concentrations = box.get("ion_concentrations")
             if concentrations is None and self.ion_names:
@@ -182,7 +189,6 @@ class GibbsEnsemble:
         params.pop("gibbs_ensemble")
         chains = amounts[:self.n_polymers]
         volume = float(np.dot(self.alphas, chains))
-        params["lx"] = [length * (volume / self.volume0[b]) ** (1.0 / self.dim) for length in self.lx0[b]]
         for p, polymer in enumerate(params["polymers"]):
             polymer.pop("chemical_potential", None)
             polymer["volume_fraction"] = float(self.alphas[p] * chains[p] / volume)
@@ -266,24 +272,23 @@ class GibbsEnsemble:
         if not self.history["cycles"]:
             raise ValidationError("The Gibbs-ensemble history has no completed cycle; start again with run()")
         stored = dict(self.history["settings"])
+        # Histories from before the fixed cell ran each box in a cell of its own
+        if any("lx" in box for box in stored["gibbs_ensemble"]["boxes"]):
+            raise ValidationError("This Gibbs-ensemble history gave each box a cell of its own, and its states do not "
+                                  "continue in the cell 'lx' of both boxes; start a fresh run().")
         self.random_seed = int(stored["random_seed"])
         current = json.loads(json.dumps(json_ready(self.settings())))
-        legacy_lengths = "effective_block_lengths" not in stored
         stored_lengths = stored.pop("effective_block_lengths", None)
         effective_lengths = current.pop("effective_block_lengths")
-        # Histories of earlier versions do not store the order of the ions
-        ion_names = current.pop("ion_names")
-        stored_names = stored.pop("ion_names", ion_names)
+        ion_names = current["ion_names"]
+        stored_names = stored.get("ion_names", [])
         if stored_names != ion_names and sorted(stored_names) == sorted(ion_names):
             raise ValidationError("'electrostatics.ions' lists the point ions in another order than the "
                                   "Gibbs-ensemble history; its amounts and chemical potentials follow that order")
-        if stored != current or stored_names != ion_names:
+        if stored != current:
             raise ValidationError("The input differs from that of the Gibbs-ensemble history (only 'cycles' may change)")
-        # Before effective lengths were recorded, amounts and charge/composition weights
-        # used the supplied lengths. Reinterpreting those amounts after a material snap
-        # would change the physical volumes or charges; ordinary roundoff is harmless.
-        if legacy_lengths:
-            stored_lengths = [[block["length"] for block in polymer["blocks"]] for polymer in self.params["polymers"]]
+        # Reinterpreting the amounts after a material snap of the lengths would change the
+        # physical volumes or charges; ordinary roundoff is harmless.
         try:
             compatible = len(stored_lengths) == len(effective_lengths) and all(
                 np.shape(saved) == np.shape(actual)
@@ -292,9 +297,6 @@ class GibbsEnsemble:
         except (TypeError, ValueError):
             compatible = False
         if not compatible:
-            if legacy_lengths:
-                raise ValidationError("This Gibbs-ensemble history used different contour lengths before discrete "
-                                      "block snapping was applied to its amounts and charges; start a fresh run().")
             raise ValidationError("The effective contour lengths differ from those of the Gibbs-ensemble history; "
                                   "start a fresh run().")
         self.history["settings"]["effective_block_lengths"] = effective_lengths
@@ -364,12 +366,25 @@ class GibbsEnsemble:
         mu_ions = [mu_mean[self.n_polymers + ion_order.index(name)] for name in self.ion_names]
         exchange = np.concatenate([mu_polymers - self.alphas * pressure_mean, mu_ions])
         volume = float(np.dot(self.alphas, self.amounts[b][:self.n_polymers]))
-        return {"volume": volume, "lx": params["lx"],
+        return {"volume": volume,
                 "volume_fractions": [polymer["volume_fraction"] for polymer in params["polymers"]],
                 "ion_concentrations": {name: params["electrostatics"]["ions"][name]["concentration"]
                                        for name in self.ion_names},
                 "chemical_potentials": mu_mean.tolist(), "pressure": pressure_mean,
                 "exchange_potentials": exchange.tolist(), "samples": int(len(pressure))}
+
+    def _mobility(self):
+        """M = (H^I + H^II + λ D)⁻¹ of the amounts, with the Hessian of the ideal mixture of each box,
+        H_ij = δ_ij/n_i - (α_i + α_j)/V + α_i α_j Σ_k n_k/V²; a point ion has α = 0."""
+        alphas = np.concatenate([self.alphas, np.zeros(len(self.ion_names))])
+        ones = np.ones(len(alphas))
+        n0, n1 = self.amounts
+        hessian = self.MOBILITY_RIDGE * np.diag(1.0 / n0 + 1.0 / n1)
+        for n in self.amounts:
+            volume = float(alphas @ n)
+            hessian += (np.diag(1.0 / n) - (np.outer(alphas, ones) + np.outer(ones, alphas)) / volume
+                        + np.outer(alphas, alphas) * float(np.sum(n)) / volume ** 2)
+        return np.linalg.inv(hessian)
 
     def _exchange_step(self, exchange_potentials):
         """Δn of box I and the difference μ̃^I - μ̃^II that drives it, from the exchange potentials of
@@ -377,12 +392,12 @@ class GibbsEnsemble:
         charges z (the arbitrary uniform potentials): Δn = -r M δ_P with δ_P = δ - z (zᵀMδ)/(zᵀMz),
         which is -r M_P δ."""
         n0, n1 = self.amounts
-        mobility = self.exchange_rate * n0 * n1 / (n0 + n1)
+        mobility = self.exchange_rate * self._mobility()
         difference = np.asarray(exchange_potentials[0]) - np.asarray(exchange_potentials[1])
         if self.neutral:
-            weighted = mobility * self.charges
+            weighted = mobility @ self.charges
             difference = difference - self.charges * float(weighted @ difference) / float(self.charges @ weighted)
-        step = -mobility * difference
+        step = -mobility @ difference
         # At most half of the smaller amount of a species per step
         ratio = float(np.max(np.abs(step) / np.minimum(n0, n1)))
         if ratio > 0.5:

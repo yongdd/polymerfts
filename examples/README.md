@@ -71,6 +71,7 @@ Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS.
 | `clfts/SmearedSaltSelfEnergy.py` | Self-energy and screening of smeared point ions (Wang 2010; Agrawal and Wang 2022) |
 | `clfts/PolyampholyteSolution.py` | Polyampholyte in implicit solvent (McCarty et al. 2019); maps an implicit-solvent model onto the compressible model |
 | `clfts/ComplexCoacervate.py` | Salt-free polycation/polyanion solution (Lee, Popov and Fredrickson 2008) |
+| `clfts/CoacervateGibbs.py` | Coexistence of a coacervate and its supernatant, with and without salt (`GibbsEnsemble`) |
 
 ## Tools (`tools/`)
 

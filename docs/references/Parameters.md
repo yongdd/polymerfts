@@ -396,7 +396,7 @@ CL-FTS samples the electrostatic potential; SCFT takes its saddle point ([Electr
 | `ions` | dict | (Optional) Point ions, `{"Na": {"valence": 1, "concentration": 0.02, "smearing_length": 0.1}, ...}`: valence, concentration of added salt in ions per segment of the reference density $`\rho_0`$, and Gaussian smearing length in units of $`R_0`$ (positive). In place of `concentration`, `chemical_potential` $`\beta\mu_s`$ makes the species grand canonical, in the convention $`\beta\mu_s = \ln(N c_s) - \ln Q_s`$. Names must differ from the monomer types | none |
 | `counterion` | str or None | The canonical point ion that neutralizes the canonical polymers and the given canonical ions: its concentration grows by the net charge divided by its valence. Default: the only canonical ion species whose valence has the opposite sign of the net charge (an error if there are several, none if there is no such species). `None` adds no counterions | automatic |
 | `psi_dt_scaling` | float | (CL-FTS) Mobility of $`\psi`$ relative to the auxiliary fields | `1.0` |
-| `fixed_charge` | array | (Optional) Fixed charge density $`c_f(\mathbf{r})`$ in charges per segment of the reference density, one value per grid point (as `nx`), for example charged surfaces or particles. It adds to the charge density as given (not smeared) and to the electroneutrality through its mean | none |
+| `fixed_charge` | array | (Optional) Fixed charge density $`c_f(\mathbf{r})`$ in charges per segment of the reference density, one value per grid point (as `nx`), for example charged surfaces or particles. It adds to the charge density as given (not smeared) and to the electroneutrality through its mean. `GibbsEnsemble` rejects it | none |
 | `screening_length` | float | (Optional) Screening length $`1/\kappa`$ in units of $`R_0`$ of a background electrolyte that is not simulated explicitly: the kernel becomes $`E/(k^2 + \kappa^2)`$. It is the Debye length of the background alone; explicit ions screen in addition ([model](../theory/PolymerFieldTheory.md#54-screened-coulomb-interaction)). Omit it for unscreened charges | none |
 
 **Requirements:**
@@ -441,11 +441,11 @@ params["electrostatics"] = {"charges": {"P": 1.0, "M": -1.0}, "coupling": 1e5}
 
 ### Gibbs Ensemble
 
-`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` and the top-level `lx` are not used, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it. Both return `summary()`, the averages of the second half of the cycles.
+`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it. Both return `summary()`, the averages of the second half of the cycles.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `boxes` | list | Two dicts with `lx` (the lengths at the starting composition), `volume_fractions` (one per polymer, summing to 1) and optionally `ion_concentrations` of the canonical point ions (by default those of `electrostatics` with the counterions of the box) | required |
+| `boxes` | list | Two dicts with `volume_fractions` (one per polymer, summing to 1), optionally `volume` (of the phase at the start, which fixes the amounts for the lever rule; by default the volume of `lx`) and optionally `ion_concentrations` of the canonical point ions (by default those of `electrostatics` with the counterions of the box) | required |
 | `cycles` | int | Number of exchanges | required |
 | `cycle_steps` | int | Langevin steps of each box per exchange, a multiple of `recording.sample_interval` | required |
 | `exchange_rate` | float | Rate $`r`$ of the exchange | `0.2` |
@@ -454,11 +454,8 @@ params["electrostatics"] = {"charges": {"P": 1.0, "M": -1.0}, "coupling": 1e5}
 The polymers must be canonical free chains and the boxes periodic, and every polymer and canonical point ion needs a positive amount in both boxes (leave ions that are absent out of `electrostatics.ions`). Without screening, charged boxes with only canonical point ions must be neutral; charged grand-canonical point ions keep their chemical potential in both boxes and set the Donnan potential of each box, which then need not be neutral by itself. `random_seed` is a non-negative integer.
 
 Gibbs histories record the effective block lengths used for their chain amounts and
-exchange potentials. Older histories without this information remain compatible when
-their input lengths already agree with the native lengths within floating-point roundoff.
-An older history with materially different discrete lengths needs a fresh run: reusing
-its amounts with the corrected lengths would change the box volumes and can change the
-charge balance.
+exchange potentials, and a continuation needs the same lengths. A history with `lx` in
+its boxes does not continue: start a fresh `run()`.
 
 The checkpoints store $`\psi`$ and its random-number stream, and a continuation must use the same electrostatic settings. A run continued by hand with `run(..., start_langevin_step=...)` takes $`\psi`$ through `initial_psi`, for example `psi_real + 1j * psi_imag` of a fields file, and the previous noise of its Leimkuhler-Matthews step through `psi_noise_prev` (zero if omitted); without `initial_psi` $`\psi`$ restarts at zero with a warning. Such a run does not restore the random-number streams; `continue_run()` continues a checkpoint exactly (with `cpu-fftw` in a new process up to rounding, see [Recording](#recording)). [ChargedDiblock.py](../../examples/charged/clfts/ChargedDiblock.py) is a complete script.
 

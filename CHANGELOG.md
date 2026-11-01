@@ -60,6 +60,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   the pending sums; a continued run reproduces them bit for bit, and a run continued from a
   checkpoint without them averages from the restart on.
   `examples/charged/clfts/CounterionsBetweenPlates.py` uses it instead of a callback.
+- `examples/charged/clfts/CoacervateGibbs.py` (2026-11-01): the coexistence of a coacervate and
+  its supernatant from `GibbsEnsemble`, with neutral chains, with charges and with a salt of point
+  ions; the charges widen a coexistence that the fluctuations of neutral chains narrow.
 - `examples/charged/scft/BrushMultivalentIons.py` (2026-11-01): a brush with multivalent ions and the
   ion self-energy of Duan, Agrawal and Wang (2025), with `cn-adi2`, in the box of their Fig. 2 and in
   the solution of the experiment of Yu et al. (2016) with a closed cell.
@@ -274,6 +277,23 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- `GibbsEnsemble` runs both boxes in the fixed cell `lx` (2026-11-01;
+  docs/theory/ComplexLangevinSimulation.md, Section 8). The amounts and volumes count the material
+  for the lever rule; `boxes[].lx` is gone, the top-level `lx` is required as for `CLFTS`, and the
+  optional `boxes[].volume` sets the volume of a phase at the start. Cells that followed the volume
+  at one grid gave the boxes different grid spacings, and the part of the chemical potentials that
+  depends on the spacing drove them apart: at chi N = 24 and a = 0.6 dx the dense branch ended at
+  0.3737 or 0.3688 depending on the volumes, and at chi N = 22 it collapsed on 12^3 grids. In the
+  fixed cell the same runs give 0.3712 and 0.3710. Inputs with `boxes[].lx` raise `ValidationError`,
+  and `continue_run()` refuses their histories: they need a fresh `run()`.
+  The fixed cell is the intensive Gibbs ensemble of Mester, Lynd and Fredrickson (2013); it agrees
+  with 11 of the 13 points of Fredrickson and Delaney (2023), Fig. 7.2, within about one error.
+- `GibbsEnsemble` moves the amounts with the inverse Hessian of the ideal mixture at the reference
+  density (2026-10-31; docs/theory/ComplexLangevinSimulation.md, Section 8) instead of
+  diag(n^I n^II/(n^I + n^II)). The old mobility left the exchange of volume along a tie line
+  thousands of cycles behind the composition when a solvent is much shorter than the chains, and
+  such boxes looked stationary away from the binodal. The coexisting states are the same, but
+  the same `exchange_rate` gives other amounts per cycle.
 - `recording.pressure` records the virial form of the CL-FTS osmotic pressure
   (`CLFTS.pressure_virial`; 2026-10-29). It adds to the dilation operator, which `CLFTS.pressure`
   still returns, the Schwinger-Dyson terms (1/2)[mean(Omega dH/dOmega) - n_g/(C V/R0^3)] of every

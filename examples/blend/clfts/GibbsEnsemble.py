@@ -24,7 +24,7 @@ chi_n = 3.0
 
 params = {
     "nx": [16, 16],                 # Grid of each box
-    "lx": [2.0, 2.0],               # Not used: each box has its own lengths (gibbs_ensemble.boxes)
+    "lx": [2.0, 2.0],               # Cell of both boxes as a_Ref * N_Ref^(1/2) unit
     "chain_model": "discrete",
     "ds": 1 / 32,
     "segment_lengths": {"A": 1.0, "B": 1.0},
@@ -41,9 +41,9 @@ params = {
                   "statistics_save_interval": 1},                # intervals: set by the cycles
 
     "gibbs_ensemble": {
-        # Starting compositions and box lengths; the totals stay fixed
-        "boxes": [{"lx": [2.0, 2.0], "volume_fractions": [0.8, 0.2]},
-                  {"lx": [2.0, 2.0], "volume_fractions": [0.2, 0.8]}],
+        # Starting compositions; the totals stay fixed
+        "boxes": [{"volume_fractions": [0.8, 0.2]},
+                  {"volume_fractions": [0.2, 0.8]}],
         "cycles": 40,               # Exchanges
         "cycle_steps": 200,         # Langevin steps of each box per exchange
         "skip_steps": 40,           # Steps at the start of each cycle left out of the averages

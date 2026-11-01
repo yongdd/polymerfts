@@ -660,25 +660,31 @@ def validate_gibbs_params(params: Dict[str, Any]) -> None:
     electrostatics = params.get("electrostatics") or {}
     if electrostatics.get("fixed_charge") is not None:
         raise ValidationError("The Gibbs ensemble does not support 'electrostatics.fixed_charge' "
-                              "(its boxes change size)")
+                              "(the amounts and the neutrality of the boxes do not count it)")
     canonical_ions = [name for name, ion in (electrostatics.get("ions") or {}).items()
                       if isinstance(ion, dict) and "concentration" in ion]
     if canonical_ions and str(params.get("chain_model")).lower() != "discrete" and "n_segments" not in electrostatics:
         raise ValidationError("'electrostatics.ions' need the number of segments N of the reference chain: give "
                               "'electrostatics.n_segments' (continuous chains)")
+    for key in ("nx", "lx"):
+        if key not in params:
+            raise ValidationError(f"Missing required parameter: '{key}'")
+    nx, lx = params["nx"], params["lx"]
+    if not isinstance(nx, (list, tuple, np.ndarray)) or not isinstance(lx, (list, tuple, np.ndarray)) or len(lx) != len(nx):
+        raise ValidationError("'lx', the cell of both boxes, needs one length per dimension of 'nx'")
+    for length in lx:
+        _finite_number(length, "lx", positive=True)
     boxes = gibbs.get("boxes")
     if not isinstance(boxes, list) or len(boxes) != 2:
         raise ValidationError("'gibbs_ensemble.boxes' must be a list of two dicts")
     for b, box in enumerate(boxes):
         name = f"gibbs_ensemble.boxes[{b}]"
-        if not isinstance(box, dict) or set(box) - {"lx", "volume_fractions", "ion_concentrations"} or \
-                not {"lx", "volume_fractions"} <= set(box):
-            raise ValidationError(f"'{name}' must be a dict with 'lx', 'volume_fractions' and optionally "
-                                  "'ion_concentrations'")
-        if not isinstance(box["lx"], (list, tuple)) or len(box["lx"]) != len(params["nx"]):
-            raise ValidationError(f"'{name}.lx' needs one length per dimension of 'nx'")
-        for length in box["lx"]:
-            _finite_number(length, name + ".lx", positive=True)
+        if not isinstance(box, dict) or set(box) - {"volume", "volume_fractions", "ion_concentrations"} or \
+                "volume_fractions" not in box:
+            raise ValidationError(f"'{name}' must be a dict with 'volume_fractions' and optionally 'volume' and "
+                                  "'ion_concentrations'; 'lx' is the cell of both boxes")
+        if "volume" in box:
+            _finite_number(box["volume"], name + ".volume", positive=True)
         fractions = box["volume_fractions"]
         if not isinstance(fractions, (list, tuple)) or len(fractions) != len(polymers):
             raise ValidationError(f"'{name}.volume_fractions' needs one value per polymer")
