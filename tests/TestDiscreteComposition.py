@@ -96,10 +96,10 @@ def check_lfts(params, expected_mean, directory):
     original = copy.deepcopy(params)
     sim = quiet(LFTS, params, random_seed=5)
     fields = np.zeros((len(sim.monomer_types), 4))
-    phi, hamiltonian, _, error = quiet(sim.find_saddle_point, fields)
+    phi, hamiltonian, _, error = quiet(sim.saddle.solve, fields)
     assert params == original
     assert_input_lengths(sim, original)
-    assert np.isfinite(hamiltonian) and error < sim.saddle["tolerance"]
+    assert np.isfinite(hamiltonian) and error < sim.saddle.settings["tolerance"]
     np.testing.assert_allclose(sim.mean_concentrations(), expected_mean, rtol=0, atol=2e-13)
     actual_mean = [sim.cb.mean(phi[monomer]) for monomer in sim.monomer_types]
     np.testing.assert_allclose(actual_mean, expected_mean, rtol=0, atol=2e-13)

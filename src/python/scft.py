@@ -1,199 +1,31 @@
 import os
 import time
 import numpy as np
-import json
-import yaml
-import copy
-import itertools
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, Union, List
-
-from dataclasses import dataclass
+from typing import Dict, Optional, Callable, Union
 
 from . import _core
 from .polymer_field_theory import SymmetricPolymerTheory
 from .propagator_solver import PropagatorSolver
-from .validation import (normalize_params, validate_scft_params, ValidationError, parse_chi_n,
+from .validation import (normalize_params, validate_scft_params, ValidationError,
                          point_ion_concentrations, open_charges, reference_segments)
 from .utils import (
     load_config,
-    process_polymer_blocks,
-    process_random_copolymer,
+    read_chains,
+    display_system,
+    mean_concentrations,
     draw_polymer_architectures,
-    simulation_metadata,
     report_partition_consistency,
     check_partition_functions,
-    atomic_savemat,
-    mat_ready,
-    json_ready,
 )
-from .smearing import Smearing
+from .cell_relaxation import CellRelaxation
+from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results
+from .smearing import smearing_of
 from .electrostatics import MeanFieldElectrostatics
 
 # OpenMP environment variables
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
 os.environ.setdefault("OMP_STACKSIZE", "1G")
-
-@dataclass
-class SCFTResult:
-    """Result object for SCFT simulations.
-
-    Encapsulates all outputs from an SCFT simulation run, providing
-    a clean interface for accessing results.
-
-    Attributes
-    ----------
-    converged : bool
-        Whether the simulation converged within tolerance.
-    free_energy : float
-        Free energy relative to the homogeneous state at the same composition,
-        in units of rho_0 V / N. Zero for a disordered bulk state.
-    error_level : float
-        Final convergence error (L2 norm of field residuals).
-    iterations : int
-        Number of iterations performed.
-    phi : dict
-        Monomer concentration fields {monomer_type: array} on the full grid
-        (expanded from the reduced basis when a space group is used).
-    w : dict
-        Potential fields {monomer_type: array} on the full grid. They can be
-        passed back to SCFT.run as initial_fields, for example to continue a
-        parameter sweep from the previous solution.
-    partition_functions : list
-        Single-chain partition functions for each polymer type.
-    stress : np.ndarray or None
-        Stress tensor components (if relax_cell was True).
-    lx : list
-        Final box dimensions.
-    nx : list
-        Grid dimensions.
-    monomer_types : list
-        List of monomer type labels.
-    params : dict
-        Original simulation parameters.
-    free_energy_homogeneous : float
-        Full homogeneous Flory-Huggins value at the same composition.
-    free_energy_absolute : float
-        Total canonical Helmholtz free energy, beta F_total / (rho_0 V / N),
-        including ideal mixing entropy. Equals free_energy + free_energy_homogeneous.
-        Grand-canonical point ions contribute -e^(beta mu_s) Q_s (a semi-grand free energy).
-    chemical_potentials : list or None
-        beta mu_p per polymer molecule, with mean(xi) = 0 for incompressible
-        systems. Not available for grafted chains or supplied initial propagators.
-    grand_potential : float or None
-        free_energy_absolute - sum_p chemical_potentials[p] * phi_p / alpha_p, in the
-        same pressure convention; canonical point ions also subtract
-        sum_s N c_s ion_chemical_potentials[s]. Use coexistence_quantities() for phase
-        comparisons of systems without electrostatics.
-    polymer_lengths, polymer_volume_fractions : list or None
-        Relative chain lengths alpha_p and polymer volume fractions phi_p.
-    psi : np.ndarray or None
-        Electrostatic potential ψ on the full grid (with `electrostatics`); it can be passed
-        back to SCFT.run as initial_psi.
-    ion_chemical_potentials : list or None
-        βμ_s of the point ions, in the order of `electrostatics.ions`.
-    """
-    converged: bool
-    free_energy: float
-    error_level: float
-    iterations: int
-    phi: Dict[str, np.ndarray]
-    w: Dict[str, np.ndarray]
-    partition_functions: List[float]
-    lx: List[float]
-    nx: List[int]
-    monomer_types: List[str]
-    params: Dict[str, Any]
-    stress: Optional[np.ndarray] = None
-    angles: Optional[List[float]] = None
-    free_energy_homogeneous: Optional[float] = None
-    chemical_potentials: Optional[List[float]] = None
-    grand_potential: Optional[float] = None
-    polymer_lengths: Optional[List[float]] = None
-    polymer_volume_fractions: Optional[List[float]] = None
-    free_energy_absolute: Optional[float] = None
-    psi: Optional[np.ndarray] = None
-    ion_chemical_potentials: Optional[List[float]] = None
-
-    def coexistence_quantities(self, reference_polymer=0):
-        """Return exchange chemical potentials and the reduced grand potential.
-
-        Requires a converged, incompressible, periodic bulk solution. The
-        reference polymer's chemical potential is set to zero by a pressure shift.
-        """
-        from .phase_equilibrium import coexistence_quantities
-        return coexistence_quantities(self, reference_polymer)
-
-    def get_concentration(self, monomer_type: str) -> np.ndarray:
-        """Get concentration field for a monomer type.
-
-        Parameters
-        ----------
-        monomer_type : str
-            Monomer type label (e.g., "A", "B").
-
-        Returns
-        -------
-        np.ndarray
-            Concentration field for the specified monomer.
-
-        Raises
-        ------
-        KeyError
-            If monomer type not found.
-        """
-        return self.phi[monomer_type]
-
-@dataclass
-class IterationInfo:
-    """Information about a single SCFT iteration.
-
-    Used for progress callbacks to provide iteration details.
-
-    Attributes
-    ----------
-    iteration : int
-        Current iteration number.
-    error_level : float
-        Current convergence error.
-    energy : float
-        Current free energy.
-    mass_error : float
-        Mass conservation error.
-    partition_functions : list
-        Partition functions for each polymer.
-    lx : list or None
-        Current box dimensions (if relax_cell).
-    angles : list or None
-        Current lattice angles (if non-orthogonal).
-    """
-    iteration: int
-    error_level: float
-    energy: float
-    mass_error: float
-    partition_functions: List[float]
-    lx: Optional[List[float]] = None
-    angles: Optional[List[float]] = None
-
-
-# Which lattice parameters may vary during box relaxation (relax_cell=True):
-#   lx_reduced : indices of the independent box lengths among [a, b, c]
-#   lx_full    : for each of a, b, c, the independent length it follows
-#   angles     : indices of the free angles among [alpha, beta, gamma]
-# "Orthorhombic" frees every box length in any dimension and is handled in the constructor.
-# To add a crystal system, add one row here (and, if it needs averaged stress
-# components like a = b, one case in SCFT._update_fields_and_box).
-CRYSTAL_SYSTEMS = {
-    "Orthorhombic": {"lx_reduced": None,      "lx_full": None,      "angles": []},
-    "Tetragonal":   {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # a = b != c
-    "Cubic":        {"lx_reduced": [0],       "lx_full": [0, 0, 0], "angles": []},         # a = b = c
-    "Hexagonal":    {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # a = b != c, gamma = 120
-    "Trigonal":     {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # hexagonal axes (space group only)
-    "Monoclinic":   {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [1]},        # beta free (a space group: see below)
-    "Triclinic":    {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [0, 1, 2]},  # all free
-    "Hexagonal2D":  {"lx_reduced": [0],       "lx_full": [0, 0],    "angles": []},         # a = b, gamma = 120
-    "Oblique2D":    {"lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2]},        # gamma free
-}
 
 class SCFT:
     """Self-consistent field theory (SCFT) of polymer melts and solutions.
@@ -281,34 +113,13 @@ class SCFT:
         self.axis_ordering, self._axis_perm = self._apply_axis_ordering(params)
         params.pop("axis_ordering", None)
 
-        # Monomer types and statistical segment lengths
-        self.monomer_types = sorted(list(params["segment_lengths"].keys()))
-        self.segment_lengths = copy.deepcopy(params["segment_lengths"])
-        self.polymers = copy.deepcopy(params["polymers"])
-
-        # Flory-Huggins parameters chi N; pairs the user did not give do not interact
-        self.chi_n = parse_chi_n(params["chi_n"], self.segment_lengths)
-        for pair in itertools.combinations(self.monomer_types, 2):
-            key = ",".join(sorted(pair))
-            if key not in self.chi_n:
-                self.chi_n[key] = 0.0
-
         # Compressibility parameter (None: incompressible)
         self.zeta_n = params.get("zeta_n", None)
         if self.zeta_n is not None and self.zeta_n < 0:
             raise ValidationError(f"zeta_n must not be negative, got {self.zeta_n}.")
 
-        # Polymer chains: block connectivity, then random copolymers (one effective monomer type each)
-        for polymer in self.polymers:
-            polymer["blocks_input"] = process_polymer_blocks(polymer)
-        self.random_fraction = {}
-        for polymer in self.polymers:
-            result = process_random_copolymer(polymer, self.segment_lengths)
-            if result is not None:
-                random_type, effective_segment_length, fraction = result
-                polymer["block_monomer_types"] = [random_type]
-                self.segment_lengths[random_type] = effective_segment_length
-                self.random_fraction[random_type] = fraction
+        # Monomer types, segment lengths, polymer chains, χN and random copolymers
+        self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
 
         # Draw the chain architectures (polymer_<id>.png) only into a directory the input names,
         # so that constructing a calculation writes no files
@@ -354,72 +165,7 @@ class SCFT:
         self.pressure_kappa = max(np.max(np.abs(np.linalg.eigvalsh(projected_chi))), 1.0)/2
 
         # Create space group object early (before PropagatorSolver) if specified
-        if params.get("space_group", None) is not None:
-            if params["space_group"].get("hall_number") is not None:
-                self.sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"], params["space_group"]["hall_number"])
-            else:
-                self.sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"])
-            # Auto-enable physical basis when possible (m3 → pmmm → z-mirror).
-            # NOTE: reuse the (possibly axis_ordering-reordered) local `angles`;
-            # missing angles means an orthogonal cell for classification, while
-            # `angles` itself stays None so the computation box is not
-            # needlessly recreated below.
-            try:
-                alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)
-            except Exception:
-                alpha, beta, gamma = 90.0, 90.0, 90.0
-            # The test of the native box and solvers (1e-10 rad): a looser one could enable a
-            # basis whose CrysFFT the solver then refuses
-            def right_angle(angle):
-                return abs(angle * (np.pi / 180.0) - np.pi / 2.0) < 1e-10
-            is_orthogonal = right_angle(alpha) and right_angle(beta) and right_angle(gamma)
-            z_axis_orthogonal = right_angle(alpha) and right_angle(beta)
-
-            if is_orthogonal:
-                # Fall back down the basis hierarchy when a basis is not
-                # applicable to this group/grid (the C++ side throws
-                # RuntimeError). Other exception types indicate real bugs
-                # and must propagate.
-                # (the m3 basis needs the recursive 3m CrysFFT: even grid, nz >= 16
-                # and a compatible translation parity)
-                try:
-                    if not self.sg.m3_crysfft_feasible():
-                        raise RuntimeError("recursive 3m CrysFFT is not feasible on this grid")
-                    self.sg.enable_m3_physical_basis()
-                except RuntimeError:
-                    try:
-                        self.sg.enable_pmmm_physical_basis()
-                    except RuntimeError:
-                        pass  # keep the irreducible (full-group) basis
-            elif z_axis_orthogonal:
-                # Hexagonal/trigonal (hexagonal-axes) space groups use a hybrid
-                # orbit convention (node-centered x,y; cell-centered z), making
-                # all in-plane symmetry maps exact on the grid. The z-mirror
-                # physical basis (cell-centered z fold) remains valid.
-                try:
-                    self.sg.enable_z_mirror_physical_basis()
-                except RuntimeError:
-                    pass  # keep the irreducible (full-group) basis
-
-            # The cell must belong to the crystal system of the space group. Otherwise
-            # the symmetry operations are not isometries of the box and the run would
-            # silently converge to a constrained, unphysical state. The native check
-            # (SpaceGroup::check_cell) is the one the computation box applies later.
-            lx_sg = [float(v) for v in params["lx"]]
-            angles_sg = [float(v) for v in angles] if angles is not None else [90.0, 90.0, 90.0]
-            try:
-                self.sg.check_cell(lx_sg, angles_sg)
-            except RuntimeError as exc:
-                raise ValidationError(str(exc)) from None
-            if (self.sg.get_crystal_system() == "Trigonal" and not self.sg.uses_hexagonal_axes()
-                    and params.get("relax_cell", False)):
-                # a = b = c and alpha = beta = gamma would have to vary together
-                raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
-                                      "use the hexagonal-axes setting of the space group.")
-            self.sg.display_info()
-
-        else:
-            self.sg = None
+        self.sg = self._create_space_group(params, angles) if params.get("space_group", None) is not None else None
 
         # Propagator solver: the C++ computation box, molecules and solver live inside it
         self.prop_solver = PropagatorSolver(
@@ -456,146 +202,18 @@ class SCFT:
             raise NotImplementedError(
                 "'smearing' is not supported together with 'space_group'. "
                 "Disable one of the two options.")
-        # Γ(k) is applied with the platform FFT (PropagatorSolver.fourier), except in a box
-        # that mixes periodic and wall axes, which smearing transforms with NumPy/SciPy
-        periodic_sides = [b.lower() == "periodic" for b in self.prop_solver.bc]
-        mixed_box = any(periodic_sides) and not all(periodic_sides)
-        self.smearing = Smearing(
-            self.cb.get_nx(),
-            self.cb.get_lx(),
-            params.get("smearing", None),
-            angles=self.prop_solver.get_angles_degrees(),
-            bc=self.prop_solver.bc,
-            transform=self.prop_solver.fourier if params.get("smearing") is not None and not mixed_box else None
-        )
+        self.smearing = smearing_of(params, self.prop_solver)
 
         # Electrostatics: the charged types feel z_i ψ, and ψ solves the Poisson equation with the
         # charges of the chains and the point ions (electrostatics.py, MeanFieldElectrostatics)
         self.electrostatics = None
         self.psi = None
         if params.get("electrostatics") is not None:
-            # A fixed charge is given in the axis order of nx, like the initial fields
-            if self._axis_perm is not None and params["electrostatics"].get("fixed_charge") is not None:
-                params["electrostatics"]["fixed_charge"] = self._to_standard_axes(params["electrostatics"]["fixed_charge"])
-            self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, reference_segments(params),
-                                                          self.prop_solver.fourier,
-                                                          ion_concentrations=point_ion_concentrations(params),
-                                                          open_charges=open_charges(params))
-            es = self.electrostatics
-            self.psi = np.zeros(self.prop_solver.n_grid)
-            # Box relaxation with electrostatics is limited to periodic boxes (compute_stress also
-            # holds in closed boxes)
-            if params["relax_cell"] and not self.prop_solver.fourier.periodic:
-                raise ValidationError("'relax_cell' with 'electrostatics' needs a periodic box")
-            print("Electrostatics: charges", es.charges, "coupling E = %g" % es.coupling
-                  + ("" if es.screening_length is None else ", screening length %g" % es.screening_length))
-            for ion in es.ions:
-                amount = ("chemical potential %g (grand canonical)" % ion["chemical_potential"] if ion["concentration"] is None
-                          else "concentration %g (with counterions)" % ion["concentration"])
-                print("Point ion %s: valence %g, %s, smearing length %g"
-                      % (ion["name"], ion["valence"], amount, ion["smearing_length"]))
+            self._setup_electrostatics(params)
 
-        # Scaling factor for stress when the fields and box size are simultaneously computed
-        self.stress_scale = params.get("stress_scale", 1)
-
-        # Which lattice parameters may vary during box relaxation (table CRYSTAL_SYSTEMS)
-        dim = len(params["nx"])
-        if self.sg is not None:
-            # The space group fixes the crystal system (and which angles vary, below)
-            crystal_system = self.sg.get_crystal_system()
-            n_field_var = len(self.monomer_types) * self.sg.get_n_reduced_basis_full()
-        else:
-            # The user chooses; a 2D cell without "crystal_system" is classified from gamma
-            if params.get("crystal_system", None) is None and dim == 2 and angles is not None and len(angles) > 0:
-                gamma = angles[0] if len(angles) == 1 else angles[2]
-                if abs(gamma - 120.0) < 1e-6:
-                    crystal_system = "Hexagonal2D"
-                elif abs(gamma - 90.0) > 1e-6:
-                    crystal_system = "Oblique2D"
-                else:
-                    crystal_system = "Orthorhombic"
-            else:
-                crystal_system = params.get("crystal_system", None) or "Orthorhombic"
-
-            valid_systems = {1: ["Orthorhombic"],
-                             2: ["Orthorhombic", "Hexagonal2D", "Oblique2D"],
-                             3: ["Orthorhombic", "Tetragonal", "Cubic", "Hexagonal", "Monoclinic", "Triclinic"]}[dim]
-            if crystal_system not in valid_systems:
-                raise ValueError(f"Crystal system '{crystal_system}' is not valid for a {dim}D box. " +
-                    "Choose from: " + ", ".join(valid_systems) + ".")
-
-            # Relaxation never changes the fixed angles, and its first step overwrites the tied
-            # lengths with the first one (a jump of the cell), so with relax_cell a crystal system
-            # that is given (or Hexagonal2D, classified from gamma) must describe the cell
-            if params["relax_cell"] and (params.get("crystal_system", None) is not None
-                                         or crystal_system == "Hexagonal2D"):
-                lx_given = [float(v) for v in params["lx"]]
-                if angles is None or len(angles) == 0:
-                    cell_angles = [90.0, 90.0, 90.0]
-                elif dim == 2:
-                    cell_angles = [90.0, 90.0, float(angles[0] if len(angles) == 1 else angles[2])]
-                else:
-                    cell_angles = [float(v) for v in angles]
-                tied = CRYSTAL_SYSTEMS[crystal_system]["lx_full"] or list(range(dim))
-                fixed = {"Hexagonal": [90, 90, 120], "Hexagonal2D": [None, None, 120], "Monoclinic": [90, None, 90],
-                         "Triclinic": [None] * 3, "Oblique2D": [None] * 3}.get(crystal_system, [90, 90, 90])
-                rule = {"Orthorhombic": "angles of 90 degrees", "Tetragonal": "a = b and angles of 90 degrees",
-                        "Cubic": "a = b = c and angles of 90 degrees",
-                        "Hexagonal": "a = b, alpha = beta = 90 and gamma = 120 degrees",
-                        "Hexagonal2D": "a = b and gamma = 120 degrees",
-                        "Monoclinic": "alpha = gamma = 90 degrees"}.get(crystal_system)
-                if (any(abs(lx_given[i] - lx_given[tied.index(tied[i])]) > 1e-6 * lx_given[i] for i in range(dim))
-                        or (dim > 1 and any(f is not None and abs(c - f) > 1e-6 for f, c in zip(fixed, cell_angles)))):
-                    raise ValidationError(f"crystal_system '{crystal_system}' needs a cell with {rule}; got lx = "
-                                          f"{lx_given} and angles = {cell_angles} (set lx and angles to such a cell"
-                                          + (", or crystal_system 'Oblique2D')" if dim == 2 else ")"))
-            n_field_var = len(self.monomer_types) * np.prod(params["nx"])
-            # ψ is iterated with the fields
-            if self.electrostatics is not None:
-                n_field_var += int(np.prod(params["nx"]))
-        self.crystal_system = crystal_system
-
-        row = CRYSTAL_SYSTEMS[crystal_system]
-        if crystal_system == "Orthorhombic":    # every box length is free, in any dimension
-            self.lx_reduced_indices = list(range(dim))
-            self.lx_full_indices = list(range(dim))
-        else:
-            self.lx_reduced_indices = list(row["lx_reduced"])
-            self.lx_full_indices = list(row["lx_full"])
-        if self.sg is None:
-            self.angles_reduced_indices = list(row["angles"])
-        else:
-            # Angles vary only in monoclinic and triclinic groups: those whose change keeps every
-            # symmetry operation an isometry of the cell (SpaceGroup.check_cell), the angle between
-            # the two axes perpendicular to the unique axis of a monoclinic setting (beta for the
-            # unique axis b, gamma for c, alpha for a) and all three in a triclinic group
-            self.angles_reduced_indices = []
-            if crystal_system in ("Monoclinic", "Triclinic"):
-                cell_lx = list(self.prop_solver.get_lx())
-                cell_angles = list(self.prop_solver.get_angles_degrees())
-                for i in range(3):
-                    trial = list(cell_angles)
-                    trial[i] += 1.0
-                    try:
-                        self.sg.check_cell(cell_lx, trial)
-                        self.angles_reduced_indices.append(i)
-                    except RuntimeError:
-                        pass
-        self.angles_full_indices = list(self.angles_reduced_indices)
-
-        # Number of variables the optimizer adjusts: the fields, plus the free box lengths and angles
-        if params["relax_cell"]:
-            n_var = n_field_var + len(self.lx_reduced_indices) + len(self.angles_reduced_indices)
-        else:
-            n_var = n_field_var
-
-        # Enable off-diagonal (cross-term) stress computation when angle
-        # optimization is active. Without this explicit opt-in, a run started
-        # at exactly 90-degree angles would compute zero angle derivatives
-        # (the orthogonal-box stress fast path skips the V12/V13/V23 cross
-        # terms) and the angles would never move away from 90 degrees.
-        if len(self.angles_reduced_indices) > 0:
-            self.prop_solver.set_force_off_diagonal_stress(True)
+        # The lattice parameters that vary with relax_cell, and the size of the optimizer
+        self.cell = CellRelaxation(self, params, angles)
+        n_var = self.cell.n_variables
 
         # Anderson mixing (C++ class) for the saddle-point iteration
         optimizer = params["optimizer"]
@@ -607,31 +225,8 @@ class SCFT:
             optimizer["mix_min"],      # minimum mixing rate of simple mixing
             optimizer["mix_init"])     # initial mixing rate of simple mixing
 
-        print("---------- Simulation Parameters ----------")
-        print("Platform :", self.prop_solver.platform)
-        print("Box Dimension: %d" % (self.prop_solver.dim))
-        print("Nx:", self.prop_solver.nx)
-        print("Lx [a, b, c]:", self.prop_solver.get_lx())
-        angles_deg = list(self.prop_solver.get_angles_degrees())
-        print("Angles [alpha, beta, gamma]:", angles_deg)
-        print("dx:", self.prop_solver.get_dx())
-        print("Volume: %f" % (self.prop_solver.get_volume()))
-
-        print("Chain model: %s" % (params["chain_model"]))
-        print("Segment lengths:\n\t", list(self.segment_lengths.items()))
-        print("Conformational asymmetry (epsilon): ")
-        for monomer_pair in itertools.combinations(self.monomer_types,2):
-            print("\t%s/%s: %f" % (monomer_pair[0], monomer_pair[1], self.segment_lengths[monomer_pair[0]]/self.segment_lengths[monomer_pair[1]]))
-
-        print("χN: ")
-        for key in self.chi_n:
-            print("\t%s: %f" % (key, self.chi_n[key]))
-
-        if self.zeta_n is not None:
-            print("zeta_n: %f" % self.zeta_n)
+        display_system(self, params["chain_model"])
         print("Pressure scale of the field residual, κ: %f" % self.pressure_kappa)
-
-        self.prop_solver.display_architectures()
         self.prop_solver.display_statistics()
 
         #  Save internal variables
@@ -655,6 +250,95 @@ class SCFT:
         if "fts_consistent_energy" in params:
             print("Warning: 'fts_consistent_energy' has no effect: the free energy does not depend on the "
                   "field means, and incompressible fields have zero means.")
+
+    def _create_space_group(self, params, angles):
+        """The space group of the input, with the physical basis that the cell allows."""
+        if params["space_group"].get("hall_number") is not None:
+            sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"], params["space_group"]["hall_number"])
+        else:
+            sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"])
+        # Auto-enable physical basis when possible (m3 → pmmm → z-mirror).
+        # NOTE: reuse the (possibly axis_ordering-reordered) local `angles`;
+        # missing angles means an orthogonal cell for classification, while
+        # `angles` itself stays None so the computation box is not
+        # needlessly recreated below.
+        try:
+            alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)
+        except Exception:
+            alpha, beta, gamma = 90.0, 90.0, 90.0
+        # The test of the native box and solvers (1e-10 rad): a looser one could enable a
+        # basis whose CrysFFT the solver then refuses
+        def right_angle(angle):
+            return abs(angle * (np.pi / 180.0) - np.pi / 2.0) < 1e-10
+        is_orthogonal = right_angle(alpha) and right_angle(beta) and right_angle(gamma)
+        z_axis_orthogonal = right_angle(alpha) and right_angle(beta)
+
+        if is_orthogonal:
+            # Fall back down the basis hierarchy when a basis is not
+            # applicable to this group/grid (the C++ side throws
+            # RuntimeError). Other exception types indicate real bugs
+            # and must propagate.
+            # (the m3 basis needs the recursive 3m CrysFFT: even grid, nz >= 16
+            # and a compatible translation parity)
+            try:
+                if not sg.m3_crysfft_feasible():
+                    raise RuntimeError("recursive 3m CrysFFT is not feasible on this grid")
+                sg.enable_m3_physical_basis()
+            except RuntimeError:
+                try:
+                    sg.enable_pmmm_physical_basis()
+                except RuntimeError:
+                    pass  # keep the irreducible (full-group) basis
+        elif z_axis_orthogonal:
+            # Hexagonal/trigonal (hexagonal-axes) space groups use a hybrid
+            # orbit convention (node-centered x,y; cell-centered z), making
+            # all in-plane symmetry maps exact on the grid. The z-mirror
+            # physical basis (cell-centered z fold) remains valid.
+            try:
+                sg.enable_z_mirror_physical_basis()
+            except RuntimeError:
+                pass  # keep the irreducible (full-group) basis
+
+        # The cell must belong to the crystal system of the space group. Otherwise
+        # the symmetry operations are not isometries of the box and the run would
+        # silently converge to a constrained, unphysical state. The native check
+        # (SpaceGroup::check_cell) is the one the computation box applies later.
+        lx_sg = [float(v) for v in params["lx"]]
+        angles_sg = [float(v) for v in angles] if angles is not None else [90.0, 90.0, 90.0]
+        try:
+            sg.check_cell(lx_sg, angles_sg)
+        except RuntimeError as exc:
+            raise ValidationError(str(exc)) from None
+        if (sg.get_crystal_system() == "Trigonal" and not sg.uses_hexagonal_axes()
+                and params.get("relax_cell", False)):
+            # a = b = c and alpha = beta = gamma would have to vary together
+            raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
+                                  "use the hexagonal-axes setting of the space group.")
+        sg.display_info()
+        return sg
+
+    def _setup_electrostatics(self, params):
+        """The Poisson equation for ψ and what it needs of the input."""
+        # A fixed charge is given in the axis order of nx, like the initial fields
+        if self._axis_perm is not None and params["electrostatics"].get("fixed_charge") is not None:
+            params["electrostatics"]["fixed_charge"] = self._to_standard_axes(params["electrostatics"]["fixed_charge"])
+        self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, reference_segments(params),
+                                                      self.prop_solver.fourier,
+                                                      ion_concentrations=point_ion_concentrations(params),
+                                                      open_charges=open_charges(params))
+        es = self.electrostatics
+        self.psi = np.zeros(self.prop_solver.n_grid)
+        # Box relaxation with electrostatics is limited to periodic boxes (CellRelaxation.stress also
+        # holds in closed boxes)
+        if params["relax_cell"] and not self.prop_solver.fourier.periodic:
+            raise ValidationError("'relax_cell' with 'electrostatics' needs a periodic box")
+        print("Electrostatics: charges", es.charges, "coupling E = %g" % es.coupling
+              + ("" if es.screening_length is None else ", screening length %g" % es.screening_length))
+        for ion in es.ions:
+            amount = ("chemical potential %g (grand canonical)" % ion["chemical_potential"] if ion["concentration"] is None
+                      else "concentration %g (with counterions)" % ion["concentration"])
+            print("Point ion %s: valence %g, %s, smearing length %g"
+                  % (ion["name"], ion["valence"], amount, ion["smearing_length"]))
 
     # =========================================================================
     # Class Methods
@@ -787,130 +471,17 @@ class SCFT:
             field = self.sg.irreducible_to_reduced(field)
         return self.sg.from_reduced_basis(field)
 
-    def save_results(self, path):
-        """Save SCFT results to file in MATLAB, JSON, or YAML format.
-
-        Exports the computed fields, concentrations, and simulation parameters
-        to a file. The format is determined by the file extension (.mat, .json,
-        or .yaml).
-
-        Parameters
-        ----------
-        path : str
-            Output file path. Extension determines format:
-
-            - '.mat' : MATLAB format (scipy.io.savemat)
-            - '.json' : JSON format (human-readable, larger files)
-            - '.yaml' : YAML format (human-readable, structured)
-
-        Raises
-        ------
-        ValueError
-            If file extension is not .mat, .json, or .yaml.
-        """
-        # Make a dictionary for chi_n
-        chi_n_mat = {}
-        for key in self.chi_n:
-            chi_n_mat[key] = self.chi_n[key]
-
-        # Make a dictionary for data
-        m_dic = {"initial_params": self.params,
-            "dim":self.prop_solver.dim, "nx":self.prop_solver.nx, "lx":self.prop_solver.get_lx(),
-            "angles":list(self.prop_solver.get_angles_degrees()),
-            "monomer_types":self.monomer_types, "chi_n":chi_n_mat, "chain_model":self.chain_model, "ds":self.ds,
-            "eigenvalues": self.mpt.eigenvalues, "matrix_a": self.mpt.matrix_a, "matrix_a_inverse": self.mpt.matrix_a_inv}
-        metadata = simulation_metadata(self)
-        metadata.update(execution_status="converged" if self.error_level < self.tolerance else "not_converged",
-                        iterations=self.iter)
-        m_dic["simulation_metadata_json"] = json.dumps(metadata)
-
-        m_dic.update(free_energy=self.free_energy,
-                     free_energy_absolute=self.free_energy_absolute,
-                     free_energy_homogeneous=self.free_energy_homogeneous,
-                     partition_functions=self.partition_functions,
-                     polymer_lengths=self.polymer_lengths,
-                     polymer_volume_fractions=self.polymer_volume_fractions)
-        if self.chemical_potentials is not None:
-            m_dic["chemical_potentials"] = self.chemical_potentials
-            m_dic["grand_potential"] = self.grand_potential
-
-        if self.sg is not None:
-            m_dic["space_group_symbol"] = self.sg.get_spacegroup_symbol()
-            m_dic["space_group_hall_number"] = self.sg.get_hall_number()
-
-        # Add w fields to the dictionary (expand to full grid if space group is set)
-        for i, name in enumerate(self.monomer_types):
-            m_dic["w_" + name] = self._to_full_grid(self.w[i])
-
-        # Add concentrations to the dictionary (expand to full grid if space group is set)
-        for name in self.monomer_types:
-            m_dic["phi_" + name] = self._to_full_grid(self.phi[name])
-
-        # Electrostatic potential and the chemical potentials of the point ions
-        if self.electrostatics is not None:
-            m_dic["psi"] = self._to_full_grid(self.psi)
-            if self.ion_chemical_potentials is not None:
-                m_dic["ion_chemical_potentials"] = self.ion_chemical_potentials
-
-        # Convert nested parameters too, without modifying self.params.
-        def plain(value):
-            if isinstance(value, np.ndarray):
-                return plain(value.tolist())
-            if isinstance(value, np.generic):
-                return plain(value.item())
-            if isinstance(value, dict):
-                return {plain(key): plain(item) for key, item in value.items()}
-            if isinstance(value, (list, tuple)):
-                return [plain(item) for item in value]
-            if isinstance(value, os.PathLike):
-                return os.fspath(value)
-            return value
-
-        m_dic = plain(m_dic)
-
-        # Get input file extension
-        _, file_extension = os.path.splitext(path)
-
-        # Save data in matlab format (MAT files have no None: options given as None are left out).
-        # Every format is converted before the file is opened, so that a failure keeps an existing file
-        if file_extension == ".mat":
-            atomic_savemat(path, mat_ready(m_dic), long_field_names=True, do_compression=True)
-
-        # Save data in json format (strict JSON: a non-finite number, such as the chemical
-        # potential -inf of a species with volume fraction 0, becomes {"nonfinite_float": "-inf"})
-        elif file_extension == ".json":
-            text = json.dumps(json_ready(m_dic), indent=2, allow_nan=False)
-            with open(path, "w") as f:
-                f.write(text)
-
-        # Save data in yaml format
-        elif file_extension == ".yaml":
-            text = yaml.safe_dump(m_dic, default_flow_style=None, width=90, sort_keys=False)
-            with open(path, "w") as f:
-                f.write(text)
-        else:
-            raise ValueError("Invalid output file extension. Use .mat, .json, or .yaml.")
-
     # =========================================================================
     # run() helpers (used more than once, or long enough to stand on their own)
     # =========================================================================
 
-    def mean_concentrations(self):
-        """Volume-averaged concentration of each monomer type from the chain compositions.
+    def save_results(self, path):
+        """Saves the results to a MATLAB, JSON or YAML file, by the extension of path (scft_results.py)."""
+        save_results(self, path)
 
-        mean(phi_i) = sum_p (f_p / alpha_p) sum_{blocks b of p} length_b * (fraction of i in b).
-        Use the native block lengths, including accepted discrete lengths snapped
-        to integer multiples of ds, to match the concentration normalization.
-        """
-        phi_mean = np.zeros(len(self.monomer_types))
-        for p in range(self.prop_solver.get_n_polymer_types()):
-            chain = self.prop_solver.get_polymer(p)
-            for block in chain.get_blocks():
-                weight = chain.get_volume_fraction() * block.contour_length / chain.get_alpha()
-                fractions = self.random_fraction.get(block.monomer_type, {block.monomer_type: 1.0})
-                for monomer_type, fraction in fractions.items():
-                    phi_mean[self.monomer_types.index(monomer_type)] += weight * fraction
-        return phi_mean
+    def mean_concentrations(self):
+        """Volume-averaged concentration of each monomer type from the chain compositions."""
+        return mean_concentrations(self)
 
     def _pin_field_means(self, w, chi_phi_mean, xi=0.0):
         """Normalize the field means in place (mean() works in the reduced basis
@@ -968,106 +539,11 @@ class SCFT:
             mu.append(float(np.log(concentration) - np.log(partition_functions[p]) + field_shift))
         return mu
 
-    def _update_fields_and_box(self, fields, fields_diff, stress_array, old_error_level, error_level):
-        """One optimizer step on the concatenated (fields, box lengths, angles)
-        vector; fields are the flattened fields (and ψ). Applies the new lattice
-        parameters to the solver and returns the new flattened fields. Length
-        changes are limited to 10 % and angle changes to 5 degrees per step.
-        """
-        dim = self.prop_solver.dim
-
-        # -dH/dL for the independent box lengths; lengths tied by the crystal
-        # system (a = b, or a = b = c) use the averaged derivative
-        dlx_full = -stress_array[0:3]
-        crystal_system = self.crystal_system
-        if crystal_system == "Hexagonal2D":
-            dlx_reduced = np.array([0.5 * (dlx_full[0] + dlx_full[1])])
-        elif crystal_system in ("Tetragonal", "Hexagonal", "Trigonal") and len(self.lx_reduced_indices) == 2:
-            dlx_reduced = np.array([0.5 * (dlx_full[0] + dlx_full[1]), dlx_full[2]])
-        elif crystal_system == "Cubic":
-            dlx_reduced = np.array([np.mean(dlx_full)])
-        else:
-            dlx_reduced = dlx_full[self.lx_reduced_indices]
-
-        # Stress array layout: 3D [dH/dL1, dH/dL2, dH/dL3, dH/dgamma, dH/dbeta, dH/dalpha],
-        # 2D [dH/dL1, dH/dL2, dH/dgamma, 0, 0, 0]. get_stress() returns +dH/d(parameter)
-        # for angles as well as lengths (the d(cos gamma)/d gamma = -sin gamma factor is
-        # already applied in the C++ compute_stress post-processing), so gradient
-        # descent uses the same negative sign as for the box lengths.
-        angle_stress_map = {0: 5, 1: 4, 2: 3} if dim == 3 else {2: 2}
-        dangle = -np.array([stress_array[angle_stress_map[i]] for i in self.angles_reduced_indices if i in angle_stress_map])
-
-        current_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
-        current_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices] if len(self.angles_reduced_indices) > 0 else np.array([])
-
-        # Angles enter the optimizer in radians, the unit of their residual -dH/dθ
-        am_current = np.concatenate((fields, current_lx, np.deg2rad(current_angles)))
-        am_diff = np.concatenate((fields_diff,
-                                 self.stress_scale*dlx_reduced,
-                                 self.stress_scale*dangle))
-        am_new = self.field_optimizer.calculate_new_fields(am_current, am_diff, old_error_level, error_level)
-
-        fields = am_new[0:len(fields)]
-
-        n_lx = len(self.lx_reduced_indices)
-        n_angles = len(self.angles_reduced_indices)
-
-        # Restricting |dLx| to be less than 10 % of Lx
-        old_lx = current_lx
-        new_lx = np.array(am_new[-(n_lx + n_angles):-(n_angles)] if n_angles > 0 else am_new[-n_lx:])
-        new_dlx = np.clip((new_lx-old_lx)/old_lx, -0.1, 0.1)
-        new_lx = (1 + new_dlx)*old_lx
-
-        if n_angles > 0:
-            old_angles = current_angles
-            new_angles = np.rad2deg(np.array(am_new[-n_angles:]))
-            new_dangle = np.clip(new_angles - old_angles, -5.0, 5.0)
-            new_angles = old_angles + new_dangle
-
-            full_angles = list(self.prop_solver.get_angles_degrees())
-            for i, idx in enumerate(self.angles_full_indices):
-                full_angles[idx] = new_angles[i]
-            self.prop_solver.set_lattice_parameters(list(np.array(new_lx)[self.lx_full_indices]), full_angles)
-        else:
-            self.prop_solver.set_lx(list(np.array(new_lx)[self.lx_full_indices]))
-
-        # The smearing kernel Γ(k) and the Coulomb kernel are functions of the physical wavenumber
-        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
-        if self.electrostatics is not None:
-            self.electrostatics.set_box()
-        return fields
-
     def _polymer_charge(self):
         """Net charge Σ_i z_i <φ_i> of the polymers and the mean fixed charge, per segment."""
         es = self.electrostatics
         fixed = 0.0 if es.fixed_charge is None else float(np.mean(es.fixed_charge))
         return fixed + float(sum(es.charges[m] * phi for m, phi in zip(self.monomer_types, self.mean_concentrations())))
-
-    def compute_stress(self, w, phi):
-        """Lattice derivatives of the free energy at the fixed fields w (and ψ) of the last
-        compute_concentrations, whose concentrations are phi, in the layout of get_stress().
-
-        At the saddle point they are the derivatives of the free energy. Besides the stress of
-        the propagators they hold the box dependence of the smearing kernel Γ(k), at the fields
-        w_i + z_i ψ the chains feel, and with electrostatics that of the Coulomb kernel and the
-        smearing of the point ions.
-        """
-        dim = self.prop_solver.dim
-        self.prop_solver.compute_stress()
-        stress = np.array(self.prop_solver.get_stress())
-        if self.smearing.enabled:
-            es = self.electrostatics
-            felt = w if es is None else [w[i] + es.charges[m] * self.psi for i, m in enumerate(self.monomer_types)]
-            smearing_stress = self.smearing.stress(felt, [phi[m] for m in self.monomer_types])
-            if es is not None:
-                smearing_stress += es.stress(self.psi, self.smearing.coefficients, self.smearing.k_sq,
-                                             self.smearing.lattice_derivatives_k_sq())
-            # The angles of an orthogonal box do not vary unless the crystal system lets them
-            angle_stress_map = {0: 5, 1: 4, 2: 3} if dim == 3 else {2: 2}
-            if self.smearing.orthogonal and not any(i in angle_stress_map for i in self.angles_reduced_indices):
-                smearing_stress[dim:] = 0.0
-            stress += smearing_stress[:len(stress)]
-        return stress
 
     def _charge_response(self, psi0, q_init=None):
         """Response D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state with the uniform ψ₀.
@@ -1177,7 +653,143 @@ class SCFT:
         print("iteration, mass error, total_partitions, energy_total, error_level", end="")
         print(", box size" if self.relax_cell else "")
 
-        # ---- 1. Initial fields -> working array of shape (M, n_grid) ----
+        # ---- 1. Initial fields and ψ ----
+        w, q_init = self._initial_fields(initial_fields, q_init)
+        es = self.electrostatics
+        energy_electrostatic_homogeneous = 0.0
+        if es is not None:
+            energy_electrostatic_homogeneous = self._start_psi(initial_psi, q_init)
+
+        # Check the partition consistency on the first field of this run
+        self._partition_checked = False
+
+        # ---- 2. Iteration ----
+        stress_array = None
+        self._homogeneous_state(energy_electrostatic_homogeneous)
+
+        time_iter_start = time.time()
+        for iter in range(1, self.max_iter+1):
+
+            # Concentrations for the current fields
+            phi, runtime_info = self.compute_concentrations(w, q_init=q_init)
+
+            # Deviation of the total density from 1
+            phi_total = sum(phi[m] for m in self.monomer_types)
+            phi_diff = phi_total - 1.0
+
+            # Concentrations the fields couple to (smeared with smearing), phi_array[i] =
+            # phi[monomer_types[i]], shape (M, n_grid)
+            phi_smeared = self.smearing.apply_to_dict(phi)
+            phi_array = np.array([phi_smeared[m] for m in self.monomer_types])
+
+            # Free energy: the reported one is relative to the homogeneous state; thermodynamic
+            # transforms and comparisons across compositions use the full F
+            total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
+            energy_absolute = self._free_energy(w, phi_array, total_partitions)
+            energy_total = energy_absolute - self.free_energy_homogeneous
+
+            # Residuals of the fields and of the Poisson equation for ψ, and their size
+            w_diff = self._field_residual(w, phi_array)
+            psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
+            old_error_level = error_level
+            error_level = self._error_level(w, w_diff, psi_diff)
+            field_error_level = error_level
+            mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
+
+            if self.relax_cell:
+                # The stress costs ~30 % of an iteration: compute it every stress_interval
+                # iterations ("adaptive": every 1, 2 or 4 as the error drops) and reuse it in between
+                if self.stress_interval == "adaptive":
+                    stress_interval = 1 if error_level > 1e-2 else (2 if error_level > 1e-4 else 4)
+                else:
+                    stress_interval = self.stress_interval
+                stress_is_current = (iter == 1) or (iter % stress_interval == 0) or iter == self.max_iter
+                if stress_is_current:
+                    stress_array = self.cell.stress(w, phi)
+                # The stress along the optimized lattice parameters counts towards the error
+                error_level += self.cell.error(stress_array)
+                # A cached stress can guide updates, but cannot certify convergence.
+                if not stress_is_current and error_level < self.tolerance:
+                    stress_array = self.cell.stress(w, phi)
+                    stress_is_current = True
+                    error_level = field_error_level + self.cell.error(stress_array)
+
+            # Print this iteration
+            self._print_iteration(iter, mass_error, total_partitions, energy_total, error_level)
+
+            # Call progress callback if provided
+            if on_iteration is not None:
+                if on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions)) is False:
+                    if self.relax_cell and not stress_is_current:
+                        stress_array = self.cell.stress(w, phi)
+                        error_level = field_error_level + self.cell.error(stress_array)
+                    print(f"Iteration stopped by callback at iteration {iter}")
+                    break
+
+            # Conditions to end the iteration
+            if error_level < self.tolerance or iter == self.max_iter:
+                break
+
+            # New fields, ψ and cell
+            w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level, phi_array, phi_total)
+
+        self.cell.check_tied_lengths(stress_array, error_level)
+
+        # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
+        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
+
+        # Print iteration timing
+        time_iter_total = time.time() - time_iter_start
+        print("Iteration time: %.3f seconds (%.4f sec/iter, %d iterations)" % (time_iter_total, time_iter_total/iter, iter))
+
+        print_free_energies(self, energy_total, energy_absolute)
+
+        # Final partition consistency check (only once at the end)
+        if not report_partition_consistency(self.prop_solver):
+            print("Warning: Final partition consistency check failed.")
+
+        # Store phi and w
+        self.phi = phi
+        self.w = w
+        self.ion_chemical_potentials = None
+        if es is not None:
+            print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
+                  % es.poisson_error(self.smearing.apply_to_dict(phi), self.psi))
+            if es.ions:
+                self.ion_chemical_potentials = es.ion_chemical_potentials(self.psi)
+                print("Point ions: chemical potentials βμ", self.ion_chemical_potentials,
+                      "ions per reference chain", es.ion_number_densities(self.psi))
+
+        # Store free energy
+        self.free_energy = energy_total
+        self.free_energy_absolute = energy_absolute
+        self.error_level = error_level
+        self.iter = iter
+        self.partition_functions = list(total_partitions)
+        self.chemical_potentials = None
+        self.grand_potential = None
+        if q_init is None and not any(p.get("initial_conditions") for p in self.polymers):
+            self.chemical_potentials = self.compute_chemical_potentials()
+            present = self.chain_densities > 0.0
+            self.grand_potential = float(energy_absolute - np.dot(self.chain_densities[present],
+                                                                 np.array(self.chemical_potentials)[present]))
+            # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
+            if es is not None:
+                for ion, mu in zip(es.ions, self.ion_chemical_potentials or []):
+                    if ion["concentration"] is not None and ion["concentration"] > 0:
+                        self.grand_potential -= es.n_segments * ion["concentration"] * mu
+            print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", self.chemical_potentials)
+            print("Grand potential in the same pressure convention: %.9f" % self.grand_potential)
+
+        # Return SCFTResult if requested
+        if return_result:
+            return scft_result(self, phi, w, energy_total, error_level, iter, total_partitions, stress_array)
+        return None
+
+    def _initial_fields(self, initial_fields, q_init):
+        """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
+        M = len(self.monomer_types)
+
         # With axis_ordering the arrays are given in the axis order of nx and lx and are
         # transposed to the standard [a, b, c] order (the results are in that order)
         if self._axis_perm is not None:
@@ -1206,9 +818,12 @@ class SCFT:
             self._pin_field_means(w, self.matrix_chi @ phi_mean, xi)
         else:
             self._pin_field_means(w, None)
+        return w, q_init
 
-        # ψ: the Newton residual of the Poisson equation needs the charge response of the
-        # homogeneous state (MeanFieldElectrostatics), which also gives the initial ψ
+    def _start_psi(self, initial_psi, q_init):
+        """ψ: the Newton residual of the Poisson equation needs the charge response of the homogeneous
+        state (MeanFieldElectrostatics), which also gives the initial ψ. Returns the electrostatic
+        free energy of the homogeneous state."""
         es = self.electrostatics
         energy_electrostatic_homogeneous = 0.0
         if es is not None:
@@ -1223,292 +838,121 @@ class SCFT:
                 self.psi = np.array(np.reshape(initial_psi, self.prop_solver.n_grid), dtype=np.float64)
                 if es.zero_uniform_mode:
                     self.psi -= np.mean(self.psi)
+        return energy_electrostatic_homogeneous
 
-        # Check the partition consistency on the first field of this run
-        self._partition_checked = False
-
-        # ---- 2. Iteration ----
-        # Stress array layout: 3D [dH/dL1, dH/dL2, dH/dL3, dH/dgamma, dH/dbeta, dH/dalpha],
-        # 2D [dH/dL1, dH/dL2, dH/dgamma, 0, 0, 0]; the angle index in [alpha, beta, gamma]
-        # maps to the stress index through angle_stress_map
-        dim = self.prop_solver.dim
-        angle_stress_map = {0: 5, 1: 4, 2: 3} if dim == 3 else {2: 2}
-        angle_stress_indices = [angle_stress_map[i] for i in self.angles_reduced_indices if i in angle_stress_map]
-        stress_array = None
-
-        # Lengths tied by the crystal system (a = b, or a = b = c) move together, along the sum
-        # of their stresses. A tied group counts towards the error as that sum divided by
-        # sqrt(group size), the norm of its stresses when they are equal; free lengths and the
-        # optimized angles count as they are. Whether each stress vanishes is checked at the end.
-        tied_groups = [[i for i in range(dim) if self.lx_full_indices[i] == j]
-                       for j in range(len(self.lx_reduced_indices))]
-
-        def stress_error(stress):
-            lengths = [np.sum(stress[group]) / np.sqrt(len(group)) for group in tied_groups]
-            return np.linalg.norm(lengths + list(stress[angle_stress_indices]))
-
+    def _homogeneous_state(self, energy_electrostatic_homogeneous):
+        """The chain densities and the free energy of the homogeneous state."""
         # Ideal mixing term is constant during a CE run. Define c log(c) = 0 at c = 0.
         self.polymer_lengths = [self.prop_solver.get_polymer(p).get_alpha()
                                 for p in range(self.prop_solver.get_n_polymer_types())]
         self.polymer_volume_fractions = [self.prop_solver.get_polymer(p).get_volume_fraction()
                                          for p in range(self.prop_solver.get_n_polymer_types())]
-        chain_densities = np.array(self.polymer_volume_fractions) / self.polymer_lengths
-        present = chain_densities > 0.0
-        ideal_energy = float(np.sum(chain_densities[present] * (np.log(chain_densities[present]) - 1.0)))
+        self.chain_densities = np.array(self.polymer_volume_fractions) / self.polymer_lengths
+        present = self.chain_densities > 0.0
+        self.ideal_energy = float(np.sum(self.chain_densities[present] * (np.log(self.chain_densities[present]) - 1.0)))
         phi_mean = self.mean_concentrations()
-        self.free_energy_homogeneous = ideal_energy + 0.5*float(phi_mean @ self.matrix_chi @ phi_mean) \
+        self.free_energy_homogeneous = self.ideal_energy + 0.5*float(phi_mean @ self.matrix_chi @ phi_mean) \
             + energy_electrostatic_homogeneous
 
-        time_iter_start = time.time()
-        for iter in range(1, self.max_iter+1):
-
-            # Concentrations for the current fields
-            phi, runtime_info = self.compute_concentrations(w, q_init=q_init)
-
-            # Deviation of the total density from 1
-            phi_total = sum(phi[m] for m in self.monomer_types)
-            phi_diff = phi_total - 1.0
-
-            # Concentrations the fields couple to (smeared with smearing), phi_array[i] =
-            # phi[monomer_types[i]], shape (M, n_grid)
-            phi_smeared = self.smearing.apply_to_dict(phi)
-            phi_array = np.array([phi_smeared[m] for m in self.monomer_types])
-
-            # Full CE free energy: Σ_p c_p[ln(c_p/Q_p)-1] + <½ φᵀ χN φ - w·φ>
-            # (+ compressibility penalty). Uniform field shifts cancel between ln Q and w·φ.
-            # At the saddle point F - ideal_energy is the Hamiltonian recorded by L-FTS.
-            total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
-            energy_total = ideal_energy
-            for p, concentration in enumerate(chain_densities):
-                if concentration > 0.0:
-                    energy_total -= concentration*np.log(total_partitions[p])
-            for i in range(M):
-                for j in range(i+1, M):
-                    if self.matrix_chi[i, j] != 0.0:
-                        energy_total += self.matrix_chi[i, j]*self.prop_solver.mean(phi_array[i]*phi_array[j], basis="irreducible")
-                energy_total -= self.prop_solver.mean(w[i]*phi_array[i], basis="irreducible")
-            if self.zeta_n is not None:
-                energy_total += 0.5*self.zeta_n*self.prop_solver.mean((np.sum(phi_array, axis=0) - 1.0)**2, basis="irreducible")
-            if es is not None:
-                energy_total += es.free_energy(self.psi)
-            # Keep the reported iteration energy relative to the homogeneous state.
-            # Thermodynamic transforms and comparisons across compositions use the full F.
-            energy_absolute = energy_total
-            energy_total -= self.free_energy_homogeneous
-
-            # The SCFT equations are w = χφ + ξe with Σφ = 1 (incompressible), or w = χφ + ζ(Σφ - 1)e
-            # (compressible), e = (1, ..., 1). Composition part: P⊥(χφ - w), the residual of the
-            # exchange fields of the symmetric theory. Pressure part along e: κ(Σφ - 1), which raises
-            # the pressure where the density is too high; κ = max(max|λ|, 1)/2 follows the coupling
-            # of the composition and the pressure (for AB κ = χN/2). Compressible: the stiff ζ term
-            # lies along e, so that part of E = χφ + ζ(Σφ - 1)e - w is scaled by κ/(κ + ζ), which
-            # gives the incompressible residual for ζ → ∞ and leaves E unscaled for ζ → 0
-            e_column = np.ones((M, 1))
-            if self.zeta_n is None:
-                w_diff = self.matrix_q_perp @ (self.matrix_chi @ phi_array - w) \
-                    + self.pressure_kappa * e_column * (np.sum(phi_array, axis=0) - 1.0)[None, :]
-            else:
-                residual = self.matrix_chi @ phi_array + self.zeta_n * (np.sum(phi_array, axis=0) - 1.0) - w
-                composition = self.matrix_q_perp @ residual
-                w_diff = composition + (self.pressure_kappa / (self.pressure_kappa + self.zeta_n)) * (residual - composition)
-
-            # Keep the level of functional derivatives
-            for i in range(M):
-                w_diff[i] -= self.prop_solver.mean(w_diff[i], basis="irreducible")
-
-            # ψ: the Newton step of the Poisson equation with the charges of the chains and ions
-            if es is not None:
-                psi_diff = es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
-
-            # Error level: relative distance between the input and output fields,
-            # sqrt( sum_i <w_diff_i^2> / (1 + sum_i <w_i^2>) ), ψ included
-            old_error_level = error_level
-            error_level = 0.0
-            error_normal = 1.0  # add 1.0 to prevent divergence
-            for i in range(M):
-                error_level += self.prop_solver.inner_product(w_diff[i], w_diff[i], basis="irreducible")
-                error_normal += self.prop_solver.inner_product(w[i], w[i], basis="irreducible")
-            if es is not None:
-                # The uniform ψ₀ (Donnan potential) shifts with the chemical potentials of the
-                # ions, so the scale of ψ is that of its variation
-                psi_variation = self.psi - self.prop_solver.mean(self.psi, basis="irreducible")
-                error_level += self.prop_solver.inner_product(psi_diff, psi_diff, basis="irreducible")
-                error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
-            error_level = np.sqrt(error_level/error_normal)
-            field_error_level = error_level
-            mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
-
-            if self.relax_cell:
-                # The stress costs ~30 % of an iteration: compute it every stress_interval
-                # iterations ("adaptive": every 1, 2 or 4 as the error drops) and reuse it in between
-                if self.stress_interval == "adaptive":
-                    stress_interval = 1 if error_level > 1e-2 else (2 if error_level > 1e-4 else 4)
-                else:
-                    stress_interval = self.stress_interval
-                stress_is_current = (iter == 1) or (iter % stress_interval == 0) or iter == self.max_iter
-                if stress_is_current:
-                    stress_array = self.compute_stress(w, phi)
-                # The stress along the optimized lattice parameters counts towards the error
-                error_level += stress_error(stress_array)
-                # A cached stress can guide updates, but cannot certify convergence.
-                if not stress_is_current and error_level < self.tolerance:
-                    stress_array = self.compute_stress(w, phi)
-                    stress_is_current = True
-                    error_level = field_error_level + stress_error(stress_array)
-
-            # Print this iteration
-            print("%8d %12.3E " % (iter, mass_error), end=" [ ")
-            for Q in total_partitions:
-                print("%13.7E " % (Q), end=" ")
-            if self.relax_cell:
-                print("] %15.9f %15.7E " % (energy_total, error_level), end=" ")
-                print("lx=[", ",".join(["%10.7f" % (x) for x in self.prop_solver.get_lx()]), "]", end="")
-                if len(self.angles_reduced_indices) > 0:
-                    print(" angles=[", ",".join(["%7.2f" % (x) for x in self.prop_solver.get_angles_degrees()]), "]", end="")
-                print()
-            else:
-                print("] %15.9f %15.7E " % (energy_total, error_level))
-
-            # Call progress callback if provided
-            if on_iteration is not None:
-                info = IterationInfo(
-                    iteration=iter,
-                    error_level=error_level,
-                    energy=energy_total,
-                    mass_error=mass_error,
-                    partition_functions=total_partitions,
-                    lx=list(self.prop_solver.get_lx()) if self.relax_cell else None,
-                    angles=list(self.prop_solver.get_angles_degrees()) if (
-                        self.relax_cell and len(self.angles_reduced_indices) > 0
-                    ) else None
-                )
-                callback_result = on_iteration(info)
-                if callback_result is False:
-                    if self.relax_cell and not stress_is_current:
-                        stress_array = self.compute_stress(w, phi)
-                        error_level = field_error_level + stress_error(stress_array)
-                    print(f"Iteration stopped by callback at iteration {iter}")
-                    break
-
-            # Conditions to end the iteration
-            if error_level < self.tolerance or iter == self.max_iter:
-                break
-
-            # Calculate new fields using simple and Anderson mixing, ψ after the fields
-            # Note: w and w_diff are in irreducible basis when space group is set
-            fields, fields_diff = w.flatten(), w_diff.flatten()
-            if es is not None:
-                fields, fields_diff = np.concatenate((fields, self.psi)), np.concatenate((fields_diff, psi_diff))
-            if self.relax_cell:
-                fields = self._update_fields_and_box(fields, fields_diff, stress_array, old_error_level, error_level)
-            else:
-                fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
-            w = np.reshape(fields[:w.size], (M, -1))
-            if es is not None:
-                self.psi = np.array(fields[w.size:])
-                if es.zero_uniform_mode:
-                    self.psi -= np.mean(self.psi)
-
-            # Normalize field means
-            if self.zeta_n is not None:
-                # mean(φ_i) = f_i exactly by chain normalization, so the target is constant
-                chi_phi_mean = np.array([self.prop_solver.mean((self.matrix_chi @ phi_array)[i], basis="irreducible") for i in range(M)])
-                xi = 0.0 if self.zeta_n is None else self.zeta_n * (self.prop_solver.mean(phi_total, basis="irreducible") - 1.0)
-                self._pin_field_means(w, chi_phi_mean, xi)
-            else:
-                self._pin_field_means(w, None)
-
-            # Irreducible grid remains valid without extra symmetrization.
-
-        # The tied lengths relax only along the sum of their stresses. Without a space group the
-        # structure need not have the symmetry of the tie, and then the stresses of the tied lengths
-        # do not vanish separately at the converged tied cell: there is no stress-free cell with
-        # this crystal system.
-        if self.relax_cell and self.sg is None and stress_array is not None and error_level < self.tolerance:
-            unequal = [stress_array[group] - np.mean(stress_array[group]) for group in tied_groups if len(group) > 1]
-            if unequal and np.linalg.norm(np.concatenate(unequal)) >= self.tolerance:
-                tie = "a = b = c" if self.crystal_system == "Cubic" else "a = b"
-                free_system = {"Hexagonal": "Triclinic", "Hexagonal2D": "Oblique2D"}.get(self.crystal_system, "Orthorhombic")
-                print(f"Warning: the box-length stresses {stress_array[:dim]} do not vanish separately. The "
-                      f"structure does not satisfy the {tie} condition of crystal_system '{self.crystal_system}'; "
-                      f"relax it with crystal_system '{free_system}' to find a cell where every stress vanishes.")
-
-        # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
-        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
-
-        # Print iteration timing
-        time_iter_total = time.time() - time_iter_start
-        print("Iteration time: %.3f seconds (%.4f sec/iter, %d iterations)" % (time_iter_total, time_iter_total/iter, iter))
-
-        print("Free energy relative to the homogeneous state: %.9f" % energy_total)
-        print("Full canonical free energy βF/(ρ₀V/N): %.9f" % energy_absolute)
-        print("Homogeneous Flory-Huggins free energy: %.9f" % self.free_energy_homogeneous)
-        print("Relative free energy divided by the number of chains of each type:")
-        for p, concentration in enumerate(chain_densities):
+    def _free_energy(self, w, phi_array, total_partitions):
+        """Full canonical free energy of the fields."""
+        M, es = len(self.monomer_types), self.electrostatics
+        # Full CE free energy: Σ_p c_p[ln(c_p/Q_p)-1] + <½ φᵀ χN φ - w·φ>
+        # (+ compressibility penalty). Uniform field shifts cancel between ln Q and w·φ.
+        # At the saddle point F - self.ideal_energy is the Hamiltonian recorded by L-FTS.
+        energy_total = self.ideal_energy
+        for p, concentration in enumerate(self.chain_densities):
             if concentration > 0.0:
-                print("\tβΔF/n_%d : %12.7f" % (p, energy_total / concentration))
-
-        # Final partition consistency check (only once at the end)
-        if not report_partition_consistency(self.prop_solver):
-            print("Warning: Final partition consistency check failed.")
-
-        # Store phi and w
-        self.phi = phi
-        self.w = w
-        self.ion_chemical_potentials = None
+                energy_total -= concentration*np.log(total_partitions[p])
+        for i in range(M):
+            for j in range(i+1, M):
+                if self.matrix_chi[i, j] != 0.0:
+                    energy_total += self.matrix_chi[i, j]*self.prop_solver.mean(phi_array[i]*phi_array[j], basis="irreducible")
+            energy_total -= self.prop_solver.mean(w[i]*phi_array[i], basis="irreducible")
+        if self.zeta_n is not None:
+            energy_total += 0.5*self.zeta_n*self.prop_solver.mean((np.sum(phi_array, axis=0) - 1.0)**2, basis="irreducible")
         if es is not None:
-            print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
-                  % es.poisson_error(self.smearing.apply_to_dict(phi), self.psi))
-            if es.ions:
-                self.ion_chemical_potentials = es.ion_chemical_potentials(self.psi)
-                print("Point ions: chemical potentials βμ", self.ion_chemical_potentials,
-                      "ions per reference chain", es.ion_number_densities(self.psi))
+            energy_total += es.free_energy(self.psi)
+        return energy_total
 
-        # Store free energy
-        self.free_energy = energy_total
-        self.free_energy_absolute = energy_absolute
-        self.error_level = error_level
-        self.iter = iter
-        self.partition_functions = list(total_partitions)
-        self.chemical_potentials = None
-        self.grand_potential = None
-        if q_init is None and not any(p.get("initial_conditions") for p in self.polymers):
-            self.chemical_potentials = self.compute_chemical_potentials()
-            self.grand_potential = float(energy_absolute - np.dot(chain_densities[present],
-                                                                 np.array(self.chemical_potentials)[present]))
-            # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
-            if es is not None:
-                for ion, mu in zip(es.ions, self.ion_chemical_potentials or []):
-                    if ion["concentration"] is not None and ion["concentration"] > 0:
-                        self.grand_potential -= es.n_segments * ion["concentration"] * mu
-            print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", self.chemical_potentials)
-            print("Grand potential in the same pressure convention: %.9f" % self.grand_potential)
+    def _field_residual(self, w, phi_array):
+        """Residual of the SCFT equations for the fields, with zero means."""
+        M = len(self.monomer_types)
+        # The SCFT equations are w = χφ + ξe with Σφ = 1 (incompressible), or w = χφ + ζ(Σφ - 1)e
+        # (compressible), e = (1, ..., 1). Composition part: P⊥(χφ - w), the residual of the
+        # exchange fields of the symmetric theory. Pressure part along e: κ(Σφ - 1), which raises
+        # the pressure where the density is too high; κ = max(max|λ|, 1)/2 follows the coupling
+        # of the composition and the pressure (for AB κ = χN/2). Compressible: the stiff ζ term
+        # lies along e, so that part of E = χφ + ζ(Σφ - 1)e - w is scaled by κ/(κ + ζ), which
+        # gives the incompressible residual for ζ → ∞ and leaves E unscaled for ζ → 0
+        e_column = np.ones((M, 1))
+        if self.zeta_n is None:
+            w_diff = self.matrix_q_perp @ (self.matrix_chi @ phi_array - w) \
+                + self.pressure_kappa * e_column * (np.sum(phi_array, axis=0) - 1.0)[None, :]
+        else:
+            residual = self.matrix_chi @ phi_array + self.zeta_n * (np.sum(phi_array, axis=0) - 1.0) - w
+            composition = self.matrix_q_perp @ residual
+            w_diff = composition + (self.pressure_kappa / (self.pressure_kappa + self.zeta_n)) * (residual - composition)
 
-        # Return SCFTResult if requested
-        if return_result:
-            return SCFTResult(
-                converged=error_level < self.tolerance,
-                free_energy=energy_total,
-                error_level=error_level,
-                iterations=iter,
-                phi={name: self._to_full_grid(phi[name]) for name in self.monomer_types},
-                w={name: self._to_full_grid(w[i]) for i, name in enumerate(self.monomer_types)},
-                partition_functions=total_partitions,
-                lx=list(self.prop_solver.get_lx()),
-                nx=list(self.prop_solver.nx),
-                monomer_types=self.monomer_types,
-                params=self.params,
-                stress=stress_array if self.relax_cell else None,
-                angles=list(self.prop_solver.get_angles_degrees()) if (
-                    len(self.angles_reduced_indices) > 0
-                ) else None,
-                free_energy_homogeneous=self.free_energy_homogeneous,
-                free_energy_absolute=self.free_energy_absolute,
-                chemical_potentials=self.chemical_potentials,
-                grand_potential=self.grand_potential,
-                polymer_lengths=list(self.polymer_lengths),
-                polymer_volume_fractions=list(self.polymer_volume_fractions),
-                psi=None if es is None else self._to_full_grid(self.psi),
-                ion_chemical_potentials=self.ion_chemical_potentials
-            )
-        return None
+        # Keep the level of functional derivatives
+        for i in range(M):
+            w_diff[i] -= self.prop_solver.mean(w_diff[i], basis="irreducible")
+        return w_diff
+
+    def _error_level(self, w, w_diff, psi_diff):
+        """Relative distance between the input and output fields,
+        sqrt( sum_i <w_diff_i^2> / (1 + sum_i <w_i^2>) ), ψ included."""
+        M, es = len(self.monomer_types), self.electrostatics
+        error_level = 0.0
+        error_normal = 1.0  # add 1.0 to prevent divergence
+        for i in range(M):
+            error_level += self.prop_solver.inner_product(w_diff[i], w_diff[i], basis="irreducible")
+            error_normal += self.prop_solver.inner_product(w[i], w[i], basis="irreducible")
+        if es is not None:
+            # The uniform ψ₀ (Donnan potential) shifts with the chemical potentials of the
+            # ions, so the scale of ψ is that of its variation
+            psi_variation = self.psi - self.prop_solver.mean(self.psi, basis="irreducible")
+            error_level += self.prop_solver.inner_product(psi_diff, psi_diff, basis="irreducible")
+            error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
+        return np.sqrt(error_level/error_normal)
+
+    def _print_iteration(self, iter, mass_error, total_partitions, energy_total, error_level):
+        print("%8d %12.3E " % (iter, mass_error), end=" [ ")
+        for Q in total_partitions:
+            print("%13.7E " % (Q), end=" ")
+        if self.relax_cell:
+            print("] %15.9f %15.7E " % (energy_total, error_level), end=" ")
+            print("lx=[", ",".join(["%10.7f" % (x) for x in self.prop_solver.get_lx()]), "]", end="")
+            if len(self.cell.angles_reduced_indices) > 0:
+                print(" angles=[", ",".join(["%7.2f" % (x) for x in self.prop_solver.get_angles_degrees()]), "]", end="")
+            print()
+        else:
+            print("] %15.9f %15.7E " % (energy_total, error_level))
+
+    def _next_fields(self, w, w_diff, psi_diff, stress_array, old_error_level, error_level, phi_array, phi_total):
+        """Simple and Anderson mixing of the fields (irreducible basis with a space group), ψ and the cell."""
+        M, es = len(self.monomer_types), self.electrostatics
+        # Calculate new fields using simple and Anderson mixing, ψ after the fields
+        # Note: w and w_diff are in irreducible basis when space group is set
+        fields, fields_diff = w.flatten(), w_diff.flatten()
+        if es is not None:
+            fields, fields_diff = np.concatenate((fields, self.psi)), np.concatenate((fields_diff, psi_diff))
+        if self.relax_cell:
+            fields = self.cell.update(fields, fields_diff, stress_array, old_error_level, error_level)
+        else:
+            fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
+        w = np.reshape(fields[:w.size], (M, -1))
+        if es is not None:
+            self.psi = np.array(fields[w.size:])
+            if es.zero_uniform_mode:
+                self.psi -= np.mean(self.psi)
+
+        # Normalize field means
+        if self.zeta_n is not None:
+            # mean(φ_i) = f_i exactly by chain normalization, so the target is constant
+            chi_phi_mean = np.array([self.prop_solver.mean((self.matrix_chi @ phi_array)[i], basis="irreducible") for i in range(M)])
+            xi = 0.0 if self.zeta_n is None else self.zeta_n * (self.prop_solver.mean(phi_total, basis="irreducible") - 1.0)
+            self._pin_field_means(w, chi_phi_mean, xi)
+        else:
+            self._pin_field_means(w, None)
+        return w

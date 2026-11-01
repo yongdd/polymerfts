@@ -86,7 +86,7 @@ def main():
         n_grid, rng = sim.prop_solver.n_grid, np.random.default_rng(2)
         sim.electrostatics.psi = rng.normal(0.0, 0.5, n_grid)
         w_aux = sim.mpt.to_aux_fields(rng.normal(0.0, 5.0, (M, n_grid))).astype(complex)
-        assert np.max(np.abs(sim.partition_ratios(w_aux) - 1.0)) < 1e-14
+        assert np.max(np.abs(sim.thermodynamics.partition_ratios(w_aux) - 1.0)) < 1e-14
         c = 3.0
         sim.electrostatics.psi = 1j * rng.normal(0.0, 0.5, n_grid)
         w = np.full((M, n_grid), c, dtype=complex)
@@ -95,7 +95,7 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             sim.compute_concentrations(w_aux)
         expected = abs(sim.prop_solver.get_partition_function(1)) * np.exp(c * sim.ds)
-        ratio = sim.partition_ratios(w_aux)[0]
+        ratio = sim.thermodynamics.partition_ratios(w_aux)[0]
         assert expected < 0.95 and abs(ratio - expected) < 1e-12, (ratio, expected)
         # A real part that varies over the grid makes the ratio depend on the sign of the exponent:
         # without smearing and charges u = w_C ds, and the ratio is |Q_C| / <e^(-Re(w_C) ds)>
@@ -110,7 +110,7 @@ def main():
             sim.compute_concentrations(w_aux)
         w_c = sim.mpt.to_monomer_fields(w_aux)[sim.monomer_types.index("C")]
         expected = abs(sim.prop_solver.get_partition_function(1)) / np.mean(np.exp(-np.real(w_c) * sim.ds))
-        ratio = sim.partition_ratios(w_aux)[0]
+        ratio = sim.thermodynamics.partition_ratios(w_aux)[0]
         assert expected < 0.95 and abs(ratio - expected) < 1e-12, (ratio, expected)
 
         # Without electrostatics only the auxiliary fields are recorded

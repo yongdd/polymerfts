@@ -1,8 +1,9 @@
-"""What a Langevin run saves and restores: checkpoints and the state of extensions.
+"""What a Langevin run saves and restores: its measurements, checkpoints and the state of extensions.
 
-checkpoint_data() writes the settings and measurements of a checkpoint. validate_checkpoint() checks a
-checkpoint before a continuation changes any state, and restore_recording_state() puts back the pending
-measurements. The extension functions capture and restore the state of an integrator and of callbacks.
+RunRecord holds what a run has measured since its last statistics file. checkpoint_data() writes the
+settings and measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a
+continuation changes any state. The extension functions capture and restore the state of an integrator
+and of callbacks.
 """
 
 import copy
@@ -12,8 +13,9 @@ import json
 import warnings
 
 import numpy as np
+from scipy.io import loadmat
 
-from .utils import input_hash, json_ready, settings_json
+from .utils import fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .validation import normalize_params, ValidationError
 
 
@@ -36,8 +38,8 @@ def checkpoint_settings(sim):
         "extensions": extension_settings(sim),
     }
     if hasattr(sim, "saddle"):
-        result["saddle"] = {**sim.saddle, "failure_policy": sim.saddle.get("failure_policy", "retry"),
-                            "max_retries": sim.saddle.get("max_retries", 5)}
+        result["saddle"] = {**sim.saddle.settings, "failure_policy": sim.saddle.settings.get("failure_policy", "retry"),
+                            "max_retries": sim.saddle.settings.get("max_retries", 5)}
         result["compressor"] = sim.params["compressor"]
         wtmd = sim.wtmd
         result["wtmd"] = None if wtmd is None else {
@@ -57,39 +59,86 @@ def checkpoint_data(sim):
             "simulation_metadata_json": json.dumps(json_ready(sim.metadata)),
             "run_status_json": json.dumps(json_ready(sim.run_status))}
     data["extension_state_json"] = json.dumps(extension_state(sim), allow_nan=False)
-    state = getattr(sim, "_recording_state", None)
-    if state is None:
+    record = getattr(sim, "_recording_state", None)
+    if record is None:
         raise ValidationError("Checkpointing requires the recording state of an accepted run step")
-    if state is not None:
-        data["record_H_history"] = np.asarray(state["H_history"])
-        data["record_drift_history"] = np.asarray(state.get("drift_history", []))
-        if "psi_drift_history" in state:
-            data["record_psi_drift_history"] = np.asarray(state["psi_drift_history"])
-        # CL-FTS: the drifts of every step since the last statistics file (per auxiliary field)
-        if "drift_step_history" in state:
-            data["record_drift_step_history"] = np.reshape(np.asarray(state["drift_step_history"], dtype=np.float64),
-                                                           (-1, len(sim.monomer_types)))
-            data["record_drift_step_start"] = int(state["drift_step_start"])
-        if "psi_drift_step_history" in state:
-            data["record_psi_drift_step_history"] = np.asarray(state["psi_drift_step_history"], dtype=np.float64)
-        if "partition_ratio_step_history" in state:
-            data["record_partition_ratio_step_history"] = np.reshape(
-                np.asarray(state["partition_ratio_step_history"], dtype=np.float64), (-1, len(sim.partition_ratio_species)))
-        # CL-FTS: the chemical potentials (one row of all species per sample) and the pressure
-        if "chemical_potential_history" in state:
-            data["record_chemical_potential_history"] = np.reshape(
-                np.asarray(state["chemical_potential_history"], dtype=np.complex128), (-1, sim.n_chemical_potentials))
-        if "pressure_history" in state:
-            data["record_pressure_history"] = np.asarray(state["pressure_history"], dtype=np.complex128)
-        if "number_density_history" in state:
-            data["record_number_density_history"] = np.reshape(
-                np.asarray(state["number_density_history"], dtype=np.complex128), (-1, sim.n_chemical_potentials))
-        data["record_sample_count"] = state["sample_count"]
-        for key, values in state["dH_history"].items():
-            data[_measurement_key("dH", key)] = np.asarray(values)
-        for key, values in state["sf_average"].items():
-            data[_measurement_key("sf", key)] = values
+    data.update(record.checkpoint_arrays())
     return data
+
+
+def system_data(sim):
+    """The system, at the head of the structure function files."""
+    chi_n = {}
+    for key in sim.chi_n:
+        monomer_pair = sorted(key.split(","))
+        chi_n[monomer_pair[0] + "," + monomer_pair[1]] = sim.chi_n[key]
+    return {"dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(), "chi_n": chi_n,
+            "chain_model": sim.chain_model, "ds": sim.ds, "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
+            "initial_params": mat_ready(sim.params)}
+
+
+def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
+    """The system and the checkpoint of a fields file, without the fields of its model."""
+    data = {"initial_params": mat_ready(sim.params),
+            "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
+            "monomer_types": sim.monomer_types, "chi_n": sim.chi_n, "chain_model": sim.chain_model, "ds": sim.ds,
+            "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
+            "eigenvalues": sim.mpt.eigenvalues,
+            "aux_fields_real": sim.mpt.aux_fields_real_idx, "aux_fields_imag": sim.mpt.aux_fields_imag_idx,
+            "matrix_a": sim.mpt.matrix_a, "matrix_a_inverse": sim.mpt.matrix_a_inv,
+            "langevin_step": langevin_step,
+            "random_generator": sim.random_bg.state["bit_generator"],
+            "random_state_state": str(sim.random_bg.state["state"]["state"]),
+            "random_state_inc": str(sim.random_bg.state["state"]["inc"]),
+            "normal_noise_prev": normal_noise_prev}
+    data.update(checkpoint_data(sim))
+    data["w_aux"] = sim.mpt.to_aux_fields(w) if w_aux is None else w_aux
+    return data
+
+
+def load_checkpoint(sim, file_name, allow_legacy=False):
+    """Reads a checkpoint, checks it and restores the extensions, the metadata and the random numbers."""
+    data = loadmat(file_name, squeeze_me=True)
+    validate_checkpoint(sim, data, allow_legacy=allow_legacy)
+    restore_extensions(sim, data)
+    if "simulation_metadata_json" in data:
+        previous_metadata = json.loads(str(data["simulation_metadata_json"]))
+        sim.metadata["random_seed"] = previous_metadata.get("random_seed")
+        sim.metadata["initial_fields_hash"] = previous_metadata.get("initial_fields_hash", "unknown")
+        sim.metadata["parent_checkpoint"] = str(file_name)
+
+    # Check if data["langevin_step"] is a multiple of statistics_save_interval
+    interval = sim.recording["statistics_save_interval"]
+    if "record_sample_count" not in data and data["langevin_step"] % interval != 0:
+        print(f"(Warning!) 'langevin_step' of {file_name} is not a multiple of 'statistics_save_interval'.")
+        print(f"The structure function will be correctly recorded after {(data['langevin_step'] // interval + 1) * interval}th langevin_step.")
+
+    # Versioned checkpoints carry the complete PCG64 state; legacy scalar
+    # fields are only needed for explicitly accepted unversioned files.
+    if "rng_state_json" in data:
+        sim.random_bg.state = json.loads(str(data["rng_state_json"]))
+    else:
+        sim.random_bg.state = {
+            "bit_generator": "PCG64",
+            "state": {"state": int(data["random_state_state"]), "inc": int(data["random_state_inc"])},
+            "has_uint32": 0, "uinteger": 0}
+    print("Restored Random Number Generator:", sim.random_bg.state)
+    return data
+
+
+def start_run_status(sim, start_langevin_step, initial_fields, restart_data, **counters):
+    """The run status and metadata of a run that is about to start; `counters` carry over a restart."""
+    first_step = 1 if start_langevin_step is None else start_langevin_step
+    if isinstance(first_step, (bool, np.bool_)) or not isinstance(first_step, (int, np.integer)) or first_step < 1:
+        raise ValidationError("start_langevin_step must be a positive integer")
+    sim.run_status = {"status": "running", "last_completed_step": first_step - 1,
+                      "requested_last_step": sim.langevin["max_step"], **counters}
+    sim.metadata["initial_fields_hash" if restart_data is None else "restart_fields_hash"] = fields_hash(initial_fields)
+    if restart_data is not None and "run_status_json" in restart_data:
+        previous_status = json.loads(str(restart_data["run_status_json"]))
+        for key in counters:
+            sim.run_status[key] = previous_status.get(key, 0)
+    sim.metadata["initial_rng_state"] = sim.random_bg.state
 
 
 def _measurement_key(kind, pair):
@@ -203,16 +252,16 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         # Partition ratios of the same steps, in [0, 1]; NaN for the steps of a checkpoint without them
         if "record_partition_ratio_step_history" in data:
             values = np.atleast_1d(np.asarray(data["record_partition_ratio_step_history"]))
-            n_ratios = len(getattr(sim, "partition_ratio_species", []))
+            n_ratios = len(sim.thermodynamics.partition_ratio_species) if hasattr(sim, "thermodynamics") else 0
             if (np.size(values) != pending_steps * n_ratios or np.iscomplexobj(values)
                     or np.any(values < 0) or np.any(values > 1)):
                 raise ValidationError("Invalid checkpoint measurement 'record_partition_ratio_step_history'")
         # Pending chemical potentials and pressures (absent in checkpoints of earlier versions or
         # of runs without them; continue_run then records NaN for those samples, which later
         # checkpoints keep). A species without chains has the chemical potential -inf
-        for key, per_sample in (("record_chemical_potential_history", getattr(sim, "n_chemical_potentials", 0)),
-                                ("record_pressure_history", 1),
-                                ("record_number_density_history", getattr(sim, "n_chemical_potentials", 0))):
+        n_columns = sim.thermodynamics.n_chemical_potentials if hasattr(sim, "thermodynamics") else 0
+        for key, per_sample in (("record_chemical_potential_history", n_columns), ("record_pressure_history", 1),
+                                ("record_number_density_history", n_columns)):
             if key in data:
                 values = np.atleast_1d(np.asarray(data[key]))
                 if np.size(values) != count * per_sample or np.any(np.isposinf(np.real(values))):
@@ -310,60 +359,103 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         raise ValidationError(f"Invalid checkpoint: {exc}") from exc
 
 
-def restore_recording_state(data, H_history, dH_history, sf_average, drift_history=None, *, psi_drift_history=None,
-                            drift_step_history=None, n_fields=1, psi_drift_step_history=None,
-                            partition_ratio_step_history=None, n_ratios=0, chemical_potential_history=None,
-                            pressure_history=None, n_polymers=1, number_density_history=None, optional_sums=None):
-    """Restore pending samples without MATLAB's squeeze changing their shape."""
-    if data is None or "record_sample_count" not in data:
-        return 0
-    # Chemical potentials and pressures that the checkpoint does not hold are NaN
-    count = int(data["record_sample_count"])
-    if chemical_potential_history is not None:
-        if "record_chemical_potential_history" in data:
-            values = np.reshape(np.asarray(data["record_chemical_potential_history"], dtype=np.complex128), (-1, n_polymers))
-        else:
-            values = np.full((count, n_polymers), np.nan + 0j)
-        chemical_potential_history.extend(values)
-    if number_density_history is not None:
-        if "record_number_density_history" in data:
-            values = np.reshape(np.asarray(data["record_number_density_history"], dtype=np.complex128), (-1, n_polymers))
-        else:
-            values = np.full((count, n_polymers), np.nan + 0j)
-        number_density_history.extend(values)
-    if pressure_history is not None:
-        if "record_pressure_history" in data:
-            values = np.atleast_1d(np.asarray(data["record_pressure_history"], dtype=np.complex128))
-        else:
-            values = np.full(count, np.nan + 0j)
-        pressure_history.extend(values.tolist())
-    H_history.extend(np.atleast_1d(data["record_H_history"]).tolist())
-    if drift_history is not None and "record_drift_history" in data:
-        drift_history.extend(np.atleast_1d(data["record_drift_history"]).tolist())
-    if psi_drift_history is not None:
-        psi_drift_history.extend(np.atleast_1d(data["record_psi_drift_history"]).tolist())
-    if drift_step_history is not None and "record_drift_step_history" in data:
-        drift_step_history.extend(np.reshape(data["record_drift_step_history"], (-1, n_fields)))
-    if psi_drift_step_history is not None and "record_psi_drift_step_history" in data:
-        psi_drift_step_history.extend(np.atleast_1d(data["record_psi_drift_step_history"]).tolist())
-    # The partition ratios keep the rows of the drift record: NaN for its steps that a checkpoint
-    # without them (earlier versions) holds
-    if partition_ratio_step_history is not None and drift_step_history is not None:
-        if "record_partition_ratio_step_history" in data:
-            partition_ratio_step_history.extend(np.reshape(data["record_partition_ratio_step_history"], (-1, n_ratios)))
-        else:
-            partition_ratio_step_history.extend(np.full((len(drift_step_history), n_ratios), np.nan))
-    for key in dH_history:
-        dH_history[key].extend(np.atleast_1d(data[_measurement_key("dH", key)]).tolist())
-    # Sums that a checkpoint may lack (written without the option) start from zero
-    for key, array in sf_average.items():
-        name = _measurement_key("sf", key)
-        if name in data or key not in (optional_sums or ()):
-            array[:] = np.asarray(data[name]).reshape(array.shape)
-    return count
+class RunRecord:
+    """What a Langevin run has measured since its last statistics file.
+
+    `series` says what is recorded, {name: columns}. add(name, value) appends one number (columns 0)
+    or one row of that many columns, per sample or per step as the run chooses. `sums` are the arrays
+    that averages accumulate in place, {name: array}. To record something new, give it an entry in
+    `series` and call add(): the statistics files, checkpoints and restarts follow from the table.
+
+    The name "dH A,B" stands for dH/dχN of that pair. In CL-FTS the values are complex
+    (complex_values), and complex series go into the statistics files as name_real and name_imag.
+    """
+
+    # Keys of the statistics files that differ from the name of the series
+    FILE_KEYS = {"drift_history": "drift_max_history", "psi_drift_history": "psi_drift_max_history",
+                 "drift_step_history": "drift_max_step_history", "psi_drift_step_history": "psi_drift_max_step_history"}
+    # Series that stay real in CL-FTS
+    REAL_SERIES = ("drift_history", "psi_drift_history", "drift_step_history", "psi_drift_step_history",
+                   "partition_ratio_step_history")
+    # Series that are complex even when a list is empty
+    COMPLEX_SERIES = ("chemical_potential_history", "number_density_history", "pressure_history")
+
+    def __init__(self, series, sums, complex_values=False):
+        self.columns = series
+        self.sums = sums
+        self.complex_values = complex_values
+        self.clear(1)
+
+    def add(self, name, value):
+        self.lists[name].append(value)
+
+    def clear(self, next_step):
+        """Starts the next statistics file, with the measurements of next_step."""
+        self.lists = {name: [] for name in self.columns}
+        for array in self.sums.values():
+            array[:] = 0.0
+        self.sample_count = 0
+        self.first_step = next_step
+
+    def array(self, name):
+        """A series as an array: one row per entry."""
+        values = np.asarray(self.lists[name], dtype=np.complex128 if name in self.COMPLEX_SERIES else None)
+        return values if self.columns[name] == 0 else np.reshape(values, (-1, self.columns[name]))
+
+    def statistics(self):
+        """The arrays of a statistics file."""
+        data = {"sample_count": self.sample_count}
+        for name in self.columns:
+            key = self.FILE_KEYS.get(name, name)
+            if name.startswith("dH "):
+                key = "dH_history_" + "_".join(sorted(name[3:].split(",")))
+            values = self.array(name)
+            if self.complex_values and name not in self.REAL_SERIES:
+                data[key + "_real"], data[key + "_imag"] = np.real(values), np.imag(values)
+            else:
+                data[key] = values
+        return data
+
+    def _checkpoint_key(self, name):
+        return _measurement_key("dH", name[3:]) if name.startswith("dH ") else "record_" + name
+
+    def checkpoint_arrays(self):
+        """The pending measurements, as a checkpoint stores them."""
+        data = {self._checkpoint_key(name): self.array(name) for name in self.columns}
+        data["record_sample_count"] = self.sample_count
+        if "drift_step_history" in self.columns:
+            data["record_drift_step_start"] = int(self.first_step)
+        for name, array in self.sums.items():
+            data[_measurement_key("sf", name)] = array
+        return data
+
+    def restore(self, data, first_step):
+        """Puts back the pending measurements of a checkpoint that validate_checkpoint() accepted, in
+        their own shapes (MATLAB squeezes them). Without any, the record starts empty at first_step."""
+        self.first_step = first_step
+        if data is None or "record_sample_count" not in data:
+            return
+        self.sample_count = int(data["record_sample_count"])
+        for name, columns in self.columns.items():
+            key, width = self._checkpoint_key(name), max(columns, 1)
+            if key in data:
+                values = np.asarray(data[key], dtype=np.complex128 if name in self.COMPLEX_SERIES else None)
+            elif name in ("drift_step_history", "psi_drift_step_history"):
+                continue    # these records start at the restart (first_step)
+            else:
+                # A series the checkpoint lacks keeps its rows in line with the others: NaN for the
+                # pending samples, or for the steps of the drift record
+                rows = len(self.lists.get("drift_step_history", [])) if name.endswith("_step_history") else self.sample_count
+                values = np.full(rows * width, np.nan + 0j if name in self.COMPLEX_SERIES else np.nan)
+            self.lists[name] = np.atleast_1d(values).tolist() if columns == 0 else list(np.reshape(values, (-1, columns)))
+        for name, array in self.sums.items():
+            key = _measurement_key("sf", name)
+            if key in data:     # sums of an option that the checkpoint's run did not use start from zero
+                array[:] = np.asarray(data[key]).reshape(array.shape)
+        # A restored record ends at the step before this run's first step
+        self.first_step = first_step - len(self.lists.get("drift_step_history", []))
 
 
-# Small extension mechanics; the physical order of calls stays in each run loop.
 def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=True):
     from .integrators import make_integrator
     sim.integrator = make_integrator(integrator)

@@ -189,16 +189,27 @@ Measure performance separately from correctness tests.
 Researchers should be able to follow and modify the physical sequence directly.
 Keep each simulation class readable from top to bottom:
 
+- The run loop reads as the physical sequence, and each step is a few lines or a
+  call to an object that owns the topic. An object takes the simulation in its
+  constructor, keeps the fixed parts it uses as attributes and reads what changes
+  during a run through `self.sim`, a `weakref.proxy`: a strong reference would make
+  a cycle that keeps a dropped simulation's solver and device memory alive. Keep one
+  flow per method: do not merge them into a generic driver or a class hierarchy.
 - Read options directly from the `params` dictionary in the constructor, with
   defaults next to their use. Avoid introducing parameter dataclass/spec layers.
-- Keep one topic per file. Duplication among `scft.py`, `lfts.py` and `clfts.py`
-  is acceptable when it keeps the loops self-contained.
+- Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
+  `clfts.py` through plain functions; a little duplication is fine where sharing
+  would hide a difference between the methods.
 - Put shared parameter validation and legacy-name normalization in `validation.py`;
   keep common mechanical helpers in `utils.py` and what a run saves and restores
-  in `checkpoint.py`.
-- `scft.py` owns SCFT iteration and optional cell relaxation; `lfts.py` owns
-  saddle-constrained Langevin sampling and its field compressors; `clfts.py`
-  evolves complex auxiliary fields.
+  in `checkpoint.py`. `RunRecord` there holds the measurements of a run: a new
+  quantity needs an entry in its series and an `add()`.
+- `scft.py`, `lfts.py` and `clfts.py` hold the flow of each method. The details live
+  in objects with one topic each, as the loop's own words say: `self.saddle`
+  (`saddle.py`: compressors, saddle search and retries), `self.structure_functions`
+  (`structure_functions.py`), `self.thermodynamics` (`thermodynamics.py`),
+  `self.cell` (`cell_relaxation.py`), and likewise `self.smearing`, `self.wtmd` and
+  `self.electrostatics`. `scft_results.py` holds what SCFT returns and writes.
 - `integrators.py` implements built-in LM and Euler steps. Use the existing
   `integrator=` interface for additional methods and named `callbacks=` for
   observables. Preserve accepted-step ordering and checkpoint contracts.

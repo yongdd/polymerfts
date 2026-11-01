@@ -97,6 +97,22 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `polymerfts.checkpoint` holds what a run saves and restores (2026-11-01): `validate_checkpoint`,
   `restore_recording_state`, `checkpoint_data` and the functions of the extension state left
   `polymerfts.utils`. `LFTS` and `CLFTS` keep their structure-function code in methods beside `_run`.
+- `scft.py`, `lfts.py` and `clfts.py` hold the flow of each method (2026-11-02), and the details moved
+  to objects with one topic each. `LFTS.saddle` (`saddle.py`) holds the compressors and the search:
+  `sim.find_saddle_point(w)` is now `sim.saddle.solve(w)`, `sim.compressor` is `sim.saddle.compressor`
+  and the input `saddle` is `sim.saddle.settings`; `LR` and `LRAM` are still exported by the package.
+  `CLFTS.thermodynamics` (`thermodynamics.py`) holds `pressure`, `pressure_virial`,
+  `chemical_potentials`, `number_densities`, `partition_ratios`, `grand_canonical_hamiltonian`,
+  `chain_densities`, `n_chemical_potentials`, `partition_ratio_species` and the `record_*` flags.
+  `SCFT.cell` (`cell_relaxation.py`) holds the lattice parameters that vary and the stress:
+  `sim.compute_stress(w, phi)` is now `sim.cell.stress(w, phi)`, and `crystal_system`,
+  `stress_scale`, `CRYSTAL_SYSTEMS`, `lx_reduced_indices`, `lx_full_indices`,
+  `angles_reduced_indices` and `angles_full_indices` moved there too. Both Langevin
+  classes have `structure_functions` (`structure_functions.py`), `SCFTResult` and `IterationInfo` live
+  in `scft_results.py`, and `force_jacobian` and `symmetric_jacobian` in `integrators.py`.
+  `checkpoint.RunRecord` replaces `restore_recording_state` and the lists of the loops: a new recorded
+  quantity needs one entry in its series and one `add()`, and a checkpoint without it gives NaN for
+  its pending samples. Results do not change.
 - Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
   of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and

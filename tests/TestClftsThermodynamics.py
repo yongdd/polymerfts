@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chemical potential and osmotic pressure operators of CL-FTS (CLFTS.chemical_potentials, CLFTS.pressure,
-CLFTS.pressure_virial).
+"""Chemical potential and osmotic pressure operators of CL-FTS (ThermodynamicOperators.chemical_potentials,
+pressure and pressure_virial).
 
 1. Pressure as a volume derivative: for random complex fields (standard deviation 5 for the
    real parts) and psi, the operator without the ideal term equals -(dH/dV + d ln N/dV)/C at
@@ -133,7 +133,7 @@ def state(sim, w_aux, psi):
     if sim.electrostatics is not None:
         sim.electrostatics.psi = psi
     phi, _ = sim.compute_concentrations(w_aux)
-    log_q = np.array([np.log(sim.prop_solver.get_partition_function(p)) for p in range(len(sim.chain_densities))])
+    log_q = np.array([np.log(sim.prop_solver.get_partition_function(p)) for p in range(len(sim.thermodynamics.chain_densities))])
     h_field = sum(sim.mpt.h_coef_mu2[i] * np.mean(w_aux[i] ** 2) + sim.mpt.h_coef_mu1[i] * np.mean(w_aux[i])
                   for i in range(len(sim.monomer_types))) + sim.mpt.h_const
     h_el = 0.0 if sim.electrostatics is None else sim.electrostatics.hamiltonian()
@@ -161,7 +161,7 @@ def pressure_derivative(root):
                           for _ in range(M)])
         psi = smooth(rng.normal(0, 1, n_grid), nx, 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), nx, 0.5)
         _, _, phi, pinned = state(sim, w_aux, psi)
-        operator = sim.pressure(pinned, phi) - np.sum(sim.chain_densities)
+        operator = sim.thermodynamics.pressure(pinned, phi) - np.sum(sim.thermodynamics.chain_densities)
         volume = sim.prop_solver.get_volume()
 
         # H and ln N at fixed numbers of chains n_p = (phi_p/alpha_p) C V0 and fixed grid values
@@ -170,7 +170,7 @@ def pressure_derivative(root):
             dilated_sim = quiet(lambda: CLFTS(dilated_params))
             log_q, h_fields, _, _ = state(dilated_sim, w_aux, psi)
             v = dilated_sim.prop_solver.get_volume()
-            return C * (volume * -np.sum(sim.chain_densities * log_q) + v * h_fields), log_normalization(dilated_sim, params), v
+            return C * (volume * -np.sum(sim.thermodynamics.chain_densities * log_q) + v * h_fields), log_normalization(dilated_sim, params), v
         (h_plus, n_plus, v_plus), (h_minus, n_minus, v_minus) = dilated(1 + 1e-5), dilated(1 - 1e-5)
         expected = -((h_plus - h_minus) + (n_plus - n_minus)) / (v_plus - v_minus) / C
         assert abs(operator - expected) < tolerance * abs(expected), \
@@ -196,18 +196,18 @@ def mean_field(root):
         psi_0 = 0.0 if es.screening_length is None else es.coupling * q / es.kappa_sq
         w_aux = sim.mpt.to_aux_fields(np.repeat(w[:, None], n_grid, axis=1)).astype(complex)
         _, _, phi, w_aux = state(sim, w_aux, np.full(n_grid, psi_0, dtype=complex))
-        flory_huggins = np.sum(sim.chain_densities) + 0.5 * phi_mean @ X @ phi_mean + 0.5 * ZETA_N * (np.sum(phi_mean) ** 2 - 1)
+        flory_huggins = np.sum(sim.thermodynamics.chain_densities) + 0.5 * phi_mean @ X @ phi_mean + 0.5 * ZETA_N * (np.sum(phi_mean) ** 2 - 1)
         if es.screening_length is not None:
             assert abs(q) > 0.05, "a net charge"
             flory_huggins += es.coupling * q ** 2 / (2 * es.kappa_sq)
-        pressure = sim.pressure(w_aux, phi) - normalization(sim)
+        pressure = sim.thermodynamics.pressure(w_aux, phi) - normalization(sim)
         assert abs(pressure - flory_huggins) < 1e-10 * flory_huggins, f"mean-field pressure {pressure} vs {flory_huggins}"
-        pressure = sim.pressure_virial(w_aux, phi)
+        pressure = sim.thermodynamics.pressure_virial(w_aux, phi)
         assert abs(pressure - flory_huggins) < 1e-10 * flory_huggins, f"mean-field virial pressure {pressure} vs {flory_huggins}"
-        mu = sim.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(len(sim.chain_densities))])
+        mu = sim.thermodynamics.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(len(sim.thermodynamics.chain_densities))])
         for p, polymer in enumerate(sim.polymers):
             shift = sum(block["length"] * (w + z * psi_0)[sim.monomer_types.index(block["type"])] for block in polymer["blocks"])
-            expected = np.log(sim.chain_densities[p]) + shift
+            expected = np.log(sim.thermodynamics.chain_densities[p]) + shift
             assert abs(mu[p] - expected) < 1e-10, f"mean-field chemical potential {p}: {mu[p]} vs {expected}"
 
 
@@ -221,8 +221,8 @@ def records(root):
     sim.electrostatics.psi = saved["psi_real"] + 1j * saved["psi_imag"]
     w_aux = np.reshape(saved["w_aux"], (3, -1))
     phi, _ = sim.compute_concentrations(w_aux)
-    pressure = sim.pressure_virial(w_aux, phi)
-    mu = sim.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(2)])
+    pressure = sim.thermodynamics.pressure_virial(w_aux, phi)
+    mu = sim.thermodynamics.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(2)])
     measured = complex(recorded["pressure_history_real"]) + 1j * complex(recorded["pressure_history_imag"])
     assert abs(measured - pressure) < 1e-10 * abs(pressure), f"recorded pressure {measured} vs {pressure}"
     measured = recorded["chemical_potential_history_real"] + 1j * recorded["chemical_potential_history_imag"]
@@ -242,7 +242,7 @@ def virial(root):
 
         def record_dilation(sample):
             phi = {name: np.asarray(value) for name, value in sample["phi"].items()}
-            dilation.append(sim.pressure(np.asarray(sample["w_aux"]), phi))
+            dilation.append(sim.thermodynamics.pressure(np.asarray(sample["w_aux"]), phi))
         sim = quiet(lambda: CLFTS(params, random_seed=5, callbacks={"dilation": record_dilation}))
         quiet(lambda: sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"}))
         recorded = loadmat(root / "virial" / f"dH_{steps:06d}.mat", squeeze_me=True)

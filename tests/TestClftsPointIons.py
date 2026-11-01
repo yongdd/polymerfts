@@ -197,18 +197,18 @@ def records(root):
     assert np.allclose(recorded[-1, 1:], es.ion_chemical_potentials(), rtol=0, atol=1e-12), "recorded ion mu"
     ratios = np.atleast_2d(data["partition_ratio_step_history"])
     assert ratios.shape == (2, len(es.ions)) and np.all(ratios > 0) and np.all(ratios <= 1), ratios
-    assert sim.partition_ratio_species == ["ion Na", "ion Cl"], sim.partition_ratio_species
+    assert sim.thermodynamics.partition_ratio_species == ["ion Na", "ion Cl"], sim.thermodynamics.partition_ratio_species
     # 1 for a real psi; |Q_s| for an imaginary psi, whose weights all have the modulus 1
     w_aux = np.zeros((2, n_grid), dtype=complex)
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 5.0)
-    assert np.max(np.abs(sim.partition_ratios(w_aux) - 1.0)) < 1e-14
+    assert np.max(np.abs(sim.thermodynamics.partition_ratios(w_aux) - 1.0)) < 1e-14
     es.psi = 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
     expected = [abs(q) for q in es.ion_densities()[1]]
-    assert max(expected) < 0.99 and np.allclose(sim.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
+    assert max(expected) < 0.99 and np.allclose(sim.thermodynamics.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
     # A complex psi, whose real part varies over the grid, makes the ratio depend on the sign of the
     # exponent: |Q_s| / <e^(-Re u_s)> with u_s = z_s (Gamma_s * psi)/N, smeared here with numpy
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 20.0) + 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
-    for ion, q, ratio in zip(es.ions, es.ion_densities()[1], sim.partition_ratios(w_aux)):
+    for ion, q, ratio in zip(es.ions, es.ion_densities()[1], sim.thermodynamics.partition_ratios(w_aux)):
         smeared = np.fft.ifftn(np.fft.fftn(np.reshape(es.psi, NX)) * np.exp(-ion["smearing_length"] ** 2 * es.k_sq / 2))
         expected = abs(q) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
         assert expected < 0.99 and abs(ratio - expected) < 1e-12 * expected, (ion["name"], ratio, expected)
@@ -258,7 +258,7 @@ def pressure(root):
             s.electrostatics.psi = psi
             phi, _ = s.compute_concentrations(pinned)
             es = s.electrostatics
-            log_q = np.log([s.prop_solver.get_partition_function(p) for p in range(len(s.chain_densities))])
+            log_q = np.log([s.prop_solver.get_partition_function(p) for p in range(len(s.thermodynamics.chain_densities))])
             _, ion_q = es.ion_densities()
             h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                            for i in range(M)) + s.mpt.h_const
@@ -267,7 +267,7 @@ def pressure(root):
             return log_q, np.log(np.asarray(ion_q, dtype=complex)), h_fields + h_psi, phi, pinned
 
         _, _, _, phi, pinned = state(sim)
-        operator = sim.pressure(pinned, phi) - np.sum(sim.chain_densities) - np.sum(ions)
+        operator = sim.thermodynamics.pressure(pinned, phi) - np.sum(sim.thermodynamics.chain_densities) - np.sum(ions)
 
         def dilated(scale):
             p = parameters(root / "pressure", screening_length=screening_length)
@@ -275,7 +275,7 @@ def pressure(root):
             s = quiet(lambda: CLFTS(p))
             log_q, log_ion_q, h_fields, _, _ = state(s)
             v = s.prop_solver.get_volume()
-            h = C * (volume * (-np.sum(s.chain_densities * log_q) - np.sum(ions * log_ion_q)) + v * h_fields)
+            h = C * (volume * (-np.sum(s.thermodynamics.chain_densities * log_q) - np.sum(ions * log_ion_q)) + v * h_fields)
             # ln N: n_grid/2 ln V per kept auxiliary field and 1/2 ln(V (k^2 + kappa^2)) per psi mode
             es = s.electrostatics
             modes = es.screened_k_sq > 0

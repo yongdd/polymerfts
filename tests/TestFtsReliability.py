@@ -41,10 +41,15 @@ def fields():
 class FailingLFTS(LFTS):
     fail_calls = ()
 
-    def find_saddle_point(self, w_aux):
-        self.calls = getattr(self, "calls", 0) + 1
-        phi, h, iterations, error = super().find_saddle_point(w_aux)
-        return phi, h, iterations, np.inf if self.calls in self.fail_calls else error
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        solve, self.calls = self.saddle.solve, 0
+
+        def failing_solve(w_aux):
+            self.calls += 1
+            phi, h, iterations, error = solve(w_aux)
+            return phi, h, iterations, np.inf if self.calls in self.fail_calls else error
+        self.saddle.solve = failing_solve
 
 
 def expect_error(call, kind):

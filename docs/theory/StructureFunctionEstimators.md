@@ -154,7 +154,7 @@ makes the estimator of Section 3 give $`(P + \mathbf{u}\mathbf{u}^T/\mathbf{u}\c
 
 **Point ions and fixed charges.** $`\psi`$ couples to the charge of the point ions and to a fixed charge density $`c_f`$ as well (Section 2 holds for the total charge density). The completion removes their charge $`\sum_s z_s \Gamma_s \tilde c_s + \tilde c_f`$ from $`(k^2/E)\,\tilde\psi`$ before it subtracts $`\sum_l z_l \tilde\mu_l`$, and the charge structure function of Section 6 is that of the total charge, ions and fixed charge included.
 
-**In polymerfts.** CL-FTS applies the completion when it has electrostatics and $`\mathbf{u} \neq 0`$ in a periodic box (`CLFTS._psi_probe`). In a closed box the structure functions are recorded without it, so along $`\mathbf{u}`$ they lack the charged zero-eigenvalue part, and the charge structure function is not recorded. The completion follows from the identity of Section 2 and was derived for polymerfts; it is not taken from a publication.
+**In polymerfts.** CL-FTS applies the completion when it has electrostatics and $`\mathbf{u} \neq 0`$ in a periodic box (`CLFTS.structure_functions.psi_probe`). In a closed box the structure functions are recorded without it, so along $`\mathbf{u}`$ they lack the charged zero-eigenvalue part, and the charge structure function is not recorded. The completion follows from the identity of Section 2 and was derived for polymerfts; it is not taken from a publication.
 
 ## 6. Charge Structure Function
 

@@ -98,7 +98,7 @@ def check_scft(root):
     before = copy.deepcopy(old)
     canonical, legacy = SCFT(params), SCFT(old)
     assert legacy.params == canonical.params and old == before
-    assert legacy.relax_cell and legacy.stress_scale == 0.5
+    assert legacy.relax_cell and legacy.cell.stress_scale == 0.5
     assert legacy.sg.get_hall_number() == 529
     rng = np.random.default_rng(51)
     initial = {m: rng.normal(0, 5, params["nx"]) for m in ("A", "B")}

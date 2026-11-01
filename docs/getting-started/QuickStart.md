@@ -136,12 +136,15 @@ If SCFT doesn't converge, reduce the mixing parameters:
 
 ## Making Your Own Variant
 
-The simulation classes are written so that one file is enough to change. To
-try a different iteration scheme, a new observable, or an extra term in the
-free energy, copy the file you want to change next to your script and edit the
-copy; the installed package keeps providing the C++ core and the shared modules.
+The simulations are written so that one file is enough to change. `scft.py`,
+`lfts.py` and `clfts.py` hold the flow of each method, and one object in its own
+file holds each topic: `saddle.py`, `structure_functions.py`, `thermodynamics.py`
+and `cell_relaxation.py`. To try a different iteration scheme, a new observable,
+or an extra term in the free energy, copy the file you want to change next to
+your script and edit the copy; the installed package keeps providing the C++ core
+and the shared modules.
 
-1. Copy the file (`scft.py`, `lfts.py` or `clfts.py`):
+1. Copy the file:
    ```bash
    cp src/python/scft.py ~/my_project/my_scft.py
    ```
@@ -169,6 +172,15 @@ copy; the installed package keeps providing the C++ core and the shared modules.
 Everything else stays the same; no rebuild and no reinstall. Edit `run()` or
 `__init__()` in the copy as you like, and keep several variants as separate
 files (`my_scft_v2.py`, ...).
+
+A copy of a topic file takes effect through its object, which you replace after
+creating the simulation:
+
+```python
+import my_saddle
+simulation = polymerfts.LFTS(params)
+simulation.saddle = my_saddle.SaddlePointSearch(simulation, params)
+```
 
 Other options:
 

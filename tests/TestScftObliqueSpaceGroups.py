@@ -6,7 +6,7 @@
    axis c) and all three angles of a triclinic group (P-1); a cell whose unique axis is not
    perpendicular to the others is rejected.
 2. Stress: with identical symmetrized fields of standard deviation 5, all six components of
-   SCFT.compute_stress with the group (reduced basis) equal those of the full grid, for
+   SCFT.cell.stress with the group (reduced basis) equal those of the full grid, for
    P2/m (unique axes b and c), P2_1/c, C2/c and P-1 in oblique cells, continuous and discrete
    chains with unequal segment lengths, on every available platform.
 3. Relaxation: AB diblock cylinders (f = 1/3, chi N = 18) along the unique axis, started in a
@@ -57,8 +57,8 @@ def free_angles():
     for symbol, hall, angles, expected in cases:
         sim = quiet(lambda: SCFT(parameters([12, 10, 8], [3.0, 3.2, 2.6], angles, cpu_platform(), relax_cell=True,
                                             space_group=group(symbol, hall))))
-        assert sim.crystal_system in ("Monoclinic", "Triclinic"), sim.crystal_system
-        assert sim.angles_reduced_indices == expected, f"{symbol} ({hall}) at {angles}: free angles {sim.angles_reduced_indices}"
+        assert sim.cell.crystal_system in ("Monoclinic", "Triclinic"), sim.cell.crystal_system
+        assert sim.cell.angles_reduced_indices == expected, f"{symbol} ({hall}) at {angles}: free angles {sim.cell.angles_reduced_indices}"
     try:
         quiet(lambda: SCFT(parameters([12, 10, 8], [3.0, 3.2, 2.6], [90.0, 90.0, 100.0], cpu_platform(),
                                       space_group=group("P2/m", 57))))
@@ -85,7 +85,7 @@ def stress():
                     sim = quiet(lambda: SCFT(parameters(nx, [3.0, 3.2, 2.6], angles, platform, chain_model=chain_model,
                                                         **extra)))
                     phi, _ = quiet(lambda: sim.compute_concentrations(w))
-                    values.append(np.array(sim.compute_stress(w, phi)))
+                    values.append(np.array(sim.cell.stress(w, phi)))
                 full, reduced = values
                 scale = np.max(np.abs(full))
                 assert np.max(np.abs(reduced - full)) < 1e-9 * scale, \

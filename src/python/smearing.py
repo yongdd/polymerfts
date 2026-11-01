@@ -462,3 +462,13 @@ class Smearing:
         if not self.enabled:
             return "Smearing(enabled=False)"
         return f"Smearing(type='{self.type}', params={self.params})"
+
+
+def smearing_of(params, prop_solver):
+    """The Smearing of a simulation. Γ(k) is applied with the platform FFT (PropagatorSolver.fourier),
+    except in a box that mixes periodic and wall axes, which smearing transforms with NumPy/SciPy."""
+    periodic_sides = [b.lower() == "periodic" for b in prop_solver.bc]
+    mixed_box = any(periodic_sides) and not all(periodic_sides)
+    return Smearing(prop_solver.nx, prop_solver.get_lx(), params.get("smearing", None),
+                    angles=prop_solver.get_angles_degrees(), bc=prop_solver.bc,
+                    transform=prop_solver.fourier if params.get("smearing") is not None and not mixed_box else None)

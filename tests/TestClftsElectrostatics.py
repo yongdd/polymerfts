@@ -537,7 +537,7 @@ def screened_measurements(root):
         sim = CLFTS(params, random_seed=5)
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     es, n_grid, types = sim.electrostatics, int(np.prod(NX)), ["E", "K"]
-    assert sim.mpt.aux_fields_dropped_idx and sim._psi_probe is not None
+    assert sim.mpt.aux_fields_dropped_idx and sim.structure_functions.psi_probe is not None
     fields = mat(root / "screened_measured", "fields_000002.mat")
     measured = mat(root / "screened_measured", "structure_function_000002.mat")
     w_aux = np.reshape(fields["w_aux"], (2, n_grid))

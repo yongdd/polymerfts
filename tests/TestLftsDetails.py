@@ -194,12 +194,15 @@ class FailingLFTS(LFTS):
     """LFTS whose saddle-point solve reports failure on chosen calls."""
     fail_calls = ()
 
-    def find_saddle_point(self, w_aux):
-        self._calls = getattr(self, "_calls", 0) + 1
-        phi, hamiltonian, saddle_iter, error_level = super().find_saddle_point(w_aux)
-        if self._calls in self.fail_calls:
-            error_level = np.inf
-        return phi, hamiltonian, saddle_iter, error_level
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        solve, self.calls = self.saddle.solve, 0
+
+        def failing_solve(w_aux):
+            self.calls += 1
+            phi, hamiltonian, saddle_iter, error_level = solve(w_aux)
+            return phi, hamiltonian, saddle_iter, np.inf if self.calls in self.fail_calls else error_level
+        self.saddle.solve = failing_solve
 
 
 def test_saddle_failure(root):
@@ -212,9 +215,10 @@ def test_saddle_failure(root):
     counts = {os.path.basename(f): np.size(loadmat(f, squeeze_me=True)["H_history"])
               for f in sorted(glob.glob(os.path.join(work, "dH_*.mat")))}
     sf_files = sorted(os.path.basename(f) for f in glob.glob(os.path.join(work, "structure_function_*.mat")))
-    check(counts == {"dH_000002.mat": 2, "dH_000004.mat": 2}
+    check(sim.run_status["saddle_failures"] == 1 and counts == {"dH_000002.mat": 2, "dH_000004.mat": 2}
           and sf_files == ["structure_function_000002.mat", "structure_function_000004.mat"],
-          f"failed saddle point at a recording step: the step is repeated, records {counts}")
+          f"failed saddle point at a recording step ({sim.run_status['saddle_failures']} failure): "
+          f"the step is repeated, records {counts}")
 
 
 def test_compressible_mean(root):
@@ -258,7 +262,7 @@ def test_lr_walls(root):
             p["saddle"] = {"max_iter": 100, "tolerance": 1e-6}
             p["compressor"] = {"name": name, "max_hist": 20, "start_error": 5e-1, "mix_min": 0.01, "mix_init": 0.01}
             sim = quiet(LFTS, p, random_seed=1)
-            _, _, iterations, error = quiet(sim.find_saddle_point, w.copy())
+            _, _, iterations, error = quiet(sim.saddle.solve, w.copy())
             check(iterations <= 10 and error < 1e-6,
                   f"{name} with walls {bc[::2]} {list(extra)}: saddle point in {iterations} iterations ({error:.1e})")
     p = params(os.path.join(root, "lr_walls"), nx, lx, 2, bc=[R, R, "absorbing", "absorbing", R, R])
@@ -285,19 +289,19 @@ def test_lr_uniform_mode(root):
             p = params(work, nx, lx, 2, **extra)
             p["compressor"]["name"] = name
             sim = quiet(LFTS, p, random_seed=1)
-            lr = sim.compressor.lr if name == "lram" else sim.compressor
+            lr = sim.saddle.compressor.lr if name == "lram" else sim.saddle.compressor
             n = int(np.prod(nx))
             w = np.zeros([2, n])
             w[0] = np.random.default_rng(5).normal(0.0, 2.0, n)
-            _, _, iterations, error = quiet(sim.find_saddle_point, w)
+            _, _, iterations, error = quiet(sim.saddle.solve, w)
             check(lr.jk.flat[0] == 1.0 and error < 1e-4,
                   f"{name} {extra['bc'][::2]} nx {nx}: J(0) = {lr.jk.flat[0]}, saddle point in {iterations} iterations ({error:.1e})")
     p = params(work, [16, 16], [3.0, 3.0], 2, zeta_n=100.0)
     p["compressor"]["name"] = "lr"
     sim = quiet(LFTS, p, random_seed=1)
     expected = 2.0/sim.mpt.eigenvalues[sim.mpt.aux_fields_imag_idx[0]]
-    check(np.isclose(sim.compressor.jk.flat[0], expected, rtol=1e-6),
-          f"lr with zeta_n: J(0) = {sim.compressor.jk.flat[0]:.6e} measured, 2/lambda = {expected:.6e}")
+    check(np.isclose(sim.saddle.compressor.jk.flat[0], expected, rtol=1e-6),
+          f"lr with zeta_n: J(0) = {sim.saddle.compressor.jk.flat[0]:.6e} measured, 2/lambda = {expected:.6e}")
 
 
 def test_file_permissions(root):

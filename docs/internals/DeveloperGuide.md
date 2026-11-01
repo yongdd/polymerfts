@@ -610,7 +610,13 @@ When adding new computational features, you must implement them for both platfor
 | Which propagators are computed, aggregation | `PropagatorComputationOptimizer`, `PropagatorAggregator` |
 | Concurrent groups | `Scheduler` |
 | Which objects a platform creates | the factories |
-| Simulation loop and parameters | `src/python` |
+| Flow of each method and its parameters | `src/python/scft.py`, `lfts.py`, `clfts.py` |
+| Saddle point search and compressors of L-FTS | `src/python/saddle.py` (`sim.saddle`) |
+| Structure functions of L-FTS and CL-FTS | `src/python/structure_functions.py` (`sim.structure_functions`) |
+| Thermodynamic operators of CL-FTS | `src/python/thermodynamics.py` (`sim.thermodynamics`) |
+| Cell relaxation and stress of SCFT | `src/python/cell_relaxation.py` (`sim.cell`) |
+| What SCFT returns and writes | `src/python/scft_results.py` |
+| What a Langevin run records, saves and restores | `src/python/checkpoint.py` (`RunRecord`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -713,6 +719,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 
 ### Python
 
+- `scft.py`, `lfts.py` and `clfts.py` show the flow of a method. A step that takes more than a few
+  lines belongs in an object with one topic, which the simulation creates in its constructor. The
+  object keeps the fixed parts it needs as attributes and reads what changes during a run through
+  `self.sim`, a `weakref.proxy`: a strong reference would make a cycle that keeps the solver and
+  device memory of a dropped simulation alive (`TestSimulationRelease`).
 - Follow PEP 8 style guidelines
 - Add docstrings for public functions
 - Include type hints where practical

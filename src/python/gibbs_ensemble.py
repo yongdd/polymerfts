@@ -353,7 +353,7 @@ class GibbsEnsemble:
         # Averages of the cycle, without the samples of its first skip_steps steps
         data = loadmat(os.path.join(directory, "dH_%06d.mat" % ((cycle + 1) * self.cycle_steps)), squeeze_me=True)
         skip = self.skip_steps // self.sample_interval
-        mu = np.reshape(np.real(data["chemical_potential_history_real"]), (-1, sim.n_chemical_potentials))[skip:]
+        mu = np.reshape(np.real(data["chemical_potential_history_real"]), (-1, sim.thermodynamics.n_chemical_potentials))[skip:]
         pressure = np.atleast_1d(np.real(data["pressure_history_real"]))[skip:]
         mu_mean, pressure_mean = np.mean(mu, axis=0), float(np.mean(pressure))
         ion_order = [ion["name"] for ion in sim.electrostatics.ions] if sim.electrostatics is not None else []

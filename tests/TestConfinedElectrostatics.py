@@ -240,7 +240,7 @@ def periodic(root):
     assert result.converged
     w = np.array([result.w[m] for m in sim.monomer_types])
     quiet(lambda: sim.compute_concentrations(w))
-    derivative = sim.compute_stress(w, result.phi)[0]
+    derivative = sim.cell.stress(w, result.phi)[0]
     delta, energies = 1e-4, []
     for sign in (1.0, -1.0):
         energies.append(scft(lx[0] + sign * delta, dict(result.w), result.psi)[1].free_energy_absolute)
@@ -283,7 +283,7 @@ def periodic(root):
         h_volume = h_fields + es.hamiltonian() + np.sum(ions * log_ion_q)
         return log_q, log_ion_q, h_volume, phi, pinned
     _, _, _, phi, pinned = quiet(lambda: state(sim))
-    operator = sim.pressure(pinned, phi) - 1.0 - np.sum(ions)
+    operator = sim.thermodynamics.pressure(pinned, phi) - 1.0 - np.sum(ions)
 
     def dilated(scale):
         s = clfts(scale)
@@ -318,7 +318,7 @@ def closed_scft(root):
     sim, result = run(lx[0], {"A": 3 * np.cos(2 * np.pi * x), "B": -3 * np.cos(2 * np.pi * x)})
     w = np.array([result.w[m] for m in sim.monomer_types])
     quiet(lambda: sim.compute_concentrations(w))
-    stress = sim.compute_stress(w, result.phi)[0]
+    stress = sim.cell.stress(w, result.phi)[0]
     eps = 1e-4
     f_plus, f_minus = (run(lx[0] + sign * eps, dict(result.w), result.psi)[1].free_energy_absolute for sign in (1, -1))
     derivative = (f_plus - f_minus) / (2 * eps)

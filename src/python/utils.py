@@ -5,6 +5,8 @@ the SCFT and LFTS simulation classes to reduce code duplication.
 """
 
 import ast
+import copy
+import itertools
 import json
 import operator
 import warnings
@@ -243,7 +245,7 @@ class DriftTailSummary:
 
 
 class PartitionRatioSummary:
-    """Smallest |Q_s|/<|e^(-u_s)|> of each canonical single-site species (CLFTS.partition_ratios) over
+    """Smallest |Q_s|/<|e^(-u_s)|> of each canonical single-site species (ThermodynamicOperators.partition_ratios) over
     a run, and the fractions of steps below 0.1 and 0.01. The step values are recorded as
     partition_ratio_step_history. Like the drift summary it gives numbers, not a verdict: a ratio
     near 0 means Q_s came close to its zero, the pole of -n_s ln Q_s."""
@@ -529,6 +531,78 @@ def process_random_copolymer(
 # =============================================================================
 # Langevin noise
 # =============================================================================
+def read_chains(params):
+    """Monomer types, segment lengths, polymers with their blocks, χN and random copolymers of the input."""
+    monomer_types = sorted(list(params["segment_lengths"].keys()))
+    segment_lengths = copy.deepcopy(params["segment_lengths"])
+    polymers = copy.deepcopy(params["polymers"])
+
+    # Flory-Huggins parameters chi N; pairs the user did not give do not interact
+    chi_n = parse_chi_n(params["chi_n"], segment_lengths)
+    for pair in itertools.combinations(monomer_types, 2):
+        key = ",".join(sorted(pair))
+        if key not in chi_n:
+            chi_n[key] = 0.0
+
+    # Polymer chains: block connectivity, then random copolymers (one effective monomer type each)
+    for polymer in polymers:
+        polymer["blocks_input"] = process_polymer_blocks(polymer)
+    random_fraction = {}
+    for polymer in polymers:
+        result = process_random_copolymer(polymer, segment_lengths)
+        if result is not None:
+            random_type, effective_segment_length, fraction = result
+            polymer["block_monomer_types"] = [random_type]
+            segment_lengths[random_type] = effective_segment_length
+            random_fraction[random_type] = fraction
+    return monomer_types, segment_lengths, polymers, chi_n, random_fraction
+
+
+def display_system(sim, chain_model):
+    """Prints the box, the chains and the interactions of a simulation."""
+    solver = sim.prop_solver
+    print("---------- Simulation Parameters ----------")
+    print("Platform:", solver.platform)
+    print("Box Dimension: %d" % (solver.dim))
+    print("Nx:", solver.nx)
+    print("Lx [a, b, c]:", solver.get_lx())
+    print("Angles [alpha, beta, gamma]:", list(solver.get_angles_degrees()))
+    print("dx:", solver.get_dx())
+    print("Volume: %f" % (solver.get_volume()))
+
+    print("Chain model: %s" % (chain_model))
+    print("Segment lengths:\n\t", list(sim.segment_lengths.items()))
+    print("Conformational asymmetry (epsilon):")
+    for monomer_pair in itertools.combinations(sim.monomer_types, 2):
+        print("\t%s/%s: %f" % (monomer_pair[0], monomer_pair[1],
+                               sim.segment_lengths[monomer_pair[0]] / sim.segment_lengths[monomer_pair[1]]))
+
+    print("χN:")
+    for key in sim.chi_n:
+        print("\t%s: %f" % (key, sim.chi_n[key]))
+    if sim.zeta_n is not None:
+        print("zeta_n: %f" % (sim.zeta_n))
+    solver.display_architectures()
+
+
+def mean_concentrations(sim):
+    """Volume-averaged concentration of each monomer type from the chain compositions.
+
+    mean(phi_i) = sum_p (f_p / alpha_p) sum_{blocks b of p} length_b * (fraction of i in b).
+    Use the native block lengths, including accepted discrete lengths snapped
+    to integer multiples of ds, to match the concentration normalization.
+    """
+    phi_mean = np.zeros(len(sim.monomer_types))
+    for p in range(sim.prop_solver.get_n_polymer_types()):
+        chain = sim.prop_solver.get_polymer(p)
+        for block in chain.get_blocks():
+            weight = chain.get_volume_fraction() * block.contour_length / chain.get_alpha()
+            fractions = sim.random_fraction.get(block.monomer_type, {block.monomer_type: 1.0})
+            for monomer_type, fraction in fractions.items():
+                phi_mean[sim.monomer_types.index(monomer_type)] += weight * fraction
+    return phi_mean
+
+
 def calculate_sigma(langevin_nbar, langevin_dt, n_grids, volume):
     """Calculate Langevin noise strength for L-FTS simulations.
 

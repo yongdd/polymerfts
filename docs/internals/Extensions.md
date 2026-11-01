@@ -5,6 +5,10 @@ integrate, resolve the saddle or concentrations, accept the step, update WTMD,
 record observables, call observers, and checkpoint. The default integrator is
 Leimkuhler–Matthews (LM). Existing simulation scripts keep working.
 
+A callback suits most observables. To keep a quantity in the `dH_*.mat` files and in
+checkpoints instead, add it to the series of the run's `RunRecord` and call
+`record.add()` in the run loop: the files and restarts follow from that table.
+
 Start with [CustomExtensions.py](../../examples/tools/CustomExtensions.py), which
 implements a composition observable and an additive-noise predictor–corrector
 integrator (one explicit Heun correction).

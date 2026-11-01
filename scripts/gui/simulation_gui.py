@@ -428,7 +428,7 @@ def build_script(values):
             if len(params["segment_lengths"]) == 2 and next(iter(params["chi_n"].values())) <= 0:
                 raise ValueError("This A/B L-FTS setup requires positive chi N.")
             mixing["name"] = choice("compressor", ("am", "lr", "lram"))
-            # The library's rule (lfts.py): LR needs the pressure field as the only imaginary one
+            # The library's rule (saddle.py): LR needs the pressure field as the only imaginary one
             if mixing["name"] != "am" and imaginary_exchange_fields(list(params["segment_lengths"]), params["chi_n"]):
                 raise ValueError("Compressors lr and lram need the pressure field as the only imaginary field; "
                                  "these chi N values give another one. Choose am.")

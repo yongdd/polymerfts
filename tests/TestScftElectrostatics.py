@@ -138,7 +138,7 @@ def stress():
         w = np.array([result.w[m] for m in sim.monomer_types])
         with contextlib.redirect_stdout(io.StringIO()):
             sim.compute_concentrations(w)
-        derivative = sim.compute_stress(w, result.phi)[0]
+        derivative = sim.cell.stress(w, result.phi)[0]
         delta, energies = 1e-4, []
         for sign in (1.0, -1.0):
             _, shifted = run(parameters(18.0, electrostatics, lx=4.3 + sign * delta), dict(result.w), result.psi)

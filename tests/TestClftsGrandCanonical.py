@@ -168,8 +168,8 @@ def ensembles(root):
     assert np.allclose(q_grand, q, rtol=1e-12, atol=0), "partition functions"
     for m in "AB":
         assert np.max(np.abs(phi_grand[m] - phi[m])) < 1e-12, f"concentration {m}"
-    assert np.allclose(sim.number_densities(q_grand), [0.6, 0.4 / ALPHA_H], rtol=1e-12, atol=0), "numbers of chains"
-    assert np.allclose(sim.chemical_potentials(q_grand), sim_canonical.chemical_potentials(q), rtol=0, atol=1e-12), \
+    assert np.allclose(sim.thermodynamics.number_densities(q_grand), [0.6, 0.4 / ALPHA_H], rtol=1e-12, atol=0), "numbers of chains"
+    assert np.allclose(sim.thermodynamics.chemical_potentials(q_grand), sim_canonical.thermodynamics.chemical_potentials(q), rtol=0, atol=1e-12), \
         "chemical potentials"
 
 
@@ -179,7 +179,7 @@ def hamiltonian(sim, w_aux):
     partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
     h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
                                     include_const_term=True, phi=phi_smeared)
-    return h + sim.electrostatics.hamiltonian() + sim.grand_canonical_hamiltonian(partitions), phi_smeared
+    return h + sim.electrostatics.hamiltonian() + sim.thermodynamics.grand_canonical_hamiltonian(partitions), phi_smeared
 
 
 def forces(root):
@@ -287,11 +287,11 @@ def pressure(root):
             h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                            for i in range(M)) + s.mpt.h_const
             # Terms that scale with V: the fields, psi with the grand-canonical ions, the homopolymer
-            h_volume = h_fields + s.electrostatics.hamiltonian() + s.grand_canonical_hamiltonian(q)
+            h_volume = h_fields + s.electrostatics.hamiltonian() + s.thermodynamics.grand_canonical_hamiltonian(q)
             return np.log(q[0]), h_volume, phi, pinned
 
         _, _, phi, pinned = state(sim)
-        operator = sim.pressure(pinned, phi) - 0.6
+        operator = sim.thermodynamics.pressure(pinned, phi) - 0.6
 
         def dilated(scale):
             s = make(scale)
@@ -385,15 +385,15 @@ def check_zero_partition(root, platform, reduced, ensemble, length, integrator):
     expected_mu = [0.0, 0.0 if grand_canonical else -np.inf]
     with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise"):
         warnings.simplefilter("error", RuntimeWarning)
-        mu = sim.chemical_potentials(partitions)
+        mu = sim.thermodynamics.chemical_potentials(partitions)
         np.testing.assert_array_equal(mu.real, expected_mu)
         np.testing.assert_array_equal(mu.imag, np.zeros(2))
         h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
                                        include_const_term=True, phi=phi)
-        h += sim.grand_canonical_hamiltonian(partitions)
+        h += sim.thermodynamics.grand_canonical_hamiltonian(partitions)
         assert np.isfinite(h)
-        assert np.isfinite(sim.pressure(w_aux, phi))
-        assert np.isfinite(sim.pressure_virial(w_aux, phi))
+        assert np.isfinite(sim.thermodynamics.pressure(w_aux, phi))
+        assert np.isfinite(sim.thermodynamics.pressure_virial(w_aux, phi))
         assert np.all(np.isfinite(sim.evaluate_force(w_aux)))
         # Exercise the public sampling path at the unchanged cancellation state.
         status = quiet(lambda: sim.run({name: w[i] for i, name in enumerate("AB")}))
@@ -411,13 +411,13 @@ def check_zero_partition(root, platform, reduced, ensemble, length, integrator):
     # An occupied canonical species still has a logarithmic singularity.
     with np.errstate(divide="raise", invalid="raise"):
         try:
-            sim.chemical_potentials([0.0, 0.0])
+            sim.thermodynamics.chemical_potentials([0.0, 0.0])
         except FloatingPointError:
             pass
         else:
             raise AssertionError("Positive canonical density with Q=0 must remain singular")
     for invalid_q in (np.nan, np.inf):
-        assert not np.isfinite(sim.chemical_potentials([invalid_q, 0.0])[0])
+        assert not np.isfinite(sim.thermodynamics.chemical_potentials([invalid_q, 0.0])[0])
 
 
 def main():
