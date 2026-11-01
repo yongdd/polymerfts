@@ -359,11 +359,12 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Non
         raise ValidationError("'recording' needs a 'dir' path")
     for key in ("checkpoint_interval", "sample_interval", "statistics_save_interval"):
         _integer(recording.get(key), "recording." + key)
-    if "pressure" in recording:
-        if not isinstance(recording["pressure"], (bool, np.bool_)):
-            raise ValidationError("'recording.pressure' must be True or False")
-        if recording["pressure"] and not complex_fields:
-            raise ValidationError("'recording.pressure' is supported in CL-FTS only")
+    for key in ("pressure", "concentrations"):
+        if key in recording:
+            if not isinstance(recording[key], (bool, np.bool_)):
+                raise ValidationError(f"'recording.{key}' must be True or False")
+            if recording[key] and not complex_fields:
+                raise ValidationError(f"'recording.{key}' is supported in CL-FTS only")
     _integer(params.get("verbose_level"), "verbose_level", minimum=0)
     if params["verbose_level"] > 2:
         raise ValidationError("'verbose_level' must be 0, 1 or 2")

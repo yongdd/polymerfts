@@ -53,6 +53,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   of a run prints its smallest value and the fractions of steps below 0.1 and 0.01,
   `scripts/analysis/drift_tail.py` summarizes the records, and checkpoints keep the pending
   steps (NaN for the steps of a checkpoint without the record).
+- `recording.concentrations` (CL-FTS, 2026-10-31) records the mean concentration of every monomer
+  type and point ion on the grid in the `structure_function_NNNNNN.mat` files
+  (`concentration_<name>_real`/`_imag`,
+  `concentration_step_count`), over every step of each interval at no extra cost. Checkpoints keep
+  the pending sums; a continued run reproduces them bit for bit, and a run continued from a
+  checkpoint without them averages from the restart on.
+  `examples/charged/clfts/CounterionsBetweenPlates.py` uses it instead of a callback.
 - `examples/charged/scft/BrushMultivalentIons.py` (2026-11-01): a brush with multivalent ions and the
   ion self-energy of Duan, Agrawal and Wang (2025), with `cn-adi2`, in the box of their Fig. 2 and in
   the solution of the experiment of Yu et al. (2016) with a closed cell.

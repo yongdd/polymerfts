@@ -399,6 +399,15 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
                 values = np.atleast_1d(np.asarray(data[key]))
                 if np.size(values) != count * per_sample or np.any(np.isposinf(np.real(values))):
                     raise ValidationError(f"Invalid checkpoint measurement '{key}'")
+        # Pending sums of recording.concentrations and their number of steps, absent in checkpoints
+        # of runs without them
+        for name in getattr(sim, "concentration_names", []):
+            key = _measurement_key("sf", "concentration_" + name)
+            if key in data and (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))):
+                raise ValidationError(f"Invalid checkpoint concentration sum '{name}'")
+        key = _measurement_key("sf", "concentration steps")
+        if key in data and (np.size(data[key]) != 1 or not np.all(np.isfinite(data[key])) or np.any(np.real(data[key]) < 0)):
+            raise ValidationError("Invalid checkpoint measurement 'concentration steps'")
         for monomer in sim.monomer_types:
             names = [kind + monomer + suffix for kind in ("w_", "phi_") for suffix in
                      (("",) if sim.prop_solver.field_type == "real" else ("_real", "_imag"))]
@@ -486,7 +495,7 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
 def restore_recording_state(data, H_history, dH_history, sf_average, drift_history=None, *, psi_drift_history=None,
                             drift_step_history=None, n_fields=1, psi_drift_step_history=None,
                             partition_ratio_step_history=None, n_ratios=0, chemical_potential_history=None,
-                            pressure_history=None, n_polymers=1, number_density_history=None):
+                            pressure_history=None, n_polymers=1, number_density_history=None, optional_sums=None):
     """Restore pending samples without MATLAB's squeeze changing their shape."""
     if data is None or "record_sample_count" not in data:
         return 0
@@ -528,9 +537,12 @@ def restore_recording_state(data, H_history, dH_history, sf_average, drift_histo
             partition_ratio_step_history.extend(np.full((len(drift_step_history), n_ratios), np.nan))
     for key in dH_history:
         dH_history[key].extend(np.atleast_1d(data[_measurement_key("dH", key)]).tolist())
+    # Sums that a checkpoint may lack (written without the option) start from zero
     for key, array in sf_average.items():
-        array[:] = np.asarray(data[_measurement_key("sf", key)]).reshape(array.shape)
-    return int(data["record_sample_count"])
+        name = _measurement_key("sf", key)
+        if name in data or key not in (optional_sums or ()):
+            array[:] = np.asarray(data[name]).reshape(array.shape)
+    return count
 
 
 class DriftTailSummary:

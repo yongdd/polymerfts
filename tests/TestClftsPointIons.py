@@ -17,6 +17,11 @@ An AB diblock with charged A blocks (discrete chains, N = 20) in a salt of point
 5. Debye-Hueckel statistics: with neutral chains and weak coupling psi is Gaussian with the screening
    operator (k^2 + kappa^2)/E + sum_s z_s^2 c_s Gamma_s^2/N: V Nbar^(1/2) times this operator times
    <|psi(k)/n|^2> is 1 and the holomorphic <psi(k) psi(-k)> -1, mode by mode on average (etd steps).
+6. recording.concentrations: the means in the statistics files equal the means over every accepted
+   step that a callback sees, bit for bit, for monomer types and point ions, with and without
+   electrostatics, whatever sample_interval; they keep the amounts; a continued run reproduces them bit
+   for bit, a checkpoint without the sums averages from the restart on, a checkpoint with corrupt sums
+   is refused, and the option is checked (a bool, CL-FTS only).
 """
 
 import contextlib
@@ -30,6 +35,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, PlatformSelector, ValidationError
+from polymerfts.utils import _measurement_key, atomic_savemat
+from polymerfts.validation import validate_lfts_params
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -311,6 +318,90 @@ def debye_hueckel(root):
             f"Debye-Hueckel (screening {screening_length}): <|psi|^2> {variance:.4f}, <psi psi> {holomorphic:.4f}"
 
 
+def concentrations(root):
+    """Mean concentrations of the statistics files (recording.concentrations)."""
+    def options(directory, steps, **recording):
+        params = parameters(directory, steps=steps)
+        params["recording"].update({"concentrations": True, "sample_interval": 3, "statistics_save_interval": 4,
+                                    "checkpoint_interval": 2} | recording)
+        return params
+
+    def fields():
+        rng = np.random.default_rng(3)
+        return {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+
+    def run(directory, steps, continue_from=None, **recording):
+        sim = quiet(lambda: CLFTS(options(directory, steps, **recording), random_seed=7))
+        with contextlib.redirect_stdout(io.StringIO()):
+            if continue_from is None:
+                sim.run(initial_fields=fields())
+            else:
+                sim.continue_run(continue_from)
+
+    def stored(directory, step):
+        return loadmat(directory / f"structure_function_{step:06d}.mat", squeeze_me=True)
+
+    # The means equal those of the accepted states, with the amounts of the species
+    for charged in (True, False):
+        directory = root / f"concentrations_{charged}"
+        params = options(directory, 4)
+        if not charged:
+            params.pop("electrostatics")
+        totals = {}
+
+        def collect(sample):
+            parts = dict(sample["phi"])
+            if charged:
+                parts.update({ion["name"]: density for ion, density in zip(sim.electrostatics.ions, sim.electrostatics.ion_densities()[0])})
+            for name, value in parts.items():
+                totals[name] = totals.get(name, 0.0) + value
+        sim = quiet(lambda: CLFTS(params, random_seed=7, callbacks={"collect": collect}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            sim.run(initial_fields=fields())
+        data = stored(directory, 4)
+        assert sorted(totals) == (["A", "B", "Cl", "Na"] if charged else ["A", "B"]), sorted(totals)
+        assert data["concentration_step_count"] == 4, data["concentration_step_count"]
+        for name, total in totals.items():
+            mean = data[f"concentration_{name}_real"] + 1j * data[f"concentration_{name}_imag"]
+            assert mean.shape == tuple(NX), mean.shape
+            assert np.all(mean.ravel() == total / 4), f"mean concentration of {name}"
+        assert abs(np.mean(data["concentration_A_real"]) - 0.5) < 1e-10, "amount of A"
+        if charged:
+            for ion in sim.electrostatics.ions:
+                assert abs(np.mean(data[f"concentration_{ion['name']}_real"]) - ion["concentration"]) < 1e-12, ion["name"]
+
+    # A continued run reproduces the pending sums bit for bit
+    run(root / "c_full", 4)
+    run(root / "c_part", 2)
+    run(root / "c_part", 4, continue_from=root / "c_part" / "fields_000002.mat")
+    a, b = stored(root / "c_full", 4), stored(root / "c_part", 4)
+    keys = [k for k in a if k.startswith("concentration_")]
+    assert len(keys) == 9 and all(np.all(a[k] == b[k]) for k in keys), "continued run, concentrations"
+
+    # A checkpoint without the sums averages from the restart on
+    run(root / "c_old", 2, concentrations=False)
+    run(root / "c_old", 8, continue_from=root / "c_old" / "fields_000002.mat")
+    counts = [int(stored(root / "c_old", step)["concentration_step_count"]) for step in (4, 8)]
+    assert counts == [2, 4], counts
+    assert np.all(np.isfinite(stored(root / "c_old", 4)["concentration_A_real"])), "interval after the restart"
+
+    # A checkpoint with corrupt sums is refused
+    checkpoint = {k: v for k, v in loadmat(root / "c_part" / "fields_000002.mat", squeeze_me=True).items()
+                  if not k.startswith("__")}
+    key, steps = (_measurement_key("sf", name) for name in ("concentration_A", "concentration steps"))
+    for name, change in (("nan", {key: np.full(int(np.prod(NX)), np.nan)}), ("size", {key: np.zeros(3)}), ("steps", {steps: -1.0})):
+        path = root / f"c_{name}.mat"
+        atomic_savemat(path, checkpoint | change)
+        sim = quiet(lambda: CLFTS(options(root / "c_corrupt", 4), random_seed=7))
+        expect_validation_error(lambda: sim.continue_run(path), "concentration")
+
+    # Input checks
+    params = options(root / "c_input", 2, concentrations="yes")
+    expect_validation_error(lambda: CLFTS(params), "'recording.concentrations' must be True or False")
+    params = options(root / "c_input", 2, pressure=False)
+    expect_validation_error(lambda: validate_lfts_params(params), "'recording.concentrations' is supported in CL-FTS only")
+
+
 def main():
     if not any(p.startswith("cpu") for p in PlatformSelector.avail_platforms()):
         return 77
@@ -318,7 +409,7 @@ def main():
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("forces", forces), ("linear response", linear_response),
                             ("records", records), ("restart", restart), ("pressure", pressure),
-                            ("Debye-Hueckel statistics", debye_hueckel)):
+                            ("Debye-Hueckel statistics", debye_hueckel), ("concentrations", concentrations)):
             check(root)
             print(f"[PASS] {name}")
     return 0

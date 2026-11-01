@@ -19,7 +19,7 @@ solvent S of one segment is the reference chain; the ions do not feel it), l_B =
 mu = 2/(q (E/N) sigma), C = Nbar^(1/2). With zeta_n = 0 the solvent has no field (docs/theory/
 ComplexLangevinSimulation.md, Section 6).
 
-Result (60000 steps, about 6 min on one CPU core): the CL-FTS profile agrees with an exact Monte Carlo
+Result (60000 steps, about 10 min on one CPU core): the CL-FTS profile agrees with an exact Monte Carlo
 simulation of the same lattice model (ions on the grid sites, smeared Coulomb pair potential of the
 cosine series) within its statistical errors, chi^2 = 43/32, and with PB + one loop to about 2 % of
 the fluctuation correction (the next order, Xi^2). At stronger coupling CL-FTS needs smaller time
@@ -32,6 +32,7 @@ import os
 
 import numpy as np
 from scipy.fft import dct, idct
+from scipy.io import loadmat
 from scipy.optimize import root
 
 # OpenMP environment variables (set before importing polymerfts)
@@ -66,31 +67,17 @@ params = {
                        "ions": {"Ci": {"valence": q, "concentration": 0.0, "smearing_length": a}}},
     "langevin": {"max_step": steps, "dt": 1.0, "nbar": C ** 2},
     "recording": {"dir": "data_counterions", "checkpoint_interval": steps, "sample_interval": 100,
-                  "statistics_save_interval": steps},
+                  "statistics_save_interval": block, "concentrations": True},   # mean c(r) of each block
     "verbose_level": 0,
 }
 
 
-class Profile:
-    """Block means of the laterally averaged counterion density Re c(z)."""
-
-    def __init__(self):
-        self.blocks, self.total, self.count, self.sim = [], np.zeros(nz), 0, None
-
-    def __call__(self, sample):
-        (density,), _ = self.sim.electrostatics.ion_densities()
-        self.total += np.real(np.reshape(density, nx)).mean(axis=(0, 1))
-        self.count += 1
-        if self.count == block:
-            self.blocks.append(self.total / block)
-            self.total, self.count = np.zeros(nz), 0
-
-
-profile = Profile()
-simulation = CLFTS(params=params, random_seed=2001, callbacks={"profile": profile})
-profile.sim = simulation
+simulation = CLFTS(params=params, random_seed=2001)
 simulation.run(initial_fields={"S": np.zeros(int(np.prod(nx)))})
-kept = np.array(profile.blocks[1:])                 # the first block is equilibration
+
+# Laterally averaged Re c(z) of each block; the first block is equilibration
+kept = np.array([loadmat(f"data_counterions/structure_function_{step:06d}.mat")["concentration_Ci_real"].mean(axis=(0, 1))
+                 for step in range(2 * block, steps + 1, block)])
 cl, cl_err = kept.mean(axis=0), kept.std(axis=0, ddof=1) / np.sqrt(len(kept))
 
 # ---- Exact limits of the lattice model: PB (zero loop) and the one-loop correction ----

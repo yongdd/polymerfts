@@ -196,6 +196,7 @@ Before the Leimkuhler-Matthews noise was introduced, this was the step of every 
 
 **Observables.**
 - **H:** the recorded $`H`$ includes $`H_{el}`$.
+- **Concentrations:** `recording.concentrations` records the means of $`\phi_i(\mathbf{r})`$ and $`c_s(\mathbf{r})`$ on the grid. Their real parts are the profiles of walls and ordered phases; their imaginary parts average to zero.
 - **Structure functions:** The estimator of [Structure functions, Section 4.2](LangevinFieldTheoreticSimulation.md#42-estimator) gives $`S_{ij}`$ of all types, counterions included. For composition modes without an auxiliary field, such as two types that differ only in charge, $`\psi`$ completes the estimator ([Structure Function Estimators](StructureFunctionEstimators.md#5-modes-without-an-auxiliary-field)). The charge structure function is $`S_{zz} = \sum_{ij} z_i z_j S_{ij}`$. The files also hold `charge_structure_function`, the structure function of the smeared charge density. It combines two estimators that use $`\psi`$ with the weight of least variance at each wavevector, and it is much less noisy where screening is strong ([Section 6](StructureFunctionEstimators.md#6-charge-structure-function)).
 - **RPA:** the RPA of [Structure functions, Section 4.4](LangevinFieldTheoreticSimulation.md#44-rpa-reference) adds $`E/(k^2 + \kappa^2)\, z z^T`$ to the interaction matrix.
 - **Estimators:** the estimators that use $`\psi`$ ([Structure Function Estimators](StructureFunctionEstimators.md#5-modes-without-an-auxiliary-field)) take $`(k^2 + \kappa^2)/E`$ in place of $`k^2/E`$.

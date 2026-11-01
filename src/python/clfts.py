@@ -347,6 +347,13 @@ class CLFTS:
                     warnings.warn("With rk2 the recorded pressure carries an O(ds^2) contour error that is large "
                                   "when one contour step b sqrt(ds) exceeds the smearing length ("
                                   + ", ".join(coarse) + ", in R0); use numerical_method 'rqm4' or a smaller ds")
+        # With recording.concentrations, the means over all steps of the concentrations of the monomer
+        # types and point ions go into the statistics files
+        self.record_concentrations = bool(self.recording.get("concentrations", False))
+        self.concentration_names = []
+        if self.record_concentrations:
+            self.concentration_names = self.monomer_types + (
+                [ion["name"] for ion in self.electrostatics.ions] if self.electrostatics is not None else [])
         # Canonical single-site species, discrete chains of one segment and point ions, whose ratio
         # |Q_s|/<|e^(-u_s)|> is recorded every step (partition_ratios())
         self._single_site_polymers = [
@@ -1014,6 +1021,14 @@ class CLFTS:
             charge_sums = {key: np.zeros(self.prop_solver.nx, dtype=np.complex128)
                            for key in self.electrostatics.CHARGE_SUMS}
             recorded.update(charge_sums)
+        # Mean concentrations on the grid: sums of φ_i of the monomer types and c_s of the point ions
+        # over every accepted step, and the number of those steps
+        concentration_sums = {"concentration_" + name: np.zeros(self.prop_solver.n_grid, dtype=np.complex128)
+                              for name in self.concentration_names}
+        concentration_steps = np.zeros(1)
+        if concentration_sums:
+            recorded.update(concentration_sums)
+            recorded["concentration steps"] = concentration_steps
         sf_sample_count = restore_recording_state(
             _restart_data, H_history, dH_history, recorded, drift_history,
             psi_drift_history=psi_drift_history if self.electrostatics is not None else None,
@@ -1022,7 +1037,8 @@ class CLFTS:
             partition_ratio_step_history=partition_ratio_step_history if n_ratios else None, n_ratios=n_ratios,
             chemical_potential_history=chemical_potential_history if self.record_chemical_potentials else None,
             pressure_history=pressure_history if self.record_pressure else None, n_polymers=self.n_chemical_potentials,
-            number_density_history=number_density_history if self.record_number_densities else None)
+            number_density_history=number_density_history if self.record_number_densities else None,
+            optional_sums=list(concentration_sums) + ["concentration steps"])
 
         # Create an empty array for field update algorithm
         # (a checkpoint loaded with squeeze_me drops the leading axis when M == 1)
@@ -1250,6 +1266,17 @@ class CLFTS:
                 for key in self.chi_n:
                     dH_history[key] = []
 
+            # Mean concentrations: every step, since φ and c_s of the accepted state are at hand and the
+            # fast modes of ψ decorrelate within a few steps
+            if concentration_sums:
+                for name in self.monomer_types:
+                    concentration_sums["concentration_" + name] += phi[name]
+                if self.electrostatics is not None:
+                    densities, _ = self.electrostatics.ion_densities()
+                    for ion, density in zip(self.electrostatics.ions, densities):
+                        concentration_sums["concentration_" + ion["name"]] += density
+                concentration_steps += 1
+
             # Calculate structure function
             if langevin_step % self.recording["sample_interval"] == 0:
                 # Perform Fourier transforms (full FFT for complex fields).
@@ -1371,6 +1398,13 @@ class CLFTS:
                     for form, s_form in (("mixed", mixed), ("field_field", mixed + difference)):
                         mdic["charge_structure_function_" + form + "_real"] = np.real(s_form)
                         mdic["charge_structure_function_" + form + "_imag"] = np.imag(s_form)
+                # Mean concentrations on the grid, shaped like nx
+                for key, total in concentration_sums.items():
+                    mean = np.reshape(total, self.prop_solver.nx) / max(concentration_steps[0], 1)
+                    mdic[key + "_real"] = np.real(mean)
+                    mdic[key + "_imag"] = np.imag(mean)
+                if concentration_sums:
+                    mdic["concentration_step_count"] = int(concentration_steps[0])
                 mdic["sample_count"] = sf_sample_count
                 mdic["simulation_metadata_json"] = json.dumps(self.metadata)
                 atomic_savemat(
