@@ -14,6 +14,10 @@ rescaled to a standard deviation of 5, continuous and discrete chains):
 - Pmmm 32x24x16, irreducible basis: the recursive 3m CrysFFT (nz/2 = 8); Ly
   alone, then Lz alone;
 - Im-3m 16^3, m3 physical basis: the recursive 3m CrysFFT on a cubic cell.
+
+The ObliqueZ CrysFFT folds z, which needs alpha = beta = 90 degrees exactly. An
+angle just off 90 degrees, inside the tolerance of the crystal system, is refused
+before the box changes, and the solver then follows a valid change.
 """
 
 import contextlib
@@ -65,6 +69,38 @@ def results(platform, chain, case, lattices, fields):
     return out
 
 
+def oblique_z_keeps_its_axis(platform):
+    """A cell the ObliqueZ CrysFFT cannot represent is refused, the box stays as it was, and the
+    solver then follows a valid change like a fresh solver, on a field of standard deviation 5."""
+    nx, lx, moved, angles = [12, 12, 16], [4.0, 4.0, 3.0], [4.1, 4.1, 3.1], [90.0, 90.0, 120.0]
+    f = _core.SpaceGroup(nx, 485).symmetrize(np.random.default_rng(7).normal(0.0, 1.0, int(np.prod(nx))))
+
+    def solver(box):
+        sg = _core.SpaceGroup(nx, 485)
+        s = PropagatorSolver(nx=nx, lx=box, ds=0.05, bond_lengths={"A": 1.0}, bc=["periodic"] * 6,
+                             chain_model="continuous", numerical_method="rqm4", platform=platform,
+                             space_group=sg, angles=angles)
+        s.add_polymer(1.0, [["A", 1.0, 0, 1]])
+        return s, {"A": sg.to_reduced_basis(5.0 * f / np.std(f))}
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        s, w = solver(lx)
+        for off in ([90.00008, 90.0, 120.0], [90.0, 90.00008, 120.0]):
+            try:
+                s.set_lattice_parameters(lx, off)
+                return False
+            except RuntimeError as error:
+                if "ObliqueZ" not in str(error):
+                    return False
+            if not np.allclose(s.get_angles_degrees(), angles, rtol=0.0, atol=1e-12):
+                return False
+        s.set_lattice_parameters(moved, angles)
+        s.compute_propagators(w)
+        fresh, w_fresh = solver(moved)
+        fresh.compute_propagators(w_fresh)
+        return abs(s.get_partition_function(0) / fresh.get_partition_function(0) - 1.0) < 1e-12
+
+
 def max_rel(a, b):
     return float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(np.max(np.abs(b)), 1e-300))
 
@@ -101,6 +137,11 @@ def main():
                 checks += 1
                 failures += not ok
                 print(f"[{'PASS' if ok else 'FAIL'}] cuda vs {cpu[0]} {symbol} {basis} {nx} {chain}: stress {d:.1e}")
+    for platform in platforms:
+        ok = oblique_z_keeps_its_axis(platform)
+        checks += 1
+        failures += not ok
+        print(f"[{'PASS' if ok else 'FAIL'}] {platform} ObliqueZ refuses alpha off 90 degrees")
     print(f"\n{checks - failures} passed, {failures} failed")
     return 1 if cuda_part_missing() or failures else 0
 

@@ -54,6 +54,7 @@ private:
         thread_local ThreadBuffers buffers;
         if (buffers.size != M_physical_)
         {
+            buffers.size = 0;
             buffers.io.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
             buffers.temp.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
             if (!buffers.io || !buffers.temp)

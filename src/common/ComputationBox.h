@@ -260,6 +260,9 @@ protected:
     /// Computations of this box whose numerical method requires an orthogonal cell
     int orthogonal_cell_holders_ = 0;
 
+    /// Solvers of this box running the ObliqueZ CrysFFT
+    int z_axis_holders_ = 0;
+
 public:
     /**
      * @brief Keep the cell orthogonal while a computation needs it.
@@ -271,6 +274,17 @@ public:
      */
     void hold_orthogonal_cell() { orthogonal_cell_holders_++; }
     void release_orthogonal_cell() noexcept { orthogonal_cell_holders_--; }
+
+    /**
+     * @brief Keep alpha = beta = 90 degrees while a solver needs it.
+     *
+     * The ObliqueZ CrysFFT folds z with a cosine transform, which needs k^2 even
+     * in m3. A crystal system accepts angles within its tolerance of 90 degrees,
+     * so while this is held set_lattice_parameters() rejects them before changing
+     * the box.
+     */
+    void hold_z_axis() { z_axis_holders_++; }
+    void release_z_axis() noexcept { z_axis_holders_--; }
 
     /**
      * Attach a computation's group while its constructors run. A failed backend
@@ -633,7 +647,9 @@ public:
      * @throws Exception before changing the box for invalid angles (including a
      *         cell of volume below 0.1 abc), for a
      *         non-orthogonal cell with walls or while hold_orthogonal_cell()
-     *         is in effect, and for a cell that does not match the space group
+     *         is in effect, for alpha or beta other than 90 degrees while
+     *         hold_z_axis() is in effect, and for a cell that does not match the
+     *         space group
      */
     virtual void set_lattice_parameters(std::vector<double> new_lx, std::vector<double> new_angles);
 };

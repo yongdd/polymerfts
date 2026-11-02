@@ -183,7 +183,7 @@ public:
     /**
      * @brief Compute weighted inverse inner product.
      *
-     * Calculates: Σᵢ g[i] * conj(h[i]) / w[i] * dV
+     * Calculates: Σᵢ g[i] * h[i] / w[i] * dV
      *
      * @param d_g First device array
      * @param d_h Second device array

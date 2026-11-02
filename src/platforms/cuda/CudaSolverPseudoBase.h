@@ -82,6 +82,7 @@ protected:
     // CrysFFT fast path (crystallographic FFT on the physical sub-grid)
     bool use_crysfft_;                               ///< True when the CrysFFT path is enabled
     CudaCrysFFTMode crysfft_mode_;
+    bool holds_z_axis_ = false;                      ///< ObliqueZ holds alpha = beta = 90 degrees on the box
     bool crysfft_identity_map_;                      ///< True when reduced basis matches physical grid
     int crysfft_physical_size_;
     CudaDeviceBuffer<int> d_crysfft_phys_to_reduced_;   ///< Device map: physical index -> reduced index

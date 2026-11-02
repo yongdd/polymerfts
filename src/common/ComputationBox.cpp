@@ -793,12 +793,16 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
         validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
             "angles[" + std::to_string(i) + "]");
     }
-    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), [](double a) {
-        return std::abs(a * std::numbers::pi / 180.0 - std::numbers::pi / 2.0) < ANGLE_TOLERANCE; });
+    const auto right_angle = [](double a) {
+        return std::abs(a * std::numbers::pi / 180.0 - std::numbers::pi / 2.0) < ANGLE_TOLERANCE; };
+    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), right_angle);
     require_orthogonal_with_walls(bc, orthogonal);
     if (orthogonal_cell_holders_ > 0 && !orthogonal)
         throw_with_line_number("A computation of this box uses a numerical method that requires an "
             "orthogonal cell (all angles 90 degrees).");
+    if (z_axis_holders_ > 0 && !(right_angle(full_angles[0]) && right_angle(full_angles[1])))
+        throw_with_line_number("A solver of this box uses the ObliqueZ CrysFFT, which requires "
+            "alpha = beta = 90 degrees.");
     if (space_group_ != nullptr)
         space_group_->check_cell(new_lx, full_angles);
 

@@ -452,6 +452,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `set_lattice_parameters` refuses alpha or beta off 90 degrees while a solver of the box runs the
+  ObliqueZ CrysFFT, before the box changes (2026-11-02). A crystal system accepts angles within its
+  tolerance of 90 degrees, but the z fold of this engine needs them exact: it went on folding, with Q
+  up to 1e-5 (relative) off the full grid, on CPU and CUDA. `TestCrysFFTCellChange` checks the
+  refusal on every platform.
+- The FFTW Pmmm and ObliqueZ CrysFFT engines keep no stale size after a failed allocation of their
+  thread-local buffers (2026-11-02). A later engine of the old size on that thread crashed on null
+  buffers; the recursive 3m engine already had the guard.
 - `SCFT.run` stops when `on_iteration` returns the NumPy False of a comparison, as for
   `return info.error_level > 1e-3` (2026-11-02). It stopped only for the Python `False`, and such a
   callback let the run go on without a message. `None` still continues.

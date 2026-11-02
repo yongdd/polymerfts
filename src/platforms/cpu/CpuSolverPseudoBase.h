@@ -165,6 +165,7 @@ protected:
     std::unique_ptr<MklCrysFFTObliqueZ> crysfft_oblique_mkl_;
 #endif
     CrysFFTMode crysfft_mode_ = CrysFFTMode::None;
+    bool holds_z_axis_ = false;  ///< ObliqueZ holds alpha = beta = 90 degrees on the box
     std::map<int, double> ds_values_;
 
     std::vector<int> crysfft_full_indices_;
@@ -403,7 +404,11 @@ public:
     CpuSolverPseudoBase() : is_periodic_(true), dim_(0), space_group_(nullptr) {}
 
     /// Virtual destructor. Frees the shared components (FFT, Pseudo).
-    virtual ~CpuSolverPseudoBase() = default;   // fft_ and pseudo are owning members
+    virtual ~CpuSolverPseudoBase()   // fft_ and pseudo are owning members
+    {
+        if (holds_z_axis_)
+            cb->release_z_axis();
+    }
 
     /**
      * @brief Set space group for reduced basis operations.

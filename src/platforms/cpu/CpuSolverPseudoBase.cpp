@@ -112,6 +112,11 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
 template <typename T>
 void CpuSolverPseudoBase<T>::reset_crysfft()
 {
+    if (holds_z_axis_)
+    {
+        cb->release_z_axis();
+        holds_z_axis_ = false;
+    }
     crysfft_mode_ = CrysFFTMode::None;
 #ifdef USE_CPU_FFTW
     crysfft_pmmm_fftw_.reset();
@@ -230,6 +235,8 @@ void CpuSolverPseudoBase<T>::init_crysfft()
             crysfft_oblique_fftw_ = std::make_unique<FftwCrysFFTObliqueZ>(nx_logical, cell_para);
 #endif
         crysfft_mode_ = CrysFFTMode::ObliqueZ;
+        cb->hold_z_axis();
+        holds_z_axis_ = true;
     }
 }
 
