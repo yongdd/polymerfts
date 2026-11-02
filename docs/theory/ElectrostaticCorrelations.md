@@ -2,7 +2,7 @@
 
 This document derives the theory of Duan, Agrawal and Wang (Reference 1), which adds the fluctuations of the electrostatic field to SCFT through a Gaussian variational reference. Each charged species then carries a self-energy set by its surroundings. The published equations are given here with corrections, listed in [Section 12](#12-corrections-to-the-published-equations).
 
-[BrushMultivalentIons.py](../../examples/charged/scft/BrushMultivalentIons.py) solves the planar working equations of [Section 6.1](#61-working-equations), and [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) compares them with the paper and with experiment.
+[BrushMultivalentIons1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py) solves the planar working equations of [Section 6.1](#61-working-equations), [BrushMultivalentIonsLateral.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIonsLateral.py) solves them in 2D and 3D, and [BrushMultivalentIonsGreen1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIonsGreen1D.py) solves the Green function of S25 in the planar brush. [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) compares them with the paper and with experiment.
 
 Numbered equations carry the number of the original: `7`, `S26`, where S marks the Supplemental Material. An asterisk marks an equation that differs from the paper. `N` marks an equation that is not in the paper. Inside an equation, red marks what was changed or added; a removed term is gone, so a red note says what it was. The last column of the table in Section 12 gives which. N equations are new as a whole and stay black, apart from the coefficient in N7.
 
@@ -279,7 +279,7 @@ U(z)=\frac{\ell_B}{2a}\left[u\big(a\kappa(z)\big)-u(a\kappa_b)\right],\qquad
 \tag{N5}
 ```
 
-[BrushMultivalentIons.py](../../examples/charged/scft/BrushMultivalentIons.py) solves these equations with continuous chains, and smooths the ionic strength over $`a`$ before N5. [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) lists what it assumes beyond them.
+[BrushMultivalentIons1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py) solves these equations with continuous chains, and smooths the ionic strength over $`a`$ before N5, in place of the long-range part of $`G`$. The field of each ion takes $`u`$ smoothed in the same way, so that the equations remain the stationary point of a grand potential. [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) lists what it assumes beyond them.
 
 The conservation of C means that the box length $`L`$ is part of the model, see [Section 9](#9-low-salt-ion-exchange).
 
@@ -465,7 +465,7 @@ S41c\* has its minimum where $`d\ln|\Gamma|/d\ln\rho_b=1`$, not at $`\partial\Ga
 
 | Result | Range |
 |---|---|
-| S33, N5, N6 | Gaussian variational closure. Uniform state; N5 in an inhomogeneous brush is a local-density approximation |
+| S33, N5, N6 | Gaussian variational closure. Uniform state; N5 in an inhomogeneous brush is a local-density approximation, without a shortest length ([Section 11.1](#111-response-of-the-self-energy-at-finite-wave-number)) |
 | S25, S33 | Screening by point charges, not the stationary point of S11. N11 and N12 keep the charge spread |
 | N2, N3 | First order in intrachain $`U`$ |
 | Working equations | $`u_P^{\rm ex}`$ and $`I_{ex}`$ dropped. RPA with a Gaussian form factor makes the correlation pressure 12–48 % more negative, as an upper estimate |
@@ -473,6 +473,25 @@ S41c\* has its minimum where $`d\ln|\Gamma|/d\ln\rho_b=1`$, not at $`\partial\Ga
 | N7 | $`a\kappa\ll1`$ |
 | N8, Eq. 6\* | $`c\gg z_+\rho_b`$, uniform regions, finite box with conserved C |
 | All of it, in the collapsed $`z_+=3`$ state | $`\kappa a\approx1.3`$ and $`z_+^2\ell_B\kappa\approx33`$: the coupling is strong for a Gaussian closure |
+
+### 11.1 Response of the Self-Energy at Finite Wave Number
+
+N5 takes $`u`$ at a point from $`I`$ at that point. S25, without $`I_{ex}`$, answers a small wave of ionic strength about a uniform medium at first order, with $`G(k)=4\pi\ell_B/(k^2+\kappa^2)`$ and $`h_K(k)=e^{-k^2a_K^2/2\pi}`$:
+
+```math
+\delta u_K(\mathbf q)=-z_K^2\,R_K(q)\,\delta I(\mathbf q),\qquad
+R_K(q)=\int\frac{d^3k}{(2\pi)^3}\,h_K(k)\,h_K(\vert\mathbf k+\mathbf q\vert)\,G(k)\,G(\vert\mathbf k+\mathbf q\vert)
+\tag{N13}
+```
+
+$`R_K(0)`$ is minus the derivative of the closed form S33 with respect to $`I`$, and $`R_K(q)`$ falls at $`q\gtrsim\kappa,1/a_K`$. The stability of a uniform mixture of chain segments and ions against a wave along $`\mathbf q`$ follows from
+
+```math
+M_{JK}(q)=\frac{\delta_{JK}}{S_J(q)}+\delta_{JP}\delta_{KP}\left(\frac{1}{1-\phi}-2\chi\right)+\frac{4\pi\ell_B z_Jz_K}{q^2}-\frac12 z_J^2z_K^2R_J(q)
+\tag{N14}
+```
+
+with $`S_P=\rho_PNg_D(q)`$, $`g_D`$ the Debye function, and $`S_\pm=\rho_\pm`$. The layer is unstable where an eigenvalue of $`M`$ is negative. In the local form $`R_J(q)=R_J(0)`$ and short waves meet nothing but $`1/S_\pm`$: the instability has no shortest period. In N13 the charge spread and the screening cut it off, so that an instability appears at one period. For the collapsed layer of Fig. 4 of Reference 1, $`\kappa=5.3`$ nm⁻¹, the smallest eigenvalue is +2.2 at a period of 1 nm for $`a_+=2.5`$ Å and −1.4 at a period of 1.02 nm for $`a_+=1.5`$ Å.
 
 ## 12. Corrections to the Published Equations
 

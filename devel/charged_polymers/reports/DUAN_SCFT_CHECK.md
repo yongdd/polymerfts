@@ -105,7 +105,7 @@ Fixing the errors restores the equations the paper computes with, but not its sc
 
 The layer model gives trends and positions. Its $`h`$ is the thickness of a uniform layer, and $`h_0=49.27`$ nm. The SCFT height is $`2\langle z\rangle`$ with $`h_0=50.91`$ nm. The paper does not define its Gibbs dividing surface, but a thesis from the same group gives the same $`2\langle z\rangle`$, see [10.2](#102-values-found-in-the-groups-other-work).
 
-**Not checked.** Fig. 4, the numerics of SI Sec. II, and the full nonlocal Green function with $`I_{ex}`$ in an inhomogeneous brush. Fig. 1 is covered by the older reproduction report in `devel/charged_polymers/reports` at tag `v0.10.0`.
+**Not checked.** The numerics of SI Sec. II and $`I_{ex}`$ in an inhomogeneous brush. Fig. 3 and Fig. 4 are compared in `docs/validation/MultivalentBrush.md`, parts 3 to 5. Fig. 1 is covered by the older reproduction report in `devel/charged_polymers/reports` at tag `v0.10.0`.
 
 ## 3. Formal theory: SI Sec. I and Eqs. 1–5
 
@@ -592,7 +592,7 @@ Earlier sampling in the same folder pointed to a weaker effect than the Gaussian
 | `workflow.py prl salt` from the restored tag, $`z_+=3`$, 10 mM | $`h=14.122885939812836`$ nm, identical to the archive |
 | `duan_scft_check.py scft`, $`z_+=2`$ and 3, 1 mM, $`L=2`$ µm | Identical to the earlier run |
 | `duan_scft_check.py walk`, $`z_+=3`$: 1 M at $`L=6.5`$ µm with both graft widths, 1 mM with 0.3 M background | Identical to the scan |
-| `examples/charged/scft/BrushMultivalentIons.py`, continuous chain with `cn-adi2`, the same equations in new code | 24 readings at $`L=6.6`$ µm, rms 0.0120 against 0.0116 here; closed cell −0.013, −0.150, −0.548, −0.550 |
+| `examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py`, continuous chain with `cn-adi2`, the same equations in new code | 24 readings at $`L=6.6`$ µm, rms 0.0113 against 0.0116 here; closed cell −0.013, −0.149, −0.555, −0.558 |
 | Chain ladder to $`N=339`$ fitted to $`N=730`$ against a direct solve at 3 nM | $`f`$ 0.0740 and 0.0740, $`h`$ 328.16 and 328.11 nm |
 | `literature_scft.py` from the restored tag, six cases | Identical to the earlier runs |
 | `workflow.py analyze electrolyte` on the archived campaign | All 1644 numbers identical to the earlier analysis |
@@ -651,7 +651,7 @@ Neither the main text nor the SI states the items below; a text search for tempe
 | Derivation of Eq. 6 | Cannot be checked | Reconstructed in [5.5](#55-eq-6) |
 | That the $`{\rm Y}^{3+}`$ data carry 3–6 mM $`{\rm NaNO_3}`$, that each series has its own $`h_0`$, and that the measured height is the outer edge | Decides whether theory and experiment are at the same solution | Compared in [6.4](#64-the-experiment-in-fig-2) |
 | That Fig. 3 plots Eqs. 7 and 9 | Reads as a calculated result | Found by comparison in [5.6](#56-fig-3-plots-formulas-not-a-brush) |
-| Fig. 4: box, grid, $`N`$, initial state | Not reproducible as printed | Not checked |
+| Fig. 4: grid, $`N`$, initial state, box height. The lateral box (about 48 × 41 $`b`$) and $`\rho_b = 1`$ mM are given | Not reproducible as printed | (c,d) reproduced with the Green function; (a,b) forms but is not the lowest state, in `docs/validation/MultivalentBrush.md` |
 | Data and code | No availability statement | Pixel readings |
 
 ### 10.2 Values found in the group's other work

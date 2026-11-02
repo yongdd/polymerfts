@@ -118,6 +118,24 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
     the stress would keep the FFT. Offer it as an optional method, not the default, and
     pass the checks listed above before using it.
 
+37. Correlation-augmented SCFT of Duan et al. (PRL 134, 048101, 2025): first finish
+    the reproduction of the paper, then correct the model itself. A reproduction shows
+    which equations the paper solved, not that they are right.
+
+    Reproduction: Fig. 1 with the current code, and Fig. 4(a,b) in 3D with the Green
+    function, where the hexagon of the paper is not yet the lowest state. Fig. 2 and
+    Fig. 4(c,d) are reproduced; see
+    [Multivalent Brush](docs/validation/MultivalentBrush.md).
+
+    Model, after that: the screening of S25 and S33 is not the stationary point of S11
+    (N11, N12 in [Electrostatic Correlations](docs/theory/ElectrostaticCorrelations.md));
+    the Green function in the varying ionic strength with its nonlocal part $`I_{ex}`$;
+    the polymer term $`u_P^{\rm ex}`$; $`\langle\ln Q_l\rangle`$ in place of
+    $`\ln\langle Q_l\rangle`$ in S32; monomers that screen as a connected chain;
+    the $`\epsilon(\rho)`$ term of S27. Judge the result against measurements
+    (brush height of Yu et al., activity coefficients of the salts), with no fitted
+    box length, and against the variational form of the free energy.
+
 ## Done (removed from the list above)
 
 - 1. Parallel tempering: dropped (maintainer's decision, 2026-10-21).

@@ -28,7 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # must finish without an error
 WITHOUT_SIMULATION = {"examples/tools/FourierTransform.py",
                       "examples/block_copolymer/scft/phase_diagram/phase_diagram.py",
-                      "examples/block_copolymer/scft/phase_diagram/seeds.py"}
+                      "examples/block_copolymer/scft/phase_diagram/seeds.py",
+                      "examples/charged/scft/multivalent_brush/multivalent_brush.py"}
 
 DRIVER = r"""
 import os, runpy, sys
