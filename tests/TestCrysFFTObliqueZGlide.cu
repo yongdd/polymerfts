@@ -278,14 +278,14 @@ static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int
 
 #ifdef USE_CPU_MKL
 // The MKL engine's per-thread z work arrays must fit the grid just transformed
-// (16x16x64 and 32x32x16 have the same Nx*Ny*Nz but need 8448 and 9216 spectrum
+// (16x16x64 and 32x32x16 have the same Nx*Ny*Nz but need 4352 and 5120 spectrum
 // values). Check their sizes directly: an undersized array would only show as
 // heap corruption, which need not crash.
 static bool check_mkl_z_work(int Nx, int Ny, int Nz)
 {
     const std::array<size_t, 2> sizes = MklCrysFFTObliqueZ::thread_z_work_sizes();
-    const size_t need_real = static_cast<size_t>(Nx) * Ny * Nz;
-    const size_t need_freq = static_cast<size_t>(Nx) * Ny * (Nz / 2 + 1);
+    const size_t need_real = static_cast<size_t>(Nx) * Ny * (Nz / 2);
+    const size_t need_freq = static_cast<size_t>(Nx) * Ny * (Nz / 4 + 1);
     const bool ok = sizes[0] >= need_real && sizes[1] >= need_freq;
     std::printf("  CPU-MKL:  z work arrays %zu real, %zu complex (need %zu, %zu) %s\n",
                 sizes[0], sizes[1], need_real, need_freq, ok ? "OK" : "FAIL");
@@ -432,7 +432,7 @@ int main()
     ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", Nx, Ny, Nz, ds);
     ok &= check_mkl_z_work(Nx, Ny, Nz);
     // Same thread, same Nx*Ny*Nz, different Nz: the engine's per-thread z buffers
-    // must follow the spectrum size (16x16x64 needs 8448 complex values, 32x32x16 9216)
+    // must follow the spectrum size (16x16x64 needs 4352 complex values, 32x32x16 5120)
     ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", 16, 16, 64, ds);
     ok &= check_mkl_z_work(16, 16, 64);
     ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", 32, 32, 16, ds);

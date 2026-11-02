@@ -310,7 +310,7 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
 - `MklRealTransform1D/2D/3D`: DCT/DST (FFT-based algorithms + MKL TT interface, see Section 8.2)
 - `MklCrysFFTPmmm`: Pmmm DCT
 - `MklCrysFFTRecursive3m`: Recursive 3m algorithm
-- `MklCrysFFTObliqueZ`: DCT-z + FFT-xy
+- `MklCrysFFTObliqueZ`: DCT-z through a real FFT of the same length (Makhoul) + FFT-xy on contiguous z planes
 
 `CpuSolverPseudoBase` holds CrysFFT members for both backends (`crysfft_*_fftw_` and `crysfft_*_mkl_`) and uses the library of the selected platform (`cpu-mkl` or `cpu-fftw`).
 
@@ -405,21 +405,44 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 
 ### 8.3 CrysFFT Benchmark (64³, Im-3m BCC)
 
-**Setup**: nx=[64,64,64], coeff=0.01, 200 iterations, NVIDIA A10 GPU; CPU: FFTW, one thread, AMD EPYC 7543 (`tests/TestCrysFFTBench 64 64 64 200 --cpu --obliquez`)
+**Setup**: one diffusion step of a real field in double precision (transform, multiplier, inverse transform), nx=[64,64,64], coeff=0.01, median of five runs of 200 iterations, NVIDIA A10 GPU; CPU: FFTW, one thread, AMD EPYC 7543 (`tests/TestCrysFFTBench 64 64 64 200 --cpu --obliquez`). The standard FFT runs as in the solvers, with a stored multiplier and `FFTW_MEASURE` plans. This measures the transforms alone; Section 8.5 gives the complete solver.
 
 | Platform | Standard FFT | 3m physical | Pmmm physical |
 |----------|-------------|-------------|---------------|
-| CUDA | 0.177 ms | 0.056 ms (3.1x) | 0.091 ms (2.0x) |
-| CPU | 2.00 ms | 0.43 ms (4.6x) | 0.60 ms (3.3x) |
+| CUDA | 0.131 ms | 0.056 ms (2.3x) | 0.090 ms (1.5x) |
+| CPU | 1.87 ms | 0.43 ms (4.3x) | 0.61 ms (3.1x) |
 
 ### 8.4 ObliqueZ Benchmark (64³, Hexagonal P6/mmm)
 
-**Setup**: nx=[64,64,64], γ=120°, coeff=0.01, 200 iterations, NVIDIA A10 GPU; CPU: FFTW, one thread, AMD EPYC 7543 (same benchmark)
+**Setup**: as in Section 8.3, with γ=120° (same benchmark)
 
 | Platform | Standard FFT | ObliqueZ |
 |----------|-------------|----------|
-| CUDA | 0.132 ms | 0.120 ms (1.1x) |
-| CPU | 2.00 ms | 1.40 ms (1.4x) |
+| CUDA | 0.132 ms | 0.104 ms (1.3x) |
+| CPU | 1.85 ms | 1.43 ms (1.3x) |
+
+### 8.5 CrysFFT in the Complete Solver
+
+**Setup**: time of `compute_propagators`, `compute_concentrations` and `get_concentration` in double precision with a space group, against the same solver without one on the same symmetric field: AB diblock with f = 0.3, ds = 0.01, nx=[64,64,64], median of repeated calls. NVIDIA A10 GPU; CPU: one thread, AMD EPYC 7543. Each range covers `rqm4`, `rk2` and the discrete chain model.
+
+| Engine (space group, physical basis) | CUDA, 4 streams | CUDA, 1 stream | CPU-FFTW | CPU-MKL |
+|--------------------------------------|-----------------|----------------|----------|---------|
+| Recursive 3m (Im-3m and Ia-3d, m3) | 3.4-4.0x | 2.4-2.5x | 5.3-5.5x | 5.0-5.2x |
+| Pmmm DCT (Im-3m and Pmmm, Pmmm) | 1.9-2.2x | 1.6x | 3.8-4.0x | 2.2x |
+| ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.5-1.6x | 1.2-1.3x |
+
+The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
+
+| Engine | 24³ | 32³ | 48³ | 64³ | 96³ | 128³ |
+|--------|-----|-----|-----|-----|-----|------|
+| Recursive 3m (Im-3m, m3) | 0.9x | 1.1x | 3.4x | 3.5x | 6.2x | 7.3x |
+| ObliqueZ (P6/mmm, z-mirror) | 0.7x | 0.8x | 1.4x | 1.7x | 2.1x | 2.0x |
+
+A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine and 1.2-2.0x with ObliqueZ).
+
+Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA, 2x with MKL and 3-4x with FFTW on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x) and MKL (0.7x), and FFTW still gains 1.2-1.3x. With ObliqueZ it takes about the same time (0.9x).
+
+Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
 
 ---
 

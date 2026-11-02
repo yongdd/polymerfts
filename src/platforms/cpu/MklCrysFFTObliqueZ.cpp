@@ -2,7 +2,8 @@
  * @file MklCrysFFTObliqueZ.cpp
  * @brief MKL implementation of crystallographic FFT for z-mirror symmetry.
  *
- * Uses FFT-based DCT-II/III with mirrored sequences since MKL lacks native DCT.
+ * MKL has no native DCT: the DCT-II/III of a column of N points goes through a real
+ * FFT of the same length N (Makhoul 1980). The 2D FFT runs on contiguous z planes.
  *
  * @see CrysFFTObliqueZBase for common functionality
  * @see FftwCrysFFTObliqueZ for FFTW implementation
@@ -11,7 +12,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -32,15 +32,15 @@ namespace
 /// different spectrum sizes.
 struct ZWork
 {
-    std::vector<double> z_extended;               ///< mirrored sequences, howmany * Nz
-    std::vector<std::complex<double>> z_freq;     ///< their spectra, howmany * (Nz/2 + 1)
+    std::vector<double> z_reordered;              ///< reordered columns, howmany * N
+    std::vector<std::complex<double>> z_freq;     ///< their spectra, howmany * (N/2 + 1)
 };
 thread_local ZWork z_work;
 
-ZWork& z_work_for(size_t n_extended, size_t n_freq)
+ZWork& z_work_for(size_t n_reordered, size_t n_freq)
 {
-    if (z_work.z_extended.size() != n_extended)
-        z_work.z_extended.resize(n_extended);
+    if (z_work.z_reordered.size() != n_reordered)
+        z_work.z_reordered.resize(n_reordered);
     if (z_work.z_freq.size() != n_freq)
         z_work.z_freq.resize(n_freq);
     return z_work;
@@ -49,7 +49,7 @@ ZWork& z_work_for(size_t n_extended, size_t n_freq)
 
 std::array<size_t, 2> MklCrysFFTObliqueZ::thread_z_work_sizes()
 {
-    return {z_work.z_extended.size(), z_work.z_freq.size()};
+    return {z_work.z_reordered.size(), z_work.z_freq.size()};
 }
 
 //------------------------------------------------------------------------------
@@ -93,232 +93,210 @@ void MklCrysFFTObliqueZ::release()
 //------------------------------------------------------------------------------
 void MklCrysFFTObliqueZ::initFFTPlans()
 {
-    // DCT via FFT: 1D FFT along z of size Nz for each (x,y) column
-    // Data layout: [Nx*Ny][Nz] with contiguous z-columns
-    const int Nz = nx_logical_[2];
-    const int howmany_z = nx_logical_[0] * nx_logical_[1];
-    const MKL_LONG Nz_long = Nz;
+    // DCT via FFT: real 1D FFT of length N = Nz/2 for each (x,y) column
+    // Data layout: [Nx*Ny][N] with contiguous z-columns
+    const int N = nx_physical_[2];
+    const int howmany_z = nx_physical_[0] * nx_physical_[1];
+    const MKL_LONG N_long = N;
 
-    mkl_dfti_check(DftiCreateDescriptor(&plan_dct_forward_z_, DFTI_DOUBLE, DFTI_REAL, 1, Nz_long), "DftiCreateDescriptor (z forward)");
+    mkl_dfti_check(DftiCreateDescriptor(&plan_dct_forward_z_, DFTI_DOUBLE, DFTI_REAL, 1, N_long), "DftiCreateDescriptor (z forward)");
     mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, z forward)");
     mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, DFTI_NUMBER_OF_TRANSFORMS, static_cast<MKL_LONG>(howmany_z)), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, z forward)");
-    mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, mkl_dfti::forward_input_distance, Nz_long), "DftiSetValue (z forward input distance)");
-    mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, mkl_dfti::forward_output_distance, static_cast<MKL_LONG>(Nz / 2 + 1)), "DftiSetValue (z forward output distance)");
+    mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, mkl_dfti::forward_input_distance, N_long), "DftiSetValue (z forward input distance)");
+    mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, mkl_dfti::forward_output_distance, static_cast<MKL_LONG>(N / 2 + 1)), "DftiSetValue (z forward output distance)");
     mkl_dfti_check(DftiSetValue(plan_dct_forward_z_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, z forward)");
     mkl_dfti_check(DftiCommitDescriptor(plan_dct_forward_z_), "DftiCommitDescriptor (z forward)");
 
-    mkl_dfti_check(DftiCreateDescriptor(&plan_dct_backward_z_, DFTI_DOUBLE, DFTI_REAL, 1, Nz_long), "DftiCreateDescriptor (z backward)");
+    mkl_dfti_check(DftiCreateDescriptor(&plan_dct_backward_z_, DFTI_DOUBLE, DFTI_REAL, 1, N_long), "DftiCreateDescriptor (z backward)");
     mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, z backward)");
     mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, DFTI_NUMBER_OF_TRANSFORMS, static_cast<MKL_LONG>(howmany_z)), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, z backward)");
-    mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, mkl_dfti::backward_input_distance, static_cast<MKL_LONG>(Nz / 2 + 1)), "DftiSetValue (z backward input distance)");
-    mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, mkl_dfti::backward_output_distance, Nz_long), "DftiSetValue (z backward output distance)");
+    mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, mkl_dfti::backward_input_distance, static_cast<MKL_LONG>(N / 2 + 1)), "DftiSetValue (z backward input distance)");
+    mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, mkl_dfti::backward_output_distance, N_long), "DftiSetValue (z backward output distance)");
     mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, z backward)");
+    mkl_dfti_check(DftiSetValue(plan_dct_backward_z_, DFTI_BACKWARD_SCALE, 1.0 / static_cast<double>(N)), "DftiSetValue (z backward scale)");
     mkl_dfti_check(DftiCommitDescriptor(plan_dct_backward_z_), "DftiCommitDescriptor (z backward)");
 
-    // 2D Real-to-complex FFT along X,Y for each Z slice (batched, strided)
-    // Data layout after DCT: [Nx][Ny][Nz/2] where z varies fastest
-    // XY FFT batch: howmany = Nz/2, stride = Nz/2, dist = 1
-    MKL_LONG dims_xy[2] = { static_cast<MKL_LONG>(nx_logical_[0]), static_cast<MKL_LONG>(nx_logical_[1]) };
-    const int howmany_xy = nx_physical_[2];
-    const MKL_LONG stride_xy = nx_physical_[2];
-
-    // For strided transforms, we need to set input/output strides
-    MKL_LONG input_strides_xy[3] = {0, static_cast<MKL_LONG>(nx_logical_[1]) * stride_xy, stride_xy};
-    MKL_LONG output_strides_xy[3] = {0, static_cast<MKL_LONG>(nx_logical_[1] / 2 + 1) * stride_xy, stride_xy};
+    // Real 2D FFT along X,Y for each Z plane, on the contiguous layout [N][Nx][Ny]:
+    // on strided planes [Nx][Ny][N] MKL takes longer than the two transpositions add
+    const int Nx = nx_logical_[0];
+    const int Ny = nx_logical_[1];
+    MKL_LONG dims_xy[2] = { static_cast<MKL_LONG>(Nx), static_cast<MKL_LONG>(Ny) };
+    const MKL_LONG howmany_xy = N;
+    const MKL_LONG distance_real = static_cast<MKL_LONG>(Nx) * Ny;
+    const MKL_LONG distance_complex = static_cast<MKL_LONG>(Nx) * (Ny / 2 + 1);
+    MKL_LONG real_strides_xy[3] = {0, static_cast<MKL_LONG>(Ny), 1};
+    MKL_LONG complex_strides_xy[3] = {0, static_cast<MKL_LONG>(Ny / 2 + 1), 1};
 
     mkl_dfti_check(DftiCreateDescriptor(&plan_fft_forward_xy_, DFTI_DOUBLE, DFTI_REAL, 2, dims_xy), "DftiCreateDescriptor (xy forward)");
     mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, xy forward)");
-    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, DFTI_NUMBER_OF_TRANSFORMS, static_cast<MKL_LONG>(howmany_xy)), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, xy forward)");
-    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_input_distance, static_cast<MKL_LONG>(1)), "DftiSetValue (xy forward input distance)");
-    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_output_distance, static_cast<MKL_LONG>(1)), "DftiSetValue (xy forward output distance)");
-    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_input_strides, input_strides_xy), "DftiSetValue (xy forward input strides)");
-    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_output_strides, output_strides_xy), "DftiSetValue (xy forward output strides)");
+    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, DFTI_NUMBER_OF_TRANSFORMS, howmany_xy), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, xy forward)");
+    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_input_distance, distance_real), "DftiSetValue (xy forward input distance)");
+    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_output_distance, distance_complex), "DftiSetValue (xy forward output distance)");
+    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_input_strides, real_strides_xy), "DftiSetValue (xy forward input strides)");
+    mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, mkl_dfti::forward_output_strides, complex_strides_xy), "DftiSetValue (xy forward output strides)");
     mkl_dfti_check(DftiSetValue(plan_fft_forward_xy_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, xy forward)");
     mkl_dfti_check(DftiCommitDescriptor(plan_fft_forward_xy_), "DftiCommitDescriptor (xy forward)");
 
     mkl_dfti_check(DftiCreateDescriptor(&plan_fft_backward_xy_, DFTI_DOUBLE, DFTI_REAL, 2, dims_xy), "DftiCreateDescriptor (xy backward)");
     mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, xy backward)");
-    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, DFTI_NUMBER_OF_TRANSFORMS, static_cast<MKL_LONG>(howmany_xy)), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, xy backward)");
-    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_input_distance, static_cast<MKL_LONG>(1)), "DftiSetValue (xy backward input distance)");
-    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_output_distance, static_cast<MKL_LONG>(1)), "DftiSetValue (xy backward output distance)");
-    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_input_strides, output_strides_xy), "DftiSetValue (xy backward input strides)");
-    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_output_strides, input_strides_xy), "DftiSetValue (xy backward output strides)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, DFTI_NUMBER_OF_TRANSFORMS, howmany_xy), "DftiSetValue(DFTI_NUMBER_OF_TRANSFORMS, xy backward)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_input_distance, distance_complex), "DftiSetValue (xy backward input distance)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_output_distance, distance_real), "DftiSetValue (xy backward output distance)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_input_strides, complex_strides_xy), "DftiSetValue (xy backward input strides)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, mkl_dfti::backward_output_strides, real_strides_xy), "DftiSetValue (xy backward output strides)");
     mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, xy backward)");
+    mkl_dfti_check(DftiSetValue(plan_fft_backward_xy_, DFTI_BACKWARD_SCALE, 1.0 / static_cast<double>(distance_real)), "DftiSetValue (xy backward scale)");
     mkl_dfti_check(DftiCommitDescriptor(plan_fft_backward_xy_), "DftiCommitDescriptor (xy backward)");
 
     if (!plan_dct_forward_z_ || !plan_dct_backward_z_ || !plan_fft_forward_xy_ || !plan_fft_backward_xy_)
         throw_with_line_number("Failed to create MKL DFTI plans for MklCrysFFTObliqueZ.");
 
     // Precompute DCT twiddle factors
-    const int N = nx_physical_[2];
-    dct_cos_.resize(N + 1);
-    dct_sin_.resize(N + 1);
+    dct_cos_.resize(N / 2 + 1);
+    dct_sin_.resize(N / 2 + 1);
     const double inv_2N = 1.0 / (2.0 * static_cast<double>(N));
-    for (int k = 0; k <= N; ++k)
+    for (int k = 0; k <= N / 2; ++k)
     {
         const double theta = M_PI * static_cast<double>(k) * inv_2N;
         dct_cos_[k] = std::cos(theta);
         dct_sin_[k] = std::sin(theta);
     }
-
-    // No scale factors: 0.5*(Re cos + Im sin) of the mirrored-sequence FFT is
-    // exactly the textbook DCT-II, and the unnormalized 2N-point inverse of the
-    // twiddled spectrum divided by 2N returns the signal.
 }
 
 //------------------------------------------------------------------------------
-// DCT-II forward along Z (implemented via FFT with mirrored sequence)
+// DCT-II forward along Z through a real FFT of the same length (Makhoul 1980)
 // DCT-II: X[k] = sum_{n=0}^{N-1} x[n] * cos(pi*k*(2n+1)/(2N))
-// Using FFT of mirrored sequence: x[0..N-1] -> mirror -> FFT -> extract
+// With v = (x[0], x[2], ..., x[3], x[1]) and its FFT V, W[k] = exp(-i*pi*k/(2N)):
+// X[k] = Re(W[k] V[k]) and X[N-k] = -Im(W[k] V[k])
 //------------------------------------------------------------------------------
 void MklCrysFFTObliqueZ::applyDCT2ForwardZ(const double* in, double* out) const
 {
-    const int Nx = nx_logical_[0];
-    const int Ny = nx_logical_[1];
-    const int Nz = nx_logical_[2];
-    const int Nz2 = nx_physical_[2];
-    const int howmany = Nx * Ny;
-    const int freq_stride = Nz / 2 + 1;
+    const int N = nx_physical_[2];
+    const int howmany = nx_logical_[0] * nx_logical_[1];
+    const int freq_stride = N / 2 + 1;
 
-    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * Nz, static_cast<size_t>(howmany) * freq_stride);
+    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
 
-    // Create mirrored sequences for all (x, y) columns
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const int base_half = ixy * Nz2;
-        const int base_full = ixy * Nz;
-        // First half: copy
-        for (int iz = 0; iz < Nz2; ++iz)
-            buffers.z_extended[base_full + iz] = in[base_half + iz];
-        // Second half: mirror
-        for (int iz = 0; iz < Nz2; ++iz)
-            buffers.z_extended[base_full + Nz - 1 - iz] = in[base_half + iz];
+        const double* x = in + static_cast<size_t>(ixy) * N;
+        double* v = buffers.z_reordered.data() + static_cast<size_t>(ixy) * N;
+        for (int j = 0; 2 * j < N; ++j)
+            v[j] = x[2 * j];
+        for (int j = 0; 2 * j + 1 < N; ++j)
+            v[N - 1 - j] = x[2 * j + 1];
     }
 
     // Batched FFT along z
-    mkl_dfti_check(DftiComputeForward(plan_dct_forward_z_, buffers.z_extended.data(), buffers.z_freq.data()), "DftiComputeForward (z DCT-II)");
+    mkl_dfti_check(DftiComputeForward(plan_dct_forward_z_, buffers.z_reordered.data(), buffers.z_freq.data()), "DftiComputeForward (z DCT-II)");
 
-    // Extract DCT-II coefficients with twiddle factors
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const int base_half = ixy * Nz2;
-        const int base_freq = ixy * freq_stride;
-        for (int k = 0; k < Nz2; ++k)
+        const std::complex<double>* V = buffers.z_freq.data() + static_cast<size_t>(ixy) * freq_stride;
+        double* X = out + static_cast<size_t>(ixy) * N;
+        X[0] = V[0].real();
+        for (int k = 1; k <= N / 2; ++k)
         {
-            double re = buffers.z_freq[base_freq + k].real();
-            double im = buffers.z_freq[base_freq + k].imag();
-            // Twiddle factor: exp(-i*pi*k/(2*Nz2)) = cos - i*sin
-            // DCT-II[k] = Re(FFT[k] * exp(-i*theta)) = Re*cos + Im*sin
-            // Factor 0.5 because mirrored sequence FFT gives 2x the DCT-II
-            out[base_half + k] = 0.5 * (re * dct_cos_[k] + im * dct_sin_[k]);
+            X[k] = V[k].real() * dct_cos_[k] + V[k].imag() * dct_sin_[k];
+            X[N - k] = V[k].real() * dct_sin_[k] - V[k].imag() * dct_cos_[k];
         }
     }
 }
 
 //------------------------------------------------------------------------------
-// DCT-III backward along Z (implemented via FFT)
-// DCT-III: x[n] = X[0]/2 + sum_{k=1}^{N-1} X[k] * cos(pi*k*(2n+1)/(2N))
-// This is the inverse of DCT-II (with appropriate normalization)
+// DCT-III backward along Z, the inverse of the DCT-II above:
+// x[n] = (X[0] + 2 sum_{k=1}^{N-1} X[k] * cos(pi*k*(2n+1)/(2N))) / N
+// V[k] = exp(i*pi*k/(2N)) (X[k] - i X[N-k]), and the scaled inverse FFT gives v
 //------------------------------------------------------------------------------
 void MklCrysFFTObliqueZ::applyDCT3BackwardZ(const double* in, double* out) const
 {
-    const int Nx = nx_logical_[0];
-    const int Ny = nx_logical_[1];
-    const int Nz = nx_logical_[2];
-    const int Nz2 = nx_physical_[2];
-    const int howmany = Nx * Ny;
-    const int freq_stride = Nz / 2 + 1;
+    const int N = nx_physical_[2];
+    const int howmany = nx_logical_[0] * nx_logical_[1];
+    const int freq_stride = N / 2 + 1;
 
-    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * Nz, static_cast<size_t>(howmany) * freq_stride);
+    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
 
-    // Apply twiddle factors to create symmetric spectrum
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const int base_half = ixy * Nz2;
-        const int base_freq = ixy * freq_stride;
-        for (int k = 0; k < Nz2; ++k)
+        const double* X = in + static_cast<size_t>(ixy) * N;
+        std::complex<double>* V = buffers.z_freq.data() + static_cast<size_t>(ixy) * freq_stride;
+        V[0] = X[0];
+        for (int k = 1; k <= N / 2; ++k)
         {
-            const double xk = in[base_half + k];
-            // Twiddle factor: exp(i*pi*k/(2*Nz2)) = cos + i*sin
-            // Factor 2 for inverse mirroring
-            buffers.z_freq[base_freq + k] = std::complex<double>(
-                2.0 * xk * dct_cos_[k],
-                2.0 * xk * dct_sin_[k]
-            );
+            V[k] = std::complex<double>(X[k] * dct_cos_[k] + X[N - k] * dct_sin_[k],
+                                        X[k] * dct_sin_[k] - X[N - k] * dct_cos_[k]);
         }
-        // Nyquist frequency
-        buffers.z_freq[base_freq + Nz2] = std::complex<double>(0.0, 0.0);
     }
 
     // Batched backward FFT along z
-    mkl_dfti_check(DftiComputeBackward(plan_dct_backward_z_, buffers.z_freq.data(), buffers.z_extended.data()), "DftiComputeBackward (z DCT-III)");
+    mkl_dfti_check(DftiComputeBackward(plan_dct_backward_z_, buffers.z_freq.data(), buffers.z_reordered.data()), "DftiComputeBackward (z DCT-III)");
 
-    // Extract first half (DCT-III result) with normalization
-    // IFFT returns 2N values, we take the first N
-    // Total normalization: 1/(2N) = 1/Nz
-    const double scale = 1.0 / static_cast<double>(Nz);
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const int base_half = ixy * Nz2;
-        const int base_full = ixy * Nz;
-        for (int iz = 0; iz < Nz2; ++iz)
-            out[base_half + iz] = buffers.z_extended[base_full + iz] * scale;
+        const double* v = buffers.z_reordered.data() + static_cast<size_t>(ixy) * N;
+        double* x = out + static_cast<size_t>(ixy) * N;
+        for (int j = 0; 2 * j < N; ++j)
+            x[2 * j] = v[j];
+        for (int j = 0; 2 * j + 1 < N; ++j)
+            x[2 * j + 1] = v[N - 1 - j];
     }
 }
 
 //------------------------------------------------------------------------------
 // Shared pipeline of diffusion() and apply_multiplier():
-// DCT-II(z) -> FFT(xy) -> multiply -> IFFT(xy) -> DCT-III(z) -> normalize
+// DCT-II(z) -> to z planes -> FFT(xy) -> multiply -> IFFT(xy) -> from z planes -> DCT-III(z)
 //------------------------------------------------------------------------------
 void MklCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q_out, const double* multiplier) const
 {
-    const int Nx = nx_logical_[0];
-    const int Ny = nx_logical_[1];
+    const int N = nx_physical_[2];
+    const int n_real = nx_logical_[0] * nx_logical_[1];
+    const int n_complex = nx_logical_[0] * (nx_logical_[1] / 2 + 1);
 
     struct ThreadBuffers
     {
-        std::unique_ptr<double[]> real_in;
-        std::unique_ptr<double[]> real_tmp;
-        std::unique_ptr<std::complex<double>[]> complex;
+        std::unique_ptr<double[]> columns;   // [Nx][Ny][N]
+        std::unique_ptr<double[]> planes;    // [N][Nx][Ny]
+        std::unique_ptr<std::complex<double>[]> complex;   // [N][Nx][Ny/2 + 1]
         int size_real = 0;
         int size_complex = 0;
     };
     thread_local ThreadBuffers buffers;
     if (buffers.size_real != M_physical_ || buffers.size_complex != M_complex_)
     {
-        buffers.real_in = std::make_unique<double[]>(M_physical_);
-        buffers.real_tmp = std::make_unique<double[]>(M_physical_);
+        buffers.size_real = buffers.size_complex = 0;
+        buffers.columns = std::make_unique<double[]>(M_physical_);
+        buffers.planes = std::make_unique<double[]>(M_physical_);
         buffers.complex = std::make_unique<std::complex<double>[]>(M_complex_);
         buffers.size_real = M_physical_;
         buffers.size_complex = M_complex_;
     }
+    double* columns = buffers.columns.get();
+    double* planes = buffers.planes.get();
+    std::complex<double>* complex = buffers.complex.get();
 
-    // Step 1: Copy input
-    std::memcpy(buffers.real_in.get(), q_in, sizeof(double) * M_physical_);
+    // Step 1: DCT-II along Z
+    applyDCT2ForwardZ(q_in, columns);
 
-    // Step 2: DCT-II along Z
-    applyDCT2ForwardZ(buffers.real_in.get(), buffers.real_tmp.get());
+    // Step 2: Batched 2D FFT along XY of the z planes
+    for (int iz = 0; iz < N; ++iz)
+        for (int i = 0; i < n_real; ++i)
+            planes[iz * n_real + i] = columns[i * N + iz];
+    mkl_dfti_check(DftiComputeForward(plan_fft_forward_xy_, planes, complex), "DftiComputeForward (xy)");
 
-    // Step 3: Batched 2D FFT along XY (strided)
-    mkl_dfti_check(DftiComputeForward(plan_fft_forward_xy_, buffers.real_tmp.get(), buffers.complex.get()), "DftiComputeForward (xy)");
+    // Step 3: Apply the spectral multiplier (Boltzmann factor or stress multiplier),
+    // stored with z running fastest
+    for (int iz = 0; iz < N; ++iz)
+        for (int i = 0; i < n_complex; ++i)
+            complex[iz * n_complex + i] *= multiplier[i * N + iz];
 
-    // Step 4: Apply the spectral multiplier (Boltzmann factor or stress multiplier)
-    for (int i = 0; i < M_complex_; ++i)
-        buffers.complex.get()[i] *= multiplier[i];
+    // Step 4: Batched 2D IFFT along XY, scaled by 1/(Nx*Ny)
+    mkl_dfti_check(DftiComputeBackward(plan_fft_backward_xy_, complex, planes), "DftiComputeBackward (xy)");
+    for (int iz = 0; iz < N; ++iz)
+        for (int i = 0; i < n_real; ++i)
+            columns[i * N + iz] = planes[iz * n_real + i];
 
-    // Step 5: Batched 2D IFFT along XY (strided)
-    mkl_dfti_check(DftiComputeBackward(plan_fft_backward_xy_, buffers.complex.get(), buffers.real_tmp.get()), "DftiComputeBackward (xy)");
-
-    // Step 6: DCT-III along Z
-    applyDCT3BackwardZ(buffers.real_tmp.get(), buffers.real_in.get());
-
-    // Step 7: Apply overall normalization
-    // DCT round trip: already normalized in DCT-III (1/Nz)
-    // XY FFT round trip: MKL DFTI uses unnormalized transforms,
-    // so only 1/(Nx * Ny) remains
-    const double xy_norm = 1.0 / static_cast<double>(Nx * Ny);
-    for (int i = 0; i < M_physical_; ++i)
-        q_out[i] = buffers.real_in.get()[i] * xy_norm;
+    // Step 5: DCT-III along Z, the inverse of step 1
+    applyDCT3BackwardZ(columns, q_out);
 }
 
 //------------------------------------------------------------------------------

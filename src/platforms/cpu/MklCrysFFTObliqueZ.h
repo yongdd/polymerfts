@@ -2,7 +2,8 @@
  * @file MklCrysFFTObliqueZ.h
  * @brief MKL implementation of crystallographic FFT for z-mirror symmetry.
  *
- * Uses FFT-based DCT-II/III implementation with mirrored sequences.
+ * The DCT-II/III along z goes through a real FFT of the same length, and the 2D
+ * FFT runs on contiguous z planes.
  *
  * @see CrysFFTObliqueZBase for common functionality
  * @see FftwCrysFFTObliqueZ for FFTW implementation
@@ -40,7 +41,7 @@ private:
     void applyDCT3BackwardZ(const double* in, double* out) const;
 
     /// Shared pipeline of diffusion() and apply_multiplier():
-    /// DCT-II(z) -> r2c FFT(xy) -> multiply -> c2r FFT(xy) -> DCT-III(z) -> normalize.
+    /// DCT-II(z) -> r2c FFT(xy) -> multiply -> c2r FFT(xy) -> DCT-III(z).
     void apply_spectral_multiplier(const double* q_in, double* q_out, const double* multiplier) const;
 
 public:
@@ -54,7 +55,7 @@ public:
     void diffusion(double* q_in, double* q_out);
     void apply_multiplier(const double* q_in, double* q_out, const double* multiplier);
 
-    /// Elements of this thread's z work arrays {mirrored real, spectrum}, as sized
+    /// Elements of this thread's z work arrays {reordered real, spectrum}, as sized
     /// by the last transform on the thread (tests check them against the grid).
     static std::array<size_t, 2> thread_z_work_sizes();
 };

@@ -641,6 +641,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- The MKL ObliqueZ CrysFFT takes its z DCT through a real FFT of the same length instead of a
+  mirrored sequence of twice that length, and its xy FFT on contiguous z planes, where this step on
+  64³ ran 1.8 times faster, transpositions included (2026-11-02). With a P6/mmm group on 64³ the
+  solver was slower than without a group (0.9x) and now gains 1.2-1.3x (double precision, one thread,
+  AMD EPYC 7543), FFTW 1.5-1.6x. All space groups agree with the full grid on MKL as before, to 1.2e-13.
 - The transforms of every Langevin step in the Python layer use `PropagatorSolver.fourier`,
   the platform FFT, on the GPU with CUDA, instead of NumPy/SciPy on the host (2026-10-27):
   the `etd` step (its matrices are Fourier multipliers, applied in one call), smearing
@@ -712,6 +717,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestCrysFFTBench` runs its full-FFT baseline as the solvers do (2026-11-02). It evaluated `exp()`
+  in a CUDA kernel at every step and planned FFTW with `FFTW_ESTIMATE`, which overstated the gains in
+  `docs/internals/FFTImplementation.md`: CUDA recursive 3m 3.1x is 2.3x, Pmmm 2.0x is 1.5x. That page
+  now also gives the gains of the complete solver, the grid sizes where CUDA gains nothing and the
+  stress.
 - `TestChains`, `TestRunRecord`, `TestSimulationRelease` and the new `TestPackageHashes`, which checks
   the source hash from a copy of `utils/common.py` as QuickStart describes, are `basic` tests
   (2026-11-02), so the Windows job runs them too.
