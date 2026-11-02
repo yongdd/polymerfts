@@ -1,20 +1,18 @@
 /**
  * @file MklRealTransform.cpp
- * @brief MKL real-to-real DCT/DST implementation using TT interface and FFT.
+ * @brief MKL real-to-real DCT/DST implementation using FFT and TT interface.
  *
- * Uses Intel MKL Trigonometric Transform (TT) routines where available,
- * and FFT-based O(N log N) algorithms for other transform types.
+ * Uses FFT-based O(N log N) algorithms, and Intel MKL Trigonometric
+ * Transform (TT) routines for DCT-IV and DST-IV.
  *
  * MKL TT to FFTW mapping (empirically verified):
- *   - STAGGERED_COSINE backward × 2 = DCT-II (FFTW REDFT10)
- *   - STAGGERED_COSINE forward × N  = DCT-III (FFTW REDFT01)
  *   - STAGGERED2_COSINE forward × N = DCT-IV (FFTW REDFT11)
  *   - STAGGERED2_SINE forward × N   = DST-IV (FFTW RODFT11)
  *
  * FFT-based O(N log N) implementations:
  *   - DCT-I: via 2(N-1) point FFT symmetric extension
  *   - DST-I: via 2(N+1) point FFT antisymmetric extension
- *   - DST-II, DST-III: cuHelmholtz algorithm (Makhoul 1980)
+ *   - DCT-II, DCT-III, DST-II, DST-III: N point FFT, cuHelmholtz algorithm (Makhoul 1980)
  */
 
 #include "MklRealTransform.h"
@@ -56,7 +54,7 @@ static double get_norm_factor(MklTransformType type, int N)
 //==============================================================================
 
 /**
- * @brief FFT handle for DCT-I/DST-I/DST-II/DST-III transforms
+ * @brief FFT handle for DCT-I/II/III and DST-I/II/III transforms
  */
 class MklFFTHandle
 {
@@ -441,8 +439,6 @@ static void fft_dst3(double* data, int N, MklFFTHandle& fft,
  * @brief Wrapper for MKL TT transforms.
  *
  * Supported transforms:
- *   - DCT-II: STAGGERED_COSINE backward × 2
- *   - DCT-III: STAGGERED_COSINE forward × N
  *   - DCT-IV: STAGGERED2_COSINE forward × N
  *   - DST-IV: STAGGERED2_SINE forward × N
  */
@@ -455,16 +451,6 @@ public:
         // Determine MKL TT type and direction
         switch (type)
         {
-            case MKL_DCT_2:
-                tt_type_ = MKL_STAGGERED_COSINE_TRANSFORM;
-                use_backward_ = true;
-                scale_ = 2.0;
-                break;
-            case MKL_DCT_3:
-                tt_type_ = MKL_STAGGERED_COSINE_TRANSFORM;
-                use_backward_ = false;
-                scale_ = static_cast<double>(N);
-                break;
             case MKL_DCT_4:
                 tt_type_ = MKL_STAGGERED2_COSINE_TRANSFORM;
                 use_backward_ = false;

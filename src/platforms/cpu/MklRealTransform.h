@@ -7,13 +7,11 @@
  * to obtain the round-trip scale factor.
  *
  * Implementation and Performance:
- *   - DCT-II, DCT-III, DCT-IV, DST-IV: MKL TT interface, O(N log N)
+ *   - DCT-II, DCT-III, DST-II, DST-III: N-point FFT with twiddle factors, O(N log N)
  *   - DCT-I, DST-I: FFT-based via symmetric/antisymmetric extension, O(N log N)
- *   - DST-II, DST-III: FFT-based, O(N log N)
+ *   - DCT-IV, DST-IV: MKL TT interface, O(N log N)
  *
  * MKL TT to FFTW mapping (empirically verified):
- *   - STAGGERED_COSINE backward × 2 = DCT-II
- *   - STAGGERED_COSINE forward × N  = DCT-III
  *   - STAGGERED2_COSINE forward × N = DCT-IV
  *   - STAGGERED2_SINE forward × N   = DST-IV
  */
@@ -104,13 +102,13 @@ private:
     MklTransformType type_;
     bool initialized_{false};
 
-    // MKL TT handle for DCT-2, DCT-3, DCT-4, DST-4
+    // MKL TT handle for DCT-4, DST-4
     std::unique_ptr<MklTTHandle> tt_handle_;
 
-    // FFT handle for DCT-1, DST-1, DST-2, DST-3 (O(N log N) algorithms)
+    // FFT handle for the other types (O(N log N) algorithms)
     std::unique_ptr<MklFFTHandle> fft_handle_;
 
-    // Twiddle factors for DST-2, DST-3 (cuHelmholtz algorithm)
+    // Twiddle factors for DCT-2, DCT-3, DST-2, DST-3 (cuHelmholtz algorithm)
     std::vector<double> cos_tbl_;
     std::vector<double> sin_tbl_;
 

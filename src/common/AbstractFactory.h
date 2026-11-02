@@ -16,7 +16,7 @@
  *
  * **Supported Platforms:**
  *
- * - **cpu-mkl**: Intel MKL-based CPU implementation (default)
+ * - **cpu-mkl**: Intel MKL-based CPU implementation
  * - **cpu-fftw**: FFTW-based CPU implementation using OpenMP
  * - **cuda**: NVIDIA CUDA GPU implementation using cuFFT
  *
@@ -34,6 +34,7 @@
  * // Create simulation objects through factory
  * std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(nx, lx, bc);
  * std::unique_ptr<Molecules> molecules = factory->create_molecules_information("continuous", ds, bonds);
+ * molecules->add_polymer(1.0, blocks);  // the optimizer needs at least one polymer
  * auto optimizer = factory->create_propagator_computation_optimizer(molecules.get(), true);
  * auto solver = factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), "rqm4");
  * auto am = factory->create_anderson_mixing(n_var, 20, 1e-1, 0.1, 0.1);
@@ -175,7 +176,7 @@ public :
      *
      * @param chain_model  "continuous" or "discrete"
      * @param ds           Contour step size
-     * @param bond_lengths Map of monomer types to segment lengths squared
+     * @param bond_lengths Map of monomer types to relative statistical segment lengths (not squared)
      * @return Molecules instance
      *
      * @example

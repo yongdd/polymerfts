@@ -197,7 +197,7 @@ public:
      * @brief Construct a Polymer from block specifications.
      *
      * @param ds              Contour step size (typically 1/N_Ref)
-     * @param bond_lengths    Statistical segment lengths squared: {type: (a/a_Ref)^2}
+     * @param bond_lengths    Relative statistical segment lengths: {type: a/a_Ref} (not squared)
      * @param volume_fraction Volume fraction of this polymer type
      * @param block_inputs    Vector of BlockInput defining topology
      * @param chain_end_to_q_init Optional: map chain ends to initial condition labels
