@@ -12,11 +12,11 @@
  * - OpenMP parallelization for multi-core CPUs
  * - Supports both continuous and discrete chain models
  * - Supports pseudo-spectral and real-space solvers
- * - Native DCT/DST support via FFTW r2r transforms
+ * - DCT/DST through MakhoulTransform over FFTW real FFT plans
  *
  * **Performance Notes:**
  *
- * - FFTW provides O(N log N) DCT/DST (faster than the old O(N^2) matrix multiplication)
+ * - O(N log N) DCT/DST through FFTW's real FFT
  * - Best for simulations with non-periodic boundary conditions
  * - Can be previously with slower for certain grid sizes
  *

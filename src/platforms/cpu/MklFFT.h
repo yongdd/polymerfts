@@ -24,10 +24,12 @@
 #define MKL_FFT_H_
 
 #include <array>
+#include <memory>
 #include <vector>
 #include <complex>
 #include "FFT.h"
 #include "ComputationBox.h"
+#include "MakhoulTransform.h"
 #include "mkl_service.h"
 #include "mkl_dfti.h"
 
@@ -35,7 +37,7 @@
  * @class MklFFT
  * @brief Intel MKL-based FFT with support for all boundary conditions.
  *
- * Uses Intel MKL's DFTI for periodic FFT and custom DCT/DST for non-periodic.
+ * Uses Intel MKL's DFTI for periodic FFT and MakhoulTransform for non-periodic BC.
  *
  * @tparam T   Input type for forward transform (typically double)
  * @tparam DIM Dimensionality of the transform (1, 2, or 3)
@@ -64,57 +66,14 @@ private:
     DFTI_DESCRIPTOR_HANDLE hand_forward_ = nullptr;   ///< Forward (r2c) transform
     DFTI_DESCRIPTOR_HANDLE hand_backward_ = nullptr;  ///< Backward (c2r) transform
 
-    // MKL DFTI descriptors for O(N log N) DCT/DST via FFT (per dimension)
-    std::vector<DFTI_DESCRIPTOR_HANDLE> dct_fft_forward_;   ///< Forward FFT for DCT-III
-    std::vector<DFTI_DESCRIPTOR_HANDLE> dct_fft_backward_;  ///< Backward FFT for DCT-II
-
-    // Precomputed twiddle factors for O(N log N) DCT/DST
-    std::vector<std::vector<double>> sin_tables_;  ///< sin(k*pi/(2*n)) for twiddle factors
-    std::vector<std::vector<double>> cos_tables_;  ///< cos(k*pi/(2*n)) for twiddle factors
+    /// DCT/DST of the grid through one real FFT (non-periodic BC only)
+    std::unique_ptr<MakhoulTransform> makhoul_;
 
     /// Initialize MKL DFTI descriptors for periodic FFT.
     void initPeriodicFFT();
 
-    /// Initialize DCT/DST trig tables for non-periodic BC.
+    /// Set up the DCT/DST of the grid for non-periodic BC.
     void initNonPeriodicFFT();
-
-    /// Precompute twiddle factors for O(N log N) DCT/DST via FFT.
-    void precomputeTwiddleFactors();
-
-    /**
-     * @brief Apply DCT-II (forward) along specified dimension.
-     * @param data Input/output data array
-     * @param temp Thread-local temporary buffer (size total_grid_)
-     * @param dim Dimension to transform
-     */
-    void applyDCT2Forward(double* data, double* temp, int dim);
-
-    /**
-     * @brief Apply DCT-III (backward/inverse) along specified dimension.
-     * @param data Input/output data array
-     * @param temp Thread-local temporary buffer (size total_grid_)
-     * @param dim Dimension to transform
-     */
-    void applyDCT3Backward(double* data, double* temp, int dim);
-
-    /**
-     * @brief Apply DST-II (forward) along specified dimension.
-     * @param data Input/output data array
-     * @param temp Thread-local temporary buffer (size total_grid_)
-     * @param dim Dimension to transform
-     */
-    void applyDST2Forward(double* data, double* temp, int dim);
-
-    /**
-     * @brief Apply DST-III (backward/inverse) along specified dimension.
-     * @param data Input/output data array
-     * @param temp Thread-local temporary buffer (size total_grid_)
-     * @param dim Dimension to transform
-     */
-    void applyDST3Backward(double* data, double* temp, int dim);
-
-    /// Get stride information for dimension-by-dimension transform.
-    void getStrides(int dim, int& stride, int& num_transforms) const;
 
     /// Free the DFTI descriptors (also after a failed construction); idempotent.
     void release();

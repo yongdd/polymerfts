@@ -139,7 +139,7 @@ The classes each platform provides (the computation classes above them are share
 | Continuous, RK2 | `CpuSolverPseudoRK2` | `CudaSolverPseudoRK2` |
 | Discrete chains | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
-| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT, DCT, DST) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `{Fftw,Mkl}CrysFFT{Pmmm,Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |

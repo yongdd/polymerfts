@@ -49,6 +49,7 @@ SET(BASIC_TESTS
     TestCpuFFT3D
     TestCpuFFT3DComplex
     TestCpuFFTMixedBC
+    TestCpuMakhoulTransform
     TestCpuSimulationBox
     TestCpuTridiagonal
     # Fourier multipliers of whole fields on every platform (Python)

@@ -16,14 +16,8 @@
  * - Periodic BC: Complex array has size Nx × Ny × (Nz/2+1) for Hermitian symmetry
  * - Non-periodic BC: "Complex" array has same size as real array (all real coefficients)
  *
- * **FFTW r2r Transform Types:**
- *
- * - FFTW_REDFT10: DCT-II (forward)
- * - FFTW_REDFT01: DCT-III (backward)
- * - FFTW_RODFT10: DST-II (forward)
- * - FFTW_RODFT01: DST-III (backward)
- *
  * @see FFT for the abstract interface
+ * @see MakhoulTransform for the DCT and DST
  * @see FftwFFT for FFTW implementation
  * @see CudaFFT for GPU implementation
  */
@@ -32,19 +26,19 @@
 #define FFTW_FFT_H_
 
 #include <array>
+#include <memory>
 #include <vector>
 #include <complex>
 #include <fftw3.h>
 #include "FFT.h"
 #include "ComputationBox.h"
+#include "MakhoulTransform.h"
 
 /**
  * @class FftwFFT
  * @brief FFTW3-based FFT with support for all boundary conditions.
  *
- * Uses FFTW3 for both periodic FFT and non-periodic DCT/DST transforms.
- * Unlike naive O(N²) matrix implementations, FFTW provides O(N log N)
- * algorithms for all transform types including DCT/DST.
+ * Uses FFTW3 for periodic FFT and MakhoulTransform over that FFT for non-periodic BC.
  *
  * @tparam T   Input type for forward transform (typically double)
  * @tparam DIM Dimensionality of the transform (1, 2, or 3)
@@ -72,11 +66,8 @@ private:
     fftw_plan plan_forward_ = nullptr;             ///< Forward (r2c) transform
     fftw_plan plan_backward_ = nullptr;            ///< Backward (c2r) transform
 
-    // FFTW plans for non-periodic DCT/DST (dimension-by-dimension)
-    std::array<fftw_plan, DIM> plan_dct_forward_{};  ///< DCT-II plans per dimension
-    std::array<fftw_plan, DIM> plan_dct_backward_{}; ///< DCT-III plans per dimension
-    std::array<fftw_plan, DIM> plan_dst_forward_{};  ///< DST-II plans per dimension
-    std::array<fftw_plan, DIM> plan_dst_backward_{}; ///< DST-III plans per dimension
+    /// DCT/DST of the grid through one real FFT (non-periodic BC only)
+    std::unique_ptr<MakhoulTransform> makhoul_;
 
     // Buffers for FFTW (FFTW requires aligned memory)
     double* work_buffer_ = nullptr;                ///< Work buffer for transforms
@@ -88,17 +79,8 @@ private:
     /// Initialize FFTW plans for periodic FFT.
     void initPeriodicFFT();
 
-    /// Initialize FFTW plans for non-periodic BC (DCT/DST).
+    /// Set up the DCT/DST of the grid for non-periodic BC.
     void initNonPeriodicFFT();
-
-    /// Get stride information for dimension-by-dimension transform.
-    void getStrides(int dim, int& stride, int& num_transforms) const;
-
-    /// Apply forward transform for one dimension (non-periodic).
-    void applyForward1D(double* data, double* temp, int dim);
-
-    /// Apply backward transform for one dimension (non-periodic).
-    void applyBackward1D(double* data, double* temp, int dim);
 
     /// Compute complex grid size based on dimensions and input type.
     void computeComplexGridSize();

@@ -641,6 +641,18 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- The DCT and DST of the CPU backends run as one reordered real FFT of the whole grid
+  (`MakhoulTransform`, 2026-11-02), the same code on FFTW and MKL; it replaces `MklDctLines.h`. Both
+  took each line in turn with a copy per line and per axis. On 64³, one thread, double precision, a
+  round trip with walls takes 3.5 ms instead of 16 ms with FFTW and 4.1 ms instead of 12 ms with MKL
+  on an AMD EPYC 7543, and 3.0 ms and 2.4 ms on an Intel Xeon 6737P; `compute_propagators` gains
+  4-6x on the AMD and 3-4x on the Intel processor. The 1D FFTW plans came out twice as slow in some
+  processes; 32 repeated runs show no such run now. The new path is also 1.6-2.1x faster on AMD,
+  1.2-1.7x on Intel, than one `fftw_plan_r2r` of the grid. The Pmmm CrysFFT runs on the same
+  transform and gains 5.9-6.2x with FFTW instead of 3.8-4.0x and 5.5-5.7x with MKL instead of 2.2x,
+  and its stress on a cell of three different lengths gains 1.7-2.1x, where MKL lost time before.
+  Results change at round-off: Q agrees with the previous code to 7e-14 on grids up to 96³, and all
+  space groups agree with the full grid to 1.2e-13 on both libraries.
 - The MKL ObliqueZ CrysFFT takes its z DCT through a real FFT of the same length instead of a
   mirrored sequence of twice that length, and its xy FFT on contiguous z planes, where this step on
   64³ ran 1.8 times faster, transpositions included (2026-11-02). With a P6/mmm group on 64³ the
@@ -717,6 +729,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestCpuMakhoulTransform` compares the DCT and DST of `FftwFFT` and `MklFFT` with their O(N^2)
+  definitions on grids of one to three axes with even, odd and unit lengths, every mix of cosine and
+  sine axes, real and complex fields of standard deviation 5, and concurrent calls (2026-11-02).
 - `TestCrysFFTBench` runs its full-FFT baseline as the solvers do (2026-11-02). It evaluated `exp()`
   in a CUDA kernel at every step and planned FFTW with `FFTW_ESTIMATE`, which overstated the gains in
   `docs/internals/FFTImplementation.md`: CUDA recursive 3m 3.1x is 2.3x, Pmmm 2.0x is 1.5x. That page

@@ -8,13 +8,8 @@
  * **Transform Types by Boundary Condition:**
  *
  * - PERIODIC: FFTW r2c/c2r transforms
- * - REFLECTING: DCT-II (forward), DCT-III (backward) via FFTW r2r
- * - ABSORBING: DST-II (forward), DST-III (backward) via FFTW r2r
- *
- * **Performance Advantage:**
- *
- * Unlike naive O(N²) matrix implementations, FFTW provides O(N log N)
- * algorithms for all transform types including DCT/DST.
+ * - REFLECTING: DCT-II (forward), DCT-III (backward) through one real FFT of the grid
+ * - ABSORBING: DST-II (forward), DST-III (backward) through one real FFT of the grid
  *
  * **Normalization:**
  *
@@ -68,15 +63,9 @@ template <typename T, int DIM>
 FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx)
     : nx_(nx), is_all_periodic_(true)
 {
-    // Initialize all BCs to periodic and plans to nullptr
+    // Initialize all BCs to periodic
     for (int d = 0; d < DIM; ++d)
-    {
         bc_[d] = BoundaryCondition::PERIODIC;
-        plan_dct_forward_[d] = nullptr;
-        plan_dct_backward_[d] = nullptr;
-        plan_dst_forward_[d] = nullptr;
-        plan_dst_backward_[d] = nullptr;
-    }
 
     // Compute grid sizes
     total_grid_ = 1;
@@ -103,15 +92,6 @@ template <typename T, int DIM>
 FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc)
     : nx_(nx), bc_(bc)
 {
-    // Initialize plan pointers to nullptr
-    for (int d = 0; d < DIM; ++d)
-    {
-        plan_dct_forward_[d] = nullptr;
-        plan_dct_backward_[d] = nullptr;
-        plan_dst_forward_[d] = nullptr;
-        plan_dst_backward_[d] = nullptr;
-    }
-
     // Compute total grid size
     total_grid_ = 1;
     for (int d = 0; d < DIM; ++d)
@@ -176,22 +156,6 @@ void FftwFFT<T, DIM>::release()
         fftw_destroy_plan(plan_backward_);
     plan_forward_ = nullptr;
     plan_backward_ = nullptr;
-
-    for (int d = 0; d < DIM; ++d)
-    {
-        if (plan_dct_forward_[d] != nullptr)
-            fftw_destroy_plan(plan_dct_forward_[d]);
-        if (plan_dct_backward_[d] != nullptr)
-            fftw_destroy_plan(plan_dct_backward_[d]);
-        if (plan_dst_forward_[d] != nullptr)
-            fftw_destroy_plan(plan_dst_forward_[d]);
-        if (plan_dst_backward_[d] != nullptr)
-            fftw_destroy_plan(plan_dst_backward_[d]);
-        plan_dct_forward_[d] = nullptr;
-        plan_dct_backward_[d] = nullptr;
-        plan_dst_forward_[d] = nullptr;
-        plan_dst_backward_[d] = nullptr;
-    }
 
     if (work_buffer_ != nullptr)
         fftw_free(work_buffer_);
@@ -269,170 +233,16 @@ void FftwFFT<T, DIM>::initPeriodicFFT()
 }
 
 //------------------------------------------------------------------------------
-// Initialize non-periodic FFT (DCT/DST via FFTW r2r)
+// Initialize non-periodic FFT (DCT/DST through one real FFT of the grid)
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::initNonPeriodicFFT()
 {
-    try
-    {
-        // Allocate aligned work buffer
-        work_buffer_ = fftw_alloc_real(total_grid_ * 2); // Extra space for temp
-        if (work_buffer_ == nullptr)
-            throw_with_line_number("FFTW memory allocation failed");
-
-        unsigned int flags = FFTW_MEASURE;
-
-        // Create 1D r2r plans for each dimension
-        // For multi-dimensional transforms, we apply 1D transforms sequentially
-        for (int dim = 0; dim < DIM; ++dim)
-        {
-            int n = nx_[dim];
-
-            // Calculate howmany, stride, and dist for batched 1D transforms
-            int stride, num_transforms;
-            getStrides(dim, stride, num_transforms);
-
-            // For dimension-by-dimension transform, we need to handle strided data
-            // FFTW guru interface allows this, but for simplicity we'll do it manually
-            // Just create a single 1D plan and apply it in loops
-
-            if (bc_[dim] == BoundaryCondition::REFLECTING)
-            {
-                // DCT-II forward: FFTW_REDFT10
-                plan_dct_forward_[dim] = fftw_plan_r2r_1d(n, work_buffer_, work_buffer_,
-                                                          FFTW_REDFT10, flags);
-                // DCT-III backward: FFTW_REDFT01
-                plan_dct_backward_[dim] = fftw_plan_r2r_1d(n, work_buffer_, work_buffer_,
-                                                           FFTW_REDFT01, flags);
-
-                if (plan_dct_forward_[dim] == nullptr || plan_dct_backward_[dim] == nullptr)
-                    throw_with_line_number("FFTW DCT plan creation failed for dimension " + std::to_string(dim));
-            }
-            else if (bc_[dim] == BoundaryCondition::ABSORBING)
-            {
-                // DST-II forward: FFTW_RODFT10
-                plan_dst_forward_[dim] = fftw_plan_r2r_1d(n, work_buffer_, work_buffer_,
-                                                          FFTW_RODFT10, flags);
-                // DST-III backward: FFTW_RODFT01
-                plan_dst_backward_[dim] = fftw_plan_r2r_1d(n, work_buffer_, work_buffer_,
-                                                           FFTW_RODFT01, flags);
-
-                if (plan_dst_forward_[dim] == nullptr || plan_dst_backward_[dim] == nullptr)
-                    throw_with_line_number("FFTW DST plan creation failed for dimension " + std::to_string(dim));
-            }
-        }
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-//------------------------------------------------------------------------------
-// Get strides for dimension-by-dimension transform
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::getStrides(int dim, int& stride, int& num_transforms) const
-{
-    stride = 1;
-    for (int d = dim + 1; d < DIM; ++d)
-        stride *= nx_[d];
-
-    num_transforms = 1;
-    for (int d = 0; d < dim; ++d)
-        num_transforms *= nx_[d];
-}
-
-//------------------------------------------------------------------------------
-// Apply forward transform for one dimension (non-periodic)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::applyForward1D(double* data, double* temp, int dim)
-{
-    int n = nx_[dim];
-    int stride, num_transforms;
-    getStrides(dim, stride, num_transforms);
-
-    fftw_plan plan = (bc_[dim] == BoundaryCondition::REFLECTING)
-                     ? plan_dct_forward_[dim]
-                     : plan_dst_forward_[dim];
-
-    // Thread-local buffer to avoid reallocation in OpenMP parallel regions
-    thread_local std::vector<double> slice;
-    if (static_cast<int>(slice.size()) < n)
-        slice.resize(n);
-
-    for (int batch = 0; batch < num_transforms; ++batch)
-    {
-        for (int s = 0; s < stride; ++s)
-        {
-            int offset = batch * n * stride + s;
-
-            // Extract 1D slice
-            for (int j = 0; j < n; ++j)
-                slice[j] = data[offset + j * stride];
-
-            // Execute FFTW plan (in-place)
-            fftw_execute_r2r(plan, slice.data(), slice.data());
-
-            // Store result back with scaling
-            // FFTW's DCT-II/DST-II output is 2x the textbook definition
-            // Scale by 0.5 to match standard mathematical definition
-            for (int j = 0; j < n; ++j)
-                temp[offset + j * stride] = slice[j] * 0.5;
-        }
-    }
-
-    // Copy temp to data
-    std::memcpy(data, temp, total_grid_ * sizeof(double));
-}
-
-//------------------------------------------------------------------------------
-// Apply backward transform for one dimension (non-periodic)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::applyBackward1D(double* data, double* temp, int dim)
-{
-    int n = nx_[dim];
-    int stride, num_transforms;
-    getStrides(dim, stride, num_transforms);
-
-    fftw_plan plan = (bc_[dim] == BoundaryCondition::REFLECTING)
-                     ? plan_dct_backward_[dim]
-                     : plan_dst_backward_[dim];
-
-    // Normalization factor for FFTW DCT/DST
-    // Forward scaled by 0.5, so backward scales by 1/n for round-trip = identity
-    // (FFTW_DCT3(FFTW_DCT2(x)*0.5) = 0.5*2n*x = n*x, so divide by n)
-    double scale = 1.0 / n;
-
-    // Thread-local buffer to avoid reallocation in OpenMP parallel regions
-    thread_local std::vector<double> slice;
-    if (static_cast<int>(slice.size()) < n)
-        slice.resize(n);
-
-    for (int batch = 0; batch < num_transforms; ++batch)
-    {
-        for (int s = 0; s < stride; ++s)
-        {
-            int offset = batch * n * stride + s;
-
-            // Extract 1D slice
-            for (int j = 0; j < n; ++j)
-                slice[j] = data[offset + j * stride];
-
-            // Execute FFTW plan (in-place)
-            fftw_execute_r2r(plan, slice.data(), slice.data());
-
-            // Store result back with normalization
-            for (int j = 0; j < n; ++j)
-                temp[offset + j * stride] = slice[j] * scale;
-        }
-    }
-
-    // Copy temp to data
-    std::memcpy(data, temp, total_grid_ * sizeof(double));
+    std::vector<bool> sine(DIM);
+    for (int d = 0; d < DIM; ++d)
+        sine[d] = bc_[d] == BoundaryCondition::ABSORBING;
+    makhoul_ = std::make_unique<MakhoulTransform>(std::vector<int>(nx_.begin(), nx_.end()), sine,
+                                                  std::make_unique<FftwFFT<double, DIM>>(nx_));
 }
 
 //------------------------------------------------------------------------------
@@ -566,49 +376,29 @@ void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
     }
     else
     {
-        // DCT/DST: dimension-by-dimension transform
-        // Use thread-local buffers for thread safety in OpenMP parallel regions
-        thread_local std::vector<double> work;
-        thread_local std::vector<double> temp;
+        // FFTW's DCT-II/DST-II are 2x the standard definition per dimension
+        const double scale = 1.0 / (1 << DIM);
 
-        if (static_cast<int>(work.size()) < total_grid_)
+        if constexpr (std::is_same<T, double>::value)
         {
-            work.resize(total_grid_);
-            temp.resize(total_grid_);
+            makhoul_->forward(rdata, cdata, scale);
         }
-
-        // Real-linear transforms: for complex fields (CL-FTS) transform
-        // the real and imaginary parts independently and store the
-        // coefficients interleaved as complex pairs (matching the
-        // periodic complex layout used by the solvers).
-        const int n_parts = std::is_same<T, double>::value ? 1 : 2;
-        for (int part = 0; part < n_parts; ++part)
+        else
         {
-            // Copy input component to work buffer
-            if constexpr (std::is_same<T, double>::value)
-            {
-                std::memcpy(work.data(), rdata, total_grid_ * sizeof(double));
-            }
-            else
+            // Real-linear transforms: for complex fields (CL-FTS) transform
+            // the real and imaginary parts independently and store the
+            // coefficients interleaved as complex pairs (matching the
+            // periodic complex layout used by the solvers).
+            // Thread-local buffer for thread safety in OpenMP parallel regions
+            thread_local std::vector<double> work;
+            if (static_cast<int>(work.size()) < total_grid_)
+                work.resize(total_grid_);
+
+            for (int part = 0; part < 2; ++part)
             {
                 for (int i = 0; i < total_grid_; ++i)
-                    work[i] = (part == 0) ? std::real(rdata[i])
-                                          : std::imag(rdata[i]);
-            }
-
-            // Apply transforms dimension by dimension
-            for (int dim = 0; dim < DIM; ++dim)
-            {
-                applyForward1D(work.data(), temp.data(), dim);
-            }
-
-            // Copy to output (interleaved for complex fields)
-            if constexpr (std::is_same<T, double>::value)
-            {
-                std::memcpy(cdata, work.data(), total_complex_grid_ * sizeof(double));
-            }
-            else
-            {
+                    work[i] = (part == 0) ? std::real(rdata[i]) : std::imag(rdata[i]);
+                makhoul_->forward(work.data(), work.data(), scale);
                 for (int i = 0; i < total_complex_grid_; ++i)
                     cdata[2 * i + part] = work[i];
             }
@@ -666,47 +456,26 @@ void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
     }
     else
     {
-        // DCT/DST: dimension-by-dimension inverse transform
-        // Use thread-local buffers for thread safety in OpenMP parallel regions
-        thread_local std::vector<double> work;
-        thread_local std::vector<double> temp;
+        const double scale = 1.0 / static_cast<double>(total_grid_);
 
-        if (static_cast<int>(work.size()) < total_grid_)
+        if constexpr (std::is_same<T, double>::value)
         {
-            work.resize(total_grid_);
-            temp.resize(total_grid_);
+            makhoul_->backward(cdata, rdata, scale);
         }
-
-        // Complex fields: coefficients arrive interleaved (see forward);
-        // inverse-transform the real and imaginary parts independently.
-        const int n_parts = std::is_same<T, double>::value ? 1 : 2;
-        for (int part = 0; part < n_parts; ++part)
+        else
         {
-            // Copy input component to work buffer
-            if constexpr (std::is_same<T, double>::value)
-            {
-                std::memcpy(work.data(), cdata, total_complex_grid_ * sizeof(double));
-            }
-            else
+            // Complex fields: coefficients arrive interleaved (see forward);
+            // inverse-transform the real and imaginary parts independently.
+            thread_local std::vector<double> work;
+            if (static_cast<int>(work.size()) < total_grid_)
+                work.resize(total_grid_);
+
+            double* out = reinterpret_cast<double*>(rdata);
+            for (int part = 0; part < 2; ++part)
             {
                 for (int i = 0; i < total_complex_grid_; ++i)
                     work[i] = cdata[2 * i + part];
-            }
-
-            // Apply inverse transforms dimension by dimension (reverse order)
-            for (int dim = DIM - 1; dim >= 0; --dim)
-            {
-                applyBackward1D(work.data(), temp.data(), dim);
-            }
-
-            // Copy to output component
-            if constexpr (std::is_same<T, double>::value)
-            {
-                std::memcpy(rdata, work.data(), total_grid_ * sizeof(double));
-            }
-            else
-            {
-                double* out = reinterpret_cast<double*>(rdata);
+                makhoul_->backward(work.data(), work.data(), scale);
                 for (int i = 0; i < total_grid_; ++i)
                     out[2 * i + part] = work[i];
             }

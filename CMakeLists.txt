@@ -284,6 +284,7 @@ SET(POLYMERFTS_CPU_COMMON_SOURCES
     src/platforms/cpu/CpuComputationBackend.cpp
     src/platforms/cpu/CpuAndersonMixing.cpp
     src/platforms/cpu/CpuFourierTransform.cpp
+    src/platforms/cpu/MakhoulTransform.cpp
 )
 
 # ---- FFTW3 ----

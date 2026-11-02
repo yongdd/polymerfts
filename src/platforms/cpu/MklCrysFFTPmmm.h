@@ -2,9 +2,6 @@
  * @file MklCrysFFTPmmm.h
  * @brief MKL implementation of crystallographic FFT for Pmmm symmetry.
  *
- * Uses O(N log N) FFT algorithm with twiddle factors to implement
- * DCT-II/III for Pmmm mirror symmetry.
- *
  * @see CrysFFTPmmmBase for common functionality
  * @see FftwCrysFFTPmmm for FFTW implementation
  */
@@ -13,68 +10,14 @@
 #define MKL_CRYS_FFT_PMMM_H_
 
 #include <array>
-#include <tuple>
-#include <vector>
-#include <complex>
-#include "mkl_dfti.h"
 #include "CrysFFTPmmmBase.h"
 
 /**
  * @class MklCrysFFTPmmm
- * @brief MKL-based crystallographic FFT using DCT via FFT.
- *
- * Implements DCT-II/III using 1D FFT per dimension with twiddle factor
- * preprocessing/postprocessing for O(N log N) complexity.
+ * @brief MKL-based crystallographic FFT: the DCT-II/III of CrysFFTPmmmBase on the real FFT of MKL.
  */
-class MklCrysFFTPmmm : public CrysFFTPmmmBase<MklCrysFFTPmmm>
+class MklCrysFFTPmmm : public CrysFFTPmmmBase
 {
-private:
-    using Base = CrysFFTPmmmBase<MklCrysFFTPmmm>;
-    friend Base;
-
-    // MKL DFTI descriptors for DCT via FFT (per dimension)
-    std::array<DFTI_DESCRIPTOR_HANDLE, 3> dct_fft_forward_;
-    std::array<DFTI_DESCRIPTOR_HANDLE, 3> dct_fft_backward_;
-
-    // Precomputed twiddle factors for O(N log N) DCT via FFT
-    std::array<std::vector<double>, 3> cos_tables_;
-    std::array<std::vector<double>, 3> sin_tables_;
-
-    /// Thread-local buffer structure.
-    struct ThreadBuffers {
-        std::vector<double> io;
-        std::vector<double> temp;
-        int size = 0;
-    };
-
-    /// Get thread-local buffers.
-    std::pair<double*, double*> get_thread_local_buffers()
-    {
-        thread_local ThreadBuffers buffers;
-        if (buffers.size != M_physical_)
-        {
-            buffers.io.resize(M_physical_);
-            buffers.temp.resize(M_physical_);
-            buffers.size = M_physical_;
-        }
-        return {buffers.io.data(), buffers.temp.data()};
-    }
-
-    /// Apply DCT-II forward via FFT.
-    void dct_forward_impl(double* io, double* temp);
-
-    /// Apply DCT-III backward via FFT.
-    void dct_backward_impl(double* io, double* temp);
-
-    /// Initialize MKL DFTI descriptors.
-    void initFFTPlans();
-
-    /// Precompute twiddle factors.
-    void precomputeTwiddleFactors();
-
-    /// Free the DFTI descriptors (also after a failed construction); idempotent.
-    void release();
-
 public:
     /**
      * @brief Construct MklCrysFFTPmmm for given grid.
@@ -87,9 +30,6 @@ public:
         std::array<int, 3> nx_logical,
         std::array<double, 6> cell_para,
         std::array<double, 9> trans_part = {0,0,0, 0,0,0, 0,0,0});
-
-    /// Destructor. Frees MKL descriptors and buffers.
-    ~MklCrysFFTPmmm();
 };
 
 #endif  // MKL_CRYS_FFT_PMMM_H_
