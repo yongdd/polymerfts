@@ -112,7 +112,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   in `scft_results.py`, and `force_jacobian` and `symmetric_jacobian` in `integrators.py`.
   `checkpoint.RunRecord` replaces `restore_recording_state` and the lists of the loops: a new recorded
   quantity needs one entry in its series and one `add()`, and a checkpoint without it gives NaN for
-  its pending samples. Results do not change.
+  its pending samples. Results do not change. The console header is shared too: SCFT prints
+  `Platform:` without the space before the colon and its `Pressure scale` line after the chains,
+  and the lines of the conformational asymmetry and of χN lose their trailing spaces.
 - `chains.py` holds the polymer chains (2026-11-02): reading them, their drawings, and through
   `chain_fields` and `solve_chains` what the three `compute_concentrations` share, so that the
   methods keep only what is their own. `file_formats.py` holds `load_config` and `save_vtk`. Both
@@ -702,6 +704,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestChains`, `TestRunRecord`, `TestSimulationRelease` and the new `TestPackageHashes`, which checks
+  the source hash from a copy of `utils/common.py` as QuickStart describes, are `basic` tests
+  (2026-11-02), so the Windows job runs them too.
 - `tests/scripts/TestDriftTail.py` runs the one-pole model of Aarts, Seiler, Sexty and
   Stamatescu (2017) with complex Langevin dynamics (2026-10-29): at β = 1.6, where the walkers
   reach the zero of the weight, `drift_tail.py` finds the power-law tail and Re<z²> is wrong by

@@ -41,7 +41,7 @@ molar = 0.6022          # nm^-3 per mol/L
 length, nz = 200.0, 800     # Grid, nm
 graft_width = 0.5           # Width of the graft layer at the wall, nm
 ds = 0.001                  # Contour step. The field reaches 4 kT per segment, so ds = 1/N is far too coarse
-floor = 6.0                 # Lowest field below its largest value, kT per segment
+floor = 6.0                 # Lowest field below its largest value, kT per segment. 7 gives the same heights, 8 overflows
 
 # Part 1. L is not in the paper: it is fitted to its Fig. 2
 box_length = 6600.0     # Length that holds the counterions, nm
@@ -63,6 +63,8 @@ y_series = [1e-14, 1e-10, 1e-9, 2e-9, 3e-9, 4e-9, 5e-9, 7e-9, 1e-8, 1.5e-8, 2e-8
 experiment = [(1e-6, -0.09), (1e-5, -0.145), (1e-4, -0.495), (5e-4, -0.545)]
 brush_charge = 73.0     # Charges per nm^2 of the brush of the experiment
 depth = 1.2e6           # Solution over the brush, nm. Not measured: fitted to the four symbols
+if not experiment[-1][0] <= y_series[-1] <= ionic_strength / 6:
+    raise ValueError("y_series must reach the last Y3+ added, and Y3+ alone gives at most ionic_strength / 6")
 
 dz = length / nz
 z = (np.arange(nz) + 0.5) * dz
@@ -90,8 +92,8 @@ def experiment_solution(y_molar):
 
 def segment_density(potential):
     """Segments per nm^3 in the field per segment, normalized to grafting * n_segments per nm^2. Double
-    precision holds about 700 kT over a chain, so the field keeps a floor where no chain reaches, far
-    outside the brush, and a constant comes off it."""
+    precision holds about 700 kT over a chain, so the field keeps a floor where hardly any chain reaches,
+    far outside the brush, and a constant comes off it."""
     field = np.maximum(potential, potential.max() - floor) - (potential.max() - floor)
     solver.compute_propagators({"A": n_segments * field}, q_init={"G": q_graft})
     solver.compute_concentrations()
@@ -170,6 +172,8 @@ def solve(s, correlations, unknowns, psi, relax=0):
     x = newton_krylov(residual, unknowns, f_tol=1e-7, rdiff=1e-5, maxiter=80, inner_maxiter=50, line_search="armijo")
     residual(x)
     rho = latest["rho"]
+    if rho[x[:nz] < x[:nz].max() - floor].max(initial=0) > 1e-4 * rho.max():
+        print("  Warning: chains reach the floor of the field. Compare this state with floor = 7.")
     uptake = z_plus * np.sum(latest["cation"] - latest["cation"][-1]) * dz / (grafting * n_segments)
     return x, latest["psi"], 2 * np.sum(z * rho) / np.sum(rho), uptake
 
@@ -182,7 +186,7 @@ def walk(solution, values, correlations, x, psi):
         value = pending[0]
         try:
             x, psi, height, uptake = solve(solution(value), correlations, x, psi)
-        except (NoConvergence, RuntimeError):
+        except (NoConvergence, RuntimeError, ValueError):
             if not done or value < 1.001 * done[-1]:
                 raise
             pending.insert(0, np.sqrt(done[-1] * value))

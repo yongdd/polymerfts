@@ -21,6 +21,10 @@ SET(BASIC_TESTS
     TestPartitionGuard
     TestPartitionIntegrand
     TestDriftStepHistory
+    TestChains
+    TestRunRecord
+    TestSimulationRelease
+    TestPackageHashes
     # Platform & utilities
     TestConsoleEncoding
     TestDisplayArchitecture

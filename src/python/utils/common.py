@@ -71,7 +71,7 @@ def fields_hash(fields):
 def _package_hashes():
     from .. import _core
     source = hashlib.sha256()
-    package = Path(__file__).parents[1]
+    package = Path(_core.__file__).parent  # Not __file__: a copy of this module may lie anywhere
     for path in sorted(package.rglob("*.py")):
         source.update(path.relative_to(package).as_posix().encode())
         source.update(path.read_bytes())
