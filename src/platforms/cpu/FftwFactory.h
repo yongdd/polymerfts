@@ -17,8 +17,8 @@
  * **Performance Notes:**
  *
  * - O(N log N) DCT/DST through FFTW's real FFT
- * - Best for simulations with non-periodic boundary conditions
- * - Can be previously with slower for certain grid sizes
+ * - Whether FFTW or MKL is faster depends on the processor
+ *   (docs/internals/FFTImplementation.md, Section 8.2)
  *
  * **License Note:**
  *

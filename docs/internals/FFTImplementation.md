@@ -138,7 +138,7 @@ so it changes only the tables that place the samples and the coefficients. Compl
 
 ## 4. Multi-dimensional Transforms
 
-### Supported Configurations
+### Supported Configurations (CudaRealTransform)
 
 | Dimension | Supported Types | Mixed Types |
 |-----------|-----------------|-------------|
@@ -146,11 +146,11 @@ so it changes only the tables that place the samples and the coefficients. Compl
 | 2D | DCT/DST-1,2,3,4 | DCT/DST-2,3,4 |
 | 3D | DCT/DST-1,2,3,4 | DCT/DST-2,3,4 |
 
-**Note**: Type-1 transforms cannot be mixed with other types due to different point counts.
+**Note**: `CudaRealTransform` cannot mix type 1 with other types, because its type-1 transform of a 2D or 3D grid is one FFT of the whole extended grid. `MklRealTransform` transforms each axis on its own and accepts any mix.
 
-### 3D Transform Algorithm (CudaRealTransform, MklRealTransform)
+### 3D Transform Algorithm (CudaRealTransform)
 
-The CPU solvers run DCT/DST-2/3 as one real FFT of the whole grid instead (Section 2.4).
+On the CPU, the wall transforms of `FftwFFT` and `MklFFT` and the Pmmm CrysFFT run DCT/DST-2/3 as one real FFT of the whole grid instead (Section 2.4). `MklRealTransform` runs every type, type 1 included, as 1D transforms along z, y and x, one line at a time (Section 8.2).
 
 **Types 2,3,4 (Separable):**
 - Batched 1D transforms along Z dimension (innermost)
@@ -437,7 +437,7 @@ The processor decides which library leads. On the Intel Xeon 6737P MKL loads its
 | 128³ | 60.6 ms | 29.1 ms | 49.2 ms | 30.8 ms |
 | 192³ | 232 ms | 134 ms | 211 ms | 172 ms |
 
-`MklRealTransform`, which the solvers do not use, provides DCT and DST of types 1 to 4 for internal use. `tests/BenchmarkMklFftw` compares it with FFTW on 3D transforms, single-threaded, on the AMD EPYC 7543:
+`MklRealTransform`, which the solvers do not use, provides DCT and DST of types 1 to 4 for internal use. `tests/BenchmarkMklFftw` compares it with FFTW plans made with `FFTW_ESTIMATE` (the solvers time their plans with `FFTW_MEASURE` or `FFTW_PATIENT`) on 3D transforms, single-threaded, on the AMD EPYC 7543:
 - **DCT-IV, DST-IV**: MKL TT interface, O(N log N)
 - **DCT-II, DCT-III, DST-II, DST-III**: FFT-based N-point algorithm with precomputed twiddle factors (Makhoul), O(N log N)
 - **DCT-I, DST-I**: FFT-based via symmetric/antisymmetric extension (for N points: 2(N-1)- and 2(N+1)-point FFTs), O(N log N)
