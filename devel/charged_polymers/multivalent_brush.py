@@ -5,7 +5,8 @@ reports/ElectrostaticCorrelations.md. Chains grafted at the wall z = 0 sit in a 
 the ions follow the Poisson-Boltzmann equation with the self-energy z^2 u of the Gaussian charge of an ion,
 which the ionic strength around it lowers. Every segment carries one negative charge. Two forms of u:
 
-- LocalSelfEnergy: the closed form of a uniform medium at the ionic strength averaged over the ion radius.
+- LocalSelfEnergy: the closed form of a uniform medium at the ionic strength averaged over the ion radius,
+  screened by point charges as in the paper (S33) or, with spread=True, by charges of the ion radius (N12).
 - GreenFunction: the Green function in the varying ionic strength of a planar brush.
 
 The self-energy is not part of the polymerfts SCFT class, so Brush writes the iteration itself, damped
@@ -13,7 +14,7 @@ steps and Anderson mixing, and takes only the chains from PropagatorSolver. Leng
 in kT.
 """
 
-from functools import partial
+from functools import lru_cache, partial
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -58,6 +59,26 @@ def born_energy(a, kappa, erfcx=erfcx):
     return bjerrum / (2 * a) * (1 - x * erfcx(x / np.sqrt(np.pi)))
 
 
+@lru_cache(maxsize=None)
+def spread_table():
+    """N12 of reports/ElectrostaticCorrelations.md, u(x) = 2/pi int_0^inf t^2 e^(-t^2/pi) / (t^2 + x^2 e^(-t^2/pi)) dt,
+    on a table of x = a kappa, by the trapezoid rule in ln t."""
+    x = np.concatenate([[0.0], np.geomspace(1e-7, 1e3, 8001)])
+    t = np.geomspace(1e-12, 20.0, 2400)
+    weight = np.full(t.size, np.log(t[1] / t[0])) * t
+    weight[[0, -1]] *= 0.5
+    decay = np.exp(-t ** 2 / np.pi)
+    u = np.array([2 / np.pi * (t ** 2 * decay / (t ** 2 + one ** 2 * decay)) @ weight for one in x])
+    return x, u
+
+
+def spread_born_energy(a, kappa, xp=np):
+    """Self-energy per z^2 of a Gaussian charge of radius a in a uniform medium of inverse screening length
+    kappa made by charges of the same spread: born_energy with the spread kept in the screening (N12)."""
+    x, u = spread_table()
+    return bjerrum / (2 * a) * xp.interp(a * kappa, xp.asarray(x), xp.asarray(u))
+
+
 def screening(strength):
     """Inverse screening length at ionic strength sum z^2 c / 2."""
     return (8 * np.pi * bjerrum * strength) ** 0.5
@@ -66,9 +87,9 @@ def screening(strength):
 class LocalSelfEnergy:
     """u per z^2 from the closed form of a uniform medium, at the ionic strength averaged over a Gaussian of the
     ion radius. The fields of the ions and of the segments feel u averaged in the same way, which makes the
-    equations the stationary point of Brush.grand_potential()."""
+    equations the stationary point of Brush.grand_potential(). spread keeps the charge spread in the screening."""
 
-    def __init__(self, brush):
+    def __init__(self, brush, spread=False):
         if len(brush.radii) > 1:
             raise ValueError("The local self-energy takes one radius for all ions")
         self.xp = brush.xp
@@ -76,27 +97,30 @@ class LocalSelfEnergy:
             from scipy import ndimage, special
         else:
             from cupyx.scipy import ndimage, special
-        self.erfcx = special.erfcx
+        if spread:
+            self.born, self.device_born = spread_born_energy, partial(spread_born_energy, xp=brush.xp)
+        else:
+            self.born, self.device_born = born_energy, partial(born_energy, erfcx=special.erfcx)
         self.blur = partial(ndimage.gaussian_filter, sigma=[radius / d for d in brush.dx] + [radius / brush.dz],
                             mode=["wrap"] * len(brush.cells) + ["reflect"])
 
     def set_bulk(self, strength):
         self.bulk_strength = strength
-        self.bulk = born_energy(radius, screening(strength))
+        self.bulk = self.born(radius, screening(strength))
 
     def felt(self, u):
         return self.blur(u)
 
     def __call__(self, strength):
-        return [born_energy(radius, screening(self.blur(strength)), self.erfcx) - self.bulk]
+        return [self.device_born(radius, screening(self.blur(strength))) - self.bulk]
 
     def free_energy(self, strength):
         """Density of the free energy of the correlations, kT/nm^3, with dw/dI = 2 (B(I) - B(bulk)) at the
-        averaged ionic strength I, B being born_energy, and w = 0 in the bulk."""
+        averaged ionic strength I, B being the self-energy of a uniform medium, and w = 0 in the bulk."""
         xp = self.xp
         averaged = self.blur(strength)
         table = np.geomspace(1e-9, 1.5 * max(30.0, self.bulk_strength, float(xp.max(averaged))), 20001)
-        gain = 2 * (born_energy(radius, screening(table)) - self.bulk)
+        gain = 2 * (self.born(radius, screening(table)) - self.bulk)
         energy = np.concatenate([[0.0], np.cumsum(0.5 * (gain[1:] + gain[:-1]) * np.diff(table))])
         energy = energy - np.interp(self.bulk_strength, table, energy)
         return xp.interp(averaged, xp.asarray(table), xp.asarray(energy))
@@ -188,9 +212,11 @@ class Brush:
     column holds the same chains, Eq. S30 of the paper at each lateral position.
 
     The unknowns x of a state are the field per segment and the self-energy per z^2 at each ion radius:
-    radius, and cation_radius for the multivalent cations when it differs. Arrays are of the module xp."""
+    radius, and cation_radius for the multivalent cations when it differs. Arrays are of the module xp.
+    spread screens the local self-energy by charges of the ion radius instead of point charges."""
 
-    def __init__(self, grafting, length, nz, ds, cells=(), size=(), green_function=False, cation_radius=radius, xp=np):
+    def __init__(self, grafting, length, nz, ds, cells=(), size=(), green_function=False, cation_radius=radius, xp=np,
+                 spread=False):
         self.grafting, self.length, self.nz, self.xp = grafting, length, nz, xp
         self.dz = length / nz
         self.z = (np.arange(nz) + 0.5) * self.dz
@@ -211,7 +237,9 @@ class Brush:
         self.weight = xp.asarray(weight)
         self.psi = xp.zeros(self.shape)
         self.radii = [radius] if cation_radius == radius else [radius, cation_radius]
-        self.self_energy = GreenFunction(self) if green_function else LocalSelfEnergy(self)
+        if spread and green_function:
+            raise ValueError("The spread screening is written for the local self-energy")
+        self.self_energy = GreenFunction(self) if green_function else LocalSelfEnergy(self, spread)
         self.correlations = True    # False keeps u at zero
         if cells:                   # Lateral eigenvalues of the finite differences, for the preconditioner
             wave2 = np.zeros(cells)

@@ -11,11 +11,14 @@ The script solves the same equations twice, and only the solution around the bru
    Y3+ is then shared between the brush and a finite depth of solution, as in a closed cell.
 
 The self-energy is the local form of multivalent_brush.py, and each state relaxes by Anderson mixing from
-the last one. How the two parts differ from the paper, and why, is in reports/MultivalentBrush.md.
+the last one. With the argument spread, charges of the ion radius screen the self-energy in place of point
+charges (N12 of reports/ElectrostaticCorrelations.md); L and the depth stay those fitted without it.
+How the two parts differ from the paper, and why, is in reports/MultivalentBrush.md.
 The two parts take about four minutes on one CPU core.
 """
 
 import os
+import sys
 import numpy as np
 from scipy.optimize import brentq
 
@@ -56,7 +59,9 @@ depth = 1.2e6           # Solution over the brush, nm. Not measured: fitted to t
 if not experiment[-1][0] <= y_series[-1] <= ionic_strength / 6:
     raise ValueError("y_series must reach the last Y3+ added, and Y3+ alone gives at most ionic_strength / 6")
 
-brush = Brush(grafting, length, nz, ds)
+if sys.argv[1:] not in ([], ["spread"]):
+    raise SystemExit("usage: python BrushMultivalentIons1D.py [spread]")
+brush = Brush(grafting, length, nz, ds, spread=sys.argv[1:] == ["spread"])
 z, dz = brush.z, brush.dz
 
 
