@@ -36,7 +36,7 @@ from scipy.special import erfcx, logsumexp
 
 HERE = Path(__file__).resolve().parent
 DATA_FILE = HERE / "reports/duan_scft_check_data.json"
-FIGURE_DIR = HERE / "reports/figures"
+FIGURE_DIR = HERE / "figures"
 lB, a, b, N, sigma, chi, MOLAR = 0.7, 0.25, 1.0, 100, 0.1, 0.5, 0.6022
 LS = [200, 2000, 20000, 200000]
 SCAN_H0 = 50.91  # 2<z> of the salt-free brush in the archived scan, nm

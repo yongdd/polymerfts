@@ -39,6 +39,7 @@ Eqs. 1–9 are the main text, Eqs. S1–S42 the SI. The representative code is [
 - [10. Open questions](#10-open-questions)
   - [10.1 Missing from the paper](#101-missing-from-the-paper)
   - [10.2 Values found in the group's other work](#102-values-found-in-the-groups-other-work)
+  - [10.3 Next steps](#103-next-steps)
 - [11. Corrected equations](#11-corrected-equations)
 - [12. Reproduce](#12-reproduce)
 
@@ -58,7 +59,7 @@ The model is sound and its high-salt predictions reproduce. The scaling explanat
 | Agreement with the experimental symbols of Fig. 2 | Not at the same solution: the $`{\rm Y}^{3+}`$ data carry 3–6 mM $`{\rm NaNO_3}`$ that the calculation omits, and its $`\rho_b`$ is not the $`{\rm Y}^{3+}`$ in its own box. In the experiment's solution the model collapses near 30 nM and the experiment between 10 and 100 µM. In a closed cell about 1.2 mm deep, the kind of finite pool the experiment used, the model follows all four $`{\rm Y}^{3+}`$ symbols to rms 0.05, with the depth fitted | [6.4](#64-the-experiment-in-fig-2)–[6.7](#67-cross-checks-at-the-experiments-solution) |
 | Coupling of correlation and conformation is "fully captured" | Overstated: $`u_P^{\rm ex}`$ is dropped | [8](#8-neglected-terms-and-range-of-validity) |
 
-![The line of the paper, the experiment and SCFT at the solution of the experiment](figures/collapse_at_6mM.png)
+![The line of the paper, the experiment and SCFT at the solution of the experiment](../figures/collapse_at_6mM.png)
 
 *The main result for the experiment. The grey line of the paper meets the black symbols, but it has no $`{\rm NaNO_3}`$. At the solution of the experiment (blue) the model collapses about 900 times too early. A closed cell (orange) moves it back, with its depth fitted, but that is not the only reading. See [6.4](#64-the-experiment-in-fig-2), [6.6](#66-closed-cell) and [6.7](#67-cross-checks-at-the-experiments-solution).*
 
@@ -74,6 +75,7 @@ Fixing the errors restores the equations the paper computes with, but not its sc
 |---|---|---|
 | Typo or notation | S8, S11, Eq. 3a, Eq. 5, S27a–b, S28, S30, S32, S42, $`\pi/24`$ | Holds |
 | Calculation error | S26, S40, S41a, Eq. 8 line 4 | Holds |
+| Omission or inconsistency | S27a–b (the derivative of $`\epsilon`$ in the fluctuation terms), S29 to S32 ($`\ln\langle Q_l\rangle`$) | Needs a new term or form. Does not reach the figures: $`\epsilon`$ is uniform, and the second enters only $`u_P^{\rm ex}`$ and $`I_{ex}`$ |
 | Structural | Eq. 3b as a potential, S27c | A corrected number is not enough: a chain has no exact one-body potential, see [3.2](#32-eq-3b-used-as-a-potential) |
 | Logic | $`\rho_b^{**}`$ at $`\Gamma=0`$, lowest height at the $`\Gamma`$ minimum, Eq. 6, $`\kappa^3\approx\rho_+`$ | Does not hold under any correction to the equations |
 
@@ -105,7 +107,7 @@ Fixing the errors restores the equations the paper computes with, but not its sc
 
 The layer model gives trends and positions. Its $`h`$ is the thickness of a uniform layer, and $`h_0=49.27`$ nm. The SCFT height is $`2\langle z\rangle`$ with $`h_0=50.91`$ nm. The paper does not define its Gibbs dividing surface, but a thesis from the same group gives the same $`2\langle z\rangle`$, see [10.2](#102-values-found-in-the-groups-other-work).
 
-**Not checked.** The numerics of SI Sec. II and $`I_{ex}`$ in an inhomogeneous brush. Fig. 3 and Fig. 4 are compared in `docs/validation/MultivalentBrush.md`, parts 3 to 5. Fig. 1 is covered by the older reproduction report in `devel/charged_polymers/reports` at tag `v0.10.0`.
+**Not checked.** The numerics of SI Sec. II and $`I_{ex}`$ in an inhomogeneous brush. Fig. 3 and Fig. 4 are compared in [MultivalentBrush.md](MultivalentBrush.md), parts 3 to 5. Fig. 1 is covered by the older reproduction report in `devel/charged_polymers/reports` at tag `v0.10.0`.
 
 ## 3. Formal theory: SI Sec. I and Eqs. 1–5
 
@@ -120,11 +122,13 @@ The layer model gives trends and positions. Its $`h`$ is the thickness of a unif
 | S26 | Wrong | Spurious $`G(\mathbf r,\mathbf r')`$, see [3.1](#31-s26) | Not stated here. The sister paper uses the local ionic strength only, see [10.2](#102-values-found-in-the-groups-other-work) |
 | S27a, S27b | Sign | Same as S11: $`-\xi`$ here, $`+\xi`$ in the main text and in the ion weight $`e^{-v_K\xi/v}`$ of S24 | No: $`v_{\rm ion}=0`$ |
 | S27c | Inconsistent | Ignores the dependence of $`u_P^{\rm ex}`$ on $`\omega_P`$; same cause as S20 | No |
+| S27a, S27b | Omission | The derivative of $`\epsilon`$ with respect to $`\rho_P`$ and $`\rho_S`$ enters only through the mean field $`\psi`$. The same derivative of the fluctuation terms of S32, through $`C`$ and $`G`$, is missing | No: uniform $`\epsilon`$ |
 | S28 | Sign | Same as S11 | No: $`v_{\rm ion}=0`$ |
 | S30 initial condition | Typo | $`\tilde q(\mathbf r;1)=\sum_l\delta(\mathbf r-\mathbf r_l)/q^\dagger(\mathbf r_l;1)`$ gives $`\int\rho_i\,d\mathbf r=e^{V_P(\mathbf r_l;1)}`$. It needs a factor $`e^{-V_P(\mathbf r;1)}`$ | No, mass fixes the normalisation |
+| S29 to S32 | Inconsistent | Carried over from free chains: $`\ln\langle Q_l\rangle`$ where tethered chains need $`\langle\ln Q_l\rangle`$. The self-interaction of the chain-averaged density enters twice, about 2.5 $`kT`$ per chain by a hand estimate | No: only in $`u_P^{\rm ex}`$ and $`I_{ex}`$ |
 | S32 | Sign | Same as S11 | No: $`v_{\rm ion}=0`$ |
 
-**Correct.** Re-derived: S1–S7, S9–S10, S12, S13–S19, S23–S24. S25 holds only with $`h_K\to\delta`$ in the screening, which the SI does not state, see N11 in [the corrected equations](../../../docs/theory/ElectrostaticCorrelations.md#3-green-function-and-self-energy). Read through: S21–S22, S27d–S27e, S29, S31. S13–S19 is a first-cumulant closure, and $`\sum_i u_P^{\rm ex}`$ is the right total energy.
+**Correct.** Re-derived: S1–S7, S9–S10, S12, S13–S19, S23–S24. S25 holds only with $`h_K\to\delta`$ in the screening, which the SI does not state, see N11 in [the corrected equations](ElectrostaticCorrelations.md#3-green-function-and-self-energy). Read through: S21–S22, S27d–S27e, S29, S31. S13–S19 is a first-cumulant closure, and $`\sum_i u_P^{\rm ex}`$ is the right total energy.
 
 **Not checkable.** SI Sec. II gives no box length, grid or discretisation.
 
@@ -140,7 +144,7 @@ S26 has an extra $`G(\mathbf r,\mathbf r')`$. Dimensions cannot show this, becau
 
 ### 3.2 Eq. 3b used as a potential
 
-The total $`\sum_i u_P^{\rm ex}`$ counts each pair once, which is why Eq. 3b carries the factor ½. A one-body potential must not have that factor, as in Hartree theory. For two independent particles with a weak pair potential, exact response / response from Eq. 3b = 1.9999 (command `correlation`, part c), so the potential there is $`2u^{\rm ex}`$. For a connected chain no one-body potential is exact: the consistent density is the derivative of the closed $`\ln Q_P`$, which involves three-monomer correlations (Eq. N3 in [Section 4](../../../docs/theory/ElectrostaticCorrelations.md#4-chain)).
+The total $`\sum_i u_P^{\rm ex}`$ counts each pair once, which is why Eq. 3b carries the factor ½. A one-body potential must not have that factor, as in Hartree theory. For two independent particles with a weak pair potential, exact response / response from Eq. 3b = 1.9999 (command `correlation`, part c), so the potential there is $`2u^{\rm ex}`$. For a connected chain no one-body potential is exact: the consistent density is the derivative of the closed $`\ln Q_P`$, which involves three-monomer correlations (Eq. N3 in [Section 4](ElectrostaticCorrelations.md#4-chain)).
 
 ## 4. Scaling theory: SI Sec. III and Eqs. 6–9
 
@@ -208,7 +212,7 @@ Exact $`\Gamma`$ for a layer at fixed polymer density shows what happens. There 
 
 Eq. 7 is reached only at several molar. At low salt the brush is neutralised by cations and $`\Gamma\to0`$, not the Eq. 7 value. For $`z_+=3`$ the dip that Eq. 7 predicts at 0.3 M is about half as deep at brush density.
 
-![Γ from Eq. 7, from the layer model and from SCFT](figures/gamma_against_eq7.png)
+![Γ from Eq. 7, from the layer model and from SCFT](../figures/gamma_against_eq7.png)
 
 *$`\Gamma`$ against $`\rho_b`$. Eq. 7 follows the brush value only at high salt. The dashed line and the band mark where Fig. 2 has $`\rho_b^{**}`$ and the height minimum.*
 
@@ -318,13 +322,13 @@ Against all 24 Fig. 2 readings, the rms difference of the layer model is:
 
 The archived $`L=200`$ nm SCFT scan gives 0.158 on the same points, so the layer model at the same $`L`$ already explains that mismatch. There, the released counterions alone are 0.05 nm⁻³, or 83 mM of monovalent background. This is the main cause of the 0.32 ($`z_+=2`$) and 0.47 ($`z_+=3`$) maximum differences in the older reproduction report at tag `v0.10.0`.
 
-![Height against box length with C conserved in the box, and in a fixed solution](figures/box_length_saturation.png)
+![Height against box length with C conserved in the box, and in a fixed solution](../figures/box_length_saturation.png)
 
 **Why the box length matters.** In a fixed solution it does not, once the box exceeds the brush and the Debye length: from 200 to 1600 nm the height at 6 mM keeps all six decimals (right panel). The calculation of Fig. 2 is different, because C are conserved. They do not fade into a bulk: released C fill the box, so $`c\approx`$ (released fraction) $`\times\,\sigma N/L`$ at any length. A longer box lowers $`c`$, which makes the exchange cheaper, so more C are released.
 
 The height does saturate, at the collapsed value, but late (left panel): to within 0.01 at 0.3 µm at 10 mM, 2 µm at 1 mM and 16 µm at 100 µM, and past the 64 µm of the scan at 10 µM. The length grows as $`\rho_b`$ falls, in line with $`\rho_b^*\propto L^{-2z_+/(z_++1)}`$. At $`L=6.6`$ µm every reading of the fall below 1 mM is on the slope, not on the plateau. The low-salt fall of Fig. 2 is therefore a finite-box result: the trend is that a long enough box collapses the brush at any $`\rho_b>0`$ in this ensemble.
 
-![Height against salt for several box lengths](figures/height_vs_box_length.png)
+![Height against salt for several box lengths](../figures/height_vs_box_length.png)
 
 *Brush height against salt. The high-salt branch does not depend on $`L`$; the low-salt fall moves with $`L`$. Fig. 2 lies between 2 and 20 µm for $`z_+=2,3`$.*
 
@@ -358,7 +362,7 @@ The box length needed at each reading:
 
 $`L`$ stays within a factor of 1.6 while $`c`$ changes 18-fold. That is what a conserved amount of C in a fixed box gives: $`c`$ rises as C are released.
 
-![Fig. 2 against SCFT at L = 0.2 and 6.5 µm](figures/fig2_one_box.png)
+![Fig. 2 against SCFT at L = 0.2 and 6.5 µm](../figures/fig2_one_box.png)
 
 *Readings of Fig. 2 against SCFT. One box length serves all three valences.*
 
@@ -394,7 +398,7 @@ SCFT at the experiment's solution, with a fixed 1:1 background, $`N=100`$ and th
 | $`10^{-4}`$ | 5.40 | −0.495 | −0.560 | 0.84 |
 | $`5\times10^{-4}`$ | 3.00 | −0.545 | −0.561 | 0.95 |
 
-![SCFT at the solution of the experiment against the Y3+ symbols](figures/collapse_at_6mM.png)
+![SCFT at the solution of the experiment against the Y3+ symbols](../figures/collapse_at_6mM.png)
 
 *Blue and orange are relative to the height in 6 mM 1:1 salt, the grey line of the paper to its salt-free brush. The arrow is taken at half of the collapse, where the experiment value is interpolated between 10 and 100 µM.*
 
@@ -436,11 +440,11 @@ SCFT at ionic strength 6 mM with $`\sigma=0.1`$ nm⁻². A step straight to $`N=
 
 From $`N=100`$ to 730, $`f`$ moves by at most 0.027 and $`h/N`$ by at most 5 %. At 1 µM, $`\log_{10}(h/h_6)`$ goes from −0.494 to −0.505, where $`h_6`$ is the height in 6 mM 1:1 salt: 49.6 nm at $`N=100`$ and 357 nm at $`N=730`$. The gap to the experiment is therefore not from $`N`$.
 
-![Profiles through the collapse, uptake for three chain lengths, and the onset of the dense layer going up and down](figures/layers_and_chain_length.png)
+![Profiles through the collapse, uptake for three chain lengths, and the onset of the dense layer going up and down](../figures/layers_and_chain_length.png)
 
 **What $`N`$ does.** $`b`$, $`\sigma`$ and the charge per bead stay fixed in nm, so raising $`N`$ adds polymer and charge per area. $`N`$ sets a length and an amount, and little else:
 
-![The same solution at three chain lengths, against z and against z/N](figures/chain_length_scaling.png)
+![The same solution at three chain lengths, against z and against z/N](../figures/chain_length_scaling.png)
 
 - **Length.** The profile is a function of $`z/N`$, so $`h\propto N`$ (figure above). Relative heights such as $`h/h_6`$ do not change.
 - **Amount.** The charge per area is $`\sigma N`$, which sets how much $`{\rm Y}^{3+}`$ the brush can take from a finite solution. Only $`\sigma N/D`$ enters [6.6](#66-closed-cell), as only $`\sigma N/L`$ enters [6.3](#63-one-box-length-reproduces-fig-2).
@@ -481,7 +485,7 @@ This is a balance on the $`f(\rho_b)`$ calculated above at a fixed background; i
 
 The range of $`D`$ within rms + 0.01 is 0.63–1.71 mm at $`N=730`$. A fresh solution at each reading gives $`D=1.08`$ mm and rms 0.055. At this depth the brush nearly empties the solution: at 1 and 10 µM added, the bulk keeps about 0.1 % of the $`{\rm Y}^{3+}`$.
 
-![Solution depth needed by each reading, and the height of the collapsed brush after changes of solution](figures/closed_cell.png)
+![Solution depth needed by each reading, and the height of the collapsed brush after changes of solution](../figures/closed_cell.png)
 
 One depth does not fit all four (left panel). Each reading alone needs $`D=7.0`$, 1.1, 0.36 and 0.077 mm at $`N=730`$, from low to high concentration.
 
@@ -514,7 +518,7 @@ A limited supply can therefore reproduce the $`{\rm Y}^{3+}`$ fall with one fitt
 
 Two cheaper calculations test the numbers above. One is a uniform layer in a neutral solution of $`{\rm Na}^+`$, $`{\rm Y}^{3+}`$ and $`{\rm NO_3}^-`$ (command `uniform6`), with no chain propagator. The other is SCFT with the self-energy switched off (`walk --mean-field`). Heights are relative to the same calculation in 6 mM 1:1 salt.
 
-![SCFT and the uniform layer with and without the self-energy against the experiment, and the Fig. 2 calculation moved to its real Y3+ concentration](figures/cross_check_6mM.png)
+![SCFT and the uniform layer with and without the self-energy against the experiment, and the Fig. 2 calculation moved to its real Y3+ concentration](../figures/cross_check_6mM.png)
 
 - **The early collapse is what the model says.** With the self-energy, the uniform layer falls between 10 and 14 nM and the SCFT height halves near 30 nM (left panel, blue). The two lie within a factor of about three, three decades below the experiment, so it is not a numerical error.
 - **In an unlimited solution, mean field fits the two lowest symbols.** Without the self-energy and with nothing fitted, SCFT gives −0.060 and −0.121 and the uniform layer −0.062 and −0.129, against −0.09 and −0.145 (orange). Half exchange falls at about 3 µM, which also follows by hand from $`\rho_Y\approx\tfrac43c^3/\rho_P^2`$.
@@ -525,7 +529,7 @@ Two cheaper calculations test the numbers above. One is a uniform layer in a neu
 
 **The fair comparison is a closed cell for both** ([6.6](#66-closed-cell)), because the solution of the experiment is a finite pool.
 
-![Closed cell with and without the self-energy against the Y3+ symbols, and the misfit against solution depth](figures/closed_cell_self_energy.png)
+![Closed cell with and without the self-energy against the Y3+ symbols, and the misfit against solution depth](../figures/closed_cell_self_energy.png)
 
 Without the self-energy the brush never collapses at any depth, with rms 0.24 against the four symbols. Its fit to the two lowest symbols holds only in a pool 20 mm deep or more, about 90 mL over the wafer. With the self-energy one depth near 1.2 mm, about 5.5 mL, follows all four. At the experiment's solution in a closed cell, the model with its self-energy is therefore the best single description.
 
@@ -539,7 +543,7 @@ The fitted depth stays the weak point, and a deeper pool with a weaker self-ener
 - The neutral level is reproduced: −0.377 and −0.378 against −0.38.
 - Without the self-energy there is no collapse. In the mean-field layer the height falls monotonically to the neutral level from above.
 
-![Height against salt in the layer model with and without the self-energy, against Fig. 2](figures/self_energy_on_off.png)
+![Height against salt in the layer model with and without the self-energy, against Fig. 2](../figures/self_energy_on_off.png)
 
 *Both curves are relative to the salt-free brush with the self-energy. Only with the self-energy (blue) does the height go below the neutral brush for $`z_+=2,3`$ and come back. In the grey band blue follows the readings. To the left of it the curve is for $`L=20`$ µm, not the $`L`$ of [6.3](#63-one-box-length-reproduces-fig-2), so it need not follow them there.*
 
@@ -578,6 +582,10 @@ With the form factor the pressure is 12–48 % more negative. This is an upper e
 
 **The first-cumulant closure.** S17 replaces $`\langle e^{-H^{\rm ex}}\rangle_0`$ by $`e^{-\langle H^{\rm ex}\rangle_0}`$, which needs small $`H^{\rm ex}`$. The same estimate gives $`u_P^{\rm ex}=2.3`$ per monomer at $`\kappa=1`$ nm⁻¹ and 6.1 at 0.3 nm⁻¹, so the closure is not controlled at low ionic strength, where the chain energy is of order $`N`$ times that.
 
+**No variational bound.** The action is complex, so the Gibbs-Bogoliubov inequality does not hold. The Gaussian reference gives a stationary point, not an upper bound, and the theory cannot measure its own error. In a uniform electrolyte it equals the one-loop result. For monovalent ions at $`\ell_B\kappa=2.15`$, CL-FTS of the same model gives an excess chemical potential 2 % below one loop, and at 2.3 CL-FTS agrees with exact Monte Carlo by Widom insertion ([Electrolytes.md](../../../docs/validation/Electrolytes.md)).
+
+**Density fluctuations.** Only $`\Psi`$ fluctuates; $`W_K`$ and $`\Xi`$ stay at their saddle points. Monomers and ions therefore screen as if they could move freely, which an incompressible dense layer does not allow. A hand estimate at $`\phi=0.7`$ lowers $`\kappa`$ by about 8 % and the gain from correlation by about 4 %. It has not been computed.
+
 **Strength of the coupling.** In the collapsed $`z_+=3`$ state at 1 mM, the layer model has $`\phi=0.77`$ and $`\kappa=5.2`$ nm⁻¹. So $`1/\kappa=0.19`$ nm is below $`a=0.25`$ nm and well below the monomer size, $`\kappa a=1.3`$, and $`z_+^2\ell_B\kappa\approx33`$. A quantitative match to Fig. 2 there is a match to the closure, not evidence that the closure is accurate at this coupling. This is a judgement, not a proof.
 
 Earlier sampling in the same folder pointed to a weaker effect than the Gaussian theory predicts, but neither study settles it. The CL runs failed an exact finite-model benchmark, and the planar MC drops transverse charge fluctuations. The size of the error at this coupling is unmeasured.
@@ -592,7 +600,7 @@ Earlier sampling in the same folder pointed to a weaker effect than the Gaussian
 | `workflow.py prl salt` from the restored tag, $`z_+=3`$, 10 mM | $`h=14.122885939812836`$ nm, identical to the archive |
 | `duan_scft_check.py scft`, $`z_+=2`$ and 3, 1 mM, $`L=2`$ µm | Identical to the earlier run |
 | `duan_scft_check.py walk`, $`z_+=3`$: 1 M at $`L=6.5`$ µm with both graft widths, 1 mM with 0.3 M background | Identical to the scan |
-| `examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py`, continuous chain with `cn-adi2`, the same equations in new code | 24 readings at $`L=6.6`$ µm, rms 0.0113 against 0.0116 here; closed cell −0.013, −0.149, −0.555, −0.558 |
+| [BrushMultivalentIons1D.py](../BrushMultivalentIons1D.py), continuous chain with `cn-adi2`, the same equations in new code | 24 readings at $`L=6.6`$ µm, rms 0.0113 against 0.0116 here; closed cell −0.013, −0.149, −0.555, −0.558 |
 | Chain ladder to $`N=339`$ fitted to $`N=730`$ against a direct solve at 3 nM | $`f`$ 0.0740 and 0.0740, $`h`$ 328.16 and 328.11 nm |
 | `literature_scft.py` from the restored tag, six cases | Identical to the earlier runs |
 | `workflow.py analyze electrolyte` on the archived campaign | All 1644 numbers identical to the earlier analysis |
@@ -618,7 +626,7 @@ Passing these checks verifies the coded model. The coded model is the smoothed l
 
 Not rerun: `studies/prl_analysis.py` and `models/prl_scft2d.py` at the tag import correctly, and that is all that was tested.
 
-Apart from the check script, `models/duan_scft.py` is the only code kept in this folder. Its default chain runs on its own. Its `direct` chain backend needs `models/stable_grafted_chain.py` from the tag.
+Apart from the check script, `models/duan_scft.py` is the only code of this check kept in this folder; the multivalent brush scripts beside it are listed in the [folder README](../README.md). Its default chain runs on its own. Its `direct` chain backend needs `models/stable_grafted_chain.py` from the tag.
 
 ## 10. Open questions
 
@@ -651,7 +659,7 @@ Neither the main text nor the SI states the items below; a text search for tempe
 | Derivation of Eq. 6 | Cannot be checked | Reconstructed in [5.5](#55-eq-6) |
 | That the $`{\rm Y}^{3+}`$ data carry 3–6 mM $`{\rm NaNO_3}`$, that each series has its own $`h_0`$, and that the measured height is the outer edge | Decides whether theory and experiment are at the same solution | Compared in [6.4](#64-the-experiment-in-fig-2) |
 | That Fig. 3 plots Eqs. 7 and 9 | Reads as a calculated result | Found by comparison in [5.6](#56-fig-3-plots-formulas-not-a-brush) |
-| Fig. 4: grid, $`N`$, initial state, box height. The lateral box (about 48 × 41 $`b`$) and $`\rho_b = 1`$ mM are given | Not reproducible as printed | (c,d) reproduced with the Green function; (a,b) forms but is not the lowest state, in `docs/validation/MultivalentBrush.md` |
+| Fig. 4: grid, $`N`$, initial state, box height. The lateral box (about 48 × 41 $`b`$) and $`\rho_b = 1`$ mM are given | Not reproducible as printed | (c,d) reproduced with the Green function; (a,b) forms but is not the lowest state, in [MultivalentBrush.md](MultivalentBrush.md) |
 | Data and code | No availability statement | Pixel readings |
 
 ### 10.2 Values found in the group's other work
@@ -700,9 +708,22 @@ A shorter box makes the fall later, as section 6 predicts. The far box keeps its
 
 **Counterions.** The 2025 paper is the only one of these works that states canonical C, and the fit in [6.3](#63-one-box-length-reproduces-fig-2) supports it. Reservoir-only ions cannot give Fig. 2 as printed: the common neutral level at −0.38 for all valences needs a common salt-free $`h_0`$, which points to a monovalent salt-free brush. A fixed monovalent background needs a different concentration for each valence, as `archive/RESEARCH_LOG.md`, section 3m, tag `v0.10.0`, also found. No paper, thesis or repository found here gives the box length or the correlation code of the 2025 calculations.
 
+### 10.3 Next steps
+
+First finish the reproduction of the paper, then correct the model itself. A reproduction shows which equations the paper solved, not that they are right.
+
+- **Reproduction.** Fig. 1 with the current code, and Fig. 4(a,b) in 3D with the Green function on 0.25 nm or less along the wall. With the split Green function, ridges on four points per nm or more lie at or above the planar layer, and the caps, tried only on two points per nm in 3D, lie above it. Whether the fine grids of this split give the Green function of a charge of radius $`a`$ is open ([MultivalentBrush.md, part 4](MultivalentBrush.md#part-4-fig-4ab-lateral-structure)). Fig. 2 and Fig. 4(c,d) are reproduced.
+- **Model.**
+  - The screening of S25 and S33, which is not the stationary point of S11: N11 and N12 in [the corrected equations](ElectrostaticCorrelations.md#3-green-function-and-self-energy).
+  - The Green function in the varying ionic strength with its nonlocal part $`I_{ex}`$ ([MultivalentBrush.md, parts 3 and 4](MultivalentBrush.md#part-3-fig-4cd-the-green-function-in-the-varying-ionic-strength)).
+  - The polymer term $`u_P^{\rm ex}`$, which has no exact one-body potential ([3.2](#32-eq-3b-used-as-a-potential), [8](#8-neglected-terms-and-range-of-validity)).
+  - $`\langle\ln Q_l\rangle`$ in place of $`\ln\langle Q_l\rangle`$ in S32, and the $`\epsilon(\rho)`$ term of S27 ([3](#3-formal-theory-si-sec-i-and-eqs-15)).
+  - Monomers that screen as a connected chain, and the density fluctuations frozen at the saddle point ([8](#8-neglected-terms-and-range-of-validity)).
+- **Judge the result** against measurements, with no fitted box length, and against the variational form of the free energy. The measurements are the brush height of Yu et al. and the activity coefficients of the salts. For a 3:1 salt at $`a=0.25`$ nm and 0.1 M the theory gives $`\gamma_\pm=0.16`$; the tables are in Habenschuss and Spedding (1976) and He and Rard (2015), and have not been compared.
+
 ## 11. Corrected equations
 
-The corrected equations, with their numbers and the list of changes from the paper, are in [ElectrostaticCorrelations.md](../../../docs/theory/ElectrostaticCorrelations.md).
+The corrected equations, with their numbers and the list of changes from the paper, are in [ElectrostaticCorrelations.md](ElectrostaticCorrelations.md).
 
 ## 12. Reproduce
 

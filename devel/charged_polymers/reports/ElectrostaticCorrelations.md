@@ -2,7 +2,7 @@
 
 This document derives the theory of Duan, Agrawal and Wang (Reference 1), which adds the fluctuations of the electrostatic field to SCFT through a Gaussian variational reference. Each charged species then carries a self-energy set by its surroundings. The published equations are given here with corrections, listed in [Section 12](#12-corrections-to-the-published-equations).
 
-[BrushMultivalentIons1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py) solves the planar working equations of [Section 6.1](#61-working-equations), [BrushMultivalentIonsLateral.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIonsLateral.py) solves them in 2D and 3D, and [BrushMultivalentIonsGreen1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIonsGreen1D.py) solves the Green function of S25 in the planar brush. [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) compares them with the paper and with experiment.
+[BrushMultivalentIons1D.py](../BrushMultivalentIons1D.py) solves the planar working equations of [Section 6.1](#61-working-equations), [BrushMultivalentIonsLateral.py](../BrushMultivalentIonsLateral.py) solves them in 2D and 3D, and [BrushMultivalentIonsGreen1D.py](../BrushMultivalentIonsGreen1D.py) solves the Green function of S25 in the planar brush. [Validation of the brush with multivalent ions](MultivalentBrush.md) compares them with the paper and with experiment.
 
 Numbered equations carry the number of the original: `7`, `S26`, where S marks the Supplemental Material. An asterisk marks an equation that differs from the paper. `N` marks an equation that is not in the paper. Inside an equation, red marks what was changed or added; a removed term is gone, so a red note says what it was. The last column of the table in Section 12 gives which. N equations are new as a whole and stay black, apart from the coefficient in N7.
 
@@ -279,7 +279,7 @@ U(z)=\frac{\ell_B}{2a}\left[u\big(a\kappa(z)\big)-u(a\kappa_b)\right],\qquad
 \tag{N5}
 ```
 
-[BrushMultivalentIons1D.py](../../examples/charged/scft/multivalent_brush/BrushMultivalentIons1D.py) solves these equations with continuous chains, and smooths the ionic strength over $`a`$ before N5, in place of the long-range part of $`G`$. The field of each ion takes $`u`$ smoothed in the same way, so that the equations remain the stationary point of a grand potential. [Validation of the brush with multivalent ions](../validation/MultivalentBrush.md) lists what it assumes beyond them.
+[BrushMultivalentIons1D.py](../BrushMultivalentIons1D.py) solves these equations with continuous chains, and smooths the ionic strength over $`a`$ before N5, in place of the long-range part of $`G`$. The field of each ion takes $`u`$ smoothed in the same way, so that the equations remain the stationary point of a grand potential. [Validation of the brush with multivalent ions](MultivalentBrush.md) lists what it assumes beyond them.
 
 The conservation of C means that the box length $`L`$ is part of the model, see [Section 9](#9-low-salt-ion-exchange).
 

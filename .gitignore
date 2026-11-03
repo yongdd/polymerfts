@@ -20,6 +20,7 @@ temp*
 *.out
 *.png
 !docs/figures/*.png
+!devel/charged_polymers/figures/*.png
 !examples/block_copolymer/clfts/dynamical_stabilization.png
 !docs/grafted_brush_validation.png
 !docs/convergence_plot.png

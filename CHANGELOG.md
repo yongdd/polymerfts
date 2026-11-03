@@ -63,22 +63,6 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `examples/charged/clfts/CoacervateGibbs.py` (2026-11-01): the coexistence of a coacervate and
   its supernatant from `GibbsEnsemble`, with neutral chains, with charges and with a salt of point
   ions; the charges widen a coexistence that the fluctuations of neutral chains narrow.
-- `examples/charged/scft/multivalent_brush/` (2026-11-02): `BrushMultivalentIons.py` moves here as
-  `BrushMultivalentIons1D.py`, and its model into `multivalent_brush.py`, which two new scripts share.
-  `BrushMultivalentIonsGreen1D.py` gives the flat and oscillatory layers of Fig. 4(c,d) of Duan, Agrawal
-  and Wang (2025) with the Green function solved in the varying ionic strength; only the bands of the
-  Green function that the charge of an ion reaches are computed, from the pivots of its tridiagonal
-  factors. `BrushMultivalentIonsLateral.py` takes the brush at a lower grafting density to 2D or 3D with
-  fixed grafts and compares dense caps with the planar layer by grand potential; it runs its
-  Poisson-Boltzmann solver on CuPy when that is installed. The field of each ion now takes the self-energy
-  averaged over the ion radius, as the ionic strength in it is, so that the equations are the stationary
-  point of a grand potential; this moves the deep collapse of Fig. 2 by up to 0.008 in log10(h/h0).
-  Each state relaxes by Anderson mixing, and the 1D script takes four minutes instead of half an hour.
-- `examples/charged/scft/BrushMultivalentIons.py` (2026-11-01): a brush with multivalent ions and the
-  ion self-energy of Duan, Agrawal and Wang (2025), with `cn-adi2`, in the box of their Fig. 2 and in
-  the solution of the experiment of Yu et al. (2016) with a closed cell.
-  docs/validation/MultivalentBrush.md says what differs from the paper, and why, and
-  docs/theory/ElectrostaticCorrelations.md derives the equations with corrections to the published ones.
 - `examples/charged/scft/SaltDopedLamella.py` (2026-10-29): a salt that the B block of a lamella
   solvates, with the ions as molecules of one segment that carry their own chi, and the
   Coulomb interaction dragging the weakly selective anion after the cation.

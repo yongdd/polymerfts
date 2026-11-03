@@ -1,7 +1,7 @@
 """SCFT of a polyelectrolyte brush with multivalent ions and ion correlations, shared by the scripts of this folder.
 
 The model is that of Duan, Agrawal and Wang, Phys. Rev. Lett. 134, 048101 (2025), with the corrections of
-docs/theory/ElectrostaticCorrelations.md. Chains grafted at the wall z = 0 sit in a field per segment, and
+reports/ElectrostaticCorrelations.md. Chains grafted at the wall z = 0 sit in a field per segment, and
 the ions follow the Poisson-Boltzmann equation with the self-energy z^2 u of the Gaussian charge of an ion,
 which the ionic strength around it lowers. Every segment carries one negative charge. Two forms of u:
 

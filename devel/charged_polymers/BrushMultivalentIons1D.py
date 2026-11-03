@@ -11,7 +11,7 @@ The script solves the same equations twice, and only the solution around the bru
    Y3+ is then shared between the brush and a finite depth of solution, as in a closed cell.
 
 The self-energy is the local form of multivalent_brush.py, and each state relaxes by Anderson mixing from
-the last one. How the two parts differ from the paper, and why, is in docs/validation/MultivalentBrush.md.
+the last one. How the two parts differ from the paper, and why, is in reports/MultivalentBrush.md.
 The two parts take about four minutes on one CPU core.
 """
 

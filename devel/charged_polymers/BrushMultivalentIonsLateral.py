@@ -11,7 +11,7 @@ spacing, and dimensions = 2 makes ridges of period spacing.
 
 The equations are those of BrushMultivalentIons1D.py, with the local self-energy of multivalent_brush.py,
 and the Green function of the varying ionic strength is left out in the same way. How this compares with
-the paper is in docs/validation/MultivalentBrush.md. Lengths are in nm and energies in kT.
+the paper is in reports/MultivalentBrush.md. Lengths are in nm and energies in kT.
 
 The Poisson-Boltzmann equation and the mixing of the pattern use CuPy when it is installed and a GPU is
 present, and NumPy otherwise. The 3D run stores 2 * 250 propagators of 48 * 83 * 320 points, 5 GB.

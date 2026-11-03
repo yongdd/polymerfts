@@ -10,7 +10,7 @@ The script relaxes the brush of Fig. 4(c,d) at the two radii of the figure: 0.1 
 trivalent salt. The oscillatory state grows from a small wave, so a plain damped iteration comes before
 the Anderson mixing, which would also converge to the unstable flat layer. The oscillatory state settles
 slowly and stops near a residual of 1e-3. Lengths are in nm and energies in kT.
-docs/validation/MultivalentBrush.md compares the result with the paper. The run takes about five minutes
+reports/MultivalentBrush.md compares the result with the paper. The run takes about five minutes
 on one CPU core.
 """
 
