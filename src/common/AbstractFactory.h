@@ -213,8 +213,8 @@ public :
      * @brief Create a propagator computation solver.
      *
      * Creates a solver for the chain propagator computation. The numerical method
-     * determines whether a pseudo-spectral (FFT-based) or real-space (finite-difference)
-     * solver is used. The chain model and reduce_memory select the computation class
+     * determines whether a pseudo-spectral (FFT-based) or real-space (finite differences
+     * or a direct bond sum) solver is used. The chain model and reduce_memory select the computation class
      * (ComputationContinuous, ComputationDiscrete or their ComputationReduceMemory*
      * variants); create_backend() supplies the platform. Implemented in
      * AbstractFactory.cpp for every platform.
@@ -222,16 +222,19 @@ public :
      * @param cb                              Computation box
      * @param molecules                       Molecules container
      * @param propagator_computation_optimizer Computation scheduler
-     * @param numerical_method                Numerical method:
-     *                                        - "rqm4": 4th-order Richardson (pseudo-spectral)
-     *                                        - "rk2":  2nd-order operator splitting (pseudo-spectral)
-     *                                        - "cn-adi2": 2nd-order Crank-Nicolson ADI (real-space)
+     * @param numerical_method                Numerical method of the chain model; empty for its default:
+     *                                        - "rqm4": 4th-order Richardson (pseudo-spectral, continuous chains, default)
+     *                                        - "rk2":  2nd-order operator splitting (pseudo-spectral, continuous)
+     *                                        - "cn-adi2": 2nd-order Crank-Nicolson ADI (real-space, continuous)
+     *                                        - "ps": bond convolution through FFTs (discrete chains, default)
+     *                                        - "rs": bond convolution summed on the grid (real-space, discrete)
+     *                                        A continuous-chain name given for discrete chains selects "ps".
      * @param space_group                     Optional space group (reduced basis, real fields only)
      * @return PropagatorComputation solver with the platform's backend. The box,
      *         molecules, optimizer and space group must outlive it.
      *
-     * @note Real-space methods (cn-adi*) support non-periodic boundary conditions
-     *       but are a beta feature.
+     * @note The real-space methods (cn-adi2, rs) mix periodic and non-periodic boundary
+     *       conditions and need an orthogonal cell.
      */
     std::unique_ptr<PropagatorComputation<T>> create_propagator_computation(
         ComputationBox<T>* cb, Molecules *molecules, PropagatorComputationOptimizer* propagator_computation_optimizer,

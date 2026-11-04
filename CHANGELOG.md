@@ -48,8 +48,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   fields. Every concentration stays positive where fields change by hundreds of kT per chain
   (grafted and charged brushes), where the FFT round-off of the default `"ps"` turns them negative.
   Like `cn-adi2` it mixes periodic and non-periodic axes and takes a different wall at each end of an
-  axis, and it needs an orthogonal cell. Its stress is the derivative of its own free energy, so the
-  box lengths relax and the CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees
+  axis, and it needs an orthogonal cell; with a space group its propagators stay in the reduced
+  basis. Its stress is the derivative of its own free energy, so the box lengths relax and the
+  CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees
   (docs/theory/NumericalMethods.md, Section 4.3).
 - The simulation GUI exposes Tetragonal and Monoclinic 3D cells, and Hexagonal
   and Oblique 2D cells, with their length/angle constraints and the corresponding

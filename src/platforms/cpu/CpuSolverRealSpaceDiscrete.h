@@ -19,7 +19,9 @@
  * it with the opposite sign (DST-II). Each end of an axis has its own condition.
  *
  * The stress of a bond is sum_r q_1 (dG/dL_a q_2), with dG/dL_a the bond whose kernel along
- * axis a is differentiated with respect to the box length. Space groups are not available.
+ * axis a is differentiated with respect to the box length. With a space group the propagators
+ * are kept in its reduced basis and expanded to the full grid for each bond: the Gaussian of an
+ * orthogonal cell commutes with the operations of its group.
  *
  * @see CpuSolverPseudoDiscrete for the FFT version ("ps")
  */
@@ -44,6 +46,7 @@ class CpuSolverRealSpaceDiscrete : public CpuSolver<T>
 private:
     ComputationBox<T>* cb;
     Molecules* molecules;
+    SpaceGroup* space_group_ = nullptr;   ///< propagators in its reduced basis when set
 
     /// Kernels of the full bonds, per ds index and monomer type
     std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
@@ -55,8 +58,12 @@ private:
     /// Source and sign of the points beyond each end of each axis
     RealSpaceBond::Ghosts ghosts;
 
-    /// q_out = g * q_in, one axis after another
+    /// q_out = g * q_in, one axis after another, on the full grid
     void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels) const;
+    /// q on the full grid: q itself, or with a space group its expansion into buffer
+    const T* expanded(const T* q, std::vector<T>& buffer) const;
+    /// The full-grid q_full in the basis of the propagators (a copy of the reduced points with a space group)
+    void reduced(const T* q_full, T* q) const;
 
 public:
     CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules);

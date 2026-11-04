@@ -19,8 +19,10 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <type_traits>
 
 #include "CpuSolverRealSpaceDiscrete.h"
+#include "SpaceGroup.h"
 
 namespace
 {
@@ -109,8 +111,31 @@ CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb,
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::set_space_group(SpaceGroup* sg)
 {
-    if (sg != nullptr)
-        throw_with_line_number("The rs method does not support space groups.");
+    if (sg != nullptr && !std::is_same_v<T, double>)
+        throw_with_line_number("Space groups need real fields.");
+    space_group_ = sg;
+}
+
+template <typename T>
+const T* CpuSolverRealSpaceDiscrete<T>::expanded(const T* q, std::vector<T>& buffer) const
+{
+    if (space_group_ == nullptr)
+        return q;
+    if constexpr (std::is_same_v<T, double>)
+    {
+        buffer.resize(cb->get_total_grid());
+        space_group_->from_reduced_basis(q, buffer.data(), 1);
+        return buffer.data();
+    }
+    throw_with_line_number("Space groups need real fields.");
+}
+
+template <typename T>
+void CpuSolverRealSpaceDiscrete<T>::reduced(const T* q_full, T* q) const
+{
+    if constexpr (std::is_same_v<T, double>)
+        if (space_group_ != nullptr)
+            space_group_->to_reduced_basis(q_full, q, 1);
 }
 
 template <typename T>
@@ -149,15 +174,18 @@ void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_input)
 {
+    // exp(-w ds) on the full grid (the fields come in the reduced basis with a space group)
     const int M = cb->get_total_grid();
     const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+    std::vector<T> w_full;
+    for (const auto& [monomer_type, w_in] : w_input)
     {
-        const double local_ds = mapping.get_ds_from_index(ds_idx);
-        for (const auto& [monomer_type, w] : w_input)
+        const T* w = expanded(w_in, w_full);
+        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
         {
             if (!this->exp_dw[ds_idx].contains(monomer_type))
                 throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
+            const double local_ds = mapping.get_ds_from_index(ds_idx);
             std::vector<T>& exp_dw = this->exp_dw.at(ds_idx).at(monomer_type);
             for (int i = 0; i < M; ++i)
                 exp_dw[i] = std::exp(-w[i] * local_ds);
@@ -212,13 +240,23 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
 {
     try
     {
+        // On the full grid; with a space group from and back to its reduced basis, where the mask is
         const int M = cb->get_total_grid();
+        const int n_basis = space_group_ != nullptr ? space_group_->get_n_reduced_basis() : M;
         const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        convolve(q_in, q_out, bond.at(ds_index).at(monomer_type));
+        thread_local std::vector<T> full_in, full_out;
+        T* out = q_out;
+        if (space_group_ != nullptr)
+        {
+            full_out.resize(M);
+            out = full_out.data();
+        }
+        convolve(expanded(q_in, full_in), out, bond.at(ds_index).at(monomer_type));
         for (int i = 0; i < M; ++i)
-            q_out[i] *= exp_dw[i];
+            out[i] *= exp_dw[i];
+        reduced(out, q_out);
         if (q_mask != nullptr)
-            for (int i = 0; i < M; ++i)
+            for (int i = 0; i < n_basis; ++i)
                 q_out[i] *= q_mask[i];
     }
     catch (std::exception& exc)
@@ -232,7 +270,15 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T
 {
     try
     {
-        convolve(q_in, q_out, bond_half.at(monomer_type));
+        thread_local std::vector<T> full_in, full_out;
+        if (space_group_ == nullptr)
+            convolve(q_in, q_out, bond_half.at(monomer_type));
+        else
+        {
+            full_out.resize(cb->get_total_grid());
+            convolve(expanded(q_in, full_in), full_out.data(), bond_half.at(monomer_type));
+            reduced(full_out.data(), q_out);
+        }
     }
     catch (std::exception& exc)
     {
@@ -258,15 +304,17 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         const int dim = cb->get_dim();
         const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
         const auto& kernels = (is_half_bond_length ? bond_half_dlength : bond_dlength).at(monomer_type);
-        thread_local std::vector<T> dq;
+        thread_local std::vector<T> dq, full_1, full_2;
         dq.resize(M);
+        const T* full_q_1 = expanded(q_1, full_1);
+        const T* full_q_2 = expanded(q_2, full_2);
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
-            convolve(q_2, dq.data(), kernels[a]);
+            convolve(full_q_2, dq.data(), kernels[a]);
             T sum = 0.0;
             for (int i = 0; i < M; ++i)
-                sum += q_1[i] * dq[i];
+                sum += full_q_1[i] * dq[i];
             stress[a] = sum * (M * 3.0 / (ds * cb->get_lx(a)));
         }
         return stress;

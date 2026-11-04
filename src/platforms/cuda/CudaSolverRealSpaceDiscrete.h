@@ -10,7 +10,8 @@
  *
  * The stress of a bond is sum_r q_1 (dG/dL_a q_2), with dG/dL_a the bond whose kernel along
  * axis a is differentiated with respect to the box length; the sum is reduced in a fixed order.
- * Space groups are not available.
+ * With a space group the propagators stay in its reduced basis and each bond expands them to
+ * the full grid.
  *
  * @see CpuSolverRealSpaceDiscrete for the algorithm
  */
@@ -44,6 +45,10 @@ private:
     ComputationBox<T>* cb;
     Molecules* molecules;
     int n_streams;
+    SpaceGroup* space_group_ = nullptr;          ///< propagators in its reduced basis when set
+    int* d_reduced_basis_indices_ = nullptr;     ///< reduced -> full index (lent by the backend)
+    int* d_full_to_reduced_map_ = nullptr;       ///< full -> reduced index (lent by the backend)
+    int n_basis_ = 0;                            ///< points of the propagators
     cudaStream_t streams[MAX_STREAMS][2];
 
     std::map<int, std::map<std::string, DeviceKernels>> d_bond;   ///< full bonds per ds index and monomer type
@@ -56,6 +61,8 @@ private:
 
     CudaDeviceBuffer<CuDeviceData<T>> d_work_a[MAX_STREAMS];
     CudaDeviceBuffer<CuDeviceData<T>> d_work_b[MAX_STREAMS];
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_in[MAX_STREAMS];     ///< full grid with a space group
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out[MAX_STREAMS];    ///< full grid with a space group
     CudaDeviceBuffer<CuDeviceData<T>> d_work_stress[MAX_STREAMS];   ///< dG/dL q_2 (allocated by prepare_stress())
     CudaDeviceBuffer<CuDeviceData<T>> d_partial_sums[MAX_STREAMS];  ///< partial sums of the stress
 

@@ -241,7 +241,7 @@ where $`\eta`$ is the `stress_scale` parameter. At equilibrium, all stress compo
 - Stress can be computed adaptively (`stress_interval: "adaptive"`) or at fixed intervals (default: 1)
 - Crystal system constraints (orthorhombic, tetragonal, cubic, hexagonal, monoclinic, triclinic) are automatically enforced
 - Lengths tied by the crystal system move together along the mean of their derivatives, so the relaxation and its convergence test reach the optimum of the tied cell. A structure without the symmetry of the tie (for example a = b of `"Tetragonal"` without a space group) can have tied lengths whose derivatives are nonzero and opposite at that optimum; no cell of that crystal system is then free of stress, and SCFT prints a warning that names a crystal system with free lengths
-- Stress computation supports periodic, reflecting, and absorbing boundary conditions (real fields) with every method except the real-space CN-ADI2 solver, so `relax_cell=True` needs another method; RS keeps the cell orthogonal, so with it only box lengths are optimized, and with non-periodic boundaries the angles stay at 90° for every method.
+- Stress computation supports periodic, reflecting, and absorbing boundary conditions (real fields) with every method except the real-space CN-ADI2 solver, so `relax_cell=True` needs another method. RS keeps the cell orthogonal: it relaxes the box lengths, and SCFT rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries the angles stay at 90° for every method.
 
 See [StressTensor.md](StressTensor.md) for detailed stress calculation.
 

@@ -408,6 +408,11 @@ def build_script(values):
             raise ValueError(f"{method.upper()} computes no stress. Disable cell relaxation or choose a pseudo-spectral method.")
         if values.get("space_group", "none") != "none":
             apply_space_group(params, values["space_group"], params["relax_cell"])
+            # rs keeps the cell orthogonal, so the angles of a monoclinic or triclinic group cannot relax
+            system = space_groups()[values["space_group"]]["crystal_system"]
+            if method == "rs" and params["relax_cell"] and system in ("Monoclinic", "Triclinic"):
+                raise ValueError("RS keeps the cell angles at 90 degrees. Disable cell relaxation or choose an "
+                                 "orthogonal space group.")
         elif structured is not None:
             shape = values["model"]["box"]["shape"]
             if shape == "square" and params["relax_cell"]:

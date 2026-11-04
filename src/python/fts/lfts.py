@@ -127,7 +127,7 @@ class LFTS:
             nx=params["nx"], lx=params["lx"], ds=params["ds"],
             bond_lengths=self.segment_lengths, bc=bc,
             chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4"
+            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
             platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
             reduce_memory=params.get("reduce_memory", False),
             angles=params.get("angles", None),

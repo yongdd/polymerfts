@@ -13,7 +13,7 @@ deviation 5:
   walls (global memory);
 - 2D: a 4001-point reflecting axis (global memory) next to a periodic one;
 - 3D: a 4500-point absorbing z axis behind two periodic axes.
-check_total_partition and the total concentration hold on CUDA as well.
+check_total_partition holds on CUDA as well, and the mean total concentration is one within 1e-12.
 """
 
 import contextlib
@@ -61,10 +61,10 @@ def main():
         q_gpu, phi_gpu, partition_ok, total = run("cuda", nx, lx, bc)
         dq = abs(q_gpu - q_cpu) / abs(q_cpu)
         dphi = max(np.max(np.abs(phi_gpu[m] - phi_cpu[m])) for m in "AB")
-        ok = dq < 1e-11 and dphi < 1e-10 and partition_ok and np.isfinite(total)
+        ok = dq < 1e-11 and dphi < 1e-10 and partition_ok and abs(total - 1.0) < 1e-12
         failures += not ok
         print(f"[{'PASS' if ok else 'FAIL'}] nx={nx} bc={bc[0]}/{bc[-1]}: Q rel diff {dq:.1e}, "
-              f"phi max diff {dphi:.1e}, check_total_partition {partition_ok}, mean total phi {total:.6f}")
+              f"phi max diff {dphi:.1e}, check_total_partition {partition_ok}, mean total phi - 1 {total - 1.0:.1e}")
     print(f"\n{len(CASES) - failures} passed, {failures} failed")
     return 1 if failures else 0
 

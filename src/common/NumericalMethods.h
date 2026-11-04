@@ -41,7 +41,9 @@ inline const NumericalMethodInfo& resolve_numerical_method(
         throw_with_line_number("Unknown chain model: " + std::string(chain_model));
     // Callers that loop over both chain models pass one continuous-chain name; discrete chains then
     // take their default (the Python interface rejects such a name instead)
-    const bool continuous_name = name == "rqm4" || name == "rk2" || name == "cn-adi2";
+    bool continuous_name = false;
+    for (const auto& info : numerical_methods)
+        continuous_name = continuous_name || (name == info.name && std::string_view(info.chain_model) == "continuous");
     if (chain_model == "discrete" && (name.empty() || continuous_name))
         name = solver_type == "realspace" ? "rs" : "ps";
     else if (name.empty())

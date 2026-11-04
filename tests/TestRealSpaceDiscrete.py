@@ -20,7 +20,10 @@ Discrete chains with the bond convolution summed in real space (numerical_method
 4. On coarse grids, where the width of the kernels is corrected to keep their variance, the
    stress is still the derivative of -ln Q with respect to the box lengths (central differences,
    relative 1e-7).
-5. CUDA equals the CPU backends (relative 1e-11) on these cases, the stress included.
+5. With the space group Im-3m in its irreducible and m3 bases (fields symmetric under it, std 5)
+   rs equals rs on the full grid (relative 1e-12, the stress included) and ps with the group
+   (relative 1e-12; the stress 1e-10, as in 1).
+6. CUDA equals the CPU backends (relative 1e-11) on these cases, the stress included.
 
 SCFT relaxes the box lengths with this stress; skewed cells, the relaxation of angles and
 continuous-chain names are refused. Exit code 1 in a CUDA build without a
@@ -184,6 +187,44 @@ def stress_derivative(platform, rng):
             check(d < 1e-7, f"{nx} {bc[0]} axis {a}: stress {stress[a]:.8f}, -dlnQ/dL {derivative:.8f}, {d:.1e}")
 
 
+def space_group(platform):
+    # Fields symmetric under Im-3m (std 5), given to rs in the reduced basis of the group; against rs on the
+    # full grid and ps with the group. SCFT turns on the m3 basis in orthogonal cells.
+    nx, lx = [32, 32, 32], [1.0, 1.0, 1.0]
+    rng = np.random.default_rng(12)
+    full = {}
+    for m in "AB":
+        f = np.asarray(_core.SpaceGroup(nx, "Im-3m", 529).symmetrize(rng.normal(0.0, 1.0, int(np.prod(nx))))).flatten()
+        full[m] = (f - f.mean()) / f.std() * 5.0
+    for basis in ("irreducible", "m3"):
+        print(f"  space group Im-3m, {basis} basis, on {platform}")
+        sg = _core.SpaceGroup(nx, "Im-3m", 529)
+        if basis == "m3":
+            sg.enable_m3_physical_basis()
+        reduced = {m: sg.to_reduced_basis(full[m].reshape(1, -1))[0].copy() for m in "AB"}
+
+        def run(method, group):
+            with contextlib.redirect_stdout(io.StringIO()):
+                solver = PropagatorSolver(nx=nx, lx=lx, ds=0.05, bond_lengths={"A": 1.0, "B": 1.2},
+                                          bc=["periodic"] * 6, chain_model="discrete", numerical_method=method,
+                                          platform=platform, space_group=sg if group else None)
+                solver.add_polymer(1.0, DIBLOCK)
+                solver.compute_propagators({m: (reduced if group else full)[m].copy() for m in "AB"})
+                solver.compute_concentrations()
+            phi = {m: np.asarray(solver.get_concentration(m)).flatten() for m in "AB"}
+            if group:
+                phi = {m: sg.from_reduced_basis(phi[m].reshape(1, -1))[0] for m in "AB"}
+            return solver, solver.get_partition_function(0), phi
+
+        rs_group, rs_full = run("rs", True), run("rs", False)
+        compare(f"{basis}: rs with the group against rs on the full grid", rs_group, rs_full, 1e-12)
+        compare_stress(f"{basis}: rs with the group against rs on the full grid", rs_group, rs_full, 1e-12)
+        ps_group = run("ps", True)
+        compare(f"{basis}: rs against ps, both with the group", rs_group, ps_group, 1e-12)
+        compare_stress(f"{basis}: rs against ps, both with the group", rs_group, ps_group, 1e-10)
+        check(rs_group[0].check_total_partition(), f"{basis}: rs with the group, partition function from every segment")
+
+
 def refusals(platform):
     print(f"  refusals on {platform}")
     # The Gaussian factorizes along the axes of orthogonal cells only
@@ -237,6 +278,7 @@ def main():
         mixed_boundaries(platform, rng)
         reference[platform] = strong_field(platform)
         stress_derivative(platform, rng)
+        space_group(platform)
         refusals(platform)
 
     if "cuda" in platforms:
@@ -245,6 +287,7 @@ def main():
         mixed_boundaries("cuda", rng)
         gpu = strong_field("cuda")
         stress_derivative("cuda", rng)
+        space_group("cuda")
         refusals("cuda")
         print("  CUDA against the CPU backends")
         rng = np.random.default_rng(11)

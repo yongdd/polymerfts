@@ -19,8 +19,8 @@ co-ions there (by 5 % at c_salt = 0.01 and a factor of 3 at 0.001).
 
 The propagators use the real-space method cn-adi2. Those of the grafted chains fall by many
 orders of magnitude between the grafting wall and the far wall (phi_A drops from 0.37 to 4e-17 at
-c_salt = 0.1), and the round-off of the pseudo-spectral methods (rqm4, rk2 and the discrete chain
-model), about 1e-16 of the largest value of a propagator, then grows into spurious and negative
+c_salt = 0.1), and the round-off of the pseudo-spectral methods (rqm4, rk2, and ps for discrete
+chains), about 1e-16 of the largest value of a propagator, then grows into spurious and negative
 concentrations far from the brush. In this box rqm4 fails at every salt concentration
 (docs/validation/ExampleValidation.md).
 """

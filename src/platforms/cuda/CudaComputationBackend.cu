@@ -115,7 +115,8 @@ CudaComputationBackend<T>::CudaComputationBackend(
     const NumericalMethodInfo& method_info,
     SpaceGroup* space_group, int max_n_streams)
     : cb(nullptr), space_group(space_group),
-      solver_discrete(nullptr), n_streams(0), n_basis(0), force_off_diagonal_stress(false)
+      solver_discrete(nullptr), discrete_chains(std::string(method_info.chain_model) == "discrete"),
+      n_streams(0), n_basis(0), force_off_diagonal_stress(false)
 {
     for (int i = 0; i < MAX_STREAMS; i++)
     {
@@ -352,9 +353,9 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
 {
     solver->update_dw("cpu", w_input);
 
-    // The discrete solver keeps exp(-w ds) on the full grid unless its CrysFFT
-    // path stores it in the reduced basis already
-    if (solver_discrete != nullptr && space_group != nullptr)
+    // The discrete solvers keep exp(-w ds) on the full grid unless the CrysFFT
+    // path of the pseudo-spectral one stores it in the reduced basis already
+    if (discrete_chains && space_group != nullptr)
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -369,7 +370,7 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
             }
             CuDeviceData<T>* d_exp_dw_basis  = found->second.get();
             CuDeviceData<T>* d_exp_dw_solver = solver->d_exp_dw.at(0).at(monomer_type);
-            if (solver_discrete->exp_dw_stored_reduced())
+            if (solver_discrete != nullptr && solver_discrete->exp_dw_stored_reduced())
             {
                 CUDA_CHECK(cudaMemcpy(d_exp_dw_basis, d_exp_dw_solver,
                                            sizeof(T)*n_basis, cudaMemcpyDeviceToDevice));

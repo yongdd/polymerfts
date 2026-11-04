@@ -40,7 +40,8 @@ private:
     CudaComputationBox<T>* cb;
     SpaceGroup* space_group;
     std::unique_ptr<CudaSolver<T>> solver;
-    CudaSolverPseudoDiscrete<T>* solver_discrete;  ///< solver, when the chains are discrete (not owning)
+    CudaSolverPseudoDiscrete<T>* solver_discrete;  ///< the pseudo-spectral solver of discrete chains (not owning)
+    bool discrete_chains;                          ///< the chains are discrete (exp(-w ds) also in the reduced basis)
     int n_streams;
     int n_basis;
     bool force_off_diagonal_stress;

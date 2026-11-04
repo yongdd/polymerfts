@@ -172,7 +172,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 | `create_computation_box(nx, lx, bc, angles, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask |
 | `create_propagator_computation_optimizer(molecules, aggregate)` | `std::unique_ptr<PropagatorComputationOptimizer>` | Propagator dependency graph with optional aggregation (concrete method of the base class) |
 | `create_molecules_information(model, ds, bond_lengths)` | `std::unique_ptr<Molecules>` | Polymer/solvent container (concrete method of the base class) |
-| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2, cn-adi2); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
+| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
 | `create_anderson_mixing(n_var, max_hist, ...)` | `std::unique_ptr<AndersonMixing<T>>` | Field update accelerator |
 | `create_fourier_transform(box, bc)` | `std::unique_ptr<FourierTransform<T>>` | Transforms and Fourier multipliers of whole fields (one transform per axis, see Section 3.4) |
 
@@ -284,7 +284,7 @@ calls the `require_*` checks first in its getters. `compute_partition_errors()`
 returns the forward/backward error of every polymer and prints nothing;
 `check_total_partition()` compares them with a tolerance. The molecules are
 fixed once a computation exists (`add_polymer()` and `add_solvent()` throw), and
-a `cn-adi2` computation keeps its box orthogonal while it exists
+a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 (`ComputationBox::hold_orthogonal_cell()`).
 
 **Who does what.** The computation classes decide *what* is computed and in
@@ -327,7 +327,7 @@ time on one stream.
 | Model | Propagator Equation | Solver Method |
 |-------|---------------------|---------------|
 | Continuous | $`\partial q/\partial s = (b^2/6)\nabla^2 q - wq`$ | RQM4, RK2, or CN-ADI2 |
-| Discrete | Recursive integral (Chapman-Kolmogorov) | Pseudo-spectral (bond convolution) |
+| Discrete | Recursive integral (Chapman-Kolmogorov) | PS (bond convolution through FFTs) or RS (bond summed on the grid) |
 
 ### 3.3 Solver Hierarchy
 

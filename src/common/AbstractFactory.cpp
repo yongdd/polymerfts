@@ -39,7 +39,7 @@ std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_
             if (space_group != nullptr)
                 throw_with_line_number("Space group reduced basis is only supported for real fields.");
 
-        // The solver: discrete chains have their own; continuous chains take the numerical method
+        // The solver of the numerical method of the chain model (ps or rs for discrete chains)
         const bool discrete = (molecules->get_model_name() == "discrete");
         const NumericalMethodInfo& method_info = resolve_numerical_method(molecules->get_model_name(), numerical_method);
         const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();

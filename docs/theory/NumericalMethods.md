@@ -310,6 +310,8 @@ The kernel samples a Gaussian of variance $`\sigma^2 = b^2 \Delta s / 3`$ along 
 
 **Stress.** The stress of a bond is $`\sum_{\mathbf r} q_1\, (\partial G / \partial L_a)\, q_2`$, where $`\partial G / \partial L_a`$ is the bond with its kernel along axis $`a`$ differentiated with respect to the box length at fixed grid offsets. The derivative includes the change of the width that keeps the variance on the grid, so the stress is the exact derivative of the RS free energy; where RS and PS agree, so do their stresses. Like PS, RS rejects the stress of complex fields with walls.
 
+**Space groups.** The Gaussian of an orthogonal cell commutes with the operations of its space group, so with a space group RS keeps the propagators in the reduced basis and expands them to the full grid for each bond.
+
 **Relation to PS.** The transform of the sampled kernel differs from $`\hat g(k) = e^{-\sigma^2 k^2/2}`$ by about $`e^{-\pi^2 \sigma^2 / (2 \Delta x^2)}`$ near the largest wavenumber of the grid, with $`\sigma`$ the standard deviation of a half bond. When $`\sigma`$ spans about three grid spacings this is $`10^{-18}`$, and RS and PS agree to round-off in random fields (`tests/TestRealSpaceDiscrete.py`); on coarser grids they are two discretizations of the same chain model.
 
 **Cost.** The sum costs $`2H+1`$ multiply-adds per point and axis, with $`H`$ growing as $`\sigma/\Delta x`$, while an FFT costs about $`5\log_2 M`$ operations per point. Time of one propagator step of a discrete chain (N = 20, $`\sigma = 0.58\,b`$), single thread on an AMD EPYC 7543, double precision:
@@ -345,8 +347,7 @@ Real-space methods have some limitations compared to pseudo-spectral methods:
 
 1. **Stress computation**: Not implemented (CN-ADI2)
 2. **Non-orthogonal cells**: Only orthogonal unit cells supported
-3. **Space groups**: Not supported by RS
-4. **Spatial accuracy**: $`O(\Delta x^2)`$ vs spectral (exponential) accuracy (CN-ADI2)
+3. **Spatial accuracy**: $`O(\Delta x^2)`$ vs spectral (exponential) accuracy (CN-ADI2)
 
 ---
 
