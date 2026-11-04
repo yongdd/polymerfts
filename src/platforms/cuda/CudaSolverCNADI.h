@@ -37,6 +37,7 @@
 #ifndef CUDA_SOLVER_CNADI_H_
 #define CUDA_SOLVER_CNADI_H_
 
+#include <array>
 #include <string>
 #include <vector>
 #include <map>
@@ -178,76 +179,46 @@ __global__ void compute_crank_3d_step_3(
     double *d_q_out, const double *d_q_dstar, const double *d_q_in, const int M);
 
 /**
- * @brief CUDA kernel: Parallel tridiagonal solver (Thomas algorithm).
+ * @brief Thomas factors of the constant tridiagonal matrix of a line, computed once on the host.
  *
- * Solves multiple independent tridiagonal systems in parallel.
- * Caches the coefficients in 3*M doubles of dynamic shared memory.
- *
- * @param d_xl      Lower diagonal (subdiagonal)
- * @param d_xd      Main diagonal
- * @param d_xh      Upper diagonal (superdiagonal)
- * @param d_c_star  Workspace for modified upper diagonal
- * @param d_d       Right-hand side vector
- * @param d_x       Solution output
- * @param d_offset  Starting offset for each system
- * @param REPEAT    Number of systems to solve
- * @param INTERVAL  Stride between systems
- * @param M         System size
+ * table holds four arrays of M values: the lower diagonal, the inverse pivots, the
+ * modified upper diagonal c* and, for a periodic line, the Sherman-Morrison vector q.
+ * A periodic line folds its corners into the first and last pivots; v and denom are the
+ * scalars of the correction x -= q (x_0 + v x_{M-1}) / denom.
  */
-__global__ void tridiagonal(
-    const double* __restrict__ d_xl,
-    const double* __restrict__ d_xd,
-    const double* __restrict__ d_xh,
-    double* __restrict__ d_c_star,
-    const double* __restrict__ d_d,
-    double* __restrict__ d_x,
-    const int* __restrict__ d_offset,
-    const int REPEAT, const int INTERVAL, const int M);
+struct TridiagonalFactors
+{
+    std::vector<double> table;
+    double v = 0.0;
+    double denom = 1.0;
+};
+
+/// Factors of the matrix with lower diagonal l, diagonal d and upper diagonal h (M >= 2)
+TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const double* h, int M, bool periodic);
 
 /**
- * @brief CUDA kernel: tridiagonal() reading the coefficients from global memory.
+ * @brief CUDA kernel: REPEAT systems of size M, one per thread, starting at d_offset with stride INTERVAL.
  *
- * Used for lines whose 3*M coefficients do not fit in shared memory; the
- * arithmetic is the same as in tridiagonal(). Parameters as for tridiagonal().
+ * Solves d_x from the right-hand side d_d (which may be the same array) with the factors in table.
  */
-__global__ void tridiagonal_global(
-    const double* __restrict__ d_xl,
-    const double* __restrict__ d_xd,
-    const double* __restrict__ d_xh,
-    double* __restrict__ d_c_star,
-    const double* __restrict__ d_d,
-    double* __restrict__ d_x,
-    const int* __restrict__ d_offset,
-    const int REPEAT, const int INTERVAL, const int M);
+template <bool PERIODIC>
+__global__ void tridiagonal_lines(
+    const double* __restrict__ table, const int M, const double v, const double denom,
+    const double* __restrict__ d_d, double* __restrict__ d_x,
+    const int* __restrict__ d_offset, const int REPEAT, const int INTERVAL);
 
 /**
- * @brief CUDA kernel: Parallel tridiagonal solver for periodic boundaries.
+ * @brief CUDA kernel: REPEAT contiguous systems of size M (system k at k*M), staged in shared memory.
  *
- * Handles cyclic tridiagonal systems using Sherman-Morrison formula.
- * More complex than non-periodic due to corner coupling.
- *
- * @param d_xl       Lower diagonal
- * @param d_xd       Main diagonal
- * @param d_xh       Upper diagonal
- * @param d_c_star   Workspace for modified coefficients
- * @param d_q_sparse Workspace for Sherman-Morrison correction
- * @param d_d        Right-hand side
- * @param d_x        Solution output
- * @param d_offset   Starting offsets
- * @param REPEAT     Number of systems
- * @param INTERVAL   Stride
- * @param M          System size
+ * A block of blockDim.x threads copies as many systems into shared memory with coalesced reads,
+ * each thread solves one there, and the block writes them back. Rows hold an odd number of values
+ * so that the threads of a warp use different banks: blockDim.x * (M or M+1) doubles of dynamic
+ * shared memory.
  */
-__global__ void tridiagonal_periodic(
-    const double* __restrict__ d_xl,
-    const double* __restrict__ d_xd,
-    const double* __restrict__ d_xh,
-    double* __restrict__ d_c_star,
-    double* __restrict__ d_q_sparse,
-    const double* __restrict__ d_d,
-    double* __restrict__ d_x,
-    const int* __restrict__ d_offset,
-    const int REPEAT, const int INTERVAL, const int M);
+template <bool PERIODIC>
+__global__ void tridiagonal_lines_shared(
+    const double* __restrict__ table, const int M, const double v, const double denom,
+    const double* __restrict__ d_d, double* __restrict__ d_x, const int REPEAT);
 
 /**
  * @class CudaSolverCNADI
@@ -269,8 +240,8 @@ __global__ void tridiagonal_periodic(
  * Per-stream workspace for tridiagonal solves:
  * - d_q_star: Intermediate ADI solution (after first sweep)
  * - d_q_dstar: Second intermediate (3D only)
- * - d_c_star: Modified coefficients for Thomas algorithm
- * - d_q_sparse: Sherman-Morrison workspace (periodic BCs)
+ *
+ * The Thomas factors of each axis (d_factors) are computed once per box and ds.
  *
  * **Offset Arrays:**
  *
@@ -324,8 +295,6 @@ private:
     /// @{
     CudaDeviceBuffer<double> d_q_star[MAX_STREAMS];  ///< First intermediate solution
     CudaDeviceBuffer<double> d_q_dstar[MAX_STREAMS];  ///< Second intermediate (3D)
-    CudaDeviceBuffer<double> d_c_star[MAX_STREAMS];  ///< Modified upper diagonal
-    CudaDeviceBuffer<double> d_q_sparse[MAX_STREAMS];  ///< Sherman-Morrison correction
     CudaDeviceBuffer<double> d_temp[MAX_STREAMS];  ///< General temporary
     /// @}
 
@@ -339,19 +308,28 @@ private:
     CudaDeviceBuffer<int> d_offset;     ///< 1D: System offsets
     /// @}
 
-    size_t max_tridiagonal_shmem_;      ///< Dynamic shared memory allowed for tridiagonal()
+    /// Thomas factors of one axis on the device (see TridiagonalFactors)
+    struct DeviceFactors
+    {
+        CudaDeviceBuffer<double> table;
+        double v = 0.0;
+        double denom = 1.0;
+        bool periodic = false;
+    };
+    /// Factors of the x, y and z lines per ds_index and monomer type
+    std::map<int, std::map<std::string, std::array<DeviceFactors, 3>>> d_factors;
+
+    int max_lines_shmem_;   ///< Dynamic shared memory allowed for tridiagonal_lines_shared()
 
     /**
-     * @brief Solve REPEAT non-periodic tridiagonal systems of size M on the stream.
+     * @brief Solve REPEAT systems of size M of one axis on the stream.
      *
-     * Uses tridiagonal() when the 3*M coefficients fit in shared memory and
-     * tridiagonal_global() otherwise.
+     * Contiguous systems (INTERVAL 1) go through tridiagonal_lines_shared(), the others, and
+     * systems too long for the shared memory, through tridiagonal_lines().
      */
-    void solve_tridiagonal(
-        const int STREAM,
-        const double *d_xl, const double *d_xd, const double *d_xh,
-        const double *d_d, double *d_x, const int *d_offset,
-        const int REPEAT, const int INTERVAL, const int M);
+    void solve_lines(
+        const int STREAM, const DeviceFactors& factors, const double *d_d, double *d_x,
+        const int *d_offset, const int REPEAT, const int INTERVAL, const int M);
 
 
     /**

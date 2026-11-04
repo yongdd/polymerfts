@@ -34,7 +34,8 @@ class PropagatorSolver:
     chain_model : str
         "continuous" or "discrete".
     numerical_method : str, optional
-        "rqm4" (default), "rk2" or "cn-adi2"; continuous chains only.
+        Continuous chains: "rqm4" (default), "rk2" or "cn-adi2". Discrete chains:
+        "ps" (default, bond convolution through FFTs) or "rs" (summed in real space).
     platform : str, optional
         "cuda", "cpu-mkl", "cpu-fftw" or "auto" (CPU for 1D, CUDA for 2D/3D).
     reduce_memory : bool
@@ -191,11 +192,11 @@ class PropagatorSolver:
     def _resolve_numerical_method(cls, chain_model, numerical_method):
         """Return (method, numerical_method) as the native factories resolve them.
 
-        The discrete chain model has its own bond-convolution solver and ignores
-        ``numerical_method``; continuous chains default to RQM4.
+        Continuous chains default to RQM4, discrete chains to "ps".
         """
-        if chain_model == "discrete" and numerical_method is not None:
-            print(f"Note: numerical_method '{numerical_method}' is ignored for discrete chain model.")
+        if chain_model == "discrete" and (numerical_method or "ps").lower() not in ("ps", "rs"):
+            raise ValueError(f"numerical_method '{numerical_method}' is for continuous chains; "
+                             "discrete chains take 'ps' or 'rs'.")
         try:
             name = _core.resolve_numerical_method(chain_model, (numerical_method or "").lower())
         except RuntimeError as exc:
@@ -241,20 +242,13 @@ class PropagatorSolver:
         self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in bc_lower)
         has_periodic = any(b == "periodic" for b in bc_lower)
         if not self.numerical_methods()[self.numerical_method]["supports_mixed_boundaries"] and has_periodic and self._has_non_periodic_bc:
-            if self.chain_model == "discrete":
-                raise NotImplementedError(
-                    "Mixing periodic and non-periodic boundary conditions is not "
-                    "supported by the pseudo-spectral transform, and the discrete "
-                    "chain model has no real-space solver. Use uniform boundary "
-                    "conditions (all-periodic, all-reflecting, or all-absorbing)."
-                )
+            real_space = "rs" if self.chain_model == "discrete" else "cn-adi2"
             raise ValueError(
                 "Mixing periodic and non-periodic boundary conditions is not "
                 "supported by the pseudo-spectral method "
                 f"(requested numerical_method='{self.numerical_method}'). "
-                "Either set numerical_method='cn-adi2' to use the real-space "
-                "solver (continuous chains only), or use uniform boundary "
-                "conditions in all directions."
+                f"Either set numerical_method='{real_space}' to use the real-space "
+                "solver, or use uniform boundary conditions in all directions."
             )
 
     # -------------------- Access to the underlying C++ objects --------------------

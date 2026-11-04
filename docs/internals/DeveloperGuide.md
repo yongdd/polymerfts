@@ -137,8 +137,9 @@ The classes each platform provides (the computation classes above them are share
 | Pseudo-spectral base | `CpuSolverPseudoBase<T>` | `CudaSolverPseudoBase<T>` |
 | Continuous, RQM4 | `CpuSolverPseudoRQM4` | `CudaSolverPseudoRQM4` |
 | Continuous, RK2 | `CpuSolverPseudoRK2` | `CudaSolverPseudoRK2` |
-| Discrete chains | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
+| Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
+| Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` | `CudaSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond`) |
 | Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `{Fftw,Mkl}CrysFFT{Pmmm,Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
@@ -362,8 +363,14 @@ CpuSolver<T>                                  [Abstract Base]
         │           ├── advance_propagator_half_bond_step()
         │           └── get_stress_boltz_bond(): returns boltz_bond
         │
-        └── CpuSolverCNADI                     [Finite Difference; CpuSolver<double>, real fields only]
-            └── CN-ADI with tridiagonal solver
+        ├── CpuSolverCNADI                     [Finite Difference; CpuSolver<double>, real fields only]
+        │   └── CN-ADI with tridiagonal solver
+        │
+        └── CpuSolverRealSpaceDiscrete<T>      [Discrete chains, bond summed on the grid]
+            ├── update_dw(): exp(-w·ds)
+            ├── advance_propagator(): one stencil per axis, then exp(-w·ds)
+            ├── advance_propagator_half_bond_step()
+            └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
@@ -383,7 +390,8 @@ work buffers through `stress_scratch()`, and the discrete solver overrides
 `get_stress_boltz_bond()` (the base default, nullptr, is the continuous chain).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
-`CudaSolverCNADI` is the finite-difference solver. The non-periodic DCT/DST
+`CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
+bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
 `backward_stream()` run the transform on the propagator's stream. Mechanical real/complex
 differences (D2Z vs Z2Z transforms, CUB sum vs reduce) are hidden behind the overloads

@@ -228,7 +228,7 @@ Boundary conditions are specified as a list `[x_low, x_high, y_low, y_high, z_lo
 bc = ["periodic", "periodic", "periodic", "periodic", "reflecting", "reflecting"]
 ```
 
-> **Note:** Mixing periodic and non-periodic boundary conditions is **not** supported by the pseudo-spectral methods (`rqm4`, `rk2`, or the discrete-chain solver) — the solver raises an error on all platforms. The confined-film example above requires `numerical_method="cn-adi2"` (real-space solver, continuous chains only); for discrete chains it cannot be used at all. Uniform boundary conditions (all-periodic, all-reflecting, or all-absorbing) work with all numerical methods.
+> **Note:** Mixing periodic and non-periodic boundary conditions is **not** supported by the pseudo-spectral methods (`rqm4`, `rk2` and `ps`) — the solver raises an error on all platforms. The confined-film example above requires a real-space method: `numerical_method="cn-adi2"` for continuous chains or `"rs"` for discrete chains. Uniform boundary conditions (all-periodic, all-reflecting, or all-absorbing) work with all numerical methods.
 
 ---
 

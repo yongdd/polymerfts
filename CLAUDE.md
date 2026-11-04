@@ -242,11 +242,12 @@ keep its algorithm in the solver classes.
 | `rqm4` | Continuous | Fourth-order contour integration using Richardson extrapolation |
 | `rk2` | Continuous | Second-order Rasmussen-Kalosakas splitting; RK does not mean Runge-Kutta here |
 | `cn-adi2` | Continuous | Second-order finite differences; real fields and orthogonal cells; mixed boundary types supported; stress unavailable |
-| `discrete` | Discrete | Bond convolution for the Chapman-Kolmogorov equation, not continuum MDE integration |
+| `ps` | Discrete | Bond convolution of the Chapman-Kolmogorov equation through FFTs, not continuum MDE integration |
+| `rs` | Discrete | The same bond summed on the grid; positive in strong fields; orthogonal cells; mixed boundary types supported |
 
 Pseudo-spectral solvers require all directions to be periodic or all directions
 to be non-periodic. Reflecting and absorbing directions can coexist. Mixing
-periodic and non-periodic directions requires `cn-adi2`. Consult the registry and
+periodic and non-periodic directions requires `cn-adi2` or `rs`. Consult the registry and
 [Parameter Reference](docs/references/Parameters.md) for further restrictions.
 
 Cell-centered grids are the default. Hexagonal-axis space-group calculations use
@@ -256,8 +257,8 @@ alias handling. See [Space Group Theory](docs/theory/SpaceGroup.md).
 Current input names include `polymers`, `relax_cell`, `stress_scale`,
 `blocks[].monomer_fractions`, `space_group.hall_number` and the three `recording`
 intervals: `checkpoint_interval`, `sample_interval`, `statistics_save_interval`.
-`numerical_method` selects the continuous-chain propagator method; discrete
-chains always select their dedicated solver. `langevin.integrator` selects the
+`numerical_method` selects the propagator method of the chain model (`rqm4` and
+`ps` by default). `langevin.integrator` selects the
 stochastic integrator. `langevin.max_step` is the final global step number,
 including restored steps. WTMD retains its separate `recording_period` option.
 

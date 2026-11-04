@@ -11,7 +11,7 @@ const sections = [
     ["platform", "Platform", ["auto", "cuda", "cpu-mkl", "cpu-fftw"]],
     ["ds", "Contour step · ds", null, "Fractions such as 1/100 are accepted."],
     ["chain_model", "Chain model", ["continuous", "discrete"]],
-    ["numerical_method", "Numerical method", ["auto", "rqm4", "rk2", "cn-adi2"], "CN-ADI2 supports real fields in orthogonal cells; it is unavailable for CL-FTS."],
+    ["numerical_method", "Numerical method", ["auto", "rqm4", "rk2", "cn-adi2", "ps", "rs"], "Continuous chains take rqm4, rk2 or cn-adi2, discrete chains ps or rs. The real-space methods cn-adi2 and rs need orthogonal cells; cn-adi2 computes no stress and is unavailable for CL-FTS."],
     ["threads", "OpenMP threads", null, "1–4"],
     ["reduce_memory", "Reduce memory usage", "checkbox", "Enable only when memory is insufficient. This reduces memory usage but slows down the simulation."],
     ["space_group", "Space group (SCFT only)", [], "Choose None to use the full grid. Hall numbers distinguish settings of the same space group.", true]
@@ -196,9 +196,11 @@ function updateConditionalFields() {
   if (tabButtons.get(activeTab).hidden) activateTab(mode === "SCFT" ? "scft" : "lfts");
   const discrete = inputs.get("chain_model").value === "discrete";
   const method = inputs.get("numerical_method");
-  method.disabled = discrete;
-  for (const option of method.options) option.disabled = mode === "CL-FTS" && option.value === "cn-adi2";
-  if (discrete || mode === "CL-FTS" && method.value === "cn-adi2") method.value = "auto";
+  for (const option of method.options) {
+    const forDiscrete = option.value === "ps" || option.value === "rs";
+    option.disabled = option.value !== "auto" && (forDiscrete !== discrete || mode === "CL-FTS" && option.value === "cn-adi2");
+  }
+  if (method.selectedOptions[0].disabled) method.value = "auto";
   const box = ModelEditor.serialize().box;
   const fixedSquare = mode === "SCFT" && box.dimension === 2 && box.shape === "square";
   inputs.get("relax_cell").disabled = fixedSquare;

@@ -139,6 +139,13 @@ class CellRelaxation:
         else:
             n_var = n_field_var
 
+        # A method that keeps the cell orthogonal (rs) computes no shear stress, so its angles cannot relax
+        if (params["relax_cell"] and self.angles_reduced_indices and
+                self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["requires_orthogonal_cell"]):
+            raise ValidationError(f"crystal_system '{crystal_system}' relaxes the cell angles, which "
+                                  f"'{self.prop_solver.numerical_method}' keeps at 90 degrees; choose an orthogonal "
+                                  "crystal system or relax_cell False")
+
         # Enable off-diagonal (cross-term) stress computation when angle
         # optimization is active. Without this explicit opt-in, a run started
         # at exactly 90-degree angles would compute zero angle derivatives

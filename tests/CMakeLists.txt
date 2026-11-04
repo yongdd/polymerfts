@@ -82,6 +82,7 @@ SET(BASIC_TESTS
     TestPseudoLinearContinuous3D
     TestPseudoLinearDiscrete3D
     TestRealSpaceLinearContinuous3D
+    TestRealSpaceDiscrete
     TestMultipleLocalDs
     TestInitialConditionPropagator
 

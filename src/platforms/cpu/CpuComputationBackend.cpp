@@ -13,6 +13,7 @@
 #include "CpuSolverPseudoDiscrete.h"
 #include "CpuSolverPseudoRK2.h"
 #include "CpuSolverPseudoRQM4.h"
+#include "CpuSolverRealSpaceDiscrete.h"
 
 template <typename T>
 CpuComputationBackend<T>::CpuComputationBackend(
@@ -26,8 +27,11 @@ CpuComputationBackend<T>::CpuComputationBackend(
 
     switch (method_info.id)
     {
-    case NumericalMethodId::Discrete:
+    case NumericalMethodId::PS:
         solver = std::make_unique<CpuSolverPseudoDiscrete<T>>(cb, molecules, fft_backend);
+        break;
+    case NumericalMethodId::RS:
+        solver = std::make_unique<CpuSolverRealSpaceDiscrete<T>>(cb, molecules);
         break;
     case NumericalMethodId::RQM4:
         solver = std::make_unique<CpuSolverPseudoRQM4<T>>(cb, molecules, fft_backend);

@@ -36,16 +36,16 @@ This document provides a complete reference for all simulation parameters.
 - `"reflecting"`: Zero flux / Neumann (uses DCT)
 - `"absorbing"`: Zero value / Dirichlet (uses DST)
 
-Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implements these boundary conditions using ghost cells.
+Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real-space methods CN-ADI2 and RS implement these boundary conditions with ghost cells.
 
 **Restrictions:**
-- Pseudo-spectral methods (RQM4, RK2, and the discrete-chain solver) require every direction to be periodic or every direction to be non-periodic; each non-periodic direction may be reflecting or absorbing independently of the others (e.g. reflecting in x and z, absorbing in y). Mixing periodic with non-periodic directions raises an error on all platforms.
-- Mixing periodic and non-periodic directions (e.g., periodic in x/y, reflecting in z) requires `"numerical_method": "cn-adi2"`, which is available for **continuous chains only**. Discrete chains cannot mix periodic and non-periodic directions.
-- Stress computation (and therefore `relax_cell`) supports periodic, reflecting, and absorbing boundary conditions (pseudo-spectral methods, real fields).
+- Pseudo-spectral methods (RQM4, RK2 and PS) require every direction to be periodic or every direction to be non-periodic; each non-periodic direction may be reflecting or absorbing independently of the others (e.g. reflecting in x and z, absorbing in y). Mixing periodic with non-periodic directions raises an error on all platforms.
+- Mixing periodic and non-periodic directions (e.g., periodic in x/y, reflecting in z) requires a real-space method: `"numerical_method": "cn-adi2"` for continuous chains or `"rs"` for discrete chains. These also take a different wall at each end of an axis (e.g., absorbing at z = 0 and reflecting at z = L).
+- Stress computation (and therefore `relax_cell`) supports periodic, reflecting, and absorbing boundary conditions (real fields; every method except `"cn-adi2"`).
 - Reflecting or absorbing walls need an orthogonal cell (all angles 90°), and a `space_group` needs periodic boundaries in every direction; both combinations are rejected.
 - Impenetrable regions (a `mask`) are available through `PropagatorSolver(mask=...)` only; `SCFT`, `LFTS` and `CLFTS` reject a `mask` parameter.
 
-**Example (reflecting in z, periodic in x/y — requires `"numerical_method": "cn-adi2"`):**
+**Example (reflecting in z, periodic in x/y — requires `"numerical_method": "cn-adi2"` or `"rs"`):**
 ```python
 "bc": ["periodic", "periodic",      # x: low, high
        "periodic", "periodic",      # y: low, high
@@ -158,7 +158,7 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `numerical_method` | str | Algorithm for propagator computation | `"rqm4"` |
+| `numerical_method` | str | Algorithm for propagator computation | `"rqm4"` (continuous), `"ps"` (discrete) |
 
 **Available methods:**
 
@@ -166,11 +166,14 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 |-------|-------|------|-------------|
 | `"rqm4"` | 4th | Pseudo-spectral | Richardson extrapolation (default) |
 | `"rk2"` | 2nd | Pseudo-spectral | Rasmussen-Kalosakas operator splitting |
-| `"cn-adi2"` | 2nd | Real-space | Crank-Nicolson ADI (continuous chains only) |
+| `"cn-adi2"` | 2nd | Real-space | Crank-Nicolson ADI (continuous chains) |
+| `"ps"` | – | Pseudo-spectral | Bond convolution through FFTs (discrete chains, default) |
+| `"rs"` | – | Real-space | The same bond summed on the grid (discrete chains) |
 
 **Restrictions:**
-- `numerical_method` applies to the **continuous** chain model only. For `"chain_model": "discrete"`, the parameter is ignored (a note is printed) and the dedicated discrete-chain pseudo-spectral solver is always used.
-- `"cn-adi2"` is the only method that supports mixing periodic and non-periodic boundary conditions; the pseudo-spectral methods require every direction to be periodic or every direction to be non-periodic (see [Boundary Conditions](#boundary-conditions)).
+- `"rqm4"`, `"rk2"` and `"cn-adi2"` are for continuous chains, `"ps"` and `"rs"` for discrete chains; a method of the other chain model raises an error.
+- The real-space methods `"cn-adi2"` and `"rs"` are the only ones that mix periodic and non-periodic boundary conditions; the pseudo-spectral methods require every direction to be periodic or every direction to be non-periodic (see [Boundary Conditions](#boundary-conditions)). The real-space methods need an orthogonal cell; `"cn-adi2"` computes no stress (no `relax_cell`).
+- `"rs"` keeps every concentration positive in fields that change by more than about 30 kT per chain where the chains hardly reach, such as grafted and charged brushes; there the FFT round-off of `"ps"` turns them negative. See [NumericalMethods.md](../theory/NumericalMethods.md#43-rs-real-space-bond-convolution).
 
 See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
@@ -229,7 +232,7 @@ All keys are **required**: omitting one, a name other than `"am"`, a `max_hist` 
 | `stress_scale` | float | Scaling of the stress entries in the optimizer vector | `1` |
 | `stress_interval` | int or `"adaptive"` | Compute the stress every N iterations; `"adaptive"` uses 1, 2 or 4 as the error drops below 1e-2 and 1e-4 | `1` |
 
-Box relaxation needs a pseudo-spectral method with real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
+Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
 
 ### Crystal System
 
@@ -312,7 +315,7 @@ The optional `"resample"` policy reproduces the earlier noise-selection behavior
 | `checkpoint_interval` | int | Interval for saving complete restart checkpoints |
 | `sample_interval` | int | Collect H, dH/dχN, drift and structure-function samples every N Langevin steps |
 | `statistics_save_interval` | int | Save the collected histories and averaged structure functions, then reset the accumulators, every N Langevin steps |
-| `pressure` | bool | (CL-FTS, optional) Also record the osmotic pressure at every sample; needs a periodic box and free chains. Default `False` |
+| `pressure` | bool | (CL-FTS, optional) Also record the osmotic pressure at every sample; needs a periodic box, free chains and a method with the stress (not `cn-adi2`). Default `False` |
 | `concentrations` | bool | (CL-FTS, optional) Also record the mean concentration of every monomer type and point ion on the grid, over all steps. Default `False` |
 
 All intervals are positive integer counts of Langevin steps. Structure functions are normalized by the actual sample count, including when `statistics_save_interval` is not a multiple of `sample_interval`. Measurement files include `sample_count` and a JSON string `simulation_metadata_json`. Hamiltonian files also record `drift_max_history`: the maximum absolute scaled force used for each sampled transition, including dynamical stabilization in CL-FTS. CL-FTS also records `drift_max_step_history`, the maximum of every step for each auxiliary field (one column per field), and with electrostatics `psi_drift_max_step_history`. With canonical single-site species (discrete chains of one segment, point ions) it records `partition_ratio_step_history`, the ratio $`\vert Q_s \vert / \langle \vert e^{-u_s} \vert \rangle`$ of every step for each species (columns named by `partition_ratio_species_json`), which approaches zero near a zero of $`Q_s`$. Checkpoints keep the steps since the last statistics file. See [ComplexLangevinSimulation.md](../theory/ComplexLangevinSimulation.md#3-correct-convergence) for their use. At every sample CL-FTS records the chemical potentials βμ_p of all species (`chemical_potential_history_real`/`_imag`, one row per sample), with `pressure` the osmotic pressure βΠR₀³/C in its virial form (`pressure_history_real`/`_imag`) and, with grand-canonical species, the numbers of chains and ions per reference chain of all species (`number_density_history_real`/`_imag`, the columns of the chemical potentials) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)). With `concentrations`, the files `structure_function_NNNNNN.mat` hold the mean of every monomer type and point ion over all steps of the interval, whatever `sample_interval`, shaped like `nx` (`concentration_<name>_real`/`_imag`), with the number of steps `concentration_step_count`; a run continued from a checkpoint without the sums averages from the restart on. Custom callbacks use their own `interval` independently of these built-in measurements.
@@ -515,7 +518,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 `relax_cell`, `stress_scale`, `stress_interval` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
-**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for pseudo-spectral methods with real fields (complex fields with non-periodic boundaries are rejected), but is not implemented for the real-space `"cn-adi2"` method. Therefore `relax_cell=True` requires a pseudo-spectral method; `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
+**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real fields (complex fields with non-periodic boundaries are rejected), with every method except the real-space `"cn-adi2"`; `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
 ### Lattice Angles (Non-orthogonal)
 
@@ -641,7 +644,7 @@ params = {
 
 ### Non-Periodic Boundaries (Confined Film)
 
-All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4 and RK2 use DCT/DST transforms, while CN-ADI2 uses ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by `"cn-adi2"` (continuous chains only) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, with which `"cn-adi2"` runs apply smearing and the `lr`/`lram` compressors in a box with walls on every axis, uses the cosine series along every wall, absorbing ones included (a box that mixes periodic axes and walls transforms them with NumPy/SciPy instead); on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
+All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, with which `"cn-adi2"` runs apply smearing and the `lr`/`lram` compressors in a box with walls on every axis, uses the cosine series along every wall, absorbing ones included (a box that mixes periodic axes and walls transforms them with NumPy/SciPy instead); on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
 
 ```python
 params = {

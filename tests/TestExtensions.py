@@ -180,7 +180,7 @@ def check_method_registry():
             assert platform in info["compiled_backends"]
             solver = PropagatorSolver(nx=[16], lx=[3.0], ds=0.05, bond_lengths={"A": 1.0},
                                       bc=["periodic"] * 2, chain_model=info["chain_model"],
-                                      numerical_method=None if name == "discrete" else name, platform=platform)
+                                      numerical_method=name, platform=platform)
             solver.add_polymer(1.0, [["A", 1.0, 0, 1]])
             w = np.random.default_rng(3).normal(0, 5, 16)
             solver.compute_propagators({"A": w})

@@ -10,7 +10,7 @@
 #include <string_view>
 #include "Exception.h"
 
-enum class NumericalMethodId { RQM4, RK2, CNADI2, Discrete };
+enum class NumericalMethodId { RQM4, RK2, CNADI2, PS, RS };
 
 struct NumericalMethodInfo
 {
@@ -22,25 +22,28 @@ struct NumericalMethodInfo
     bool supports_complex;
     bool requires_orthogonal_cell;
     bool supports_mixed_boundaries;
+    bool supports_stress;
 };
 
-inline constexpr std::array<NumericalMethodInfo, 4> numerical_methods = {{
-    {NumericalMethodId::RQM4, "rqm4", "continuous", "pseudospectral", 4, true, false, false},
-    {NumericalMethodId::RK2, "rk2", "continuous", "pseudospectral", 2, true, false, false},
-    {NumericalMethodId::CNADI2, "cn-adi2", "continuous", "realspace", 2, false, true, true},
-    {NumericalMethodId::Discrete, "discrete", "discrete", "pseudospectral", 0, true, false, false}
+inline constexpr std::array<NumericalMethodInfo, 5> numerical_methods = {{
+    {NumericalMethodId::RQM4, "rqm4", "continuous", "pseudospectral", 4, true, false, false, true},
+    {NumericalMethodId::RK2, "rk2", "continuous", "pseudospectral", 2, true, false, false, true},
+    {NumericalMethodId::CNADI2, "cn-adi2", "continuous", "realspace", 2, false, true, true, false},
+    // Discrete chains: the bond convolution through FFTs (ps) or summed in real space (rs)
+    {NumericalMethodId::PS, "ps", "discrete", "pseudospectral", 0, true, false, false, true},
+    {NumericalMethodId::RS, "rs", "discrete", "realspace", 0, true, true, true, true}
 }};
 
 inline const NumericalMethodInfo& resolve_numerical_method(
     std::string_view chain_model, std::string_view name, std::string_view solver_type = "")
 {
-    // Discrete chains always use their own bond-convolution solver.
-    if (chain_model == "discrete")
-        name = "discrete";
-    else if (chain_model != "continuous")
-    {
+    if (chain_model != "continuous" && chain_model != "discrete")
         throw_with_line_number("Unknown chain model: " + std::string(chain_model));
-    }
+    // Callers that loop over both chain models pass one continuous-chain name; discrete chains then
+    // take their default (the Python interface rejects such a name instead)
+    const bool continuous_name = name == "rqm4" || name == "rk2" || name == "cn-adi2";
+    if (chain_model == "discrete" && (name.empty() || continuous_name))
+        name = solver_type == "realspace" ? "rs" : "ps";
     else if (name.empty())
         name = solver_type == "realspace" ? "cn-adi2" : "rqm4";
 
@@ -67,7 +70,7 @@ inline void validate_numerical_method(const NumericalMethodInfo& info, bool comp
     if (mixed_boundaries && !info.supports_mixed_boundaries)
         throw_with_line_number(std::string(info.name) + " cannot mix periodic and non-periodic boundary "
             "conditions: make every direction periodic or every direction non-periodic, or use cn-adi2 "
-            "(continuous chains).");
+            "(continuous chains) or rs (discrete chains).");
 }
 
 #endif

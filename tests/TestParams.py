@@ -116,7 +116,7 @@ def main():
     assert not any(line.startswith("Langevin step:") for line in output.getvalue().splitlines())
 
     p = base_params(); p["chain_model"] = "discrete"
-    assert build(SCFT, p).prop_solver.numerical_method == "discrete"
+    assert build(SCFT, p).prop_solver.numerical_method == "ps"
 
     # A fully absent composition mode must have a finite zero step size and
     # remain fixed through CL-FTS, including when initial fields contain that mode.

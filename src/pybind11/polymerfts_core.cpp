@@ -996,6 +996,7 @@ PYBIND11_MODULE(_core, m)
             entry["supports_complex"] = info.supports_complex;
             entry["requires_orthogonal_cell"] = info.requires_orthogonal_cell;
             entry["supports_mixed_boundaries"] = info.supports_mixed_boundaries;
+            entry["supports_stress"] = info.supports_stress;
             py::list backends;
 #ifdef USE_CPU_MKL
             backends.append("cpu-mkl");
@@ -1014,7 +1015,7 @@ PYBIND11_MODULE(_core, m)
     m.def("resolve_numerical_method", [](const std::string& chain_model, const std::string& numerical_method) {
         return std::string(resolve_numerical_method(chain_model, numerical_method).name);
     }, py::arg("chain_model"), py::arg("numerical_method") = "",
-       "The method the factories use: 'discrete' for discrete chains, rqm4 for an empty name.");
+       "The method the factories use; an empty name gives rqm4 (continuous) or ps (discrete).");
     m.def("runtime_info", [](bool include_cuda) {
         py::dict info;
 #ifdef USE_CPU_FFTW

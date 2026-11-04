@@ -38,6 +38,9 @@ class ThermodynamicOperators:
                 raise ValidationError("'recording.pressure' needs free chains (no initial_conditions)")
             if any(b != "periodic" for b in self.prop_solver.bc):
                 raise ValidationError("'recording.pressure' needs a periodic box")
+            if not self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
+                raise ValidationError(f"'recording.pressure' needs the stress; "
+                                      f"'{self.prop_solver.numerical_method}' computes none")
             # The O(ds²) contour error of rk2 in the stress, and so in the pressure, is large where one
             # contour step b √ds spans more than the smearing length, the shortest length on which the
             # smeared fields vary (docs/theory/ComplexLangevinSimulation.md, Section 7); without smearing

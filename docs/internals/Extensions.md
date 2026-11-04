@@ -187,11 +187,11 @@ does not certify sampling correctness for every physical model. See
 
 [NumericalMethods.h](../../src/common/NumericalMethods.h) is the common table of
 names, chain models, solver families, contour order, complex-field support,
-orthogonal-cell requirements and mixed-boundary support. Python reads it through
-`PropagatorSolver.numerical_methods()`, which also reports compiled backends.
-The discrete entry describes its separate bond-convolution solver; it has no
-continuum contour convergence order. `numerical_method` remains ignored for
-discrete chains.
+orthogonal-cell requirements, mixed-boundary support and stress support. Python reads it
+through `PropagatorSolver.numerical_methods()`, which also reports compiled backends.
+`numerical_method` names a method of the chain model: `rqm4`, `rk2` or `cn-adi2` for
+continuous chains, `ps` (default) or `rs` for discrete chains, whose bond convolution
+has no continuum contour convergence order.
 
 To add a new native method:
 

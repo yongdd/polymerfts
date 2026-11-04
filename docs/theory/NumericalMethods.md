@@ -22,9 +22,11 @@ This document provides comprehensive documentation of the numerical methods avai
 
 | Method | Order | Solver Type | Speed (vs CN-ADI2, Section 6) | Material Conservation |
 |--------|-------|-------------|-------------------|----------------------|
-| **RQM4** | 4th | Pseudo-spectral | 1.4x slower | Exact (10⁻¹⁶–10⁻¹⁴, round-off) |
-| **RK2** | 2nd | Pseudo-spectral | 1.4x faster | Exact (10⁻¹⁶–10⁻¹⁴, round-off) |
+| **RQM4** | 4th | Pseudo-spectral | 2.3x slower | Exact (10⁻¹⁶–10⁻¹⁴, round-off) |
+| **RK2** | 2nd | Pseudo-spectral | 1.1x slower | Exact (10⁻¹⁶–10⁻¹⁴, round-off) |
 | **CN-ADI2** | 2nd | Real-space | baseline | Exact (10⁻¹⁶–10⁻¹⁴, round-off) |
+
+Discrete chains take **PS** (bond convolution through FFTs, the default, Section 3.4) or **RS** (the same bond summed on the grid, Section 4.3).
 
 ### Decision Guide
 
@@ -32,6 +34,7 @@ This document provides comprehensive documentation of the numerical methods avai
 |----------|-------------------|
 | Standard SCFT/FTS (periodic BC) | **RQM4** (default) |
 | Fast iterations, prototyping | **RK2** |
+| Discrete chains in strong fields (grafted or charged brushes) | **RS** |
 
 ### Runtime Selection
 
@@ -43,7 +46,7 @@ params = {
     "lx": [3.3, 3.3, 3.3],
     "ds": 0.01,
     "chain_model": "continuous",
-    "numerical_method": "rqm4",  # or "rk2", "cn-adi2"
+    "numerical_method": "rqm4",  # or "rk2", "cn-adi2"; discrete chains: "ps" or "rs"
     # ... other parameters
 }
 
@@ -78,7 +81,7 @@ Both pseudo-spectral and real-space methods support the following boundary condi
 | **Reflecting** | Neumann (zero flux) | $`\partial q / \partial n = 0`$ | DCT |
 | **Absorbing** | Dirichlet (zero value) | $`q = 0`$ at boundary | DST |
 
-> **Note**: Pseudo-spectral methods (RQM4, RK2) cannot mix **periodic** with **non-periodic** boundary conditions in different directions (e.g., a thin film periodic in $`x, y`$ and reflecting in $`z`$); such configurations raise an error on all platforms and require the real-space method `cn-adi2`, which is available for continuous chains only. Non-periodic conditions may be mixed with each other (e.g., reflecting in $`x`$ and absorbing in $`y`$), and uniform all-periodic, all-reflecting, or all-absorbing configurations are fully supported.
+> **Note**: Pseudo-spectral methods (RQM4, RK2, PS) cannot mix **periodic** with **non-periodic** boundary conditions in different directions (e.g., a thin film periodic in $`x, y`$ and reflecting in $`z`$); such configurations raise an error on all platforms and require a real-space method, `cn-adi2` for continuous or `rs` for discrete chains. Non-periodic conditions may be mixed with each other (e.g., reflecting in $`x`$ and absorbing in $`y`$), and uniform all-periodic, all-reflecting, or all-absorbing configurations are fully supported.
 
 ---
 
@@ -161,7 +164,7 @@ q^{n+1} = \exp\left(-\frac{w \Delta s}{2}\right) q^{**}
 - **2nd-order accuracy** in $`\Delta s`$ (convergence order ≈ 2.0)
 - Time-reversible (due to symmetric splitting)
 - 2 FFTs per step
-- Fastest method (2.0x less total run time than RQM4 at Ns = 1000 in the benchmark of Section 6)
+- Fastest pseudo-spectral method (2.0x less total run time than RQM4 at Ns = 1000 in the benchmark of Section 6)
 
 > **Note**: RK2 for continuous chains is mathematically equivalent to the **N-bond model** for discrete chains described in Park et al. (2019) [5]. Both use the same Boltzmann factor $`e^{-b^2 k^2 \Delta s / 6}`$ in Fourier space.
 
@@ -198,7 +201,7 @@ q^{n+1} = \frac{4 q_{half} - q_{full}}{3}
 
 ### 3.4 Discrete Chain Model
 
-For discrete chains, the propagator is computed using **recursive integral equations** (Chapman-Kolmogorov equations) rather than solving a differential equation.
+For discrete chains, the propagator is computed using **recursive integral equations** (Chapman-Kolmogorov equations) rather than solving a differential equation. This section describes PS (`numerical_method="ps"`, the default); RS (Section 4.3) sums the same bond on the grid.
 
 **Units and Conventions:**
 - **Unit length**: $`R_0 = bN^{1/2}`$, where $`b`$ is the statistical segment length and $`N`$ is the polymerization index
@@ -240,7 +243,7 @@ For non-orthogonal cells, each index triple is first replaced by its alias $`(n_
 
 ## 4. Real-Space Methods
 
-Real-space methods use finite difference discretization instead of spectral transforms. They use **cell-centered grids** (same as pseudo-spectral methods) for consistent boundary condition handling.
+Real-space methods work on the grid instead of through spectral transforms: CN-ADI2 with finite differences for continuous chains, RS with a direct bond sum for discrete chains. They use **cell-centered grids** (same as pseudo-spectral methods) for consistent boundary condition handling.
 
 ### 4.1 Grid Discretization
 
@@ -285,14 +288,65 @@ Each direction requires solving a tridiagonal (or cyclic tridiagonal for periodi
 - Supports periodic, reflecting, and absorbing boundaries
 - CUDA parallelizes across systems, solving thousands of tridiagonal systems simultaneously
 
-### 4.3 Limitations
+The matrices do not change from step to step, because the field is split off, so the CUDA solver computes the Thomas factors of each axis once (with the Sherman-Morrison vector of periodic axes), and a solve is two sweeps over them. Each thread solves one line; the lines along the contiguous axis are first copied, a warp of them per block, into shared memory, so that their reads and writes coalesce like those of the other axes.
+
+### 4.3 RS (Real-Space Bond Convolution)
+
+`numerical_method="rs"` computes the bond of the discrete chain model (Section 3.4) as a sum on the grid:
+
+```math
+q_{i+1}(\mathbf{r}) = e^{-w(\mathbf{r})\Delta s} \sum_{\mathbf{r}'} g(\mathbf{r}-\mathbf{r}')\, q_i(\mathbf{r}')
+```
+
+In an orthogonal box the Gaussian bond is a product of one kernel per axis, so a bond is three one-dimensional stencils,
+
+```math
+q^{*}_j = g_0\, q_j + \sum_{d=1}^{H} g_d \left( q_{j-d} + q_{j+d} \right).
+```
+
+The kernel samples a Gaussian of variance $`\sigma^2 = b^2 \Delta s / 3`$ along each axis ($`b^2 \Delta s / 6`$ for the half bonds at chain ends and junctions), is summed to one and ends at $`H \approx 13.6\,\sigma / \Delta x`$, where it falls below $`10^{-40}`$ of its peak. Its width is set so that the sampled kernel has exactly the variance $`\sigma^2`$: on grids that resolve the bond this changes nothing, and on coarse grids it keeps the size of the chain (the plain samples are 3.6 % short at $`\Delta x = b`$). Points beyond the box come from the ghost cells of Section 4.1: periodic axes wrap, reflecting walls mirror the grid about the cell face, $`q_{-1-j} = q_j`$, and absorbing walls do so with the opposite sign, the symmetries of the DCT-II and DST-II. Each end of an axis has its own condition, and a kernel longer than the box is folded repeatedly.
+
+**Why sum on the grid.** For real fields every term of the sum is a positive weight times $`q`$, so every value of $`q`$ keeps its own relative precision. An FFT returns every value with an error of about $`10^{-16}`$ of the largest value of $`q`$: a value $`10^{-50}`$ of the maximum is the sum of Fourier modes of order one that cancel, which double precision cannot carry. When the field changes by more than about 30 kT per chain between regions, the propagators span more than sixteen decades where the chains are. In a grafted polyelectrolyte brush the propagator from the free ends is $`10^{-60}`$ to $`10^{-150}`$ of its maximum inside the brush, so PS returns concentrations as negative as their maximum there, while RS keeps them positive and gives the same partition function from every segment. Cutting small values of $`q`$ or of $`\hat g(\mathbf{k})`$ does not help: the forward transform has already lost them.
+
+**Stress.** The stress of a bond is $`\sum_{\mathbf r} q_1\, (\partial G / \partial L_a)\, q_2`$, where $`\partial G / \partial L_a`$ is the bond with its kernel along axis $`a`$ differentiated with respect to the box length at fixed grid offsets. The derivative includes the change of the width that keeps the variance on the grid, so the stress is the exact derivative of the RS free energy; where RS and PS agree, so do their stresses. Like PS, RS rejects the stress of complex fields with walls.
+
+**Relation to PS.** The transform of the sampled kernel differs from $`\hat g(k) = e^{-\sigma^2 k^2/2}`$ by about $`e^{-\pi^2 \sigma^2 / (2 \Delta x^2)}`$ near the largest wavenumber of the grid, with $`\sigma`$ the standard deviation of a half bond. When $`\sigma`$ spans about three grid spacings this is $`10^{-18}`$, and RS and PS agree to round-off in random fields (`tests/TestRealSpaceDiscrete.py`); on coarser grids they are two discretizations of the same chain model.
+
+**Cost.** The sum costs $`2H+1`$ multiply-adds per point and axis, with $`H`$ growing as $`\sigma/\Delta x`$, while an FFT costs about $`5\log_2 M`$ operations per point. Time of one propagator step of a discrete chain (N = 20, $`\sigma = 0.58\,b`$), single thread on an AMD EPYC 7543, double precision:
+
+| Grid | $`\Delta x`$ | Kernel points per axis | Boundaries | PS, cpu-mkl | PS, cpu-fftw | RS |
+|------|------|------|------|------|------|------|
+| 64³ | $`b`$ | 17 | periodic | 2.7 ms | 2.3 ms | 3.2 ms |
+| 64³ | $`b`$ | 17 | reflecting | 4.2 ms | 3.6 ms | 3.3 ms |
+| 64³ | $`b/2`$ | 33 | periodic | 2.8 ms | 2.4 ms | 5.7 ms |
+| 64³ | $`b/2`$ | 33 | reflecting | 4.2 ms | 3.6 ms | 5.7 ms |
+| 128³ | $`b`$ | 17 | periodic | 28 ms | 26 ms | 29 ms |
+| 128³ | $`b`$ | 17 | reflecting | 41 ms | 38 ms | 29 ms |
+
+With walls, where the cosine and sine transforms cost more than a periodic FFT, RS is as fast as PS on grids of spacing $`b`$.
+
+On CUDA a block copies a tile of the grid with its halos into shared memory once, and the pass along the first axis also multiplies by $`e^{-w\Delta s}`$ and the mask; a kernel of more than about 3400 points per axis for real fields, or 2000 for complex fields ($`\sigma \gtrsim 125\,\Delta x`$ or $`75\,\Delta x`$), does not fit and raises an error. Time of one step of real fields on an NVIDIA A10, double precision (N = 20; N = 100 on the 1D grid):
+
+| Grid | $`\Delta x`$ | Boundaries | PS | RS |
+|------|------|------|------|------|
+| 1600 | $`b/8`$ | reflecting | 0.075 ms | 0.014 ms |
+| 512² | $`b`$ | reflecting | 0.28 ms | 0.078 ms |
+| 64³ | $`b`$ | periodic | 0.15 ms | 0.11 ms |
+| 64³ | $`b`$ | reflecting | 0.30 ms | 0.11 ms |
+| 64³ | $`b/2`$ | periodic | 0.15 ms | 0.17 ms |
+| 128³ | $`b`$ | periodic | 1.5 ms | 0.74 ms |
+| 128³ | $`b`$ | reflecting | 3.5 ms | 0.74 ms |
+| 256³ | $`b`$ | periodic | 11 ms | 5.7 ms |
+| 256³ | $`b`$ | reflecting | 36 ms | 5.7 ms |
+
+### 4.4 Limitations
 
 Real-space methods have some limitations compared to pseudo-spectral methods:
 
-1. **Stress computation**: Not yet implemented
-2. **Discrete chains**: Only continuous chain model supported
-3. **Non-orthogonal cells**: Only orthogonal unit cells supported
-4. **Spatial accuracy**: $`O(\Delta x^2)`$ vs spectral (exponential) accuracy
+1. **Stress computation**: Not implemented (CN-ADI2)
+2. **Non-orthogonal cells**: Only orthogonal unit cells supported
+3. **Space groups**: Not supported by RS
+4. **Spatial accuracy**: $`O(\Delta x^2)`$ vs spectral (exponential) accuracy (CN-ADI2)
 
 ---
 
@@ -366,27 +420,27 @@ Total time of the SCFT setup and iterations:
 
 | Method | Ns=40 | Ns=80 | Ns=160 | Ns=320 | Ns=640 | Ns=1000 |
 |--------|-------|-------|--------|--------|--------|---------|
-| **RQM4** | 4.1 s | 6.8 s | 12.5 s | 23.6 s | 45.6 s | 70.6 s |
-| **RK2** | 2.5 s | 3.9 s | 6.6 s | 12.2 s | 23.4 s | 36.0 s |
-| **CN-ADI2** | 3.2 s | 4.9 s | 8.8 s | 16.8 s | 32.0 s | 49.2 s |
+| **RQM4** | 3.4 s | 6.0 s | 11.5 s | 22.6 s | 44.8 s | 69.4 s |
+| **RK2** | 1.6 s | 2.9 s | 5.7 s | 11.4 s | 22.4 s | 34.9 s |
+| **CN-ADI2** | 1.6 s | 2.8 s | 5.2 s | 10.0 s | 19.7 s | 30.5 s |
 
 ### Speedup Summary (at Ns=1000)
 
 | Method | Speedup (vs CN-ADI2) |
 |--------|----------------------|
-| **RK2** | **1.4x faster** |
-| **RQM4** | 1.4x slower |
+| **RK2** | 1.1x slower |
+| **RQM4** | 2.3x slower |
 | **CN-ADI2** | baseline |
 
-The ratios depend on the grid. One propagator computation of the same diblock (ds = 0.01, one stream, A10) takes 24, 90 and 889 ms with RQM4, 12, 32 and 327 ms with RK2, and 19, 53 and 856 ms with CN-ADI2 on 32³, 64³ and 128³ grids.
+The ratios depend on the grid. One propagator computation of the same diblock (ds = 0.01, one stream, A10) takes 24, 88 and 869 ms with RQM4, 12, 30 and 314 ms with RK2, and 12, 30 and 261 ms with CN-ADI2 on 32³, 64³ and 128³ grids.
 
 ### Key Findings
 
-1. **RK2 is the fastest method** - 2.0x less total run time than RQM4 at Ns = 1000, but only 2nd-order accurate
+1. **RK2 and CN-ADI2 are the fastest methods** - 2.0x and 2.3x less total run time than RQM4 at Ns = 1000, but only 2nd-order accurate
 2. **RQM4 achieves 4th-order convergence** - converges to F = -0.47697411
 3. **RK2 achieves 2nd-order convergence** - converges to F = -0.47697240 (differs by ~1.7e-6 from RQM4)
 4. **CN-ADI2** converges to a different free energy (F = -0.47935) due to finite-difference spatial discretization error
-5. **CN-ADI2** needs 1.3-1.4x less run time than RQM4 at every Ns of this benchmark (32³ grid); at 128³ the two take about the same time per step
+5. **CN-ADI2** needs 2.1-2.3x less run time than RQM4 at every Ns of this benchmark (32³ grid), and 3.3x less per propagator computation at 128³
 
 ### Pseudo-Spectral vs Real-Space Discrepancy
 
@@ -408,28 +462,29 @@ For the 32³ grid used in these benchmarks, the finite-difference spatial error 
 | Use Case | Recommended Method | Reason |
 |----------|-------------------|--------|
 | Standard SCFT/FTS (periodic BC) | **RQM4** | Fastest 4th-order, recommended default |
-| Fast iterations, prototyping | **RK2** | Fastest overall, lower accuracy |
+| Fast iterations, prototyping | **RK2** | Fastest pseudo-spectral method, lower accuracy |
 | Brush with grafted delta-function | **CN-ADI2** | Handles sharp initial conditions smoothly |
-| Stress calculations | **RQM4** or **RK2** | All BCs supported (real fields); real-space stress not implemented |
+| Discrete chains in strong fields (grafted or charged brushes) | **RS** | Positive concentrations where FFT round-off is amplified (Section 4.3) |
+| Stress calculations | **RQM4**, **RK2**, **PS** or **RS** | All BCs supported (real fields); CN-ADI2 has no stress |
 | Comparison with finite difference | **CN-ADI2** | Same discretization approach |
 
 ### Feature Comparison
 
-| Feature | RQM4 | RK2 | CN-ADI2 |
-|---------|------|-----|---------|
-| Continuous chains | Yes | Yes | Yes |
-| Discrete chains | No¹ | No¹ | No |
-| Periodic BC | Yes (FFT) | Yes (FFT) | Yes |
-| Reflecting BC | Yes (DCT) | Yes (DCT) | Yes |
-| Absorbing BC | Yes (DST) | Yes (DST) | Yes |
-| Mixed periodic/non-periodic BC | No² | No² | Yes |
-| Stress calculation | Yes³ | Yes³ | No |
-| Non-orthogonal cells | Yes | Yes | No |
-| Accuracy order | 4th | 2nd | 2nd |
+| Feature | RQM4 | RK2 | CN-ADI2 | PS | RS |
+|---------|------|-----|---------|----|----|
+| Chain model | Continuous | Continuous | Continuous | Discrete | Discrete |
+| Periodic BC | Yes (FFT) | Yes (FFT) | Yes | Yes (FFT) | Yes |
+| Reflecting BC | Yes (DCT) | Yes (DCT) | Yes | Yes (DCT) | Yes |
+| Absorbing BC | Yes (DST) | Yes (DST) | Yes | Yes (DST) | Yes |
+| Mixed periodic/non-periodic BC | No² | No² | Yes | No² | Yes |
+| Stress calculation | Yes³ | Yes³ | No | Yes³ | Yes³ |
+| Complex fields | Yes | Yes | No | Yes | Yes |
+| Non-orthogonal cells | Yes | Yes | No | Yes | No |
+| Accuracy order | 4th | 2nd | 2nd | –¹ | –¹ |
 
-¹ The discrete chain model uses its own dedicated pseudo-spectral solver (bond convolution via the Chapman-Kolmogorov equation); the `numerical_method` parameter is ignored for `chain_model="discrete"` (a note is printed), so neither RQM4 Richardson extrapolation nor RK2 stepping applies to discrete chains.
+¹ PS and RS compute the discrete chain model itself (bond convolution via the Chapman-Kolmogorov equation), not a contour discretization of the continuous chain.
 
-² Mixing periodic with reflecting/absorbing boundary conditions in different directions raises an error for pseudo-spectral methods on all platforms; such periodic/non-periodic mixes require `numerical_method="cn-adi2"` (continuous chains only). Purely non-periodic mixes (reflecting with absorbing) and uniform all-reflecting or all-absorbing configurations work with RQM4/RK2.
+² Mixing periodic with reflecting/absorbing boundary conditions in different directions raises an error for pseudo-spectral methods on all platforms; such periodic/non-periodic mixes require a real-space method (`cn-adi2` or `rs`). Purely non-periodic mixes (reflecting with absorbing) and uniform all-reflecting or all-absorbing configurations work with RQM4/RK2/PS.
 
 ³ `compute_stress()` supports periodic, reflecting, and absorbing boundary conditions for real fields (per-mode DCT/DST Parseval weights are folded into the spectral stress tables); complex fields with non-periodic boundaries are rejected. Box optimization (`relax_cell=True`) works with non-periodic boundaries for the box lengths (angles stay at 90°).
 

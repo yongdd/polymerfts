@@ -55,7 +55,7 @@ params = {
     }],
 
     # Numerical method
-    "numerical_method": "rqm4",    # "rqm4", "rk2", or "cn-adi2"
+    "numerical_method": "rqm4",    # "rqm4", "rk2" or "cn-adi2"; discrete chains: "ps" or "rs"
 
     # Box relaxation (required by SCFT; True relaxes lx with the stress)
     "relax_cell": False,
@@ -75,9 +75,11 @@ params = {
 
 | Method | Description | Best For |
 |--------|-------------|----------|
-| `rqm4` | 4th-order Richardson extrapolation (default) | Standard SCFT/FTS |
-| `rk2` | 2nd-order Rasmussen-Kalosakas | Faster, lower accuracy |
-| `cn-adi2` | 2nd-order Crank-Nicolson ADI | Brush with grafted delta-function |
+| `rqm4` | 4th-order Richardson extrapolation (continuous chains, default) | Standard SCFT/FTS |
+| `rk2` | 2nd-order Rasmussen-Kalosakas (continuous chains) | Faster, lower accuracy |
+| `cn-adi2` | 2nd-order Crank-Nicolson ADI (continuous chains) | Brush with grafted delta-function |
+| `ps` | Bond convolution through FFTs (discrete chains, default) | Standard discrete-chain SCFT/FTS |
+| `rs` | Bond convolution summed on the grid (discrete chains) | Grafted or charged brushes in strong fields |
 
 See [NumericalMethods.md](../theory/NumericalMethods.md) for detailed benchmarks.
 

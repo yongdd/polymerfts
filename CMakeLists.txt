@@ -253,6 +253,7 @@ ADD_LIBRARY(common
     src/common/CircularBuffer.cpp
     src/common/Pseudo.cpp
     src/common/FiniteDifference.cpp
+    src/common/RealSpaceBond.cpp
     src/common/PropagatorComputation.cpp
     src/common/ComputationCommon.cpp
     src/common/ComputationContinuous.cpp
@@ -281,6 +282,7 @@ SET(POLYMERFTS_CPU_COMMON_SOURCES
     src/platforms/cpu/CpuSolverPseudoRK2.cpp
     src/platforms/cpu/CpuSolverPseudoDiscrete.cpp
     src/platforms/cpu/CpuSolverCNADI.cpp
+    src/platforms/cpu/CpuSolverRealSpaceDiscrete.cpp
     src/platforms/cpu/CpuComputationBackend.cpp
     src/platforms/cpu/CpuAndersonMixing.cpp
     src/platforms/cpu/CpuFourierTransform.cpp
@@ -616,6 +618,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaSolverPseudoRK2.cu
         src/platforms/cuda/CudaSolverPseudoDiscrete.cu
         src/platforms/cuda/CudaSolverCNADI.cu
+        src/platforms/cuda/CudaSolverRealSpaceDiscrete.cu
         src/platforms/cuda/CudaComputationBackend.cu
         src/platforms/cuda/CudaCircularBuffer.cu
         src/platforms/cuda/PinnedCircularBuffer.cu

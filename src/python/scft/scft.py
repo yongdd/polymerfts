@@ -177,11 +177,9 @@ class SCFT:
             angles=angles,
             aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
         )
-        # Box relaxation needs the stress, which the real-space method (cn-adi2) does not compute
-        if (params["relax_cell"]
-                and PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["solver_type"] != "pseudospectral"):
-            raise ValidationError(f"'relax_cell' needs a pseudo-spectral method; '{self.prop_solver.numerical_method}' "
-                                  "computes no stress")
+        # Box relaxation needs the stress, which cn-adi2 does not compute
+        if params["relax_cell"] and not PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
+            raise ValidationError(f"'relax_cell' needs the stress; '{self.prop_solver.numerical_method}' computes none")
         for polymer in self.polymers:
             self.prop_solver.add_polymer(polymer["volume_fraction"], polymer["blocks_input"],
                                          polymer.get("initial_conditions", None))

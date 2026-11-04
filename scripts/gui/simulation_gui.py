@@ -383,12 +383,14 @@ def build_script(values):
     platform = choice("platform", ("auto", "cuda", "cpu-mkl", "cpu-fftw"))
     if platform != "auto":
         params["platform"] = platform
-    method = choice("numerical_method", ("auto", "rqm4", "rk2", "cn-adi2"))
+    method = choice("numerical_method", ("auto", "rqm4", "rk2", "cn-adi2", "ps", "rs"))
     if method != "auto":
-        if params["chain_model"] == "discrete":
-            raise ValueError("Choose numerical method 'auto' for discrete chains.")
+        if (params["chain_model"] == "discrete") != (method in ("ps", "rs")):
+            raise ValueError(f"Numerical method '{method}' is not for {params['chain_model']} chains: continuous "
+                             "chains take rqm4, rk2 or cn-adi2, discrete chains ps or rs.")
         params["numerical_method"] = method
-    if method == "cn-adi2" and "angles" in params:
+    real_space = method in ("cn-adi2", "rs")
+    if real_space and "angles" in params:
         raise ValueError("For non-orthogonal boxes choose a pseudo-spectral method.")
     if mode == "CL-FTS" and method == "cn-adi2":
         raise ValueError("CN-ADI2 does not support complex fields. For CL-FTS choose auto, rqm4 or rk2.")
@@ -401,9 +403,9 @@ def build_script(values):
         params.update(relax_cell=bool(values["relax_cell"]), stress_interval=1,
                       optimizer=mixing, max_iter=num("max_iter", integer=True),
                       tolerance=num("tolerance"))
-        # Box relaxation needs the stress, which the real-space method does not compute
+        # Box relaxation needs the stress, which cn-adi2 does not compute
         if method == "cn-adi2" and params["relax_cell"]:
-            raise ValueError("CN-ADI2 computes no stress. Disable cell relaxation or choose a pseudo-spectral method.")
+            raise ValueError(f"{method.upper()} computes no stress. Disable cell relaxation or choose a pseudo-spectral method.")
         if values.get("space_group", "none") != "none":
             apply_space_group(params, values["space_group"], params["relax_cell"])
         elif structured is not None:
@@ -414,6 +416,10 @@ def build_script(values):
             # the cell constraints selected in the editor during SCFT relaxation.
             params["crystal_system"] = (shape.title() if len(nx) == 3 else
                                         {"hexagonal": "Hexagonal2D", "oblique": "Oblique2D"}.get(shape, "Orthorhombic"))
+            # rs keeps the cell orthogonal, so its angles cannot relax
+            if method == "rs" and params["relax_cell"] and params["crystal_system"] in ("Monoclinic", "Triclinic", "Oblique2D"):
+                raise ValueError("RS keeps the cell angles at 90 degrees. Disable cell relaxation or choose an "
+                                 "orthogonal cell shape.")
     else:
         params.update(
             langevin=dict(max_step=num("max_step", integer=True), dt=num("dt"), nbar=num("nbar")),

@@ -14,6 +14,7 @@
 #include "CudaSolverPseudoDiscrete.h"
 #include "CudaSolverPseudoRK2.h"
 #include "CudaSolverPseudoRQM4.h"
+#include "CudaSolverRealSpaceDiscrete.h"
 #include "CudaTypeDispatch.h"
 
 namespace {
@@ -157,13 +158,16 @@ CudaComputationBackend<T>::CudaComputationBackend(
 
         switch (method_info.id)
         {
-        case NumericalMethodId::Discrete:
+        case NumericalMethodId::PS:
         {
             auto discrete = std::make_unique<CudaSolverPseudoDiscrete<T>>(cb, molecules, n_streams, streams, false);
             solver_discrete = discrete.get();
             solver = std::move(discrete);
             break;
         }
+        case NumericalMethodId::RS:
+            solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(cb, molecules, n_streams, streams, false);
+            break;
         case NumericalMethodId::RQM4:
             solver = std::make_unique<CudaSolverPseudoRQM4<T>>(cb, molecules, n_streams, streams, false);
             break;

@@ -143,3 +143,17 @@ def test_clfts_cn_adi_is_rejected_before_generation_or_save(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("shape", ("orthorhombic", "monoclinic", "triclinic"))
+def test_rs_relaxes_lengths_of_orthogonal_cells_only(shape):
+    # rs computes the stress but keeps the cell angles at 90 degrees
+    form = MODEL["values"]()
+    form["model"]["box"]["shape"] = shape
+    form.update(chain_model="discrete", numerical_method="rs", relax_cell=True)
+    if shape == "orthorhombic":
+        params = parameters(form)
+        assert params["numerical_method"] == "rs" and params["relax_cell"]
+    else:
+        with pytest.raises(ValueError, match="keeps the cell angles"):
+            BUILDER["build_script"](form)

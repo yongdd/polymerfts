@@ -46,31 +46,24 @@ int main()
         std::array<double,M> diff_sq;
         double error;
 
-        double *d_a, *d_b, *d_c, *d_y, *d_x; 
-        CUDA_CHECK(cudaMalloc((void**)&d_a, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_b, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_c, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_y, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_x, sizeof(double)*M));
-
-        int *d_offset, offset[1] = {0};
-        double *d_temp, *d_q_sparse, *d_x_answer, *d_x_periodic_answer;
-        CUDA_CHECK(cudaMalloc((void**)&d_offset, sizeof(double)*1));
-        CUDA_CHECK(cudaMalloc((void**)&d_q_sparse, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_temp, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_x_answer, sizeof(double)*M));
-        CUDA_CHECK(cudaMalloc((void**)&d_x_periodic_answer, sizeof(double)*M));
-
-        cudaMemcpy(d_a, a, sizeof(double)*M, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_b, b, sizeof(double)*M, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_c, c, sizeof(double)*M, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_y, y, sizeof(double)*M, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_offset, offset, sizeof(double)*1, cudaMemcpyHostToDevice);
+        // The solvers sweep over the factors of the matrix (lower a, diagonal b, upper c),
+        // computed once on the host
+        const TridiagonalFactors factors = factorize_tridiagonal(a, b, c, M, false);
+        const TridiagonalFactors factors_periodic = factorize_tridiagonal(a, b, c, M, true);
+        CudaDeviceBuffer<double> d_table(4*M), d_table_periodic(4*M), d_y(M), d_x(M);
+        CudaDeviceBuffer<int> d_offset(1);
+        const int offset = 0;
+        CUDA_CHECK(cudaMemcpy(d_table, factors.table.data(), sizeof(double)*4*M, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_table_periodic, factors_periodic.table.data(), sizeof(double)*4*M, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_y, y, sizeof(double)*M, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_offset, &offset, sizeof(int), cudaMemcpyHostToDevice));
+        // One line in shared memory: a row of M + 1 values (M is even)
+        const size_t shmem_size = (M + 1) * sizeof(double);
 
         // Tridiagonal
-        size_t shmem_size = 3 * M * sizeof(double);
-        tridiagonal<<<256, 256, shmem_size>>>(d_a, d_b, d_c, d_temp, d_y, d_x, d_offset, 1, 1, M);
-        cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost);
+        tridiagonal_lines_shared<false><<<1, 1, shmem_size>>>(d_table, M, factors.v, factors.denom, d_y, d_x, 1);
+        CUDA_CHECK_LAUNCH();
+        CUDA_CHECK(cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
         std::cout << "Tridiagonal" << std::endl;
         std::cout << "i: x_answer[i], x[i]" << std::endl;
         for(int i=0; i<M; i++)
@@ -84,8 +77,10 @@ int main()
             return -1;
 
         // Tridiagonal with periodic boundary
-        tridiagonal_periodic<<<256, 256>>>(d_a, d_b, d_c, d_temp, d_q_sparse, d_y, d_x, d_offset, 1, 1, M);
-        cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost);
+        tridiagonal_lines_shared<true><<<1, 1, shmem_size>>>(d_table_periodic, M, factors_periodic.v,
+                                                              factors_periodic.denom, d_y, d_x, 1);
+        CUDA_CHECK_LAUNCH();
+        CUDA_CHECK(cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
         std::cout << "Tridiagonal with periodic boundary" << std::endl;
         std::cout << "i: x_periodic_answer[i], x[i]" << std::endl;
         for(int i=0; i<M; i++)
@@ -98,23 +93,34 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
             return -1;
 
-        // Tridiagonal reading the coefficients from global memory (used for lines
-        // too long for shared memory): the same arithmetic as tridiagonal()
-        std::array<double, M> x_shared;
-        tridiagonal<<<256, 256, shmem_size>>>(d_a, d_b, d_c, d_temp, d_y, d_x, d_offset, 1, 1, M);
-        CUDA_CHECK_LAUNCH();
-        CUDA_CHECK(cudaMemcpy(x_shared.data(), d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
-        tridiagonal_global<<<256, 256>>>(d_a, d_b, d_c, d_temp, d_y, d_x, d_offset, 1, 1, M);
-        CUDA_CHECK_LAUNCH();
-        CUDA_CHECK(cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
-        std::cout << "Tridiagonal from global memory" << std::endl;
-        if (!std::equal(x_shared.begin(), x_shared.end(), x))
+        // One line per thread in global memory (used along strided axes and for lines too long
+        // for shared memory): the same arithmetic as through shared memory
+        for (bool periodic : {false, true})
         {
-            std::cout << "tridiagonal_global differs from tridiagonal" << std::endl;
-            return -1;
+            const TridiagonalFactors& f = periodic ? factors_periodic : factors;
+            const double* table = periodic ? d_table_periodic.get() : d_table.get();
+            std::array<double, M> x_shared;
+            if (periodic)
+                tridiagonal_lines_shared<true><<<1, 1, shmem_size>>>(table, M, f.v, f.denom, d_y, d_x, 1);
+            else
+                tridiagonal_lines_shared<false><<<1, 1, shmem_size>>>(table, M, f.v, f.denom, d_y, d_x, 1);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaMemcpy(x_shared.data(), d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
+            if (periodic)
+                tridiagonal_lines<true><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, d_offset, 1, 1);
+            else
+                tridiagonal_lines<false><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, d_offset, 1, 1);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
+            std::cout << "Tridiagonal from global memory" << (periodic ? ", periodic" : "") << std::endl;
+            if (!std::equal(x_shared.begin(), x_shared.end(), x))
+            {
+                std::cout << "tridiagonal_lines differs from tridiagonal_lines_shared" << std::endl;
+                return -1;
+            }
         }
 
-        // A line whose 3*L coefficients exceed the shared memory of tridiagonal()
+        // A long line, through global memory and through shared memory
         const int L = 6000;
         std::vector<double> la(L), lb(L), lc(L), ly(L), lx(L);
         for (int i = 0; i < L; i++)
@@ -124,40 +130,36 @@ int main()
             lc[i] = -0.6 + 0.1*std::sin(0.7*i);
             ly[i] = std::cos(0.01*i);
         }
-        CudaDeviceBuffer<double> d_la(L), d_lb(L), d_lc(L), d_ly(L), d_lx(L), d_lc_star(L);
-        CUDA_CHECK(cudaMemcpy(d_la, la.data(), sizeof(double)*L, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_lb, lb.data(), sizeof(double)*L, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_lc, lc.data(), sizeof(double)*L, cudaMemcpyHostToDevice));
+        const TridiagonalFactors long_factors = factorize_tridiagonal(la.data(), lb.data(), lc.data(), L, false);
+        CudaDeviceBuffer<double> d_long_table(4*L), d_ly(L), d_lx(L);
+        CUDA_CHECK(cudaMemcpy(d_long_table, long_factors.table.data(), sizeof(double)*4*L, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_ly, ly.data(), sizeof(double)*L, cudaMemcpyHostToDevice));
-        tridiagonal_global<<<1, 64>>>(d_la, d_lb, d_lc, d_lc_star, d_ly, d_lx, d_offset, 1, 1, L);
-        CUDA_CHECK_LAUNCH();
-        CUDA_CHECK(cudaMemcpy(lx.data(), d_lx, sizeof(double)*L, cudaMemcpyDeviceToHost));
-        std::vector<double> residual(L);
-        for (int i = 0; i < L; i++)
+        for (bool shared : {false, true})
         {
-            double r = lb[i]*lx[i] - ly[i];
-            if (i > 0)
-                r += la[i]*lx[i-1];
-            if (i < L-1)
-                r += lc[i]*lx[i+1];
-            residual[i] = std::abs(r);
+            if (shared)
+                tridiagonal_lines_shared<false><<<1, 1, (L + 1)*sizeof(double)>>>(
+                    d_long_table, L, long_factors.v, long_factors.denom, d_ly, d_lx, 1);
+            else
+                tridiagonal_lines<false><<<1, 64>>>(d_long_table, L, long_factors.v, long_factors.denom,
+                                                    d_ly, d_lx, d_offset, 1, 1);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaMemcpy(lx.data(), d_lx, sizeof(double)*L, cudaMemcpyDeviceToHost));
+            std::vector<double> residual(L);
+            for (int i = 0; i < L; i++)
+            {
+                double r = lb[i]*lx[i] - ly[i];
+                if (i > 0)
+                    r += la[i]*lx[i-1];
+                if (i < L-1)
+                    r += lc[i]*lx[i+1];
+                residual[i] = std::abs(r);
+            }
+            error = max_or_nan(residual);
+            std::cout << "Tridiagonal of " << L << " points from " << (shared ? "shared" : "global")
+                      << " memory, max residual: " << error << std::endl;
+            if (!std::isfinite(error) || error > 1e-12)
+                return -1;
         }
-        error = max_or_nan(residual);
-        std::cout << "Tridiagonal of " << L << " points from global memory, max residual: " << error << std::endl;
-        if (!std::isfinite(error) || error > 1e-12)
-            return -1;
-
-        cudaFree(d_a);
-        cudaFree(d_b);
-        cudaFree(d_c);
-        cudaFree(d_y);
-        cudaFree(d_x);
-
-        cudaFree(d_offset);
-        cudaFree(d_q_sparse);
-        cudaFree(d_temp);
-        cudaFree(d_x_answer);
-        cudaFree(d_x_periodic_answer);
 
         return 0;
     }

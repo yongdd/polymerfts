@@ -43,6 +43,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Added
 
+- Discrete chains take `numerical_method: "rs"` (2026-11-05): the bond is summed on the grid,
+  one stencil per axis, instead of through FFTs, on the CPU and CUDA backends for real and complex
+  fields. Every concentration stays positive where fields change by hundreds of kT per chain
+  (grafted and charged brushes), where the FFT round-off of the default `"ps"` turns them negative.
+  Like `cn-adi2` it mixes periodic and non-periodic axes and takes a different wall at each end of an
+  axis, and it needs an orthogonal cell. Its stress is the derivative of its own free energy, so the
+  box lengths relax and the CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees
+  (docs/theory/NumericalMethods.md, Section 4.3).
 - The simulation GUI exposes Tetragonal and Monoclinic 3D cells, and Hexagonal
   and Oblique 2D cells, with their length/angle constraints and the corresponding
   SCFT `crystal_system` in exported scripts (2026-10-30).
@@ -311,6 +319,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- `numerical_method` names the method of either chain model (2026-11-05): the FFT solver of discrete
+  chains, formerly `"discrete"` and chosen whatever `numerical_method` said, is `"ps"`, the default, and
+  `"rs"` is the new real-space one. A discrete chain with `"rqm4"`, `"rk2"` or `"cn-adi2"` raises an
+  error instead of a note. Checkpoints of discrete chains written before record `"discrete"` and do not
+  continue.
 - `LR` takes `fourier` or `axis_bc` (2026-11-02): the update without either, with NumPy, is gone.
   `LFTS` measures J(k) of a periodic box with `PropagatorSolver.fourier`, as it did with
   reflecting walls.
@@ -636,6 +649,12 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- `cn-adi2` on CUDA factorizes the tridiagonal matrix of each axis once, with the Sherman-Morrison
+  vector of periodic axes, instead of in every solve of every line, and stages the lines along the
+  contiguous axis in shared memory, whose reads were not coalesced (2026-11-05). One step on an A10
+  takes 1.2 ms instead of 2.1 ms with reflecting walls and 1.3 ms instead of 4.2 ms periodic on
+  128³; the gyroid benchmark of docs/theory/NumericalMethods.md, Section 6, runs in 30.5 s instead
+  of 49.2 s at Ns = 1000. The per-stream Thomas workspaces of the size of the grid are gone.
 - The DCT and DST of the CPU backends run as one reordered real FFT of the whole grid
   (`MakhoulTransform`, 2026-11-02), the same code on FFTW and MKL; it replaces `MklDctLines.h`. Both
   took each line in turn with a copy per line and per axis. On 64³, one thread, double precision, a
