@@ -156,8 +156,9 @@ protected:
      * Buffers of the derived solver that are free while one segment's stress is
      * computed: pair_full takes the two propagators expanded to the full grid
      * (2*M; reduced-basis runs only), qk_pair their batched forward FFT
-     * (2*M_COMPLEX), rk_1/rk_2 the real DCT/DST coefficients (M_COMPLEX each,
-     * non-periodic BC; nullptr when periodic).
+     * (2*M_COMPLEX), rk_1/rk_2 the DCT/DST coefficients (non-periodic BC; nullptr
+     * when periodic): M_COMPLEX doubles each for real fields, 2*M_COMPLEX for complex
+     * fields, whose real and imaginary parts come as interleaved pairs.
      */
     struct StressScratch
     {

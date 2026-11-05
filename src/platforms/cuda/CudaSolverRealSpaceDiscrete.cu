@@ -80,6 +80,30 @@ __global__ void ker_sum_partial(const D* __restrict__ partial, const int count, 
 constexpr int max_shared_bytes = 40 * 1024;
 __host__ __device__ inline int weights_bytes(int H) { return ((H + 1) * static_cast<int>(sizeof(double)) + 15) / 16 * 16; }
 
+// The tile of a pass along an axis of n points with `inner` contiguous values per point and a kernel
+// of half width H: the widest the shared memory of a block holds; along the contiguous axis a block
+// has a thread per point of a short axis. bytes exceeds max_shared_bytes when no tile fits.
+struct Tile
+{
+    int threads, columns, points, bytes;
+};
+
+template <typename D>
+Tile tile_of(int n, long inner, int H)
+{
+    Tile tile;
+    tile.threads = inner == 1 ? std::min(256, (n + 31) / 32 * 32) : 256;
+    tile.columns = inner == 1 ? 1 : 32;
+    tile.points = inner == 1 ? tile.threads : 64;
+    auto bytes = [&] { return weights_bytes(H) + (tile.points + 2 * H) * tile.columns * static_cast<int>(sizeof(D)); };
+    while (bytes() > max_shared_bytes && tile.points > 8)
+        tile.points /= 2;
+    while (bytes() > max_shared_bytes && tile.columns > 1)
+        tile.columns /= 2;
+    tile.bytes = bytes();
+    return tile;
+}
+
 // One stencil pass along an axis of n points with `inner` contiguous values per point. A block of
 // columns x rows threads copies `points` points of the axis with their halos, signed by the ghost tables,
 // for `columns` consecutive inner values (coalesced) into shared memory once, and each thread sums the
@@ -222,6 +246,7 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
         const double ds = mapping.get_ds_from_index(0);
         std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
         std::map<std::string, RealSpaceBond::Kernels> bond_half;
+        std::map<std::string, std::array<RealSpaceBond::Kernels, 3>> bond_dlength, bond_half_dlength;
         std::vector<const RealSpaceBond::Kernels*> all;
         for (const auto& [monomer_type, b] : molecules->get_bond_lengths())
         {
@@ -229,22 +254,46 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
             {
                 bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx);
                 all.push_back(&bond[ds_idx][monomer_type]);
-                upload(bond[ds_idx][monomer_type], d_bond[ds_idx][monomer_type]);
             }
             bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx);
             all.push_back(&bond_half[monomer_type]);
-            upload(bond_half[monomer_type], d_bond_half[monomer_type]);
-            const std::array<RealSpaceBond::Kernels, 3> dlength = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx());
-            const std::array<RealSpaceBond::Kernels, 3> half_dlength = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx());
-            for (int a = 0; a < 3; ++a)
+            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx());
+            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx());
+        }
+        const RealSpaceBond::Ghosts ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
+
+        // Every pass must fit the shared memory of a block: the longest kernel of an axis (its halo;
+        // the derivatives have the lengths of the bonds) is checked before the solver changes. The box
+        // has changed already, so a box that does not fit refuses every bond until one fits again,
+        // instead of leaving the kernels of the previous box in use.
+        const std::vector<int> nx = cb->get_nx();
+        for (int d = 0; d < cb->get_dim(); ++d)
+        {
+            long inner = 1;
+            for (int e = d + 1; e < cb->get_dim(); ++e)
+                inner *= nx[e];
+            if (tile_of<CuDeviceData<T>>(nx[d], inner, ghosts.halo[d]).bytes > max_shared_bytes)
             {
-                upload(dlength[a], d_bond_dlength[monomer_type][a]);
-                upload(half_dlength[a], d_bond_half_dlength[monomer_type][a]);
+                refusal_ = "The bond spans " + std::to_string(2 * ghosts.halo[d] + 1) + " grid points along axis " +
+                           std::to_string(d) + ", more than the shared memory of a block holds; use a coarser grid.";
+                throw_with_line_number(refusal_);
             }
         }
 
-        const RealSpaceBond::Ghosts ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
+        for (const auto& [ds_idx, kernels] : bond)
+            for (const auto& [monomer_type, k] : kernels)
+                upload(k, d_bond[ds_idx][monomer_type]);
+        for (const auto& [monomer_type, k] : bond_half)
+        {
+            upload(k, d_bond_half[monomer_type]);
+            for (int a = 0; a < 3; ++a)
+            {
+                upload(bond_dlength.at(monomer_type)[a], d_bond_dlength[monomer_type][a]);
+                upload(bond_half_dlength.at(monomer_type)[a], d_bond_half_dlength[monomer_type][a]);
+            }
+        }
         halo = ghosts.halo;
+        refusal_.clear();
         for (int d = 0; d < cb->get_dim(); ++d)
         {
             const size_t count = ghosts.index[d].size();
@@ -332,6 +381,8 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
     const CuDeviceData<T>* d_factor, const double* d_mask)
 {
     using D = CuDeviceData<T>;
+    if (!refusal_.empty())
+        throw_with_line_number(refusal_);
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
     const long M = cb->get_total_grid();
@@ -365,22 +416,11 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
         const int* index = d_ghost_index[axis].get() + halo[axis];
         const double* sign = d_ghost_sign[axis].get() + halo[axis];
 
-        // The widest tile the shared memory of a block holds with this kernel; along the contiguous
-        // axis a block has a thread per point of a short axis
-        const int threads = inner == 1 ? std::min(256, (n + 31) / 32 * 32) : 256;
-        int columns = inner == 1 ? 1 : 32;
-        int points = inner == 1 ? threads : 64;
-        auto bytes = [&] { return weights_bytes(H) + (points + 2 * H) * columns * static_cast<int>(sizeof(D)); };
-        while (bytes() > max_shared_bytes && points > 8)
-            points /= 2;
-        while (bytes() > max_shared_bytes && columns > 1)
-            columns /= 2;
-        if (bytes() > max_shared_bytes)
-            throw_with_line_number("The bond spans more grid points than the shared memory of a block holds; "
-                                   "use a coarser grid.");
-        const long tiles = outer * ((n + points - 1) / points) * ((inner + columns - 1) / columns);
-        ker_bond_pass<<<grid_blocks(tiles * threads, threads), dim3(columns, threads / columns), bytes(), stream>>>(
-            src, dst, n, inner, outer, g, H, index, sign, points, factor, mask);
+        // The tile fits: update_laplacian_operator() refuses kernels that do not
+        const Tile tile = tile_of<D>(n, inner, H);
+        const long tiles = outer * ((n + tile.points - 1) / tile.points) * ((inner + tile.columns - 1) / tile.columns);
+        ker_bond_pass<<<grid_blocks(tiles * tile.threads, tile.threads), dim3(tile.columns, tile.threads / tile.columns),
+                        tile.bytes, stream>>>(src, dst, n, inner, outer, g, H, index, sign, tile.points, factor, mask);
         CUDA_CHECK_LAUNCH();
         src = dst;
         dst = (dst == d_work_a[STREAM].get()) ? d_work_b[STREAM].get() : d_work_a[STREAM].get();

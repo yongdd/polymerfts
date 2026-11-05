@@ -395,7 +395,7 @@ protected:
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
-    /// Accumulate Σ_k kernel(k) v_i v_j from real DCT/DST coefficients (non-periodic BC).
+    /// Accumulate Σ_k kernel(k) v_i v_j from DCT/DST coefficients (non-periodic BC; complex pairs for complex fields).
     void accumulate_stress_nonperiodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                        const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
 

@@ -14,9 +14,10 @@ ComputationReduceMemoryDiscrete<T>::ComputationReduceMemoryDiscrete(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
+    const NumericalMethodInfo& method,
     SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, space_group,
+    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, method, space_group,
                                      /*first_segment=*/1, create_backend)
 {
     try
@@ -297,7 +298,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
     this->require_propagators();
     try
     {
-        this->check_stress_supported("pseudospectral");
+        this->check_stress_supported();
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds (see ComputationDiscrete)

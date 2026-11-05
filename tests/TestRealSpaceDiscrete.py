@@ -9,7 +9,7 @@ Discrete chains with the bond convolution summed in real space (numerical_method
    concentrations (1e-12 of the largest) in random fields (std 5): an AB diblock with
    different bond lengths (half bonds at the junction) in 1D, 2D and 3D, periodic,
    reflecting and absorbing walls, a mask, and complex fields; with them the stress (relative
-   1e-10; complex fields in periodic boxes, as PS rejects their stress with walls).
+   1e-10).
 2. Boundaries "ps" cannot take: an axis absorbing at one end and reflecting at the
    other equals the first half of the doubled axis absorbing at both ends in the
    mirrored field; a box periodic in x and reflecting in y with a field along y
@@ -19,11 +19,13 @@ Discrete chains with the bond convolution summed in real space (numerical_method
    the same from every segment.
 4. On coarse grids, where the width of the kernels is corrected to keep their variance, the
    stress is still the derivative of -ln Q with respect to the box lengths (central differences,
-   relative 1e-7).
+   relative 1e-7), also for complex fields with walls.
 5. With the space group Im-3m in its irreducible and m3 bases (fields symmetric under it, std 5)
    rs equals rs on the full grid (relative 1e-12, the stress included) and ps with the group
    (relative 1e-12; the stress 1e-10, as in 1).
-6. CUDA equals the CPU backends (relative 1e-11) on these cases, the stress included.
+6. CUDA equals the CPU backends (relative 1e-11) on these cases, the stress included. A bond
+   longer than the shared memory of a block holds is refused when the box changes, and so is
+   every computation until the box fits again.
 
 SCFT relaxes the box lengths with this stress; skewed cells, the relaxation of angles and
 continuous-chain names are refused. Exit code 1 in a CUDA build without a
@@ -119,8 +121,7 @@ def against_ps(platform, rng):
             rs = solve("rs", platform, nx, lx, bc, w, field_type=field_type)
             ps = solve("ps", platform, nx, lx, bc, w, field_type=field_type)
             compare(f"{nx} {bc[::2]} {field_type}", rs, ps, 1e-12)
-            if field_type == "real" or all(b == "periodic" for b in bc):
-                compare_stress(f"{nx} {bc[::2]} {field_type}", rs, ps, 1e-10)
+            compare_stress(f"{nx} {bc[::2]} {field_type}", rs, ps, 1e-10)
             check(rs[0].check_total_partition(), f"{nx} {bc[::2]} {field_type}: partition function from every segment")
             total = sum(rs[2][m] for m in "AB")
             check(abs(np.mean(total) - 1.0) < 1e-12, f"{nx} {bc[::2]} {field_type}: mean total concentration 1")
@@ -172,19 +173,21 @@ def strong_field(platform):
 
 def stress_derivative(platform, rng):
     print(f"  stress against differences of -ln Q on coarse grids on {platform}")
-    for nx, lx, bc in (([16], [4.0], ["periodic"] * 2), ([12, 10], [2.4, 2.0], ["reflecting"] * 4)):
-        w = fields(rng, int(np.prod(nx)))
-        stress = stress_of(solve("rs", platform, nx, lx, bc, w))
+    for nx, lx, bc, field_type in (([16], [4.0], ["periodic"] * 2, "real"),
+                                   ([12, 10], [2.4, 2.0], ["reflecting"] * 4, "real"),
+                                   ([12, 10], [2.4, 2.0], ["absorbing"] * 2 + ["reflecting"] * 2, "complex")):
+        w = fields(rng, int(np.prod(nx)), field_type)
+        stress = stress_of(solve("rs", platform, nx, lx, bc, w, field_type=field_type))
         h = 1e-5
         for a in range(len(nx)):
             q = []
             for sign in (1, -1):
                 box = list(lx)
                 box[a] *= 1 + sign * h
-                q.append(solve("rs", platform, nx, box, bc, w)[1])
+                q.append(solve("rs", platform, nx, box, bc, w, field_type=field_type)[1])
             derivative = -(np.log(q[0]) - np.log(q[1])) / (2 * h * lx[a])
             d = abs(stress[a] - derivative) / abs(derivative)
-            check(d < 1e-7, f"{nx} {bc[0]} axis {a}: stress {stress[a]:.8f}, -dlnQ/dL {derivative:.8f}, {d:.1e}")
+            check(d < 1e-7, f"{nx} {bc[0]} {field_type} axis {a}: stress {stress[a]:.8f}, -dlnQ/dL {derivative:.8f}, {d:.1e}")
 
 
 def space_group(platform):
@@ -258,6 +261,29 @@ def refusals(platform):
         check(False, "SCFT with rs refuses to relax the angles")
     except ValidationError:
         check(True, "SCFT with rs refuses to relax the angles")
+    if platform == "cuda":
+        # The bond of B spans 2x1054+1 points at L = 2 and 2x2107+1 at L = 1, more than the shared memory of a
+        # block holds: the box change is refused, and so is every computation until the box fits again
+        w = fields(np.random.default_rng(3), 1000)
+        solved = solve("rs", platform, [1000], [2.0], ["reflecting"] * 2, w)
+        check(solved[0].check_total_partition(), "rs on CUDA computes a bond of 2109 points")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                solved[0].set_lx([1.0])
+            check(False, "rs on CUDA refuses a box whose bond does not fit the shared memory of a block")
+        except Exception as exc:
+            check("shared memory" in str(exc), "rs on CUDA refuses a box whose bond does not fit the shared memory of a block")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                solved[0].compute_propagators({m: w[m].copy() for m in w})
+            check(False, "rs on CUDA computes nothing in the refused box")
+        except Exception as exc:
+            check("shared memory" in str(exc), "rs on CUDA computes nothing in the refused box")
+        with contextlib.redirect_stdout(io.StringIO()):
+            solved[0].set_lx([2.0])
+            solved[0].compute_propagators({m: w[m].copy() for m in w})
+        dq = abs(solved[0].get_partition_function(0) - solved[1]) / abs(solved[1])
+        check(dq < 1e-12, f"rs on CUDA computes again when the box fits: Q {dq:.1e}")
     for chain_model, method in (("discrete", "rqm4"), ("continuous", "rs")):
         try:
             PropagatorSolver(nx=[16], lx=[1.0], ds=0.05, bond_lengths={"A": 1.0}, bc=["periodic"] * 2,
@@ -298,8 +324,7 @@ def main():
                 for cpu in cpus:
                     host = solve("rs", cpu, nx, lx, bc, w, field_type=field_type)
                     compare(f"{nx} {bc[::2]} {field_type}: cuda vs {cpu}", cuda, host, 1e-11)
-                    if field_type == "real" or all(b == "periodic" for b in bc):
-                        compare_stress(f"{nx} {bc[::2]} {field_type}: cuda vs {cpu}", cuda, host, 1e-11)
+                    compare_stress(f"{nx} {bc[::2]} {field_type}: cuda vs {cpu}", cuda, host, 1e-11)
         for cpu in cpus:
             compare(f"strong field: cuda vs {cpu}", gpu, reference[cpu], 1e-11)
     elif cuda_part_missing():

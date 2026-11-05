@@ -442,7 +442,7 @@ CuDeviceData<T>* CudaSolverPseudoBase<T>::expand_to_full_grid(int STREAM, CuDevi
 {
     if (space_group_ == nullptr)
         return d_q_in;
-    // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+    // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
     if constexpr (!std::is_same_v<T, double>)
     {
         throw_with_line_number("Space group reduced basis is only supported for real fields.");
@@ -774,7 +774,7 @@ void CudaSolverPseudoBase<T>::update_dw_impl(
 
         if (device != "gpu" && device != "cpu")
             throw_with_line_number("Invalid device \"" + device + "\".");
-        // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+        // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
         if constexpr (!std::is_same_v<T, double>)
         {
             if (use_reduced_basis)
@@ -912,7 +912,7 @@ void CudaSolverPseudoBase<T>::prepare_stress()
 {
     try
     {
-        // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+        // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
         if constexpr (std::is_same_v<T, double>)
         {
             crysfft_stress_keys_.clear();
@@ -964,14 +964,6 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
     std::string monomer_type, bool is_half_bond_length)
 {
     try{
-        // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
-        if constexpr (std::is_same<T, std::complex<double>>::value)
-        {
-            if (!is_periodic_)
-                throw_with_line_number(
-                    "Stress computation for complex fields with non-periodic "
-                    "boundary conditions is not implemented.");
-        }
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
@@ -1000,7 +992,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         // Mirrors CpuSolverPseudoBase::compute_single_segment_stress.
         // ObliqueZ and all other cases fall through to the standard path.
         // =====================================================================
-        // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+        // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
         if constexpr (std::is_same_v<T, double>)
         {
             // NOTE: The CrysFFT fast path computes only the diagonal sums
@@ -1032,7 +1024,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         CuDeviceData<T>* d_q_pair_full = d_q_pair;
         if (space_group_ != nullptr)
         {
-            // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
             if constexpr (std::is_same_v<T, double>)
             {
                 ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
@@ -1073,32 +1065,29 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         }
         else
         {
-            // Non-periodic BC: use CudaFFT (DCT/DST)
-            // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
-            if constexpr (!std::is_same<T, double>::value)
-            {
-                throw_with_line_number("Stress computation with non-periodic BC is only supported for real fields (double).");
-            }
-            else
-            {
-                double* d_q1 = d_q_pair_full;
-                double* d_q2 = &d_q_pair_full[M];
+            // Non-periodic BC: use CudaFFT (DCT/DST). The coefficients are real for real
+            // fields; for complex fields those of the real and imaginary parts come as
+            // complex pairs, whose product needs no conjugate (the basis functions are real).
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(d_q_pair_full), scratch.rk_1, streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(&d_q_pair_full[M]), scratch.rk_2, streams[STREAM][0]);
 
-                fft_[STREAM]->forward_stream(d_q1, scratch.rk_1, streams[STREAM][0]);
-                fft_[STREAM]->forward_stream(d_q2, scratch.rk_2, streams[STREAM][0]);
-
-                // Multiply (real coefficients for non-periodic BC)
-                // Per-mode Parseval weights (2 interior / 1 special modes) are folded
-                // into the fourier_basis tables by Pseudo::update_weighted_fourier_basis_mixed.
-                // CudaFFT's real-coefficient forward is 2x the textbook DCT-II/DST-II
-                // convention per transformed dimension (CudaRealTransform matches FFTW's
-                // unnormalized REDFT10/RODFT10, while the CPU FftwFFT/MklFFT scale by 0.5);
-                // the coefficient product therefore carries 4^DIM, compensated here.
-                // (All dimensions are r2r here: mixed periodic/non-periodic is rejected.)
-                const double dct_scale = std::pow(0.25, DIM);
+            // Multiply the coefficients
+            // Per-mode Parseval weights (2 interior / 1 special modes) are folded
+            // into the fourier_basis tables by Pseudo::update_weighted_fourier_basis_mixed.
+            // CudaFFT's real-coefficient forward is 2x the textbook DCT-II/DST-II
+            // convention per transformed dimension (CudaRealTransform matches FFTW's
+            // unnormalized REDFT10/RODFT10, while the CPU FftwFFT/MklFFT scale by 0.5);
+            // the coefficient product therefore carries 4^DIM, compensated here.
+            // (All dimensions are r2r here: mixed periodic/non-periodic is rejected.)
+            // [type-specific algorithm] DCT/DST coefficients are real for real fields and interleaved complex pairs for complex fields.
+            const double dct_scale = std::pow(0.25, DIM);
+            if constexpr (std::is_same<T, double>::value)
                 ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_multi[STREAM], scratch.rk_1, scratch.rk_2, dct_scale, M_COMPLEX);
-                CUDA_CHECK_LAUNCH();
-            }
+            else
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+                    d_q_multi[STREAM], reinterpret_cast<const cuDoubleComplex*>(scratch.rk_1),
+                    reinterpret_cast<const cuDoubleComplex*>(scratch.rk_2), dct_scale, M_COMPLEX);
+            CUDA_CHECK_LAUNCH();
         }
 
         // Discrete chains: Boltzmann bond factor exp(-k²·b²·ds/6) and b² (already

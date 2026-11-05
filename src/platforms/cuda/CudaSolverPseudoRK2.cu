@@ -105,7 +105,7 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
         if (use_crysfft)
         {
-            // [real-only feature] Space-group reduced basis, CrysFFT and non-periodic stress are implemented for real fields; complex fields take the generic path or raise.
+            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
             if constexpr (!std::is_same_v<T, double>)
             {
                 throw_with_line_number("CrysFFT path is only supported for real fields.");

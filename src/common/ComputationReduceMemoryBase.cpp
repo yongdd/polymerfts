@@ -14,10 +14,11 @@ ComputationReduceMemoryBase<T>::ComputationReduceMemoryBase(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
+    const NumericalMethodInfo& numerical_method,
     SpaceGroup* space_group,
     int first_segment,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, space_group, create_backend),
+    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, numerical_method, space_group, create_backend),
       first_segment(first_segment), checkpoint_interval(1)
 {
     try

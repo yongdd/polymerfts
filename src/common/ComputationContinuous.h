@@ -38,8 +38,6 @@ template <typename T>
 class ComputationContinuous : public ComputationCommon<T>
 {
 private:
-    std::string method;  ///< "pseudospectral" or "realspace"
-
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;  ///< propagator[key][n], n = 0..max_n_segment
 
     /// One segment per polymer for its partition function: (polymer, q, q†, n_aggregated)
@@ -54,12 +52,12 @@ private:
 
 public:
     /**
-     * @param method         "pseudospectral" or "realspace" (stress is pseudo-spectral only)
+     * @param method         The numerical method (see ComputationCommon)
      * @param create_backend Creates the platform backend (see ComputationCommon)
      */
     ComputationContinuous(ComputationBox<T>* cb, Molecules* molecules,
                           PropagatorComputationOptimizer* propagator_computation_optimizer,
-                          std::string method, SpaceGroup* space_group,
+                          const NumericalMethodInfo& method, SpaceGroup* space_group,
                           const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
     ~ComputationContinuous();
 

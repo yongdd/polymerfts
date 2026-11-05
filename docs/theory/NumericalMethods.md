@@ -308,7 +308,7 @@ The kernel samples a Gaussian of variance $`\sigma^2 = b^2 \Delta s / 3`$ along 
 
 **Why sum on the grid.** For real fields every term of the sum is a positive weight times $`q`$, so every value of $`q`$ keeps its own relative precision. An FFT returns every value with an error of about $`10^{-16}`$ of the largest value of $`q`$: a value $`10^{-50}`$ of the maximum is the sum of Fourier modes of order one that cancel, which double precision cannot carry. When the field changes by more than about 30 kT per chain between regions, the propagators span more than sixteen decades where the chains are. In a grafted polyelectrolyte brush the propagator from the free ends is $`10^{-60}`$ to $`10^{-150}`$ of its maximum inside the brush, so PS returns concentrations as negative as their maximum there, while RS keeps them positive and gives the same partition function from every segment. Cutting small values of $`q`$ or of $`\hat g(\mathbf{k})`$ does not help: the forward transform has already lost them.
 
-**Stress.** The stress of a bond is $`\sum_{\mathbf r} q_1\, (\partial G / \partial L_a)\, q_2`$, where $`\partial G / \partial L_a`$ is the bond with its kernel along axis $`a`$ differentiated with respect to the box length at fixed grid offsets. The derivative includes the change of the width that keeps the variance on the grid, so the stress is the exact derivative of the RS free energy; where RS and PS agree, so do their stresses. Like PS, RS rejects the stress of complex fields with walls.
+**Stress.** The stress of a bond is $`\sum_{\mathbf r} q_1\, (\partial G / \partial L_a)\, q_2`$, where $`\partial G / \partial L_a`$ is the bond with its kernel along axis $`a`$ differentiated with respect to the box length at fixed grid offsets. The derivative includes the change of the width that keeps the variance on the grid, so the stress is the exact derivative of the RS free energy; where RS and PS agree, so do their stresses.
 
 **Space groups.** The Gaussian of an orthogonal cell commutes with the operations of its space group, so with a space group RS keeps the propagators in the reduced basis and expands them to the full grid for each bond.
 
@@ -327,7 +327,7 @@ The kernel samples a Gaussian of variance $`\sigma^2 = b^2 \Delta s / 3`$ along 
 
 With walls, where the cosine and sine transforms cost more than a periodic FFT, RS is as fast as PS on grids of spacing $`b`$.
 
-On CUDA a block copies a tile of the grid with its halos into shared memory once, and the pass along the first axis also multiplies by $`e^{-w\Delta s}`$ and the mask; a kernel of more than about 3400 points per axis for real fields, or 2000 for complex fields ($`\sigma \gtrsim 125\,\Delta x`$ or $`75\,\Delta x`$), does not fit and raises an error. Time of one step of real fields on an NVIDIA A10, double precision (N = 20; N = 100 on the 1D grid):
+On CUDA a block copies a tile of the grid with its halos into shared memory once, and the pass along the first axis also multiplies by $`e^{-w\Delta s}`$ and the mask; a kernel of more than about 3400 points per axis for real fields, or 2000 for complex fields ($`\sigma \gtrsim 125\,\Delta x`$ or $`75\,\Delta x`$), does not fit: the solver refuses such a grid when it is built or the box changes. Time of one step of real fields on an NVIDIA A10, double precision (N = 20; N = 100 on the 1D grid):
 
 | Grid | $`\Delta x`$ | Boundaries | PS | RS |
 |------|------|------|------|------|
@@ -360,8 +360,10 @@ Material conservation requires that forward and backward partition functions are
 | **RQM4** | Exact | Symmetric splitting: $`e^{-w \cdot ds/2} \cdot e^{L \cdot ds} \cdot e^{-w \cdot ds/2}`$ |
 | **RK2** | Exact | Same symmetric splitting as RQM4 |
 | **CN-ADI2** | Exact | Symmetric Crank-Nicolson time stepping |
+| **PS** | Exact | Symmetric bond (real, even $`\hat g(\mathbf k)`$) with $`e^{-w \cdot ds}`$ at each segment |
+| **RS** | Exact | Symmetric bond (even kernel, wrapped or mirrored at the walls) with $`e^{-w \cdot ds}`$ at each segment |
 
-The remaining mismatch is round-off and does not depend on the method. For an AB diblock ($`f = 0.4`$) on a 32³ grid with $`ds = 0.01`$ and random fields of standard deviation 5, the largest relative deviation of $`Q`$ along the chain (returned by `partition_errors()`) is $`2\times10^{-16}`$–$`3\times10^{-15}`$ on CUDA and about $`2\times10^{-14}`$ on cpu-mkl, for all three methods and for periodic, reflecting and absorbing boundaries; the mean of the total concentration differs from 1 by at most $`1.1\times10^{-15}`$ (CUDA) and $`8\times10^{-15}`$ (cpu-mkl).
+The remaining mismatch is round-off and does not depend on the method. For an AB diblock ($`f = 0.4`$) on a 32³ grid with $`ds = 0.01`$ and random fields of standard deviation 5, the largest relative deviation of $`Q`$ along the chain (returned by `partition_errors()`) is $`1\times10^{-16}`$–$`3\times10^{-15}`$ on CUDA and about $`2\times10^{-14}`$ on cpu-mkl, for all five methods (discrete chains for PS and RS) and for periodic, reflecting and absorbing boundaries; the mean of the total concentration differs from 1 by at most $`1.1\times10^{-15}`$ (CUDA) and $`8\times10^{-15}`$ (cpu-mkl).
 
 **Reference**: Yong & Kim, *Phys. Rev. E* **2017**, 96, 063312
 
@@ -487,7 +489,7 @@ For the 32³ grid used in these benchmarks, the finite-difference spatial error 
 
 ² Mixing periodic with reflecting/absorbing boundary conditions in different directions raises an error for pseudo-spectral methods on all platforms; such periodic/non-periodic mixes require a real-space method (`cn-adi2` or `rs`). Purely non-periodic mixes (reflecting with absorbing) and uniform all-reflecting or all-absorbing configurations work with RQM4/RK2/PS.
 
-³ `compute_stress()` supports periodic, reflecting, and absorbing boundary conditions for real fields (per-mode DCT/DST Parseval weights are folded into the spectral stress tables); complex fields with non-periodic boundaries are rejected. Box optimization (`relax_cell=True`) works with non-periodic boundaries for the box lengths (angles stay at 90°).
+³ `compute_stress()` supports periodic, reflecting, and absorbing boundary conditions (per-mode DCT/DST Parseval weights are folded into the spectral stress tables; for complex fields the coefficients of the real and imaginary parts are multiplied as complex numbers). Box optimization (`relax_cell=True`) works with non-periodic boundaries for the box lengths (angles stay at 90°).
 
 ---
 

@@ -17,10 +17,11 @@ ComputationCommon<T>::ComputationCommon(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
+    const NumericalMethodInfo& numerical_method,
     SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
     : PropagatorComputation<T>(cb, molecules, propagator_computation_optimizer),
-      n_streams(0)
+      numerical_method(numerical_method), n_streams(0)
 {
     try
     {
@@ -191,23 +192,10 @@ void ComputationCommon<T>::set_stress_from_blocks(const std::vector<std::array<T
 }
 
 template <typename T>
-void ComputationCommon<T>::check_stress_supported(const std::string& method) const
+void ComputationCommon<T>::check_stress_supported() const
 {
-    if (method == "realspace")
-        throw_with_line_number("Currently, the real-space method does not support stress computation.");
-
-    // Non-periodic (DCT/DST) stress is supported for real fields; the
-    // per-mode Parseval weights are folded into the fourier_basis tables
-    // (Pseudo::update_weighted_fourier_basis_mixed). The real-coefficient
-    // transform path drops the imaginary part, so complex fields with
-    // non-periodic boundaries are rejected explicitly.
-    if constexpr (std::is_same_v<T, std::complex<double>>)
-    {
-        for (const auto& bc : this->cb->get_boundary_conditions())
-            if (bc != BoundaryCondition::PERIODIC)
-                throw_with_line_number("Stress computation with non-periodic boundary "
-                    "conditions is not supported for complex fields.");
-    }
+    if (!numerical_method.supports_stress)
+        throw_with_line_number("The " + std::string(numerical_method.name) + " method does not support stress computation.");
 }
 
 template <typename T>

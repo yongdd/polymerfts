@@ -60,7 +60,7 @@ private:
 public:
     ComputationDiscrete(ComputationBox<T>* cb, Molecules* molecules,
                         PropagatorComputationOptimizer* propagator_computation_optimizer,
-                        SpaceGroup* space_group,
+                        const NumericalMethodInfo& method, SpaceGroup* space_group,
                         const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
     ~ComputationDiscrete();
 

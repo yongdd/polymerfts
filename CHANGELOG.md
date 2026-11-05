@@ -52,6 +52,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   basis. Its stress is the derivative of its own free energy, so the box lengths relax and the
   CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees
   (docs/theory/NumericalMethods.md, Section 4.3).
+- `compute_stress()` takes complex fields with reflecting and absorbing walls (2026-11-06): the
+  pseudo-spectral methods multiply the cosine and sine coefficients of the real and imaginary
+  parts of the propagators as complex numbers, on the CPU and for `"ps"` on CUDA, and `"rs"` sums
+  on the grid. Before, the stress of complex fields needed a periodic box
+  (tests/TestStressComplexWalls.py).
 - The simulation GUI exposes Tetragonal and Monoclinic 3D cells, and Hexagonal
   and Oblique 2D cells, with their length/angle constraints and the corresponding
   SCFT `crystal_system` in exported scripts (2026-10-30).

@@ -518,7 +518,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 `relax_cell`, `stress_scale`, `stress_interval` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
-**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real fields (complex fields with non-periodic boundaries are rejected), with every method except the real-space `"cn-adi2"`; `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
+**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"` (on CUDA, `"rqm4"` and `"rk2"` take no complex fields with walls, which `"auto"` runs on the CPU); `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
 ### Lattice Angles (Non-orthogonal)
 

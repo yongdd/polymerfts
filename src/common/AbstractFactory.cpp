@@ -47,7 +47,6 @@ std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_
         const bool walls = std::any_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b != BoundaryCondition::PERIODIC; });
         validate_numerical_method(method_info, std::is_same_v<T, std::complex<double>>, cb->is_orthogonal(),
                                   periodic && walls);
-        const std::string solver_type = method_info.solver_type;
 
         // Reduce-memory mode computes one propagator at a time
         const int max_n_streams = this->reduce_memory ? 1 : INT_MAX;
@@ -58,13 +57,13 @@ std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_
         typename ComputationBox<T>::SpaceGroupGuard group_change(cb, space_group);
         std::unique_ptr<PropagatorComputation<T>> computation;
         if (discrete && !this->reduce_memory)
-            computation = std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, space_group, make_backend);
+            computation = std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
         else if (discrete)
-            computation = std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, space_group, make_backend);
+            computation = std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
         else if (!this->reduce_memory)
-            computation = std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, solver_type, space_group, make_backend);
+            computation = std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
         else
-            computation = std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, solver_type, space_group, make_backend);
+            computation = std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
         if (method_info.requires_orthogonal_cell)
             computation->hold_orthogonal_cell();
         group_change.commit();

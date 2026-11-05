@@ -28,6 +28,7 @@
 #include "ComputationBackend.h"
 #include "ComputationBox.h"
 #include "Molecules.h"
+#include "NumericalMethods.h"
 #include "PropagatorComputation.h"
 #include "PropagatorComputationOptimizer.h"
 #include "Scheduler.h"
@@ -73,6 +74,7 @@ template <typename T>
 class ComputationCommon : public PropagatorComputation<T>
 {
 protected:
+    NumericalMethodInfo numerical_method;            ///< The numerical method (check_stress_supported())
     std::unique_ptr<ComputationBackend<T>> backend;  ///< Platform operations
     std::unique_ptr<Scheduler> sc;                   ///< Order in which the propagators are computed
     int n_streams;                   ///< Number of propagators computed concurrently
@@ -89,12 +91,13 @@ protected:
     std::set<std::string> w_input_types;           ///< Monomer types given to the last compute_propagators()
 
     /**
-     * @param create_backend Called after the space group is set on the box,
-     *                       because the solvers size their buffers from it.
+     * @param numerical_method The numerical method of the solver
+     * @param create_backend   Called after the space group is set on the box,
+     *                         because the solvers size their buffers from it.
      */
     ComputationCommon(ComputationBox<T>* cb, Molecules* molecules,
                       PropagatorComputationOptimizer* propagator_computation_optimizer,
-                      SpaceGroup* space_group,
+                      const NumericalMethodInfo& numerical_method, SpaceGroup* space_group,
                       const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     /**
@@ -140,8 +143,8 @@ protected:
      */
     void convert_stress_to_lattice_derivatives();
 
-    /// Throw if stress is requested for a setup that does not support it.
-    void check_stress_supported(const std::string& method) const;
+    /// Throw if the numerical method computes no stress.
+    void check_stress_supported() const;
 
 private:
     /// Free the concentrations, the fields and the backend (also on a failed construction).
