@@ -147,7 +147,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - Examples of charged systems (2026-10-28): `examples/charged/scft/ChargedDiblockLamella.py` relaxes
   the period of a charged diblock lamella with point counterions over a range of added salt,
   `examples/charged/scft/PolyelectrolyteBrush.py` solves a charged brush grafted to a charged wall of a
-  closed box with the real-space `cn-adi2` method, and `examples/charged/clfts/SaltReservoir.py` runs a
+  closed box with discrete chains and the real-space `rs` method, and `examples/charged/clfts/SaltReservoir.py` runs a
   charged diblock melt in contact with a salt reservoir (grand-canonical point ions) and compares
   the uptake of ions with the Donnan equilibrium. `examples/block_copolymer/scft/crystal_systems/`
   relaxes cylinders in hexagonal, oblique and triclinic cells and a lamella in a monoclinic cell, and

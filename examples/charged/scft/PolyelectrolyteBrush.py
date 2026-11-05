@@ -15,14 +15,15 @@ concentration the script prints the brush height <x> (the first moment of phi_A)
 concentrations of both ions at the far wall and the potential difference between the two walls
 per unit charge. At c_salt >= 0.03 the far wall lies in a neutral salt solution (equal
 concentrations); at lower salt the box is too narrow for that, and the counterions exceed the
-co-ions there (by 5 % at c_salt = 0.01 and a factor of 3 at 0.001).
+co-ions there (by 5 % at c_salt = 0.01 and a factor of 2.8 at 0.001).
 
-The propagators use the real-space method cn-adi2. Those of the grafted chains fall by many
-orders of magnitude between the grafting wall and the far wall (phi_A drops from 0.37 to 4e-17 at
-c_salt = 0.1), and the round-off of the pseudo-spectral methods (rqm4, rk2, and ps for discrete
-chains), about 1e-16 of the largest value of a propagator, then grows into spurious and negative
-concentrations far from the brush. In this box rqm4 fails at every salt concentration
-(docs/validation/ExampleValidation.md).
+The chains are discrete (N = 50 segments) and the propagators use the real-space bond convolution
+rs. Those of the grafted chains fall by many orders of magnitude between the grafting wall and the
+far wall (phi_A drops to 7e-19 at the far wall at c_salt = 0.1), and the round-off of the
+pseudo-spectral methods (ps for discrete chains; rqm4 and rk2 for continuous chains), about 1e-16 of
+the largest value of a propagator, then grows into spurious and negative concentrations far from
+the brush. In this box ps does not converge and gives negative phi_A already at c_salt = 0.1
+(docs/validation/ExampleValidation.md). Continuous chains would use the real-space method cn-adi2.
 """
 
 import os
@@ -36,7 +37,7 @@ from polymerfts import SCFT
 
 z_a = -0.2          # Valence of an A segment
 phi_brush = 0.1     # Volume fraction of the brush in the box (sets the grafting density)
-n_segments = 50     # Segments N of a brush chain (the contour step ds is a numerical choice)
+n_segments = 50     # Segments N of a brush chain
 coupling = 2000.0   # E = 4 pi l_B rho_0 N R0^2 = 4 pi (l_B/R0) N^2 Nbar^(1/2)
 substrate = 0.25    # Fixed charge of the substrate relative to the charge of the brush (same sign)
 salts = [0.1, 0.03, 0.01, 0.003, 0.001]   # Added salt in the box, ions per segment
@@ -50,9 +51,9 @@ params = {
     "bc":["reflecting", "reflecting"],   # Walls on both sides: a closed box
     "relax_cell":False,         # Fixed box: box relaxation of charged systems needs a periodic box
 
-    "chain_model":"continuous", # cn-adi2 takes continuous chains
-    "ds":0.01,                  # Contour step
-    "numerical_method":"cn-adi2",   # Real-space propagators (finite differences)
+    "chain_model":"discrete",   # Discrete chains of N segments
+    "ds":1/n_segments,          # 1/N: one bond per segment
+    "numerical_method":"rs",    # Real-space bond convolution
 
     "segment_lengths":{         # Relative statistical segment lengths
         "A":1.0,
@@ -80,7 +81,7 @@ params = {
         "mix_init":0.1,         # Initial mixing rate of simple mixing
     },
 
-    "max_iter":5000,            # The maximum relaxation iterations
+    "max_iter":10000,           # The maximum relaxation iterations
     "tolerance":1e-8,           # Terminate iteration if the self-consistency error is less than tolerance
 }
 
@@ -98,8 +99,8 @@ fixed_charge[0] = substrate * z_a * phi_brush * lx / dx
 
 def electrostatics(c_salt):
     """Charges of A, the substrate and point ions Na+ (also the counterions) and Cl- with the salt c_salt."""
-    # Continuous chains give N through n_segments: a segment and an ion feel z psi/N
-    return {"charges": {"A": z_a}, "coupling": coupling, "n_segments": n_segments, "fixed_charge": fixed_charge,
+    # Discrete chains have N = 1/ds: a segment and an ion feel z psi/N
+    return {"charges": {"A": z_a}, "coupling": coupling, "fixed_charge": fixed_charge,
             "ions": {"Na": {"valence": 1.0, "concentration": c_salt, "smearing_length": 0.05},
                      "Cl": {"valence": -1.0, "concentration": c_salt, "smearing_length": 0.05}}}
 

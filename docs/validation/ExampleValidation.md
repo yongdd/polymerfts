@@ -20,7 +20,7 @@ Each example lists under these labels:
 | `blend/clfts/HomopolymerSolutionBook.py` | Fredrickson and Delaney 2023 | Agrees within the reading precision (0.1–0.2 %) |
 | `charged/scft/ChargedDiblockLamella.py` | Strong-screening limit, grid convergence | Checked; the unscreened lamellae not compared |
 | `charged/scft/SaltDopedLamella.py` | Locally neutral limit (a neutral salt molecule), grid convergence | Checked; published salt-doped lamellae not compared |
-| `charged/scft/PolyelectrolyteBrush.py` | Independent Poisson-Boltzmann solution, Δx and Δs convergence | Checked; brush theory not compared |
+| `charged/scft/PolyelectrolyteBrush.py` | Independent Poisson-Boltzmann solution, Δx convergence, `ps` where it runs | Checked; brush theory not compared |
 | [`charged/scft/CounterionsBetweenPlates.py`](Electrolytes.md) | Poisson-Boltzmann of Netz 2001 | Agrees: profile within 10⁻³, pressure within 3×10⁻⁵ |
 | [`charged/clfts/CounterionsBetweenPlates.py`](Electrolytes.md) | Netz's loop expansion, exact lattice Monte Carlo | Agrees up to Ξ ≈ 0.6; wrong at Ξ ≥ 0.85 (limit of CL-FTS) |
 | [`charged/clfts/SmearedSaltSelfEnergy.py`](Electrolytes.md) | One-loop theory, exact Monte Carlo | Agrees: 0.1 % at weak coupling, Monte Carlo up to l_Bκ = 4.8 |
@@ -83,20 +83,20 @@ Strong screening: blocks with valences +0.5 and −0.5, continuous chains (Δs =
 
 - **`scft/PolyelectrolyteBrush.py`**
   - Checked (`TestConfinedElectrostatics`, with discrete chains and pseudo-spectral propagators): ψ in a closed box against an independent Poisson-Boltzmann solution between fixed charge layers (10⁻⁹); the closed-box stress against dF/dL; charged chains grafted to a wall converge to the Poisson equation.
-  - Checked (validation runs, figure and table below): (a) with `cn-adi2`, the method of this example, ψ between the charged layers of that test agrees with the independent Poisson-Boltzmann solution within 2.8×10⁻¹¹ (|ψ| ≤ 5.5); (b) the brush heights converge at second order in Δx and Δs, and those of the example are 0.9 % (c_salt = 0.1) to 1.6 % (c_salt = 0.001) above the extrapolated values; in a 4 R₀ box, where the pseudo-spectral `rqm4` still runs at high salt, `rqm4` with 512 points and Δs = 0.0025 agrees with the extrapolated `cn-adi2` heights within 3×10⁻⁵ R₀ (c_salt = 0.1 and 0.03), although its iteration stalls at errors of 5×10⁻⁸ to 10⁻⁷ and its check of the partition functions fails at c_salt = 0.01; (c) `rqm4` in the example's box puts a spurious second layer of A segments at x ≈ 4 R₀ and negative φ_A between the brush and that layer (down to −0.0014) and near the far wall (down to −0.0005); its iteration stalls at an error of 10⁻⁵ already at c_salt = 0.1, and at c_salt = 0.03 the check of the partition functions fails. The propagators of the grafted chains fall by many orders of magnitude across the box: the true φ_A drops from 0.37 to 4×10⁻¹⁷ at the far wall of the 6 R₀ box (c_salt = 0.1), but only to 10⁻⁷ in the 4 R₀ box. The round-off of the pseudo-spectral transforms, about 10⁻¹⁶ of the largest value of a propagator, grows into the spurious density where the propagators are small; the real-space `cn-adi2` method does not have it.
-  - Not checked: the electrostatics with `cn-adi2` in a ctest; the brush heights against brush theory (osmotic and salted regimes) or published profiles.
+  - Checked (validation runs, figure and table below): (a) with discrete chains and `rs`, as in this example, ψ between the charged layers of that test agrees with the independent Poisson-Boltzmann solution within 2.8×10⁻¹¹ (|ψ| up to 5.5); its chains are neutral, so this checks the electrostatics of the discrete chain (N = 1/Δs) but not the propagators of `rs`; (b) with Δs = 1/N fixed by the discrete chain, the brush heights converge in Δx at an observed order of 1.7–1.8, and those of the example are 0.16 % (c_salt = 0.1) to 0.18 % (c_salt = 0.001) above the extrapolated values; in a 4 R₀ box, where the pseudo-spectral `ps` still runs at high salt, `ps` and `rs` on the same grids agree within 1.8×10⁻⁷ R₀ at c_salt = 0.1 and 0.03 and within 1.4×10⁻⁶ R₀ at 0.01; from zero fields at c_salt = 0.1 both need 14,000–16,000 iterations, but continued to c_salt = 0.01 `ps` needs 8165 and 6432 iterations (256 and 512 points) where `rs` needs 89 and 87, and the check of the partition functions of `ps` fails at c_salt = 0.003; (c) `ps` in the example's box gives negative φ_A from x = 3.0 R₀ to the far wall (down to −0.0040, oscillating from cell to cell) and does not converge at c_salt = 0.1 (error 1.5×10⁻⁶ after 20,000 iterations). The propagators of the grafted chains fall by many orders of magnitude across the box: φ_A drops from 0.47 to 7×10⁻¹⁹ at the far wall of the 6 R₀ box (c_salt = 0.1), but only to 5×10⁻⁸ in the 4 R₀ box. The round-off of the pseudo-spectral transforms, about 10⁻¹⁶ of the largest value of a propagator, grows into the spurious density where the propagators are small; the real-space `rs` method does not have it.
+  - Not checked: the electrostatics with `rs` in a ctest; the brush heights against brush theory (osmotic and salted regimes) or published profiles.
 
 ![Poisson-Boltzmann check, convergence of the brush height and pseudo-spectral failure](../figures/polyelectrolyte_brush_validation.png)
 
-| Brush height ⟨x⟩ [R₀], example box | c_salt = 0.1 | c_salt = 0.001 |
+| Brush height ⟨x⟩ [R₀], example box, Δs = 1/50 | c_salt = 0.1 | c_salt = 0.001 |
 |------------------------------------|-------------:|---------------:|
-| Δx = 0.094 (64 points), Δs = 0.02 | 1.05194 | 1.28034 |
-| Δx = 0.047 (128 points), Δs = 0.01 (the example) | 1.02733 | 1.23055 |
-| Δx = 0.023 (256 points), Δs = 0.005 | 1.02049 | 1.21642 |
-| Δx = 0.012 (512 points), Δs = 0.0025 | 1.01874 | 1.21278 |
-| Richardson extrapolation | 1.01816 | 1.21157 |
+| Δx = 0.094 (64 points) | 1.01473 | 1.20644 |
+| Δx = 0.047 (128 points, the example) | 1.01083 | 1.20103 |
+| Δx = 0.023 (256 points) | 1.00969 | 1.19946 |
+| Δx = 0.012 (512 points) | 1.00934 | 1.19900 |
+| Extrapolation with the observed order | 1.00919 | 1.19881 |
 
-Every run converged to the error 10⁻⁸ of the example, with relative partition-function errors below 10⁻¹³. The potential difference between the walls converges only at first order, since it is read in the first cell, which also holds the substrate charge: the example's −0.648 and −2.833 lie 5 % and 2 % from the extrapolated −0.681 and −2.881 (c_salt = 0.1 and 0.001).
+Every run of the table converged to the error 10⁻⁸ of the example, with relative partition-function errors below 10⁻¹⁴. Starting from zero fields, the first salt concentration takes 5110 iterations on the example's grid and about 14,000 on the finer ones. The potential difference between the walls converges only at first order, since it is read in the first cell, which also holds the substrate charge: the example's −0.654 and −2.864 lie 5 % and 1 % from the extrapolated −0.687 and −2.898 (c_salt = 0.1 and 0.001).
 
 - **`clfts/ChargedDiblock.py`**
   - Checked: the forces of ψ and of the auxiliary fields against derivatives of H, the exact step of ψ and its stationary variance, the neutral limits and bitwise restarts (`TestClftsElectrostatics`); the structure functions of a charged diblock with one-segment counterions against the RPA at N̄ = 10⁶ (`TestChargedStructureFunctionRPA`, figure below).
