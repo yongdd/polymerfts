@@ -8,7 +8,7 @@ otherwise.
 |--------|----------|
 | [gui/](gui/) | Browser script builder and [web assets](gui/assets/) |
 | [pscf/](pscf/) | PSCF converter and a small initial-field example |
-| [analysis/](analysis/) | MATLAB scripts, Jupyter notebooks and Python scripts for density, structure functions, WTMD, drift records and interaction calibration |
+| [analysis/](analysis/) | Jupyter notebooks and Python scripts for density, structure functions, WTMD, drift records, auxiliary fields and interaction calibration |
 
 ## Simulation Script Builder (beta)
 
@@ -45,12 +45,13 @@ examples, cell conventions, input validation and supported model scope.
 
 ## Analysis
 
-MATLAB scripts, notebooks and Python scripts that plot and analyze the output are in
-[analysis/](analysis/).
-Run them from the directory containing the simulation output, for example:
+Notebooks and Python scripts that plot and analyze the output are in [analysis/](analysis/).
+Jupyter runs a notebook in the folder of the notebook, so copy it next to the simulation output:
 
 ```bash
-jupyter notebook /path/to/polymerfts/scripts/analysis/plot_2d_density.ipynb
+cd /path/to/simulation
+cp /path/to/polymerfts/scripts/analysis/plot_2d_density.ipynb .
+jupyter notebook plot_2d_density.ipynb
 ```
 
 `renormalization.py` computes the UV renormalization factor $`z_\infty`$ of $`\chi N`$ and the

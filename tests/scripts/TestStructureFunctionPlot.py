@@ -1,5 +1,6 @@
 """Execute the notebook's aggregation cell against independently known full spectra."""
 
+import itertools
 import json
 from pathlib import Path
 
@@ -12,13 +13,13 @@ NOTEBOOK = Path(__file__).resolve().parents[2] / 'scripts/analysis/plot_structur
 CELL = ''.join(json.loads(NOTEBOOK.read_text(encoding='utf-8'))['cells'][0]['source'])
 
 
-def aggregate(tmp_path, monkeypatch, spectra, counts=None):
+def aggregate(tmp_path, monkeypatch, spectra, counts=None, lx=(1., 1., 1.), **extra):
     """Write exactly the four windows selected by the notebook, then run its actual code."""
     directory = tmp_path / 'data_simulation'
     directory.mkdir()
     for step, full, count in zip(range(100000, 500000, 100000), spectra, counts or [None] * 4):
         nx = full.shape
-        data = {'nx': nx, 'lx': [1., 1., 1.],
+        data = {'nx': nx, 'lx': list(lx), **extra,
                 'structure_function_A_A': full[:, :, :nx[2] // 2 + 1]}
         if count is not None:
             data['sample_count'] = count
@@ -87,3 +88,46 @@ def test_all_empty_windows_are_rejected(tmp_path, monkeypatch):
 def test_invalid_sample_counts_are_rejected(tmp_path, monkeypatch, count):
     with pytest.raises(ValueError, match='finite nonnegative integer'):
         aggregate(tmp_path, monkeypatch, [np.ones((4, 4, 4))] * 4, [count, 1, 1, 1])
+
+
+def smallest_k(nx, lx, angles):
+    """|k| of every index of the full spectrum: the alias m + a n of the smallest m^T G^-1 m, with the
+    metric G_ij = l_i l_j cos(angle_ij) of the cell, by brute force over a window of aliases that
+    holds the minimum (an axis of one grid point has no aliases, as in the solvers)."""
+    alpha, beta, gamma = np.deg2rad(angles)
+    cosines = np.array([[1, np.cos(gamma), np.cos(beta)], [np.cos(gamma), 1, np.cos(alpha)],
+                        [np.cos(beta), np.cos(alpha), 1]])
+    metric = np.outer(lx, lx)*cosines
+    inverse = np.linalg.inv(metric)
+    m = np.stack(np.meshgrid(*(np.arange(n) for n in nx), indexing='ij'), axis=-1)
+    m = np.where(m > np.array(nx)//2, m - np.array(nx), m)
+    form = lambda q: np.einsum('...i,ij,...j->...', q, inverse, q)
+    # |q_d| <= sqrt(f G_dd) for the minimal alias q, with f the form of the centred index
+    window = [0 if n == 1 else int(np.sqrt(form(m).max()*metric[d, d])/n) + 2 for d, n in enumerate(nx)]
+    best = np.full(nx, np.inf)
+    for shift in itertools.product(*(range(-w, w + 1) for w in window)):
+        best = np.minimum(best, form(m + np.array(shift)*np.array(nx)))
+    return 2*np.pi*np.sqrt(best)
+
+
+@pytest.mark.parametrize('nx, lx, angles, source', [
+    ((6, 6, 4), (1.0, 1.0, 1.5), [90.0, 90.0, 120.0], 'angles'),           # hexagonal
+    ((6, 6, 4), (1.0, 1.0, 1.5), [90.0, 90.0, 120.0], 'initial_params'),   # older files: the input
+    ((4, 32, 6), (1.0, 1.0, 1.0), [90.0, 90.0, 120.0], 'angles'),          # anisotropic spacing
+    ((6, 6, 6), (1.0, 1.0, 1.0), [60.0, 60.0, 60.0], 'angles'),            # aliases along z too
+    ((6, 6, 6), (1.0, 1.2, 1.4), [120.0, 120.0, 90.0], 'angles'),
+    ((6, 5, 4), (1.0, 1.2, 1.4), [100.0, 80.0, 110.0], 'angles'),         # triclinic, every angle its own
+    ((4, 4, 16), (1.0, 1.0, 1.0), [60.0, 60.0, 60.0], 'angles'),
+    ((8, 8, 1), (1.0, 1.0, 0.3), [60.0, 60.0, 60.0], 'angles'),            # one grid point along z
+])
+def test_non_orthogonal_cell_groups_modes_of_equal_wavenumber(tmp_path, monkeypatch, nx, lx, angles, source):
+    # A spectrum that depends on |k| alone must come back as that function on every shell
+    k = smallest_k(nx, lx, angles)
+    full = np.exp(-k**2/400)
+    extra = {'angles': angles} if source == 'angles' else {'initial_params': {'nx': list(nx), 'angles': angles}}
+    shells, mean = aggregate(tmp_path, monkeypatch, [full]*4, [1]*4, lx=lx, **extra)
+    x = np.sqrt(shells)*2*np.pi
+    # The shells are labelled by k^2/(2 pi)^2 rounded to 7 decimals, so x is exact to about 1e-7
+    np.testing.assert_allclose(mean[shells > 0], np.exp(-x[shells > 0]**2/400), rtol=1e-6)
+    # Every distinct |k| of the spectrum is one shell
+    assert len(shells) == len(np.unique(np.round(k[:, :, :nx[2]//2 + 1]/(2*np.pi), 6)))

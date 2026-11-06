@@ -92,3 +92,24 @@ def test_concentrations_of_every_file_layout(tmp_path, monkeypatch, layout):
                           angles=np.array([90.0, 90.0, 90.0]))
     for name in ('A', 'B'):
         np.testing.assert_array_equal(drawn['phi_' + name][1].reshape(5, 3), written[name].reshape(5, 3))
+
+
+def test_every_monomer_type_of_the_file(tmp_path, monkeypatch):
+    # Types A and C: one plot for each type the file lists
+    nx = [5, 3]
+    phi = {name: np.random.default_rng(9).random(15) + i for i, name in enumerate(('A', 'C'))}
+    (tmp_path / 'phases').mkdir()
+    savemat(tmp_path / 'phases' / 'C2D.mat', {'nx': np.array(nx), 'lx': np.array([1.0, 1.2]), 'angles': np.array([90.0, 90.0, 90.0]),
+                                              'monomer_types': ['A', 'C'], 'phi_A': phi['A'], 'phi_C': phi['C']})
+    monkeypatch.chdir(tmp_path)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='.*non-interactive', category=UserWarning)
+            namespace = {}
+            exec(compile(CELL, str(NOTEBOOK) + ':cell0', 'exec'), namespace)
+        drawn = {ax.get_title(): np.asarray(ax.collections[0].get_array()) for ax in namespace['axes']}
+    finally:
+        plt.close('all')
+    assert sorted(drawn) == ['phi_A', 'phi_C']
+    for name in ('A', 'C'):
+        np.testing.assert_array_equal(drawn['phi_' + name].reshape(nx), phi[name].reshape(nx))

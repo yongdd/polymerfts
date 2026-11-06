@@ -329,6 +329,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- The MATLAB scripts of `scripts/analysis` are removed (2026-11-06); notebooks and Python scripts
+  do their work: `plot_2d_density.m`, `plot_3d_isodensity.m`,
+  `plot_structure_function.m` and `plot_wtmd_statistics.m` by the notebooks of the same name,
+  `plot_2d_slice.m` by the new `plot_2d_slice.ipynb` (tests/scripts/TestSlicePlot.py), and
+  `convert_into_auxiliary_fields.m` by the new `convert_into_auxiliary_fields.py`, which takes the
+  file on the command line, also reads CL-FTS fields and writes the lattice angles
+  (tests/scripts/TestConvertAuxiliaryFields.py).
 - `numerical_method` names the method of either chain model (2026-11-05): the FFT solver of discrete
   chains, formerly `"discrete"` and chosen whatever `numerical_method` said, is `"ps"`, the default, and
   `"rs"` is the new real-space one. A discrete chain with `"rqm4"`, `"rk2"` or `"cn-adi2"` raises an
@@ -470,25 +477,25 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
-- The 2D plots of `scripts/analysis` fill the grid cell around each point with its value, in the
-  unit cell of the file's lengths and angle, with the second lattice vector pointing up
-  (2026-11-06); the images before were mirrored, with it pointing down. `plot_2d_density.m` took
-  the aspect ratio from the box lengths alone, right only for equal grid sizes; `plot_2d_slice.m`
-  drew square cells and, when ny and nz differ, scattered the values of the slice;
-  `plot_2d_density.ipynb` drew every cell rectangular. The slice is the plane of grid index
-  `slice_index` along the lattice vector `a`, drawn with `b` and `c`. All three read CL-FTS files
-  (the real part) and the angles of older files from `initial_params`, and the slice reads 3D SCFT
-  results. tests/scripts/TestDensityPlot2D.py runs the notebook.
-- `scripts/analysis/plot_3d_isodensity.m` draws the field at the grid points of the solvers
-  (2026-11-06): the cell centres, or the nodes along a and b for a hexagonal-axes space group,
-  along the lattice vectors of the cell, with the angles of an SCFT result, of the checkpoint
-  settings of a fields file or of the input of an older one. It placed the points at (i + 1) dx, a
-  full cell past the first node, and drew every cell as orthogonal. `plot_3d_isodensity.ipynb`
-  draws at the same points, with the outline of the cell and true proportions, instead of in grid
-  indices; a non-orthogonal cell is interpolated linearly onto a Cartesian grid, which Plotly's
-  isosurface needs, and the periodic field fills the box around the cell. Both read CL-FTS fields
-  files (the real part), and the notebook reads the `phi` structure of older files, which failed
-  (tests/scripts/TestIsodensityPlot.py).
+- The plots of `scripts/analysis` draw the fields at the grid points of the solvers, in the cell of
+  the file's lattice vectors (2026-11-06). The 2D plots fill the grid cell around each point with its
+  value, with the second lattice vector pointing up (the images before were mirrored):
+  `plot_2d_density.ipynb` drew every cell rectangular and only the types A and B; it draws every
+  monomer type of the file. `plot_3d_isodensity.ipynb` drew in grid
+  indices; it now uses the cell centres, or the nodes along a and b for a hexagonal-axes space
+  group, draws the outline of the cell with true proportions and interpolates a non-orthogonal cell
+  linearly onto a Cartesian grid, which Plotly's isosurface needs (the periodic field fills the box
+  around the cell). The notebooks take the angles of an SCFT result, of the checkpoint settings of a
+  fields file or of the input of an older one, and read CL-FTS files (the real parts) and the `phi`
+  structure of older files, which failed (tests/scripts/TestDensityPlot2D.py, TestIsodensityPlot.py).
+- `plot_structure_function.ipynb` groups the modes of a cell that is not orthogonal by their true
+  |k| (2026-11-06): the reciprocal metric of the cell, with the index alias of the smallest |k| that
+  the solvers use. It took |k|^2 = (2 pi)^2 sum (n_i/L_i)^2, which holds for orthogonal cells
+  only, so modes of different |k| shared a shell. Shells group values equal to a relative 1e-9,
+  so that round-off of the metric does not split one; the rounding to 7 decimals could. The
+  structure function files of L-FTS and CL-FTS save `angles`; for older files the notebook reads
+  those of the input in `initial_params` (tests/scripts/TestStructureFunctionPlot.py and
+  tests/TestStructureFunctionRecords.py).
 - SCFT refuses `electrostatics` together with `space_group` with its own `ValidationError`
   (2026-11-06). The combination was refused only through the smearing it needs, with a message
   about `smearing`.
@@ -536,7 +543,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
     noninteger exponents, and adds no force when the bias derivative is zero.
   - Dictionary conversion of monomer fields preserves imaginary components. Stateful custom
     linear-response integrators capture their initial state after preparing the response.
-  - Structure-function plots weight the rFFT modes by Hermitian multiplicity and files by
+  - `plot_structure_function.ipynb` weights the rFFT modes by Hermitian multiplicity and files by
     their actual sample counts. Runnable PSCF import rejects a single monomer type before
     writing a bundle; field-only conversion remains available.
   - The new smearing, WTMD and grand-canonical regression tests fail when a CUDA build cannot

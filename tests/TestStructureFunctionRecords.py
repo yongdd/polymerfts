@@ -12,6 +12,8 @@ available platform, agreement to 1e-10 relative:
 Periodic boxes transform with PropagatorSolver.fourier; boxes with walls record the Fourier
 coefficients of numpy.fft, not the cosine series of the transform, whose coefficients have the same
 shape for complex fields.
+3. The files record the lattice angles of the box: L-FTS of the ABC triblock in a periodic cell
+   with gamma = 120 (6x6x4), with the recomputation of 1.
 """
 
 import contextlib
@@ -79,7 +81,9 @@ def compare(sim, directory, complex_fields, gamma):
             g = gamma(i)
             expected = np.divide(expected, g, out=np.zeros_like(expected), where=g > 1e-12)
         worst = max(worst, np.max(np.abs(recorded - expected)) / np.max(np.abs(expected)))
-    return worst, len(pairs)
+    # The cell, which S(k) needs for |k| (scripts/analysis/plot_structure_function.ipynb)
+    angles_ok = np.allclose(np.atleast_1d(sf["angles"]), sim.prop_solver.get_angles_degrees())
+    return worst, len(pairs), angles_ok
 
 
 def lfts(platform, root, bc):
@@ -101,9 +105,32 @@ def lfts(platform, root, bc):
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "ABC"})
     half = nx[-1] // 2 + 1
     gamma = (lambda name: sim.smearing.fourier[..., :half]) if bc == "periodic" else None
-    worst, count = compare(sim, root, False, gamma)
+    worst, count, angles_ok = compare(sim, root, False, gamma)
     check(f"{platform} L-FTS ABC {bc}{' with smearing' if gamma else ''}: recorded S_ij = recomputation",
-          worst < 1e-10 and count == 6, f"({count} pairs, max rel diff {worst:.1e})")
+          worst < 1e-10 and count == 6 and angles_ok, f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
+
+
+def lfts_oblique(platform, root):
+    """L-FTS of the ABC triblock in a periodic cell with gamma = 120: the files record its angles."""
+    nx, lx, angles = [6, 6, 4], [1.5, 1.5, 1.7], [90.0, 90.0, 120.0]
+    params = {"nx": nx, "lx": lx, "angles": angles, "ds": 1 / 20, "chain_model": "continuous",
+              "segment_lengths": {"A": 1.0, "B": 1.0, "C": 1.0}, "chi_n": {"A,B": 12.0, "B,C": 10.0, "A,C": 14.0},
+              "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.3}, {"type": "B", "length": 0.4},
+                                                                {"type": "C", "length": 0.3}]}],
+              "platform": platform, "langevin": {"nbar": 1e4, "dt": 0.5, "max_step": 2},
+              "recording": {"dir": root, "checkpoint_interval": 1, "sample_interval": 1, "statistics_save_interval": 1},
+              "saddle": {"max_iter": 200, "tolerance": 1e-6},
+              "compressor": {"name": "am", "max_hist": 20, "start_error": 5e-1, "mix_min": 0.01, "mix_init": 0.01},
+              "verbose_level": 0}
+    rng = np.random.default_rng(3)
+    with contextlib.redirect_stdout(io.StringIO()):
+        sim = LFTS(params, random_seed=5)
+        sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "ABC"})
+    worst, count, angles_ok = compare(sim, root, False, None)
+    recorded = np.atleast_1d(loadmat(os.path.join(root, "structure_function_000002.mat"), squeeze_me=True)["angles"])
+    check(f"{platform} L-FTS ABC periodic, gamma = 120: recorded S_ij = recomputation and the angles",
+          worst < 1e-10 and count == 6 and angles_ok and np.allclose(recorded, angles),
+          f"({count} pairs, max rel diff {worst:.1e}, angles {recorded})")
 
 
 def clfts(platform, root, bc):
@@ -121,9 +148,9 @@ def clfts(platform, root, bc):
         sim = CLFTS(params, random_seed=5)
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "AB"})
     gamma = (lambda name: sim.smearing.kernel(name)) if bc == "periodic" else None
-    worst, count = compare(sim, root, True, gamma)
+    worst, count, angles_ok = compare(sim, root, True, gamma)
     check(f"{platform} CL-FTS AB {bc} with per-type smearing: recorded S_ij = recomputation",
-          worst < 1e-10 and count == 3, f"({count} pairs, max rel diff {worst:.1e})")
+          worst < 1e-10 and count == 3 and angles_ok, f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
 
 
 def main():
@@ -132,6 +159,7 @@ def main():
             for bc in ("periodic", "reflecting"):
                 lfts(platform, os.path.join(tmp, f"l_{platform}_{bc}"), bc)
                 clfts(platform, os.path.join(tmp, f"cl_{platform}_{bc}"), bc)
+            lfts_oblique(platform, os.path.join(tmp, f"l_{platform}_oblique"))
     print(f"\n{failures} failed")
     return 1 if cuda_part_missing() or failures else 0
 

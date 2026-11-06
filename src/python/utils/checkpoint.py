@@ -72,7 +72,8 @@ def system_data(sim):
     for key in sim.chi_n:
         monomer_pair = sorted(key.split(","))
         chi_n[monomer_pair[0] + "," + monomer_pair[1]] = sim.chi_n[key]
-    return {"dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(), "chi_n": chi_n,
+    return {"dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
+            "angles": list(sim.prop_solver.get_angles_degrees()), "chi_n": chi_n,
             "chain_model": sim.chain_model, "ds": sim.ds, "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "initial_params": mat_ready(sim.params)}
 
