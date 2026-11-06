@@ -27,7 +27,12 @@ This script reports
      as the start of an HTML tag and break the formula ('\\sum_{i<j}' gave
      "Extra open brace or missing close brace"), so write \\lt or put a space
      after '<';
-  5. formulas KaTeX cannot parse, if the KaTeX CLI is installed
+  5. \\tag and \\operatorname in math: GitHub turns the formula into MathML,
+     where \\tag becomes an mlabeledtr element that Chromium does not lay out
+     (the equation falls apart into one symbol per line) and \\operatorname
+     can fail, so write the number as \\qquad\\text{(1)} and the operator as
+     \\mathrm{erf};
+  6. formulas KaTeX cannot parse, if the KaTeX CLI is installed
      (npm install -g katex). GitHub uses MathJax; KaTeX understands nearly
      the same TeX and is the stricter of the two.
 
@@ -50,6 +55,13 @@ FENCE = re.compile(r'^((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*)(`{
 QUOTES = re.compile(r'^(?:[ \t]*>)*')
 PREFIX = re.compile(r'^(?:[ \t]*> ?)*[ \t]*')
 TABLE_ROW = re.compile(r'^(?:[ \t]*>)*[ \t]*\|')
+# Macros that break in GitHub's MathML output
+UNSUPPORTED = {
+    'tag': "\\tag becomes MathML that Chromium does not lay out, one symbol per line: "
+           "write the number as \\qquad\\text{(1)}",
+    'operatorname': "\\operatorname can fail in GitHub's math renderer: write \\mathrm{...} "
+                    "(e.g. \\mathrm{erf})",
+}
 
 
 def scan(text):
@@ -136,12 +148,15 @@ def scan(text):
     if fence is not None:
         problems.append((fence[1], 'code block is not closed'))
     for ln, tex, display in formulas:
+        # a ```math block starts on the line after its fence
+        line_of = lambda pos: ln + 1 + tex[:pos].count('\n') if display else ln
         m = re.search(r'<[A-Za-z/!?]', tex)
         if m:
-            # a ```math block starts on the line after its fence
-            at = ln + 1 + tex[:m.start()].count('\n') if display else ln
-            problems.append((at, "'<' before a letter, '/', '!' or '?' in math can start an HTML "
-                                 "tag on GitHub: write \\lt or put a space after '<'"))
+            problems.append((line_of(m.start()), "'<' before a letter, '/', '!' or '?' in math can "
+                                                 "start an HTML tag on GitHub: write \\lt or put a "
+                                                 "space after '<'"))
+        for m in re.finditer(r'(?<!\\)(?:\\\\)*\\(tag|operatorname)(?![A-Za-z])', tex):
+            problems.append((line_of(m.start()), UNSUPPORTED[m.group(1)]))
     return formulas, problems
 
 
