@@ -319,6 +319,9 @@ def validate_scft_params(params: Dict[str, Any]) -> None:
                                   "(E = 4 pi l_B rho0 N R0^2)")
         if isinstance(electrostatics, dict) and "psi_dt_scaling" in electrostatics:
             raise ValidationError("'electrostatics.psi_dt_scaling' is a CL-FTS option")
+        if group is not None:
+            raise ValidationError("SCFT 'electrostatics' is not available with 'space_group': the Poisson "
+                                  "equation and the smearing it needs work on the full grid")
     # Before validate_electrostatics, which reads the smearing length of the charges
     _validate_smearing(params, complex_fields=False)
     if electrostatics is not None:

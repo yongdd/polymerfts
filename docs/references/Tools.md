@@ -150,11 +150,12 @@ Uses networkx and matplotlib; a graphviz layout is used when pygraphviz is insta
 from polymerfts import save_vtk
 result = calc.run(initial_fields=w, return_result=True)
 save_vtk("phi.vtk", result.phi, calc.prop_solver.get_lx(), nx=calc.prop_solver.nx,
-         angles=calc.prop_solver.get_angles_degrees())
+         angles=calc.prop_solver.get_angles_degrees(), space_group=calc.sg)
 ```
 
 - `fields` is one array (named by `field_name`, default `phi`) or a dictionary `{name: array}`, which puts several fields in one file. Arrays have the grid shape, or are flat when `nx` is given; 1D and 2D grids are padded to 3D.
 - Grid points sit at the cell centres, `(i + 1/2) * lx / nx`, as in the solvers. The outline ParaView draws through the points therefore lies half a cell inside the box; the walls of a non-periodic box are at 0 and `lx`.
+- `space_group` takes the space group of the fields (`calc.sg` or `calc.prop_solver.space_group`, `None` without one), built for the grid `nx`. A hexagonal-axes setting of a hexagonal or trigonal group samples the lattice axes a and b at the nodes, `i * lx / nx` ([Space Group](../theory/SpaceGroup.md#how-hexagonaltrigonal-groups-are-handled)), and the points along a and b are placed there, as in `PropagatorSolver.get_grid_points`; the outline then starts at 0 along a and b.
 - With `angles` (degrees) of a non-orthogonal cell, the file is a structured grid with explicit point coordinates along the lattice vectors (`a` along x, `b` in the xy plane, as in `ComputationBox`).
 - Values are written as single-precision text; complex fields are rejected (write the real and imaginary parts separately).
 

@@ -57,6 +57,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   parts of the propagators as complex numbers, on the CPU and for `"ps"` on CUDA, and `"rs"` sums
   on the grid. Before, the stress of complex fields needed a periodic box
   (tests/TestStressComplexWalls.py).
+- `save_vtk` takes `space_group` (2026-11-06): the group of the fields, `calc.sg`. A
+  hexagonal-axes setting samples the lattice axes a and b at the nodes, i/n, and its points are
+  written there, as `PropagatorSolver.get_grid_points` places them; without the argument these
+  fields are drawn half a grid cell off along a and b.
 - The simulation GUI exposes Tetragonal and Monoclinic 3D cells, and Hexagonal
   and Oblique 2D cells, with their length/angle constraints and the corresponding
   SCFT `crystal_system` in exported scripts (2026-10-30).
@@ -466,6 +470,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- SCFT refuses `electrostatics` together with `space_group` with its own `ValidationError`
+  (2026-11-06). The combination was refused only through the smearing it needs, with a message
+  about `smearing`.
 - `set_lattice_parameters` refuses alpha or beta off 90 degrees while a solver of the box runs the
   ObliqueZ CrysFFT, before the box changes (2026-11-02). A crystal system accepts angles within its
   tolerance of 90 degrees, but the z fold of this engine needs them exact: it went on folding, with Q

@@ -288,7 +288,9 @@ corresponding relaxation constraints.
 
 Grid values are transferred without interpolation. Polymerfts normally samples
 at cell centers and PSCF at nodes, so assigning the same values changes the
-physical origin by a constant half-grid translation. This is compatible with the
+physical origin by a constant half-grid translation (along c only for fields of
+a hexagonal-axes space group, which polymerfts samples at the nodes along a and
+b). This is compatible with the
 periodic full-grid workflow; the converter does not translate symmetry origins
 or create a PSCF symmetry-adapted basis.
 

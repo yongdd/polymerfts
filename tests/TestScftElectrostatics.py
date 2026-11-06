@@ -3,8 +3,8 @@
 
 AB diblocks with charged blocks in 1D periodic boxes (Gaussian smearing 0.05):
 1. Input: bjerrum_length (SCFT has no N̄), psi_dt_scaling, a zero coupling, grand-canonical ions
-   that cannot neutralize the system and a smearing without a length are rejected, and so is an
-   initial_psi without electrostatics or with complex or non-finite values.
+   that cannot neutralize the system, a space group and a smearing without a length are rejected,
+   and so is an initial_psi without electrostatics or with complex or non-finite values.
 2. Zero valences reproduce SCFT without electrostatics.
 3. Strong screening: E/(k^2 + kappa^2) -> E/kappa^2 turns the charges into the contact interaction
    chi_eff N = chi N - E (z_A - z_B)^2/(2 kappa^2). The free energy and the relaxed period of a
@@ -88,6 +88,12 @@ def inputs():
     cations = {"Na": {"valence": 1.0, "chemical_potential": 0.0, "smearing_length": 0.05}}
     expect_validation_error(lambda: SCFT(parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": cations})),
                             "cannot neutralize")
+    # The Poisson equation and the smearing work on the full grid: no space group (in a box the
+    # group accepts, where only the smearing refused it before)
+    params = parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()})
+    params["nx"], params["lx"] = [8, 8, 8], [2.0, 2.0, 2.0]
+    params["space_group"] = {"symbol": "Im-3m", "hall_number": 529}
+    expect_validation_error(lambda: SCFT(params), "not available with 'space_group'")
     # The smearing is checked before the charges use its length
     params = parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()})
     params["smearing"] = {"type": "gaussian"}

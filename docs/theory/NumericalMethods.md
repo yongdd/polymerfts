@@ -92,7 +92,7 @@ Pseudo-spectral methods use spectral transforms to solve the diffusion operator 
 - **Reflecting BC**: Discrete Cosine Transform (DCT-II/III)
 - **Absorbing BC**: Discrete Sine Transform (DST-II/III)
 
-All pseudo-spectral methods use **cell-centered grids** where grid points are at $`x_i = (i + 0.5) \cdot dx`$ for $`i = 0, 1, ..., N-1`$, with boundaries at cell faces (not grid points).
+All pseudo-spectral methods use **cell-centered grids** where grid points are at $`x_i = (i + 0.5) \cdot dx`$ for $`i = 0, 1, ..., N-1`$, with boundaries at cell faces (not grid points). The fields of a hexagonal-axes space group sample the lattice axes a and b at the nodes instead ([Space Group](SpaceGroup.md#how-hexagonaltrigonal-groups-are-handled)); in a periodic box this is a translation, which the propagators do not see.
 
 ### 3.1 Lattice Vectors and Metric Tensors
 

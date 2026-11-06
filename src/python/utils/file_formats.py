@@ -168,13 +168,17 @@ def save_vtk(
     field_name: str = "phi",
     nx: Optional[List[int]] = None,
     angles: Optional[List[float]] = None,
+    space_group: Optional[Any] = None,
 ) -> None:
     """Save fields as a legacy VTK file for ParaView.
 
     The grid points sit at the cell centres, (i + 1/2) * lx / nx along each
     lattice vector, as in the solvers, so the outline ParaView draws through
     the points lies half a cell inside the box (the walls of a non-periodic
-    box are at 0 and lx).
+    box are at 0 and lx). Fields of a hexagonal-axes space group sample the
+    lattice axes a and b at the nodes, i * lx / nx (docs/theory/SpaceGroup.md);
+    pass the group as space_group to place the points there (the outline then
+    starts at 0 along a and b).
 
     Parameters
     ----------
@@ -194,6 +198,10 @@ def save_vtk(
         Lattice angles [alpha, beta, gamma] in degrees, or [gamma] for a 2D
         cell. A non-orthogonal cell is written as a structured grid with
         explicit point coordinates.
+    space_group : SpaceGroup, optional
+        The space group of the fields (SCFT.sg or PropagatorSolver.space_group),
+        built for the grid nx. As in PropagatorSolver.get_grid_points, a
+        hexagonal-axes setting puts the points along a and b at the nodes.
     """
     if not isinstance(fields, dict):
         fields = {field_name: fields}
@@ -207,6 +215,13 @@ def save_vtk(
     if not 1 <= dim <= 3 or len(lx) != dim:
         raise ValueError(f"nx and lx must have the same length 1, 2 or 3, got nx={nx}, lx={list(lx)}")
     n_points = int(np.prod(nx))
+    if space_group is not None:
+        if not hasattr(space_group, "uses_hexagonal_axes"):
+            raise TypeError("space_group must be the SpaceGroup of the fields (SCFT.sg), not the input "
+                            f"option, got {type(space_group).__name__}")
+        if list(space_group.get_nx()) != nx:
+            raise ValueError(f"space_group was built for the grid {list(space_group.get_nx())}, "
+                             f"the fields have {nx}")
 
     # Fields in VTK point order (x fastest); names without spaces
     data = {}
@@ -228,6 +243,10 @@ def save_vtk(
         raise ValueError(f"angles must be [alpha, beta, gamma] or [gamma], got {list(angles)}")
     alpha, beta, gamma = np.deg2rad(angles) if angles is not None else (np.pi/2,)*3
     orthogonal = np.allclose([alpha, beta, gamma], np.pi/2, atol=1e-10)
+    # Fractional offset of the first point of each axis: cell centres, or the nodes of a and b
+    offsets = [0.5, 0.5, 0.5]
+    if space_group is not None and space_group.uses_hexagonal_axes():
+        offsets[0] = offsets[1] = 0.0
 
     with open(path, "w") as f:
         f.write("# vtk DataFile Version 3.0\n")
@@ -237,7 +256,7 @@ def save_vtk(
             spacing = [lx3[d]/nx3[d] for d in range(3)]
             f.write("DATASET STRUCTURED_POINTS\n")
             f.write("DIMENSIONS %d %d %d\n" % tuple(nx3))
-            f.write("ORIGIN %.10g %.10g %.10g\n" % tuple(0.5*h for h in spacing))
+            f.write("ORIGIN %.10g %.10g %.10g\n" % tuple(o*h for o, h in zip(offsets, spacing)))
             f.write("SPACING %.10g %.10g %.10g\n" % tuple(spacing))
         else:
             # Lattice vectors as in ComputationBox: a along x, b in the xy plane
@@ -246,7 +265,7 @@ def save_vtk(
             cx = np.cos(beta)
             cy = (np.cos(alpha) - np.cos(beta)*np.cos(gamma))/np.sin(gamma)
             c = lx3[2]*np.array([cx, cy, np.sqrt(max(1.0 - cx*cx - cy*cy, 0.0))])
-            frac = [(np.arange(nx3[d]) + 0.5)/nx3[d] for d in range(3)]
+            frac = [(np.arange(nx3[d]) + offsets[d])/nx3[d] for d in range(3)]
             fz, fy, fx = np.meshgrid(frac[2], frac[1], frac[0], indexing="ij")   # x fastest after ravel
             points = np.outer(fx.ravel(), a) + np.outer(fy.ravel(), b) + np.outer(fz.ravel(), c)
             f.write("DATASET STRUCTURED_GRID\n")
