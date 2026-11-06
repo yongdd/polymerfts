@@ -470,6 +470,16 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `scripts/analysis/plot_3d_isodensity.m` draws the field at the grid points of the solvers
+  (2026-11-06): the cell centres, or the nodes along a and b for a hexagonal-axes space group,
+  along the lattice vectors of the cell, with the angles of an SCFT result, of the checkpoint
+  settings of a fields file or of the input of an older one. It placed the points at (i + 1) dx, a
+  full cell past the first node, and drew every cell as orthogonal. `plot_3d_isodensity.ipynb`
+  draws at the same points, with the outline of the cell and true proportions, instead of in grid
+  indices; a non-orthogonal cell is interpolated linearly onto a Cartesian grid, which Plotly's
+  isosurface needs, and the periodic field fills the box around the cell. Both read CL-FTS fields
+  files (the real part), and the notebook reads the `phi` structure of older files, which failed
+  (tests/scripts/TestIsodensityPlot.py).
 - SCFT refuses `electrostatics` together with `space_group` with its own `ValidationError`
   (2026-11-06). The combination was refused only through the smearing it needs, with a message
   about `smearing`.

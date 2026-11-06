@@ -22,8 +22,8 @@ This document describes the utility scripts in `scripts/analysis/` and `scripts/
 | `plot_2d_density.m` | MATLAB | Plot 2D monomer density from `fields.mat` |
 | `plot_2d_density.ipynb` | Python | Plot `phi_A` and `phi_B` of a 2D `.mat` file (set the file name in the notebook) |
 | `plot_2d_slice.m` | MATLAB | Extract and plot a 2D slice from 3D density data in `fields_002000.mat` |
-| `plot_3d_isodensity.m` | MATLAB | Render 3D isodensity surfaces with lighting from `fields_002000.mat` |
-| `plot_3d_isodensity.ipynb` | Python | Interactive Plotly isosurfaces of `fields_002000.mat` |
+| `plot_3d_isodensity.m` | MATLAB | Render 3D isodensity surfaces with lighting from `fields_002000.mat` (L-FTS, or the real part of CL-FTS) or a 3D SCFT result, at the grid points of the solvers in the cell of the file's lattice vectors |
+| `plot_3d_isodensity.ipynb` | Python | Interactive Plotly isosurfaces of the same files, with the outline of the cell; a non-orthogonal cell is interpolated linearly onto a Cartesian grid, which Plotly's isosurface needs, and the periodic field fills the box around the cell |
 
 **Usage (MATLAB):**
 ```matlab
@@ -314,7 +314,7 @@ Simulation output files (`fields_XXXXXX.mat`) contain:
 | `matrix_a` | float matrix | Transformation matrix $`\mathbf{A}`$ |
 | `matrix_a_inverse` | float matrix | Inverse transformation matrix $`\mathbf{A}^{-1}`$ |
 
-L-FTS and CL-FTS checkpoints additionally hold `initial_params`, `langevin_step`, `dt`, `eigenvalues`, `aux_fields_real`/`aux_fields_imag`, the noise array `normal_noise_prev` and the random-generator state (`random_generator`, `random_state_state`, `random_state_inc`), which `continue_run()` restores. CL-FTS stores complex fields as `w_A_real`/`w_A_imag` and `phi_A_real`/`phi_A_imag`; with `electrostatics` its checkpoints also hold $`\psi`$ (`psi_real`/`psi_imag`, `psi_k_real`/`psi_k_imag`), the previous noise `psi_noise_prev` and the random-generator state `psi_rng_state_json` of $`\psi`$, and the order of the point ions `ion_names_json`.
+L-FTS and CL-FTS checkpoints additionally hold `checkpoint_settings_json` (the settings of the run as JSON, among them `nx`, `lx` and `angles`), `initial_params`, `langevin_step`, `dt`, `eigenvalues`, `aux_fields_real`/`aux_fields_imag`, the noise array `normal_noise_prev` and the random-generator state (`random_generator`, `random_state_state`, `random_state_inc`), which `continue_run()` restores. CL-FTS stores complex fields as `w_A_real`/`w_A_imag` and `phi_A_real`/`phi_A_imag`; with `electrostatics` its checkpoints also hold $`\psi`$ (`psi_real`/`psi_imag`, `psi_k_real`/`psi_k_imag`), the previous noise `psi_noise_prev` and the random-generator state `psi_rng_state_json` of $`\psi`$, and the order of the point ions `ion_names_json`.
 
 **SCFT results** (`SCFT.save_results(path)`, `.mat`, `.json` or `.yaml` by extension) contain `initial_params`, `dim`, `nx`, `lx`, `angles`, `monomer_types`, `chi_n`, `chain_model`, `ds`, `eigenvalues`, `matrix_a`, `matrix_a_inverse`, `simulation_metadata_json` (run metadata, including whether the run converged), `free_energy`, `free_energy_absolute`, `free_energy_homogeneous`, `partition_functions`, `polymer_lengths`, `polymer_volume_fractions`, `chemical_potentials` and `grand_potential` (omitted for grafted chains or supplied initial propagators), `w_<type>` and `phi_<type>` on the full grid (expanded from the reduced basis when a space group was used), with `electrostatics` the potential `psi` and, with point ions, `ion_chemical_potentials`, and `space_group_symbol`/`space_group_hall_number` if one was used. Load `.json` with `json.load` and `.yaml` with `yaml.safe_load`; arrays are stored as lists there. The `.json` file is strict JSON: a non-finite number, such as the entry `-inf` of `chemical_potentials` for a species with volume fraction 0, is stored as `{"nonfinite_float": "-inf"}`.
 
