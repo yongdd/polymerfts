@@ -19,9 +19,9 @@ This document describes the utility scripts in `scripts/analysis/` and `scripts/
 
 | File | Language | Description |
 |------|----------|-------------|
-| `plot_2d_density.m` | MATLAB | Plot 2D monomer density from `fields.mat` |
-| `plot_2d_density.ipynb` | Python | Plot `phi_A` and `phi_B` of a 2D `.mat` file (set the file name in the notebook) |
-| `plot_2d_slice.m` | MATLAB | Extract and plot a 2D slice from 3D density data in `fields_002000.mat` |
+| `plot_2d_density.m` | MATLAB | Plot the 2D monomer density of `fields.mat` (SCFT, L-FTS, or the real part of CL-FTS) in the unit cell of the file's lengths and angle, each value filling the grid cell around its point |
+| `plot_2d_density.ipynb` | Python | Plot `phi_A` and `phi_B` of the same 2D files in the same way (set the file name in the notebook) |
+| `plot_2d_slice.m` | MATLAB | Plot one plane of a 3D density in `fields_002000.mat` or a 3D SCFT result: the plane of grid index `slice_index` along the lattice vector `a`, drawn with `b` and `c`, their lengths and the angle between them |
 | `plot_3d_isodensity.m` | MATLAB | Render 3D isodensity surfaces with lighting from `fields_002000.mat` (L-FTS, or the real part of CL-FTS) or a 3D SCFT result, at the grid points of the solvers in the cell of the file's lattice vectors |
 | `plot_3d_isodensity.ipynb` | Python | Interactive Plotly isosurfaces of the same files, with the outline of the cell; a non-orthogonal cell is interpolated linearly onto a Cartesian grid, which Plotly's isosurface needs, and the periodic field fills the box around the cell |
 
@@ -201,9 +201,9 @@ script separately with polymerfts installed. Results are complete polymerfts
 and unsupported physical models are rejected; the guide lists the restrictions.
 
 See the [PSCF conversion guide](../getting-started/PscfConversion.md) for dependencies,
-cell conventions, supported models, migration from the old tool paths, and
-examples. The converter uses PSCF's full-grid iterator; it does not impose the
-source space group or convert discrete/complex models by approximation.
+cell conventions, supported models, checks and examples. The converter uses PSCF's
+full-grid iterator; it does not impose the source space group or convert
+discrete/complex models by approximation.
 
 ---
 

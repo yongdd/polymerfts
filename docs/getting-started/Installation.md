@@ -205,7 +205,8 @@ source /path/to/venvs/polymerfts-0.10.0/bin/activate
 ```
 
 Keep the Conda environment available: `--system-site-packages` shares its
-dependencies. Releases before 0.10.0 use their own CMake installation instructions.
+dependencies. A checkout without a `pyproject.toml` has no wheel build; install it as the
+README.md of that checkout describes.
 
 </details>
 
@@ -286,5 +287,7 @@ python -m pip uninstall polymerfts
 ```
 
 This removes the Python package while keeping the Conda environment and its
-dependencies. Old direct CMake installs have no pip file record; use a fresh
-environment when migrating one to wheel installation.
+dependencies. pip keeps no record of the files that `cmake --install` copies
+(`POLYMERFTS_INSTALL_PYTHON`, on by default, into the site-packages of the Python that
+CMake found): remove them with the `install_manifest.txt` of the build directory, or
+use a fresh environment, and install wheels into an environment without them.

@@ -8,7 +8,7 @@ otherwise.
 |--------|----------|
 | [gui/](gui/) | Browser script builder and [web assets](gui/assets/) |
 | [pscf/](pscf/) | PSCF converter and a small initial-field example |
-| [analysis/](analysis/) | MATLAB scripts, Jupyter notebooks and a Python script for density, structure functions, WTMD and interaction calibration |
+| [analysis/](analysis/) | MATLAB scripts, Jupyter notebooks and Python scripts for density, structure functions, WTMD, drift records and interaction calibration |
 
 ## Simulation Script Builder (beta)
 
@@ -45,7 +45,8 @@ examples, cell conventions, input validation and supported model scope.
 
 ## Analysis
 
-MATLAB scripts and notebooks formerly under `tools/` are in [analysis/](analysis/).
+MATLAB scripts, notebooks and Python scripts that plot and analyze the output are in
+[analysis/](analysis/).
 Run them from the directory containing the simulation output, for example:
 
 ```bash

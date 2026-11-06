@@ -190,7 +190,7 @@ With the Euler integrator, $`\psi`$ takes fresh noise, $`i \sqrt{(1 - a_k^2)/(2 
 \frac{1 + \epsilon}{1 + \frac{2 a_k}{1 + a_k} \epsilon - \frac{1 - a_k}{1 + a_k} \epsilon^2} \approx 1 + \epsilon \tanh\frac{\gamma_k \delta\tau N}{2}, \qquad \epsilon = \frac{R E}{k^2 + \kappa^2}
 ```
 
-Before the Leimkuhler-Matthews noise was introduced, this was the step of every integrator. In the polyampholyte of `TestChargedStructureFunctionRPA` ($`E = 300`$, $`\delta\tau N = 1`$) it put the charge structure functions from $`\psi`$ about 2 % above the RPA; with the averaged noise they agree within 0.5 % ([Structure Function Estimators, Section 6](StructureFunctionEstimators.md#6-charge-structure-function)).
+In the polyampholyte of `TestChargedStructureFunctionRPA` ($`E = 300`$, $`\delta\tau N = 1`$) this step puts the charge structure functions from $`\psi`$ about 2 % above the RPA; with the averaged noise they agree within 0.5 % ([Structure Function Estimators, Section 6](StructureFunctionEstimators.md#6-charge-structure-function)).
 
 **With the `etd` integrator.** The integrator of Section 2.1 advances $`\psi`$ together with the auxiliary fields, as the last field with the force $`-\delta H/\delta\psi`$, its mobility $`s`$ and its noise stream. Its Jacobian then contains the screening of $`\psi`$ by the charges and the coupling of $`\psi`$ to the auxiliary fields, which the step above keeps explicit, so the Gaussian statistics of all fields are exact for any time step. Without screening the uniform mode of $`\psi`$ is set to zero after each step, unless a charged species is grand canonical.
 

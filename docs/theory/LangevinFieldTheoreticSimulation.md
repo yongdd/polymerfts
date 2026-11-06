@@ -236,7 +236,7 @@ In these formulas:
 - $`\Gamma(k)`$ is the smearing function, and $`\zeta N`$ is `zeta_n`;
 - the integrals run over $`-\pi/\Delta_\nu \le k_\nu \le \pi/\Delta_\nu`$.
 
-In the incompressible limit $`\zeta \to \infty`$ the factor $`1 + t/\zeta`$ goes to 1. For $`\zeta \to \infty`$ and $`\Gamma = 1`$, $`z_\infty`$ equals the bond sum of Reference 5, $`1 - (1 + 2\sum_i P_i)/(\rho_0 \Delta V)`$, which the former `renormalization_discrete.m` evaluated.
+In the incompressible limit $`\zeta \to \infty`$ the factor $`1 + t/\zeta`$ goes to 1. For $`\zeta \to \infty`$ and $`\Gamma = 1`$, $`z_\infty`$ equals the bond sum of Reference 5, $`1 - (1 + 2\sum_i P_i)/(\rho_0 \Delta V)`$.
 
 **Continuous chains.** Continuous chains use the limit $`N \to \infty`$ of the discrete formulas at a fixed grid in units of $`R_0`$. In this limit, $`\tanh u`$ and $`\sinh u`$ both become $`u = k^2/(12N)`$:
 
@@ -250,9 +250,9 @@ Both corrections grow without bound as the grid is refined, as $`z_\infty`$ of d
 
 `scripts/analysis/renormalization.py` ([Tools, Section 3](../references/Tools.md#3-χn-renormalization)) evaluates both corrections from a fields file or from options. To use the calibration, set `chi_n` to the $`\chi_b N`$ of the target $`z_\infty \chi_b N`$ and, in CL-FTS, multiply all `segment_lengths` by $`a_b/a`$. Reference 9 adds a quadratic term, $`\chi = z_\infty \chi_b + c_2 (z_\infty \chi_b)^2`$, fitted to renormalized one-loop theory; $`c_2`$ differs between CL-FTS and L-FTS. Section 4.4 gives an example.
 
-### 5.3 Earlier RPA Calibration
+### 5.3 Athermal RPA
 
-The former `renormalization_rpa.m` integrated the athermal RPA of Reference 4 instead. That integral also contains a finite term of order $`\bar{N}^{-1/2}`$ from $`k \lesssim 1/R_0`$, which Eq. (29) does not include because it is derived for $`N \to \infty`$. For example, for a $`32^3`$ grid with $`L = 4 R_0`$ and $`\bar{N} = 10^4`$, the former script gave $`z_\infty = 0.858`$, while the formula above gives 0.813.
+The integral of the athermal RPA of Reference 4 also contains a finite term of order $`\bar{N}^{-1/2}`$ from $`k \lesssim 1/R_0`$, which Eq. (29) does not include because it is derived for $`N \to \infty`$. For example, for a $`32^3`$ grid with $`L = 4 R_0`$ and $`\bar{N} = 10^4`$, the RPA integral gives $`z_\infty = 0.858`$, while the formula above gives 0.813.
 
 ---
 

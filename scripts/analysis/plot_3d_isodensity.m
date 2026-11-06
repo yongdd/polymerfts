@@ -41,7 +41,7 @@ if ~exist('angles','var')
     if exist('checkpoint_settings_json','var')
         settings = jsondecode(checkpoint_settings_json);
         angles = settings.angles(:)';
-    elseif exist('initial_params','var') && isfield(initial_params, 'angles')
+    elseif exist('initial_params','var') && isfield(initial_params, 'angles') && ~isempty(initial_params.angles)
         angles = double(initial_params.angles(:)');
     else
         angles = [90 90 90];

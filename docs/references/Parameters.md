@@ -301,7 +301,7 @@ SCFT accepts `electrostatics` as described under [Electrostatics](#electrostatic
 
 The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. Other numerical errors propagate and are recorded as `failed`.
 
-The optional `"resample"` policy reproduces the earlier noise-selection behavior. Each redraw emits a warning and increments `noise_resamples`; convergence-dependent selection can alter the sampled distribution. Initial-saddle retries never draw noise, regardless of the policy.
+The optional `"resample"` policy draws fresh noise after a failed solve instead. Each redraw emits a warning and increments `noise_resamples`; convergence-dependent selection can alter the sampled distribution. Initial-saddle retries never draw noise, regardless of the policy.
 
 ### Recording
 

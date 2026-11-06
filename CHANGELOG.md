@@ -470,6 +470,15 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- The 2D plots of `scripts/analysis` fill the grid cell around each point with its value, in the
+  unit cell of the file's lengths and angle, with the second lattice vector pointing up
+  (2026-11-06); the images before were mirrored, with it pointing down. `plot_2d_density.m` took
+  the aspect ratio from the box lengths alone, right only for equal grid sizes; `plot_2d_slice.m`
+  drew square cells and, when ny and nz differ, scattered the values of the slice;
+  `plot_2d_density.ipynb` drew every cell rectangular. The slice is the plane of grid index
+  `slice_index` along the lattice vector `a`, drawn with `b` and `c`. All three read CL-FTS files
+  (the real part) and the angles of older files from `initial_params`, and the slice reads 3D SCFT
+  results. tests/scripts/TestDensityPlot2D.py runs the notebook.
 - `scripts/analysis/plot_3d_isodensity.m` draws the field at the grid points of the solvers
   (2026-11-06): the cell centres, or the nodes along a and b for a hexagonal-axes space group,
   along the lattice vectors of the cell, with the angles of an SCFT result, of the checkpoint
@@ -843,6 +852,13 @@ corrected or removed between releases; those entries do not all describe v0.9.1.
   remove them with `python -m pip uninstall polymerfts`. Direct CMake installation is no
   longer the documented Python installation path. See
   [Installation](docs/getting-started/Installation.md).
+- The user scripts moved from `tools/` to `scripts/`: the MATLAB scripts and notebooks of the
+  analysis to `scripts/analysis/` (`tools/README.md` became `POSTPROCESSING_REFERENCES.md` there),
+  and the PSCF sample fields to `tests/data/pscf/`. The exporter
+  `tools/conversion_to_pscf/to_pscf.py --file_name <script>`, which read a polymerfts input script,
+  and the importer `tools/read_pscf_output/to_matlab.py` are replaced by `export` and `import` of
+  `scripts/pscf/pscf_converter.py`: `export` reads a saved SCFT result, or a parameter file with
+  `--fields`, and `import-script` also translates supported PSCF calculations.
 - Unvalidated Docker image definitions have been removed.
 - The supplied environment uses Anaconda `defaults` and Python 3.14. MKL and FFTW are
   installed separately and enabled explicitly; CUDA detection defaults to `AUTO`.

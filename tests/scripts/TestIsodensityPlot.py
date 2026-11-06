@@ -94,3 +94,9 @@ def test_large_box_around_a_long_tilted_cell_is_coarsened(tmp_path, monkeypatch,
     result = draw(tmp_path, monkeypatch, nx, [2.0, 2.0, 20.0], angles=np.array([60.0, 60.0, 90.0]))
     assert 'drawn with spacing' in capsys.readouterr().out
     assert result['X'].size <= 9*np.prod(nx)
+
+
+def test_empty_input_angles_draw_an_orthogonal_cell(tmp_path, monkeypatch, capsys):
+    result = draw(tmp_path, monkeypatch, [4, 3, 5], [1.0, 2.0, 3.0], initial_params={'nx': [4, 3, 5], 'angles': []})
+    assert 'no lattice angles' in capsys.readouterr().out
+    np.testing.assert_allclose(result['L'], np.diag([1.0, 2.0, 3.0]), rtol=0, atol=1e-15)

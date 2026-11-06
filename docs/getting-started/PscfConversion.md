@@ -308,16 +308,11 @@ for cross-code comparisons. A PSCF calculation still needs its own convergence
 checks; conversion does not establish thermodynamic equivalence of different
 models or solver stopping criteria.
 
-## Migration and checks
+## Checks
 
-The old `tools/conversion_to_pscf/to_pscf.py --file_name ...` exporter and
-`tools/read_pscf_output/to_matlab.py` importer are replaced by `export` and
-`import`; `import-script` additionally translates supported PSCF calculations.
-Other MATLAB scripts and analysis notebooks have moved from `tools/` to
-`scripts/analysis/`. The historical PSCF sample fields are preserved in
+Run the format, coordinate, model-validation and command-line checks with the
+command below; the import check reads the PSCF sample fields in
 [`tests/data/pscf/`](../../tests/data/pscf/).
-
-Run the format, coordinate, model-validation and command-line checks with:
 
 ```bash
 python -m pytest tests/scripts/TestPscfConverter.py tests/scripts/TestPscfScript.py -q
