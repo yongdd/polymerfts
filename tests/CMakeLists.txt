@@ -49,6 +49,7 @@ SET(BASIC_TESTS
     TestCpuFFT3D
     TestCpuFFT3DComplex
     TestCpuFFTMixedBC
+    TestCpuFFTAddressIndependence
     TestCpuMakhoulTransform
     TestCpuSimulationBox
     TestCpuTridiagonal
