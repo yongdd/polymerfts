@@ -219,7 +219,12 @@ def check_real_multiplicities(w, platforms):
                 check(mass < 1e-12, f"{tag}: |mean(phi_A + phi_B) - 1| = {mass:.1e}")
                 same = (full["Q"] == reduced["Q"] and all(np.array_equal(full["phi"][k], reduced["phi"][k]) for k in w)
                         and np.array_equal(full["stress"], reduced["stress"]))
-                check(same, f"{tag}: full and reduced memory agree bit for bit (Q, phi, stress)")
+                # The differences name the quantity that broke the bitwise agreement
+                q_diff = max(abs(a / b - 1.0) for a, b in zip(full["Q"], reduced["Q"]))
+                phi_diff = max(max_abs(full["phi"][k], reduced["phi"][k]) for k in w)
+                stress_diff = max_abs(full["stress"], reduced["stress"])
+                check(same, f"{tag}: full and reduced memory agree bit for bit (|dQ/Q| {q_diff:.1e}, "
+                            f"|dphi| {phi_diff:.1e}, |dstress| {stress_diff:.1e})")
                 dstress = stress_mismatch(n, w, platform, chain_model)
                 check(dstress < STRESS_TOLERANCE[chain_model],
                       f"{tag}: stress against the differences of -ln Q / alpha at ds = "
