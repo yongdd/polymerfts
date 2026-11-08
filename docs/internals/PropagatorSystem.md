@@ -172,9 +172,12 @@ For a propagator at a junction (e.g., `(A3B2)C+0`):
 q(\mathbf{r}, 0) = \prod_{i} \left[ q_i(\mathbf{r}, N_i) \right]^{n_i}
 ```
 
-where $`n_i`$ is the repetition count (from `:n` notation, default 1). Integer powers are
-computed by multiplication; a real power (block multiplicity) is computed with `pow` and
-needs real propagators, so the backends refuse it for complex fields.
+where $`n_i`$ is the repetition count (from `:n` notation, default 1). An integer power keeps
+an integer exponent (`pow(q, n)` on the CPU, n successive multiplications on CUDA), so an
+integer block multiplicity gives the same junction products and partition functions as explicit
+arms on the same backend; concentrations and stress agree to round-off. A non-integer power
+(block multiplicity) is computed with the real `pow` and needs real propagators, so the backends
+refuse it for complex fields.
 
 ### Aggregated Computation (D with Square Brackets)
 

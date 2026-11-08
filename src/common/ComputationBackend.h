@@ -44,31 +44,25 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
-#include <iomanip>
 #include <map>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
-/// True if a junction power is an integer. Integer powers are computed by multiplication;
-/// real powers come from block multiplicities.
+/// True if a junction power is an integer. The backends raise a propagator to an integer
+/// power with an integer exponent (std::pow on the CPU, repeated multiplication on CUDA),
+/// the same operation as for explicit arms; other powers come from non-integer block
+/// multiplicities and need real propagators.
 inline bool is_integer_power(double n)
 {
     return n == std::floor(n) && std::abs(n) <= 1.0e6;
 }
 
-/// Error text for a junction that would raise complex propagators to a non-integer power.
-/// The power is that of one branch: the multiplicity of its block, or one less for the
-/// propagator that enters a copy.
-inline std::string complex_real_power_message(double power)
-{
-    std::ostringstream text;
-    text << std::setprecision(12) << power;
-    return "A junction raises complex propagators to the non-integer power " + text.str() +
-           ", which comes from a non-integer block multiplicity and has no unique value for "
-           "complex numbers; use integer multiplicities with complex fields.";
-}
+/// Error text for a junction that would raise complex propagators to a power that is not an
+/// integer of at most 10^6 (is_integer_power). The power is that of one branch: the multiplicity
+/// of its block, or one less for the propagator that enters a copy, summed over identical
+/// branches. Defined in ComputationCommon.cpp.
+std::string complex_real_power_message(double power);
 
 /// One field in backend memory. Intentionally incomplete (see the file comment).
 template <typename T>

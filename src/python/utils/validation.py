@@ -425,12 +425,14 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Non
         raise ValidationError("'verbose_level' must be 0, 1 or 2")
     _reject_mask(params, "CL-FTS" if complex_fields else "L-FTS")
     if complex_fields:
-        # A non-integer multiplicity raises complex propagators to a real power, which has no unique value
+        # A non-integer multiplicity raises complex propagators to a real power, which has no unique value.
+        # The backends take powers up to 10^6 as integers (is_integer_power in ComputationBackend.h).
         for i, polymer in enumerate(params["polymers"]):
             for j, block in enumerate(polymer["blocks"]):
-                if float(block.get("multiplicity", 1)) != int(block.get("multiplicity", 1)):
-                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer in CL-FTS "
-                                          f"(complex fields), got {block['multiplicity']!r}")
+                multiplicity = float(block.get("multiplicity", 1))
+                if not (multiplicity.is_integer() and multiplicity <= 1e6):
+                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer of at most "
+                                          f"10^6 in CL-FTS (complex fields), got {block['multiplicity']!r}")
     if not complex_fields:
         _reject_grand_canonical(params, "L-FTS")
     else:

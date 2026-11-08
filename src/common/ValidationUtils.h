@@ -17,11 +17,24 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 
 #include "Exception.h"
 
 namespace validation {
+
+/**
+ * @brief Shortest text that reads back to the same double, for error messages.
+ *
+ * A stream at its default precision prints 5.0000001 as 5 and 0.9999999 as 1,
+ * which hides why a value was refused.
+ */
+inline std::string shortest_text(double value)
+{
+    char text[64];
+    return std::string(text, std::to_chars(text, text + sizeof(text), value).ptr);
+}
 
 /**
  * @brief Validate that a value is finite and positive.

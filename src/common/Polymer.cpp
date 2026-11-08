@@ -33,7 +33,6 @@
 #include <numbers>
 #include <cassert>
 #include <algorithm>
-#include <charconv>
 #include <stack>
 #include <set>
 
@@ -88,13 +87,8 @@ Polymer::Polymer(
         // copy would raise propagators to negative powers
         const double multiplicity = block_inputs[i].multiplicity;
         if (!std::isfinite(multiplicity) || multiplicity < 1.0)
-        {
-            // Shortest text that reads back to the same double, so 0.9999999 does not print as 1
-            char text[64];
-            char* end = std::to_chars(text, text + sizeof(text), multiplicity).ptr;
             throw_with_line_number("block_inputs[" + std::to_string(i) + "].multiplicity ("
-                + std::string(text, end) + ") must be a finite number >= 1.");
-        }
+                + validation::shortest_text(multiplicity) + ") must be a finite number >= 1.");
         // Note: contour_length/ds no longer needs to be exactly an integer.
         // The ContourLengthMapping class handles computing n_segment = round(contour_length/ds)
         // and the corresponding local ds = contour_length / n_segment.

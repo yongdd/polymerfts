@@ -52,13 +52,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   n_tc ≈ 5.4475 (Kim et al., Macromolecules 59, 11903 (2026)). Integer multiplicities reproduce
   the explicit arms: the same partition functions, concentrations and stress equal to round-off,
   and, without propagator aggregation, the same keys and junction products. SCFT and L-FTS take
-  real multiplicities; CL-FTS and complex fields take integers only. A real power of a negative
-  numerical propagator (Crank-Nicolson next to absorbing walls, a pseudo-spectral method in a
-  strong field) stops the computation with an error. Polymers with multiplicities are computed
-  without propagator aggregation; `get_block_concentration` gives all copies of a block. The
-  drawings `polymer_<id>.png` mark a block with copies by ×m, and the PSCF export refuses
-  multiplicities (docs/theory/ChainPropagators.md, Section 4.3; docs/validation/StarNonIntegerArms.md;
-  examples/block_copolymer/scft/StarNonIntegerArms1D.py; tests/TestBlockMultiplicity.py).
+  real multiplicities; CL-FTS and complex fields take integers only (up to 10⁶). A real power of
+  a negative numerical propagator (Crank-Nicolson next to absorbing walls, a pseudo-spectral
+  method in a strong field) stops the computation with an error. Polymers with multiplicities
+  are computed without propagator aggregation; `get_block_concentration` gives all copies of a
+  block. The drawings `polymer_<id>.png` mark a block with copies by ×m, and the PSCF export
+  refuses multiplicities (docs/theory/ChainPropagators.md, Section 4.3;
+  docs/validation/StarNonIntegerArms.md; examples/block_copolymer/scft/StarNonIntegerArms1D.py;
+  tests/TestBlockMultiplicity.py).
 - Discrete chains take `numerical_method: "rs"` (2026-11-05): the bond is summed on the grid,
   one stencil per axis, instead of through FFTs, on the CPU and CUDA backends for real and complex
   fields. Every concentration stays positive where fields change by hundreds of kT per chain
@@ -347,6 +348,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 - `Polymer.get_n_segment_total()` counts every copy of a block (2026-11-08): it returns the
   segments of one whole chain as a float, which a real block multiplicity makes non-integer.
+- `ComputationBlock.n_repeated` and the repeat count in each `ComputationEdge.deps` entry are
+  floats for every polymer (2026-11-08), since a real block multiplicity makes them non-integer;
+  `Block.multiplicity`, `Block.n_copies` and `ComputationBlock.n_copies` are new read-only
+  attributes.
 - The MATLAB scripts of `scripts/analysis` are removed (2026-11-06); notebooks and Python scripts
   do their work: `plot_2d_density.m`, `plot_3d_isodensity.m`,
   `plot_structure_function.m` and `plot_wtmd_statistics.m` by the notebooks of the same name,

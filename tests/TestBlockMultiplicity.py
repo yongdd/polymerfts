@@ -15,16 +15,20 @@ models, propagator aggregation on and off and reduced memory on and off:
      its copies at a chain end, in a blend with a diblock, and a pom-pom whose two
      copied ends share one computation block.
   2. Real multiplicities (A_n B_n, n = 5.6 and 1.5): check_total_partition(),
-     material conservation (< 1e-12), full and reduced memory agree bit for bit,
-     platforms agree (< 1e-10), the uniform-field limit
+     material conservation (< 1e-12), full and reduced memory agree bit for bit
+     (Q, concentrations and stress), the stress equals the central differences of
+     -ln Q / alpha in the box lengths (discrete < 1e-7; continuous < 3e-4 at
+     ds = 0.0125, where its contour quadrature is accurate enough), platforms agree
+     (< 1e-10), the uniform-field limit
      Q = exp(-sum copies * length * w) (< 1e-12), ln Q is convex in n, and the
-     real power at n = 5 + 1e-9 joins the multiplications at n = 5 (< 1e-7).
+     real power at n = 5 + 1e-9 joins the integer power at n = 5 (< 1e-7).
   3. Input errors: multiplicity < 1, two blocks replicating each other, copies at
      a grafted end, a non-integer multiplicity with complex fields (every platform
-     and chain model, and CL-FTS validation), while an integer one reproduces the
-     explicit arms in complex fields; a real power of a negative propagator
-     (Crank-Nicolson next to absorbing walls) stops with an error naming the
-     multiplicity on every platform; blocks numbered only in part give a
+     and chain model, and CL-FTS validation, which also refuses integers above
+     10^6), while an integer one reproduces the explicit arms in complex fields; a
+     real power of a negative propagator (Crank-Nicolson next to absorbing walls)
+     stops with an error naming the multiplicity on every platform, a near-integer
+     one with all its digits; blocks numbered only in part give a
      ValidationError; the Python copy count equals the native one, and alpha and
      the segment total count every copy.
   4. SCFT of a blend of an A3B2 star with a diblock, given with multiplicities and
@@ -76,9 +80,9 @@ def smooth_field(rng):
     return (f / f.std() * 5.0).flatten()
 
 
-def make_solver(platform, chain_model, aggregate=True, reduce_memory=False, field_type="real"):
+def make_solver(platform, chain_model, aggregate=True, reduce_memory=False, field_type="real", lx=LX, ds=DS):
     return PropagatorSolver(
-        nx=NX, lx=LX, ds=DS, bond_lengths=BONDS, bc=["periodic"] * 6, chain_model=chain_model,
+        nx=NX, lx=lx, ds=ds, bond_lengths=BONDS, bc=["periodic"] * 6, chain_model=chain_model,
         numerical_method="rqm4" if chain_model == "continuous" else None, platform=platform,
         reduce_memory=reduce_memory, aggregate_propagator_computation=aggregate, field_type=field_type)
 
@@ -167,6 +171,40 @@ def star(n):
     return [(1.0, [["A", 0.5, 0, 1, n], ["B", 0.5, 0, 2, n]])]
 
 
+# Stress against the central differences of -ln Q / alpha. Discrete chains: the stress is the exact
+# derivative of the discrete ln Q, so only the differencing error remains (4e-9). Continuous chains:
+# the stress is a contour quadrature whose error falls about 13-fold per halving of ds, alike for
+# real and integer n and for a diblock (6e-3 at ds = 0.05, 5e-5 at 0.0125); it is checked at 0.0125.
+STRESS_DS = {"discrete": DS, "continuous": 0.0125}
+STRESS_TOLERANCE = {"discrete": 1e-7, "continuous": 3e-4}
+
+
+def stress_mismatch(n, w, platform, chain_model):
+    """Largest difference between the first three stress components and the central differences of
+    -ln Q / alpha in the box lengths at fixed grid fields, relative to the largest difference. For a
+    melt of one polymer get_stress gives the derivatives of -sum_p phi_p/alpha_p ln Q_p."""
+    def solver_at(lx):
+        solver = make_solver(platform, chain_model, lx=lx, ds=STRESS_DS[chain_model])
+        solver.add_polymer(1.0, star(n)[0][1])
+        solver.compute_propagators({key: value.copy() for key, value in w.items()})
+        return solver
+
+    solver = solver_at(LX)
+    solver.compute_stress()
+    stress = np.asarray(solver.get_stress())[:3]
+    derivatives = []
+    for d in range(3):
+        values = []
+        for sign in (1.0, -1.0):
+            lx = list(LX)
+            lx[d] += sign * 1e-4 * LX[d]
+            shifted = solver_at(lx)
+            values.append(-np.log(shifted.get_partition_function(0)) / shifted.get_polymer(0).get_alpha())
+        derivatives.append((values[0] - values[1]) / (2e-4 * LX[d]))
+    derivatives = np.array(derivatives)
+    return np.max(np.abs(stress - derivatives)) / np.max(np.abs(derivatives))
+
+
 def check_real_multiplicities(w, platforms):
     print("2. Real multiplicities (A_n B_n stars)")
     for n in [5.6, 1.5]:
@@ -174,13 +212,18 @@ def check_real_multiplicities(w, platforms):
         for platform in platforms:
             for chain_model in ["continuous", "discrete"]:
                 tag = f"n = {n}, {platform}/{chain_model}"
-                full = solve(star(n), w, platform, chain_model)
-                reduced = solve(star(n), w, platform, chain_model, reduce_memory=True)
+                full = solve(star(n), w, platform, chain_model, stress=True)
+                reduced = solve(star(n), w, platform, chain_model, reduce_memory=True, stress=True)
                 mass = abs(np.mean(full["phi"]["A"] + full["phi"]["B"]) - 1.0)
                 check(full["partition_ok"] and reduced["partition_ok"], f"{tag}: check_total_partition()")
                 check(mass < 1e-12, f"{tag}: |mean(phi_A + phi_B) - 1| = {mass:.1e}")
-                same = full["Q"] == reduced["Q"] and all(np.array_equal(full["phi"][k], reduced["phi"][k]) for k in w)
-                check(same, f"{tag}: full and reduced memory agree bit for bit")
+                same = (full["Q"] == reduced["Q"] and all(np.array_equal(full["phi"][k], reduced["phi"][k]) for k in w)
+                        and np.array_equal(full["stress"], reduced["stress"]))
+                check(same, f"{tag}: full and reduced memory agree bit for bit (Q, phi, stress)")
+                dstress = stress_mismatch(n, w, platform, chain_model)
+                check(dstress < STRESS_TOLERANCE[chain_model],
+                      f"{tag}: stress against the differences of -ln Q / alpha at ds = "
+                      f"{STRESS_DS[chain_model]} (relative {dstress:.1e})")
                 if chain_model in reference:
                     ref = reference[chain_model]
                     dq = abs(full["Q"][0] / ref["Q"][0] - 1.0)
@@ -202,7 +245,7 @@ def check_real_multiplicities(w, platforms):
             check(dq < 1e-12 and dphi < 1e-12,
                   f"uniform fields, {platform}/{chain_model}: |Q/exp(-sum n L w) - 1| {dq:.1e}, |phi - 1/2| {dphi:.1e}")
 
-    # ln Q = ln <q_c^n> is convex in n; the real power continues the integer multiplications
+    # ln Q = ln <q_c^n> is convex in n; the real power continues the integer powers
     for platform in platforms:
         for chain_model in ["continuous", "discrete"]:
             log_q = {n: np.log(solve(star(n), w, platform, chain_model)["Q"][0]) for n in [5, 5.5, 6, 5 + 1e-9]}
@@ -274,6 +317,10 @@ def check_input_errors(w, platforms):
               f"{platform_w}: a real power of a negative propagator stops with an error ({message})")
         check(raises(lambda: walls_star(5, platform_w)) is None,
               f"{platform_w}: the same chain with an integer multiplicity runs")
+    # The message gives every digit, so a multiplicity next to an integer does not print as one
+    message = raises(lambda: walls_star(5.0000001, platforms[0]))
+    check(message is not None and "multiplicity of 5.0000001:" in message,
+          f"the error names a near-integer multiplicity in full ({message})")
 
     params = {"nx": [16], "lx": [2.0], "ds": 0.05, "chain_model": "continuous",
               "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 10.0},
@@ -284,13 +331,17 @@ def check_input_errors(w, platforms):
               "recording": {"dir": "unused", "checkpoint_interval": 1, "sample_interval": 1,
                             "statistics_save_interval": 1},
               "verbose_level": 1}
-    try:
-        validate_lfts_params(params, complex_fields=True)
-        message = None
-    except ValidationError as exc:
-        message = str(exc)
-    check(message is not None and "multiplicity" in message,
-          f"CL-FTS validation rejects a real multiplicity ({message})")
+    # The backends take integer powers up to 10^6 only, so CL-FTS refuses larger integers too
+    for multiplicity in [2.5, 2000000]:
+        for block in params["polymers"][0]["blocks"]:
+            block["multiplicity"] = multiplicity
+        try:
+            validate_lfts_params(params, complex_fields=True)
+            message = None
+        except ValidationError as exc:
+            message = str(exc)
+        check(message is not None and "multiplicity" in message,
+              f"CL-FTS validation rejects the multiplicity {multiplicity} ({message})")
 
     try:
         polymer_block_copies({"blocks": [{"type": "A", "length": 0.5, "v": 0, "u": 1, "multiplicity": 2},

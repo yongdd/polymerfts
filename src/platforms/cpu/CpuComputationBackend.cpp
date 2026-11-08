@@ -209,7 +209,7 @@ void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pai
     {
         if (is_integer_power(n_repeated))
         {
-            // pow(q, int): repeated squaring for complex propagators
+            // pow(q, int), the call explicit arms take as well
             const int n_integer = static_cast<int>(n_repeated);
             for (int i = 0; i < n_basis; i++)
                 q[i] *= pow(src[i], n_integer);

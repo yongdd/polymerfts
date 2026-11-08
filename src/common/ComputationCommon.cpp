@@ -7,11 +7,18 @@
 #include <algorithm>
 #include <memory>
 #include <complex>
-#include <sstream>
 
 #include "ComputationCommon.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
+
+std::string complex_real_power_message(double power)
+{
+    return "A junction raises complex propagators to the power " + validation::shortest_text(power)
+        + ". Complex fields take only integer powers up to 10^6: a non-integer power, which comes from "
+        "a non-integer block multiplicity, has no unique value for complex numbers. With complex fields "
+        "use integer multiplicities and at most 10^6 identical branches at one junction.";
+}
 
 template <typename T>
 ComputationCommon<T>::ComputationCommon(
@@ -127,14 +134,13 @@ void ComputationCommon<T>::check_real_power_partitions() const
         {
             if (is_integer_power(block.multiplicity))
                 continue;
-            std::ostringstream message;
-            message << "The partition function of polymer " << p << " is NaN. If the fields are finite, "
-                       "the cause is its block multiplicity of " << block.multiplicity << ": it raises "
-                       "propagators to a non-integer power, which is "
-                       "undefined where a numerical propagator is negative (for example with Crank-Nicolson "
-                       "next to absorbing walls, or with a pseudo-spectral method in a strong field). Use an "
-                       "integer multiplicity, or a method and resolution that keep the propagators positive.";
-            throw_with_line_number(message.str());
+            throw_with_line_number("The partition function of polymer " + std::to_string(p) + " is NaN. "
+                "If the fields are finite, the cause is its block multiplicity of "
+                + validation::shortest_text(block.multiplicity) + ": it raises propagators to a "
+                "non-integer power, which is undefined where a numerical propagator is negative (for "
+                "example with Crank-Nicolson next to absorbing walls, or with a pseudo-spectral method "
+                "in a strong field). Use an integer multiplicity, or a method and resolution that keep "
+                "the propagators positive.");
         }
     }
 }
