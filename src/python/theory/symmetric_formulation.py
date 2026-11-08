@@ -430,7 +430,7 @@ class SymmetricPolymerTheory:
                             if block.monomer_type not in self.monomer_types:
                                 raise ValueError("Pass phi to compute_hamiltonian for random copolymers with dropped fields.")
                             phi_mean[self.monomer_types.index(block.monomer_type)] += (
-                                polymer.get_volume_fraction() * block.contour_length / polymer.get_alpha())
+                                polymer.get_volume_fraction() * block.n_copies * block.contour_length / polymer.get_alpha())
                     for s in range(molecules.get_n_solvent_types()):
                         fraction, name = molecules.get_solvent(s)
                         phi_mean[self.monomer_types.index(name)] += fraction

@@ -428,6 +428,11 @@ __global__ void ker_multi(double* dst, const double* src1, const double* src2, d
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M);
+/// dst = dst * src^a: a real power of a real propagator (block multiplicities)
+__global__ void ker_multi_pow(double* dst, const double* src, double a, const int M);
+/// dst = dst * src^n for an integer n >= 0, as n successive multiplications in one launch
+__global__ void ker_multi_int_pow(double* dst, const double* src, const int n, const int M);
+__global__ void ker_multi_int_pow(cuDoubleComplex* dst, const cuDoubleComplex* src, const int n, const int M);
 // Combined stress kernels for non-orthogonal boxes
 
 __global__ void ker_mutiple_multi(int n_comp, double* dst, const double* src1, const double* src2, double  a, const int M);

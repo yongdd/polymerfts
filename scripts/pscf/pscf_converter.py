@@ -475,6 +475,9 @@ def prepare_export(source, field_source=None, lattice=None):
         for block in blocks:
             if "monomer_fractions" in block:
                 raise ValueError("Random-copolymer blocks are not supported by this PSCF export.")
+            if block.get("multiplicity", 1) != 1:
+                raise ValueError("Block multiplicities are not supported by this PSCF export; "
+                                 "write integer copies as separate blocks.")
             if block["type"] not in names:
                 raise ValueError(f"Unknown block monomer: {block['type']}.")
             if explicit:

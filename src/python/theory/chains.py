@@ -35,7 +35,8 @@ def process_polymer_blocks(
     Returns
     -------
     list
-        Processed blocks_input list with [type, length, v, u] format.
+        Processed blocks_input list with [type, length, v, u] format, and the
+        multiplicity as a fifth entry for blocks that have one.
 
     Raises
     ------
@@ -66,6 +67,8 @@ def process_polymer_blocks(
                     "Index u should exist in all blocks, or it should not exist in all blocks for each polymer."
                 )
             blocks_input.append([block["type"], block["length"], block["v"], block["u"]])
+        if "multiplicity" in block:
+            blocks_input[-1].append(block["multiplicity"])
 
     return blocks_input
 
@@ -202,7 +205,7 @@ def check_partition_once(sim):
 def mean_concentrations(sim):
     """Volume-averaged concentration of each monomer type from the chain compositions.
 
-    mean(phi_i) = sum_p (f_p / alpha_p) sum_{blocks b of p} length_b * (fraction of i in b).
+    mean(phi_i) = sum_p (f_p / alpha_p) sum_{blocks b of p} copies_b * length_b * (fraction of i in b).
     Use the native block lengths, including accepted discrete lengths snapped
     to integer multiples of ds, to match the concentration normalization.
     """
@@ -210,7 +213,7 @@ def mean_concentrations(sim):
     for p in range(sim.prop_solver.get_n_polymer_types()):
         chain = sim.prop_solver.get_polymer(p)
         for block in chain.get_blocks():
-            weight = chain.get_volume_fraction() * block.contour_length / chain.get_alpha()
+            weight = chain.get_volume_fraction() * block.n_copies * block.contour_length / chain.get_alpha()
             fractions = sim.random_fraction.get(block.monomer_type, {block.monomer_type: 1.0})
             for monomer_type, fraction in fractions.items():
                 phi_mean[sim.monomer_types.index(monomer_type)] += weight * fraction
@@ -298,22 +301,25 @@ def draw_polymer_architecture(
     import matplotlib.pyplot as plt
 
     G = nx.Graph()
+    labels = {}
+    multiplied_nodes = set()    # nodes where copies of a block (a fifth entry, its multiplicity) hang
     for block in polymer["blocks_input"]:
-        monomer_type = block[0]
-        length = round(block[1] / ds)
-        v = block[2]
-        u = block[3]
+        monomer_type, contour_length, v, u = block[:4]
+        length = round(contour_length / ds)
+        labels[(v, u)] = str(length)
+        if len(block) > 4 and block[4] != 1:
+            labels[(v, u)] += f" ×{block[4]:.12g}"
+            multiplied_nodes.add(v)
         G.add_edge(v, u, weight=length, monomer_type=monomer_type)
 
-    # Set node colors
+    # Set node colors; a chain end that carries copies is a junction
     color_map = []
     for node in G:
-        if len(G.edges(node)) == 1:
+        if len(G.edges(node)) == 1 and node not in multiplied_nodes:
             color_map.append('yellow')
         else:
             color_map.append('gray')
 
-    labels = nx.get_edge_attributes(G, 'weight')
     try:
         pos = nx.drawing.nx_agraph.graphviz_layout(G, prog='twopi')
     except ImportError:
@@ -326,6 +332,8 @@ def draw_polymer_architecture(
     title += f"\nColors of monomers: {dict_color},"
     title += "\nColor of chain ends: 'yellow',"
     title += "\nColor of junctions: 'gray',"
+    if multiplied_nodes:
+        title += "\n'×m' on a block (v, u): m copies of it and of everything on its u side, attached at v,"
     title += "\nPlease note that the length of each edge is not proportional to the number of monomers in this image."
     plt.title(title)
     nx.draw(G, pos, node_color=color_map, edge_color=edge_colors, width=4, with_labels=True)

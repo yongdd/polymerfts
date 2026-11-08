@@ -87,6 +87,9 @@ struct BlockInput{
     double contour_length;      ///< Relative contour length (fraction of reference chain)
     int v;                      ///< Starting vertex (node) index
     int u;                      ///< Ending vertex (node) index
+    /// Number of copies of the block and of everything on its u side, all attached at v
+    /// (a real number >= 1; e.g. the arm number of a star given by one arm)
+    double multiplicity = 1.0;
 };
 
 /**
@@ -106,6 +109,10 @@ struct Block{
     double contour_length;      ///< Relative contour length (N_block / N_Ref)
     int v;                      ///< Starting vertex (node) index
     int u;                      ///< Ending vertex (node) index
+    double multiplicity;        ///< Copies of this block and its u side attached at v (BlockInput)
+    /// Copies of this block in one chain: the product of its own multiplicity and of the
+    /// multiplicities of the blocks whose u side contains it
+    double n_copies;
 };
 
 /**
@@ -124,6 +131,13 @@ struct Block{
  * - **Edges (Blocks)**: Polymer segments connecting two vertices
  * - **Contour Length (alpha)**: Total chain length in units of N_Ref
  * - **Volume Fraction**: Fraction of system volume occupied by this polymer type
+ * - **Multiplicity**: A block (v,u) with multiplicity m stands for m copies of the
+ *   block and of everything on its u side, all attached at v. m may be any real
+ *   number >= 1: the junction product at v contains that branch to the power m
+ *   (m - 1 for the propagator that enters one of the copies), which continues an
+ *   integer number of identical arms to real values (e.g. an A_n B_n star with
+ *   real n is two blocks of multiplicity n). Two blocks with multiplicities may
+ *   not lie each in the part the other replicates.
  *
  * **Propagator Computation:**
  *
@@ -227,9 +241,21 @@ public:
 
     /**
      * @brief Get total contour length.
-     * @return Sum of all block contour lengths (alpha = N/N_Ref)
+     * @return Sum of the contour lengths of all block copies (alpha = N/N_Ref)
      */
     double get_alpha() const;
+
+    /**
+     * @brief Copies of the branch reached from a node through one of its blocks.
+     *
+     * The branch on the neighbor side of block (node, neighbor) hangs at the node
+     * multiplicity times if the block has its v at the node, and once otherwise.
+     *
+     * @param node     Junction or chain-end vertex
+     * @param neighbor Adjacent vertex
+     * @return Number of copies of that branch at the node
+     */
+    double get_branch_multiplicity(const int node, const int neighbor) const;
 
     /**
      * @brief Get volume fraction of this polymer type.
@@ -259,10 +285,10 @@ public:
     struct Block& get_block(const int v, const int u);
 
     /**
-     * @brief Get total number of contour segments.
-     * @return Sum of n_segment over all blocks
+     * @brief Get total number of contour segments of one chain, block copies included.
+     * @return Sum of n_copies*n_segment over all blocks; not an integer for a real multiplicity
      */
-    int get_n_segment_total() const;
+    double get_n_segment_total() const;
 
     /**
      * @brief Get number of segments in a specific block.

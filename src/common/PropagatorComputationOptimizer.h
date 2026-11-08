@@ -17,7 +17,9 @@
 struct ComputationEdge{
     int max_n_segment;                                    // The maximum segment number
     std::string monomer_type;                             // Monomer_type
-    std::vector<std::tuple<std::string, int, int>> deps;  // Tuple <key, n_segment, n_repeated>
+    // Tuple <key, n_segment, n_repeated>: n_repeated is the power of the dependency in a junction
+    // product or its weight in an aggregated sum; block multiplicities make it real
+    std::vector<std::tuple<std::string, int, double>> deps;
     int height;                                           // Height of propagator (height of tree data Structure)
     std::set<int> junction_ends;                          // Indices where additional half bond step computation is required.
 };
@@ -31,9 +33,14 @@ struct ComputationBlock{
     // For the second slice, n_segment_right, and n_segment_left are 3, and 3, respectively.
     // If the 'aggregate_propagator_computation' is off, original block is not sliced to smaller block pieces.
     // In this case, n_segment_right, and n_segment_left are 5, and 5, respectively.
-    int n_segment_left;
-    int n_segment_right;
-    int n_repeated;
+    int n_segment_left = 0;
+    int n_segment_right = 0;
+    // Weight of this entry's ∫ q q† in the concentration: the copies of the blocks it holds, or
+    // one when its right propagator is an aggregated sum that carries them
+    double n_repeated = 0.0;
+    // Copies of the blocks in v_u (the sum of their Block::n_copies): n_repeated ∫ q q† dr is
+    // n_copies times the integral of one block
+    double n_copies = 0.0;
     std::vector<std::tuple<int ,int>> v_u; // node pair <polymer id, v, u>
 };
 
@@ -81,8 +88,8 @@ private:
     bool is_junction(Polymer& pc, int node);
 
     // Convert length_index to n_segment in deps using contour_length_mapping
-    std::vector<std::tuple<std::string, int, int>> convert_deps_to_n_segment(
-        const std::vector<std::tuple<std::string, int, int>>& deps) const;
+    std::vector<std::tuple<std::string, int, double>> convert_deps_to_n_segment(
+        const std::vector<std::tuple<std::string, int, double>>& deps) const;
 
 public:
     PropagatorComputationOptimizer(Molecules* molecules, bool aggregate_propagator_computation);

@@ -61,7 +61,8 @@ from .clfts import CLFTS
 from ..theory.electrostatics import coulomb_coupling, homogeneous_potential, point_ions
 from ..utils.common import json_ready, input_hash
 from ..utils.validation import (ValidationError, _chain_charge, normalize_params, open_charges, parse_chi_n, point_ion_concentrations,
-                         polymer_block_lengths, reference_segments, validate_gibbs_params, validate_lfts_params)
+                         polymer_block_copy_lengths, polymer_block_lengths, reference_segments, validate_gibbs_params,
+                         validate_lfts_params)
 
 
 def cell_volume(lx, angles=None):
@@ -118,7 +119,7 @@ class GibbsEnsemble:
 
         # Species that move between the boxes: the polymers, then the canonical point ions
         self.block_lengths = tuple(polymer_block_lengths(params, polymer) for polymer in params["polymers"])
-        self.alphas = np.array([sum(lengths) for lengths in self.block_lengths])
+        self.alphas = np.array([sum(polymer_block_copy_lengths(params, polymer)) for polymer in params["polymers"]])
         n_polymers = len(self.alphas)
         es = params.get("electrostatics")
         ions = (es.get("ions") or {}) if es is not None else {}
@@ -207,7 +208,7 @@ class GibbsEnsemble:
         types = sorted(params["segment_lengths"])
         fractions = np.zeros(len(types))
         for polymer in params["polymers"]:
-            lengths = polymer_block_lengths(params, polymer)
+            lengths = polymer_block_copy_lengths(params, polymer)
             length = sum(lengths)
             for block, block_length in zip(polymer["blocks"], lengths):
                 shares = block.get("monomer_fractions", {block["type"]: 1.0})

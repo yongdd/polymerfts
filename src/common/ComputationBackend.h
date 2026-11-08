@@ -42,11 +42,33 @@
 
 #include <array>
 #include <climits>
+#include <cmath>
 #include <cstdlib>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+/// True if a junction power is an integer. Integer powers are computed by multiplication;
+/// real powers come from block multiplicities.
+inline bool is_integer_power(double n)
+{
+    return n == std::floor(n) && std::abs(n) <= 1.0e6;
+}
+
+/// Error text for a junction that would raise complex propagators to a non-integer power.
+/// The power is that of one branch: the multiplicity of its block, or one less for the
+/// propagator that enters a copy.
+inline std::string complex_real_power_message(double power)
+{
+    std::ostringstream text;
+    text << std::setprecision(12) << power;
+    return "A junction raises complex propagators to the non-integer power " + text.str() +
+           ", which comes from a non-integer block multiplicity and has no unique value for "
+           "complex numbers; use integer multiplicities with complex fields.";
+}
 
 /// One field in backend memory. Intentionally incomplete (see the file comment).
 template <typename T>
@@ -159,19 +181,20 @@ public:
 
     /// q = Σ_i n_i q_i over sources (q_i, n_i): aggregated propagators.
     virtual void junction_sum(int stream, BackendArray<T>* q,
-                              const std::vector<std::pair<BackendArray<T>*, int>>& sources) = 0;
+                              const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 
-    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction.
+    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction. A block
+    /// multiplicity makes n_i real; a real power needs real propagators and throws for complex ones.
     virtual void junction_product(int stream, BackendArray<T>* q,
-                                  const std::vector<std::pair<BackendArray<T>*, int>>& sources) = 0;
+                                  const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 
     /// junction_sum() with checkpoints as sources.
     virtual void junction_sum(int stream, BackendArray<T>* q,
-                              const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) = 0;
+                              const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
     /// junction_product() with checkpoints as sources.
     virtual void junction_product(int stream, BackendArray<T>* q,
-                                  const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) = 0;
+                                  const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
     /// q = q * mask (impenetrable regions); does nothing without a mask.
     virtual void apply_mask(int stream, BackendArray<T>* q) = 0;

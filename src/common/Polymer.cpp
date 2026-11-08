@@ -33,6 +33,7 @@
 #include <numbers>
 #include <cassert>
 #include <algorithm>
+#include <charconv>
 #include <stack>
 #include <set>
 
@@ -83,6 +84,17 @@ Polymer::Polymer(
     {
         validation::require_positive(block_inputs[i].contour_length,
             "block_inputs[" + std::to_string(i) + "].contour_length");
+        // Copies of a branch continue an integer number of identical arms; fewer than one
+        // copy would raise propagators to negative powers
+        const double multiplicity = block_inputs[i].multiplicity;
+        if (!std::isfinite(multiplicity) || multiplicity < 1.0)
+        {
+            // Shortest text that reads back to the same double, so 0.9999999 does not print as 1
+            char text[64];
+            char* end = std::to_chars(text, text + sizeof(text), multiplicity).ptr;
+            throw_with_line_number("block_inputs[" + std::to_string(i) + "].multiplicity ("
+                + std::string(text, end) + ") must be a finite number >= 1.");
+        }
         // Note: contour_length/ds no longer needs to be exactly an integer.
         // The ContourLengthMapping class handles computing n_segment = round(contour_length/ds)
         // and the corresponding local ds = contour_length / n_segment.
@@ -113,7 +125,9 @@ Polymer::Polymer(
                 n_segment,                                              // n_segment
                 block_inputs[i].contour_length,                         // contour_length
                 block_inputs[i].v,                                      // starting node
-                block_inputs[i].u});                                    // ending node
+                block_inputs[i].u,                                      // ending node
+                block_inputs[i].multiplicity,                           // multiplicity
+                1.0});                                                  // n_copies, set below
         }
     }
     catch(std::exception& exc)
@@ -121,14 +135,7 @@ Polymer::Polymer(
         throw_without_line_number(exc.what());
     }
 
-    // Compute alpha, sum of relative contour lengths
-    double alpha{0.0};
-    for(size_t i=0; i<blocks.size(); i++){
-        alpha += blocks[i].contour_length;
-    }
-    this->alpha = alpha;
-
-    // Construct starting vertices 'v', ending vertices 'u', 
+    // Construct starting vertices 'v', ending vertices 'u',
     std::vector<int> v;
     std::vector<int> u;
     for(size_t i=0; i<block_inputs.size(); i++)
@@ -237,6 +244,63 @@ Polymer::Polymer(
         throw_with_line_number(error_message + ".");
     }
 
+    // Copies of each block. A block with a multiplicity replicates itself and every block on
+    // its u side; the copies of a block are the product of the multiplicities replicating it.
+    std::vector<int> multiplied;
+    for (size_t i = 0; i < blocks.size(); i++)
+    {
+        if (blocks[i].multiplicity == 1.0)
+            continue;
+        // The copies of a branch hang at v; a grafted end has one initial condition, not a junction
+        if (this->chain_end_to_q_init.contains(blocks[i].v))
+            throw_with_line_number("Block " + std::to_string(i) + " has a multiplicity at the grafted chain end "
+                + std::to_string(blocks[i].v) + "; give the multiplicity to a block whose v is not grafted.");
+        multiplied.push_back(static_cast<int>(i));
+    }
+    std::vector<std::vector<bool>> replicated(multiplied.size(), std::vector<bool>(blocks.size(), false));
+    for (size_t m = 0; m < multiplied.size(); m++)
+    {
+        const Block& block = blocks[multiplied[m]];
+        replicated[m][multiplied[m]] = true;
+        std::stack<std::pair<int,int>> to_visit;  // (node, node it was reached from)
+        to_visit.push(std::make_pair(block.u, block.v));
+        while (!to_visit.empty())
+        {
+            const auto [node, from] = to_visit.top();
+            to_visit.pop();
+            for (const int next : adjacent_nodes[node])
+            {
+                if (next == from)
+                    continue;
+                replicated[m][edge_to_block_index[std::make_pair(node, next)]] = true;
+                to_visit.push(std::make_pair(next, node));
+            }
+        }
+    }
+    for (size_t a = 0; a < multiplied.size(); a++)
+    {
+        for (size_t b = a + 1; b < multiplied.size(); b++)
+        {
+            if (replicated[a][multiplied[b]] && replicated[b][multiplied[a]])
+                throw_with_line_number("Blocks " + std::to_string(multiplied[a]) + " and " + std::to_string(multiplied[b])
+                    + " have multiplicities and each lies on the u side of the other. Orient the blocks with "
+                    + "multiplicities so that their u sides point away from each other.");
+        }
+    }
+    for (size_t i = 0; i < blocks.size(); i++)
+    {
+        for (size_t m = 0; m < multiplied.size(); m++)
+            if (replicated[m][i])
+                blocks[i].n_copies *= blocks[multiplied[m]].multiplicity;
+    }
+
+    // Compute alpha, the sum of the relative contour lengths of all block copies
+    double alpha{0.0};
+    for(size_t i=0; i<blocks.size(); i++){
+        alpha += blocks[i].n_copies*blocks[i].contour_length;
+    }
+    this->alpha = alpha;
+
     // Generate propagator codes and assign each of them to each of propagator
     auto propagator_codes = PropagatorCode::generate_codes(*this, chain_end_to_q_init);
     for(size_t i=0; i<propagator_codes.size(); i++)
@@ -259,11 +323,11 @@ int Polymer::get_n_segment(const int idx) const
             std::to_string(static_cast<int>(blocks.size()) - 1) + "]");
     return blocks[idx].n_segment;
 }
-int Polymer::get_n_segment_total() const
+double Polymer::get_n_segment_total() const
 {
-    int total_n{0};
+    double total_n{0.0};
     for(size_t i=0; i<blocks.size(); i++)
-        total_n += blocks[i].n_segment;
+        total_n += blocks[i].n_copies*blocks[i].n_segment;
     return total_n;
 }
 double Polymer::get_alpha() const
@@ -273,6 +337,11 @@ double Polymer::get_alpha() const
 double Polymer::get_volume_fraction() const
 {
     return volume_fraction;
+}
+double Polymer::get_branch_multiplicity(const int node, const int neighbor) const
+{
+    const Block& block = blocks[get_block_index_from_edge(node, neighbor)];
+    return (block.v == node) ? block.multiplicity : 1.0;
 }
 int Polymer::get_block_index_from_edge(const int v, const int u) const
 {
@@ -345,6 +414,8 @@ static std::string format_edge(const Block& block)
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(2);
     oss << block.monomer_type << "[" << block.contour_length << "]";
+    if (block.multiplicity != 1.0)
+        oss << "x" << PropagatorCode::format_count(block.multiplicity);
     return oss.str();
 }
 

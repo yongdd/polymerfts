@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <complex>
+#include <type_traits>
 #include <utility>
 #include <cuComplex.h>
 
 #include "CudaComputationBackend.h"
+#include "Exception.h"
 #include "NumericalMethods.h"
 #include "CudaSolverCNADI.h"
 #include "CudaSolverPseudoDiscrete.h"
@@ -438,8 +440,32 @@ void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendAr
 }
 
 template <typename T>
+void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q, const CuDeviceData<T>* d_src, double power)
+{
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    if (is_integer_power(power))
+    {
+        // q_i^n as n multiplications in one launch
+        ker_multi_int_pow<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            d_q, d_src, static_cast<int>(power), n_basis);
+        CUDA_CHECK_LAUNCH();
+    }
+    else if constexpr (std::is_same_v<T, double>)
+    {
+        // Real power from a block multiplicity
+        ker_multi_pow<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            d_q, d_src, power, n_basis);
+        CUDA_CHECK_LAUNCH();
+    }
+    else
+    {
+        throw_with_line_number(complex_real_power_message(power));
+    }
+}
+
+template <typename T>
 void CudaComputationBackend<T>::junction_sum(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -456,28 +482,19 @@ void CudaComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CudaComputationBackend<T>::junction_product(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_q = raw(q);
 
     CUDA_CHECK(cudaMemcpyAsync(d_q, d_q_unity, sizeof(T)*n_basis,
                                     cudaMemcpyDeviceToDevice, streams[stream][0]));
     for (const auto& [src, n_repeated] : sources)
-    {
-        // q_i^n as n multiplications
-        for (int r = 0; r < n_repeated; r++)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(d_q, d_q, raw(src), 1.0, n_basis);
-            CUDA_CHECK_LAUNCH();
-        }
-    }
+        multiply_power(stream, d_q, raw(src), n_repeated);
 }
 
 template <typename T>
 void CudaComputationBackend<T>::junction_sum(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -498,10 +515,8 @@ void CudaComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CudaComputationBackend<T>::junction_product(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_q = raw(q);
     // The stress pair buffer is free while propagators are computed; stage each checkpoint in it
     CuDeviceData<T>* d_stage = d_q_pair[stream][0];
@@ -512,11 +527,7 @@ void CudaComputationBackend<T>::junction_product(
     {
         CUDA_CHECK(cudaMemcpyAsync(d_stage, raw(src), sizeof(T)*n_basis,
                                         cudaMemcpyHostToDevice, streams[stream][0]));
-        for (int r = 0; r < n_repeated; r++)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(d_q, d_q, d_stage, 1.0, n_basis);
-            CUDA_CHECK_LAUNCH();
-        }
+        multiply_power(stream, d_q, d_stage, n_repeated);
     }
 }
 

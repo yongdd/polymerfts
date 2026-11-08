@@ -78,10 +78,13 @@ Where N is the block's `length_index` for both chain models (the keys are genera
 | `(A3)B2` | B-type propagator depending on A3 |
 | `(A3B2)C4` | C-type propagator at junction of A3 and B2 |
 | `(A3B2:2)C4` | C-type with two identical B2 branches |
+| `(A3:4.6B3:5.6)A3` | A-type entering one of 5.6 copies of an A3 arm, with 5.6 copies of a B3 arm (block multiplicities) |
 
 **Dependency Notation:**
 - **Parentheses `()`**: Junction point merging multiple branches
-- **Colon `:`**: Repetition count (e.g., `B2:3` = three identical B2 branches)
+- **Colon `:`**: Repetition count (e.g., `B2:3` = three identical B2 branches). Block
+  multiplicities make it a real number, written as the shortest decimal that reads back
+  to the same double (`PropagatorCode::format_count`); integer counts keep their integer form
 - **Curly braces `{}`**: Custom initial condition (e.g., `{wall}A3`)
 
 ### 2.4 Key Format: DK+M
@@ -104,6 +107,9 @@ The key format is derived from the code format and includes the ds_index for com
 ### 2.5 Aggregated Key Format
 
 When identical propagator branches are detected, they are merged to reduce redundancy.
+A polymer with block multiplicities is computed without aggregation: the re-keying of the
+blocks downstream of an aggregated sum (`substitute_right_keys`) assumes one copy of each
+branch at a junction. Its blocks still share propagators with the other polymers by key.
 
 **Structure:**
 ```
@@ -166,7 +172,9 @@ For a propagator at a junction (e.g., `(A3B2)C+0`):
 q(\mathbf{r}, 0) = \prod_{i} \left[ q_i(\mathbf{r}, N_i) \right]^{n_i}
 ```
 
-where $`n_i`$ is the repetition count (from `:n` notation, default 1).
+where $`n_i`$ is the repetition count (from `:n` notation, default 1). Integer powers are
+computed by multiplication; a real power (block multiplicity) is computed with `pow` and
+needs real propagators, so the backends refuse it for complex fields.
 
 ### Aggregated Computation (D with Square Brackets)
 
@@ -252,7 +260,7 @@ Time 20-30: F+0 (stream 0)
 struct ComputationEdge {
     int max_n_segment;  // Number of contour steps
     std::string monomer_type;
-    std::vector<std::tuple<std::string, int, int>> deps;  // (key, n_segment, n_repeated)
+    std::vector<std::tuple<std::string, int, double>> deps;  // (key, n_segment, n_repeated)
     int height;         // Height of the propagator in the dependency tree (used by the scheduler)
     std::set<int> junction_ends;  // Indices where additional half-bond-step computation
                                   // is required (discrete chains)

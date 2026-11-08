@@ -344,7 +344,8 @@ public:
     /**
      * @brief Get block-resolved concentration for a polymer.
      *
-     * Returns φ for each block concatenated: [φ_block0, φ_block1, ...]
+     * Returns φ for each block concatenated: [φ_block0, φ_block1, ...]. A block with copies
+     * (Block::n_copies, from multiplicities) gives the concentration of all its copies.
      *
      * @param polymer Polymer index
      * @param phi     Output array of length (n_blocks * total_grid)

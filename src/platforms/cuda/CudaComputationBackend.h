@@ -69,6 +69,10 @@ private:
 
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
+
+    /// d_q = d_q * d_src^power on a stream: multiplications for an integer power, a real power
+    /// (block multiplicities) for real fields; throws for a non-integer power of complex fields
+    void multiply_power(int stream, CuDeviceData<T>* d_q, const CuDeviceData<T>* d_src, double power);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
 
     /// Destroy the solver, then the streams and events it runs on (the device
@@ -111,13 +115,13 @@ public:
     void set_zero(int stream, BackendArray<T>* a) override;
     void copy(int stream, BackendArray<T>* dst, BackendArray<T>* src) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void apply_mask(int stream, BackendArray<T>* q) override;
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 

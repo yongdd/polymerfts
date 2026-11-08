@@ -41,7 +41,7 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
             if (p != current_p)
                 continue;
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int n_aggregated = block.v_u.size()/block.n_repeated;
+            const double n_aggregated = block.n_copies/block.n_repeated;
             this->add_checkpoint(std::get<1>(key), block.n_segment_left);
             this->add_checkpoint(std::get<2>(key), 0);
             single_partition_segment.push_back(std::make_tuple(
@@ -89,7 +89,7 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
                     }
                     else
                     {
-                        std::vector<std::pair<CheckpointArray<T>*, int>> sources;
+                        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
                         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                             sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
                         if (key[0] == '[')       // aggregated propagators
@@ -127,6 +127,7 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
             this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
                                                  /(n_aggregated*this->cb->get_volume());
         }
+        this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
     }
@@ -286,7 +287,7 @@ std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_erro
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const int n_propagators = block.v_u.size();
+        const double n_propagators = block.n_copies;
 
         this->for_each_segment_pair(key_left, key_right, block.n_segment_left, 0, block.n_segment_right,
             [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)

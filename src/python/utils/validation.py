@@ -120,6 +120,54 @@ def polymer_block_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) -> tu
     return tuple(lengths)
 
 
+def polymer_block_copies(polymer: Dict[str, Any]) -> tuple:
+    """Copies of each block in one chain, in input block order.
+
+    A block (v, u) with 'multiplicity' m stands for m copies of itself and of every
+    block on its u side, attached at v. The copies of a block are the product of the
+    multiplicities that replicate it, as Block.n_copies of the native polymer.
+    """
+    blocks = polymer["blocks"]
+    copies = [1.0] * len(blocks)
+    if all(block.get("multiplicity", 1) == 1 for block in blocks):
+        return tuple(copies)
+    numbered = "v" in blocks[0]
+    for block in blocks:
+        for vertex in ("v", "u"):
+            if (vertex in block) != numbered:
+                raise ValidationError(f"Index {vertex} should exist in all blocks, "
+                                      "or it should not exist in all blocks for each polymer.")
+    edges = [(block["v"], block["u"]) if numbered else (j, j + 1) for j, block in enumerate(blocks)]
+    neighbors = {}
+    for j, (v, u) in enumerate(edges):
+        neighbors.setdefault(v, []).append((u, j))
+        neighbors.setdefault(u, []).append((v, j))
+    for i, block in enumerate(blocks):
+        multiplicity = float(block.get("multiplicity", 1))
+        if multiplicity == 1:
+            continue
+        v, u = edges[i]
+        replicated, to_visit = {i}, [(u, v)]
+        while to_visit:
+            node, reached_from = to_visit.pop()
+            for next_node, j in neighbors[node]:
+                if next_node != reached_from and j not in replicated:
+                    replicated.add(j)
+                    to_visit.append((next_node, node))
+        for j in replicated:
+            copies[j] *= multiplicity
+    return tuple(copies)
+
+
+def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) -> tuple:
+    """Contour length of all copies of each block (length times copies), in input block order.
+
+    Their sum is alpha, the length of one chain relative to the reference chain.
+    """
+    return tuple(length * copies for length, copies in zip(polymer_block_lengths(params, polymer),
+                                                          polymer_block_copies(polymer)))
+
+
 def validate_system_params(params: Dict[str, Any]) -> None:
     """Check the parameters shared by SCFT, L-FTS and CL-FTS.
 
@@ -191,6 +239,10 @@ def validate_system_params(params: Dict[str, Any]) -> None:
             for vertex in ("v", "u"):
                 if vertex in block:
                     _integer(block[vertex], name + "." + vertex, minimum=0)
+            if "multiplicity" in block:
+                _finite_number(block["multiplicity"], name + ".multiplicity")
+                if block["multiplicity"] < 1:
+                    raise ValidationError(f"'{name}.multiplicity' must be a number >= 1, got {block['multiplicity']!r}")
             if "monomer_fractions" in block:
                 fractions = block["monomer_fractions"]
                 if not isinstance(fractions, dict) or not fractions:
@@ -372,6 +424,13 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Non
     if params["verbose_level"] > 2:
         raise ValidationError("'verbose_level' must be 0, 1 or 2")
     _reject_mask(params, "CL-FTS" if complex_fields else "L-FTS")
+    if complex_fields:
+        # A non-integer multiplicity raises complex propagators to a real power, which has no unique value
+        for i, polymer in enumerate(params["polymers"]):
+            for j, block in enumerate(polymer["blocks"]):
+                if float(block.get("multiplicity", 1)) != int(block.get("multiplicity", 1)):
+                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer in CL-FTS "
+                                          f"(complex fields), got {block['multiplicity']!r}")
     if not complex_fields:
         _reject_grand_canonical(params, "L-FTS")
     else:
@@ -576,7 +635,7 @@ def reference_segments(params: Dict[str, Any], default: Any = None) -> Any:
 
 def _chain_charge(params: Dict[str, Any], polymer: Dict[str, Any], charges: Dict[str, float]) -> float:
     """Net charge of a chain per segment of the reference chain, Σ_blocks z_i α_i (zero within round-off)."""
-    lengths = polymer_block_lengths(params, polymer)
+    lengths = polymer_block_copy_lengths(params, polymer)
     charge = sum(charges.get(block["type"], 0.0) * length for block, length in zip(polymer["blocks"], lengths))
     scale = sum(abs(charges.get(block["type"], 0.0)) * length for block, length in zip(polymer["blocks"], lengths))
     return 0.0 if abs(charge) <= 1e-12 * scale else charge
@@ -602,7 +661,7 @@ def net_polymer_charge(params: Dict[str, Any]) -> float:
     for polymer in params["polymers"]:
         if "chemical_potential" in polymer:
             continue
-        lengths = polymer_block_lengths(params, polymer)
+        lengths = polymer_block_copy_lengths(params, polymer)
         alpha = sum(lengths)
         for block, length in zip(polymer["blocks"], lengths):
             total += charges.get(block["type"], 0.0) * polymer["volume_fraction"] * length / alpha

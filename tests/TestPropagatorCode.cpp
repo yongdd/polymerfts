@@ -52,7 +52,7 @@ int main()
 
         // Test get_deps_from_key
         std::string key;
-        std::vector<std::tuple<std::string, int, int>> sub_deps;
+        std::vector<std::tuple<std::string, int, double>> sub_deps;
         // sub_deps: []
         key = "B";
         sub_deps = PropagatorCode::get_deps_from_key(key);

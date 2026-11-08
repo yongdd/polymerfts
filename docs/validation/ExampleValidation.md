@@ -14,6 +14,7 @@ Each example lists under these labels:
 | Example | Compared with | Result |
 |---|---|---|
 | [`block_copolymer/clfts/SoftBeadDiblockMelt.py`](SoftBeadModels.md) | CL-FTS of Lequieu 2024; exact Monte Carlo of a Gaussian-core fluid | Agrees: chemical potentials within 0.003–0.02 kT, pressures within about one standard error; the excess pressure of the polyampholyte lies 2 % of its fluctuation correction below (not confirmed) |
+| [`block_copolymer/scft/StarNonIntegerArms1D.py`](StarNonIntegerArms.md) | Kim et al. 2026, Figs. 2, 3 and 5 | Agrees: ODTs of A_nB_n stars within 10⁻⁴ (read to ±5×10⁻⁴), ODT shifts of real n and of blends within 3×10⁻⁷. The paper's Figs. 2 and 3 correspond to a relaxed lamellar period, its Fig. 5 to the period fixed at L_s (explained) |
 | `blend/scft/MixtureBlockRandom.py`, `blend/lfts/MixtureBlockRandom.py` | Flory-Huggins (homogeneous states) | Checked; the ordered blend not checked |
 | `blend/scft/CanonicalCoexistence.py` | Common tangent of the Flory-Huggins free energy | Checked |
 | [`blend/clfts/GibbsEnsemble.py`](BlendGibbsEnsemble.md) | Flory-Huggins binodal; canonical CL-FTS at N̄ = 10⁴; Fredrickson and Delaney 2023, Fig. 7.2 | Agrees: 0.92928 in the mean-field limit, 0.91498 ± 0.00009 against 0.91497 ± 0.00013 at N̄ = 10⁴. Fig. 7.2: 11 of 13 points within about one error; one is 2.3 errors off, and at the last the run reaches one phase (undecided) |
@@ -37,6 +38,7 @@ The sections below give the details, and the longest entries have a page of thei
 Paths are relative to `examples/block_copolymer/`.
 
 - **`clfts/SoftBeadDiblockMelt.py`** (Lequieu 2024): [SoftBeadModels.md](SoftBeadModels.md)
+- **`scft/StarNonIntegerArms1D.py`** (Kim et al. 2026): [StarNonIntegerArms.md](StarNonIntegerArms.md)
 
 ## Blends and coexistence
 

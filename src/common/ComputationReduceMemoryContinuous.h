@@ -33,7 +33,7 @@ class ComputationReduceMemoryContinuous : public ComputationReduceMemoryBase<T>
 {
 private:
     /// One segment per polymer for its partition function: (polymer, key, n, key†, n_aggregated)
-    std::vector<std::tuple<int, std::string, int, std::string, int>> single_partition_segment;
+    std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 
 protected:
     int propagator_ds_index(const std::string& key) const override;

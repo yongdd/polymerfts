@@ -350,12 +350,18 @@ class PropagatorSolver:
         blocks : list of lists
             Block specifications. Each block is [monomer_type, length, v, u]
             where v and u are node indices defining the block connectivity.
+            An optional fifth entry, the multiplicity m >= 1 (a real number),
+            makes the block stand for m copies of itself and of everything on
+            its u side, attached at v.
 
             For a simple linear chain A-B diblock:
                 blocks = [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]]
 
             For a homopolymer:
                 blocks = [["A", 1.0, 0, 1]]
+
+            For an A_n B_n star with n = 5.6 arms of each type:
+                blocks = [["A", 0.5, 0, 1, 5.6], ["B", 0.5, 0, 2, 5.6]]
         grafting_points : dict, optional
             Custom initial conditions for specific nodes.
             Keys are node indices (int), values are string labels for q_init.

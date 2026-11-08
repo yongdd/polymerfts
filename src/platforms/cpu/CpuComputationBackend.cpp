@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <type_traits>
 
 #include "CpuComputationBackend.h"
+#include "Exception.h"
 #include "NumericalMethods.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
@@ -189,30 +191,47 @@ void CpuComputationBackend<T>::copy(int, BackendArray<T>* dst, BackendArray<T>* 
 }
 
 template <typename T>
-void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<const T*, int>>& sources)
+void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
     for (int i = 0; i < n_basis; i++)
         q[i] = 0.0;
     for (const auto& [src, n_repeated] : sources)
         for (int i = 0; i < n_basis; i++)
-            q[i] += src[i]*static_cast<double>(n_repeated);
+            q[i] += src[i]*n_repeated;
 }
 
 template <typename T>
-void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, int>>& sources)
+void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
     for (int i = 0; i < n_basis; i++)
         q[i] = 1.0;
     for (const auto& [src, n_repeated] : sources)
-        for (int i = 0; i < n_basis; i++)
-            q[i] *= pow(src[i], n_repeated);
+    {
+        if (is_integer_power(n_repeated))
+        {
+            // pow(q, int): repeated squaring for complex propagators
+            const int n_integer = static_cast<int>(n_repeated);
+            for (int i = 0; i < n_basis; i++)
+                q[i] *= pow(src[i], n_integer);
+        }
+        else if constexpr (std::is_same_v<T, double>)
+        {
+            // Real power from a block multiplicity
+            for (int i = 0; i < n_basis; i++)
+                q[i] *= std::pow(src[i], n_repeated);
+        }
+        else
+        {
+            throw_with_line_number(complex_real_power_message(n_repeated));
+        }
+    }
 }
 
 template <typename T>
 void CpuComputationBackend<T>::junction_sum(
-    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     sum_sources(raw(q), host_sources);
@@ -220,9 +239,9 @@ void CpuComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_product(
-    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     multiply_sources(raw(q), host_sources);
@@ -230,9 +249,9 @@ void CpuComputationBackend<T>::junction_product(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_sum(
-    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     sum_sources(raw(q), host_sources);
@@ -240,9 +259,9 @@ void CpuComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_product(
-    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     multiply_sources(raw(q), host_sources);

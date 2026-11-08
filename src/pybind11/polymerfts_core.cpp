@@ -954,7 +954,7 @@ static py::array_t<double> sg_output_like(const py::buffer_info& in, int n_field
     return py::array_t<double>({static_cast<py::ssize_t>(n_fields), static_cast<py::ssize_t>(n_out)});
 }
 
-// Converts the Python block list [[monomer_type, contour_length, v, u], ...]
+// Converts the Python block list [[monomer_type, contour_length, v, u(, multiplicity)], ...]
 static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py::object>>& block_list)
 {
     if (block_list.empty())
@@ -963,14 +963,16 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
     for (size_t b = 0; b < block_list.size(); b++)
     {
         const auto& py_block = block_list[b];
-        if (py_block.size() != 4)
+        if (py_block.size() != 4 && py_block.size() != 5)
             throw_with_line_number("Block " + std::to_string(b) + " has " + std::to_string(py_block.size()) +
-                " entries; a block is [monomer_type, contour_length, v, u].");
+                " entries; a block is [monomer_type, contour_length, v, u] or [monomer_type, contour_length, v, u, multiplicity].");
         BlockInput block;
         block.monomer_type = py::cast<std::string>(py_block[0]);
         block.contour_length = py::cast<double>(py_block[1]);
         block.v = py::cast<int>(py_block[2]);
         block.u = py::cast<int>(py_block[3]);
+        if (py_block.size() == 5)
+            block.multiplicity = py::cast<double>(py_block[4]);
         block_inputs.push_back(block);
     }
     return block_inputs;
@@ -1069,7 +1071,9 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("n_segment", &Block::n_segment)
         .def_readonly("contour_length", &Block::contour_length)
         .def_readonly("v", &Block::v)
-        .def_readonly("u", &Block::u);
+        .def_readonly("u", &Block::u)
+        .def_readonly("multiplicity", &Block::multiplicity)
+        .def_readonly("n_copies", &Block::n_copies);
 
     py::class_<ComputationEdge>(m, "ComputationEdge")
         .def_readonly("max_n_segment", &ComputationEdge::max_n_segment)
@@ -1083,6 +1087,7 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("n_segment_left", &ComputationBlock::n_segment_left)
         .def_readonly("n_segment_right", &ComputationBlock::n_segment_right)
         .def_readonly("n_repeated", &ComputationBlock::n_repeated)
+        .def_readonly("n_copies", &ComputationBlock::n_copies)
         .def_readonly("v_u", &ComputationBlock::v_u);
 
     py::class_<Polymer>(m, "Polymer")

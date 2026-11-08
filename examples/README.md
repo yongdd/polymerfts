@@ -27,6 +27,7 @@ What the tests and validation runs check for each example, with the compared num
 | `scft/ABC_Triblock_Sphere3D.py` | ABC triblock terpolymer spheres |
 | `scft/Star3Arms1D.py` | 3-arm star polymer (1D) |
 | `scft/Star9ArmsGyroid.py` | 9-arm star polymer gyroid |
+| `scft/StarNonIntegerArms1D.py` | A<sub>n</sub>B<sub>n</sub> star with a real arm number n (block multiplicity) |
 | `scft/BottleBrushLamella3D.py` | Bottle-brush copolymer |
 | `scft/phase_diagram/` | Phase diagrams by continuation and boundary root finding (AB diblock, ABA triblock; GPU) |
 | `scft/crystal_systems/` | Box relaxation in hexagonal, oblique, monoclinic and triclinic cells; free energy against the cell angle |
@@ -106,6 +107,7 @@ python Lamella3D.py
 - M. W. Matsen, and R. B. Thompson, Equilibrium behavior of symmetric ABA triblock copolymer melts, *J. Chem. Phys* **1999**, 111, 7139 (`block_copolymer/scft/ABA_Triblock1D.py`)
 - S. J. Park, F. S. Bates, and Kevin D. Dorfman, Complex Phase Behavior in Binary Blends of AB Diblock Copolymer and ABC Triblock Terpolymer, *Macromolecules* **2023**, 56, 1278 (`block_copolymer/scft/ABC_Triblock_Sphere3D.py`)
 - M. W. Matsen, and M. Schick, Microphase Separation in Starblock Copolymer Melts, *Macromolecules* **1994**, 27, 6761 (`block_copolymer/scft/Star9ArmsGyroid.py`)
+- M. Kim, W. Kang, J. Cho, D. Yong, and J. U. Kim, Order–Disorder Tricriticality in Symmetric A<sub>n</sub>B<sub>n</sub> Star Polymer Melts, *Macromolecules* **2026**, 59, 11903 (`block_copolymer/scft/StarNonIntegerArms1D.py`)
 - R. R. Netz, Electrostatistics of counter-ions at and between planar charged walls: From Poisson-Boltzmann to the strong-coupling theory, *Eur. Phys. J. E* **2001**, 5, 557 (`charged/scft/CounterionsBetweenPlates.py`, `charged/clfts/CounterionsBetweenPlates.py`)
 - Z.-G. Wang, Fluctuation in electrolyte solutions: The self energy, *Phys. Rev. E* **2010**, 81, 021501 (`charged/clfts/SmearedSaltSelfEnergy.py`)
 - N. R. Agrawal, and R. Wang, Self-Consistent Description of Vapor-Liquid Interface in Ionic Fluids, *Phys. Rev. Lett.* **2022**, 129, 228001 (`charged/clfts/SmearedSaltSelfEnergy.py`)

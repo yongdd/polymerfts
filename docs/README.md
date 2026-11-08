@@ -47,6 +47,7 @@
 | [ComplexCoacervate.md](validation/ComplexCoacervate.md) | Salt-free coacervate against Lee, Popov and Fredrickson (2008) and Danielsen et al. (2019) |
 | [Electrolytes.md](validation/Electrolytes.md) | Point ions against Netz (2001), one-loop theory and exact Monte Carlo |
 | [SoftBeadModels.md](validation/SoftBeadModels.md) | Soft-bead models against Lequieu (2024) |
+| [StarNonIntegerArms.md](validation/StarNonIntegerArms.md) | A_nB_n stars with integer and real arm numbers against Kim et al. (2026) |
 
 ## References
 

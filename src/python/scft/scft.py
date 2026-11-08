@@ -495,7 +495,7 @@ class SCFT:
             for block in chain.get_blocks():
                 fractions = self.random_fraction.get(block.monomer_type, {block.monomer_type: 1.0})
                 for monomer, fraction in fractions.items():
-                    field_shift += block.contour_length * fraction * shift[self.monomer_types.index(monomer)]
+                    field_shift += block.n_copies * block.contour_length * fraction * shift[self.monomer_types.index(monomer)]
             mu.append(float(np.log(concentration) - np.log(partition_functions[p]) + field_shift))
         return mu
 

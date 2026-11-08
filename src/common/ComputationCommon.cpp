@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <complex>
+#include <sstream>
 
 #include "ComputationCommon.h"
 #include "PropagatorCode.h"
@@ -112,6 +113,30 @@ void ComputationCommon<T>::set_fields(
     }
 
     backend->update_dw(w_input);
+}
+
+template <typename T>
+void ComputationCommon<T>::check_real_power_partitions() const
+{
+    for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
+    {
+        const T q = this->single_polymer_partitions[p];
+        if (!std::isnan(std::real(q)) && !std::isnan(std::imag(q)))
+            continue;
+        for (const Block& block : this->molecules->get_polymer(p).get_blocks())
+        {
+            if (is_integer_power(block.multiplicity))
+                continue;
+            std::ostringstream message;
+            message << "The partition function of polymer " << p << " is NaN. If the fields are finite, "
+                       "the cause is its block multiplicity of " << block.multiplicity << ": it raises "
+                       "propagators to a non-integer power, which is "
+                       "undefined where a numerical propagator is negative (for example with Crank-Nicolson "
+                       "next to absorbing walls, or with a pseudo-spectral method in a strong field). Use an "
+                       "integer multiplicity, or a method and resolution that keep the propagators positive.";
+            throw_with_line_number(message.str());
+        }
+    }
 }
 
 template <typename T>
@@ -473,11 +498,12 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
                 phi[b*N + i] *= norm;
 
             // Identical blocks (e.g. the equal arms of a star) share one entry, which
-            // holds all n_repeated of them; each block gets its share
-            const int n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
-            if (n_repeated > 1)
+            // holds the copies of all of them; each block gets the share of its copies
+            const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
+            const double n_copies = blocks[b].n_copies;
+            if (n_repeated != n_copies)
                 for (int i = 0; i < N; i++)
-                    phi[b*N + i] /= static_cast<double>(n_repeated);
+                    phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
         }
     }
     catch (std::exception& exc)

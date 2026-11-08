@@ -40,7 +40,7 @@ ComputationContinuous<T>::ComputationContinuous(
             if (p != current_p)
                 continue;
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int n_aggregated = block.v_u.size()/block.n_repeated;
+            const double n_aggregated = block.n_copies/block.n_repeated;
             single_partition_segment.push_back(std::make_tuple(
                 p,
                 propagator.at(std::get<1>(key))[block.n_segment_left],  // q
@@ -75,10 +75,10 @@ void ComputationContinuous<T>::free_propagators()
 }
 
 template <typename T>
-std::vector<std::pair<BackendArray<T>*, int>> ComputationContinuous<T>::junction_sources(
-    const std::vector<std::tuple<std::string, int, int>>& deps)
+std::vector<std::pair<BackendArray<T>*, double>> ComputationContinuous<T>::junction_sources(
+    const std::vector<std::tuple<std::string, int, double>>& deps)
 {
-    std::vector<std::pair<BackendArray<T>*, int>> sources;
+    std::vector<std::pair<BackendArray<T>*, double>> sources;
     for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : deps)
         sources.push_back({propagator.at(sub_key)[sub_n_segment], sub_n_repeated});
     return sources;
@@ -140,6 +140,7 @@ void ComputationContinuous<T>::compute_propagators(
         for (const auto& [p, q_left, q_right, n_aggregated] : single_partition_segment)
             this->single_polymer_partitions[p] = this->backend->inner_product(q_left, q_right)
                                                  /(n_aggregated*this->cb->get_volume());
+        this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
     }
@@ -327,7 +328,7 @@ std::vector<double> ComputationContinuous<T>::compute_partition_errors()
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const int n_propagators = block.v_u.size();
+        const double n_propagators = block.n_copies;
 
         for (int n = 0; n <= block.n_segment_right; n++)
         {

@@ -86,54 +86,6 @@ class ContourLengthMapping;
  */
 class PropagatorCode
 {
-private:
-    /**
-     * @brief Recursively generate code for one edge direction.
-     *
-     * Uses memoization to avoid recomputing codes for edges already visited.
-     *
-     * @param memory            Cache of already-computed edge codes
-     * @param blocks            Block information vector
-     * @param adjacent_nodes    Adjacency list of polymer graph
-     * @param edge_to_block_index Edge to block index mapping
-     * @param chain_end_to_q_init Initial condition labels for grafted ends
-     * @param in_node           Source vertex (where propagator comes from)
-     * @param out_node          Target vertex (where propagator goes to)
-     * @return Code string for this propagator direction
-     */
-    static std::string generate_edge_code(
-        std::map<std::pair<int, int>, std::string>& memory,
-        std::vector<Block>& blocks,
-        std::map<int, std::vector<int>>& adjacent_nodes,
-        std::map<std::pair<int, int>, int>& edge_to_block_index,
-        std::map<int, std::string>& chain_end_to_q_init,
-        int in_node, int out_node);
-
-    /**
-     * @brief Recursively generate code using length index instead of n_segment.
-     *
-     * This version uses ContourLengthMapping to convert contour_length to
-     * an integer index, enabling support for floating-point block lengths.
-     *
-     * @param memory            Cache of already-computed edge codes
-     * @param blocks            Block information vector
-     * @param adjacent_nodes    Adjacency list of polymer graph
-     * @param edge_to_block_index Edge to block index mapping
-     * @param chain_end_to_q_init Initial condition labels for grafted ends
-     * @param mapping           Contour length to index mapping
-     * @param in_node           Source vertex
-     * @param out_node          Target vertex
-     * @return Code string using length index
-     */
-    static std::string generate_edge_code_with_mapping(
-        std::map<std::pair<int, int>, std::string>& memory,
-        std::vector<Block>& blocks,
-        std::map<int, std::vector<int>>& adjacent_nodes,
-        std::map<std::pair<int, int>, int>& edge_to_block_index,
-        std::map<int, std::string>& chain_end_to_q_init,
-        const ContourLengthMapping& mapping,
-        int in_node, int out_node);
-
 public:
     /**
      * @brief Generate all propagator codes for a polymer.
@@ -192,7 +144,8 @@ public:
      * @brief Parse dependencies from a propagator key.
      *
      * @param key Propagator key string
-     * @return Vector of (dependency_key, n_segment, n_repeated) tuples
+     * @return Vector of (dependency_key, n_segment, n_repeated) tuples; n_repeated is the
+     *         power of the dependency in a junction product or its weight in an aggregated sum
      *
      * @example
      * @code
@@ -201,7 +154,19 @@ public:
      * // deps contains entries for B20 and C10 dependencies
      * @endcode
      */
-    static std::vector<std::tuple<std::string, int, int>> get_deps_from_key(std::string key);
+    static std::vector<std::tuple<std::string, int, double>> get_deps_from_key(std::string key);
+
+    /**
+     * @brief Text of a branch count in a key, "n" of "A10:n".
+     *
+     * Integers keep their integer form ("3"); other counts, from block
+     * multiplicities, take the shortest decimal that reads back to the same
+     * double ("4.6"). Equal counts give equal keys.
+     *
+     * @param count Number of copies (> 0)
+     * @return Count text without exponent or sign
+     */
+    static std::string format_count(double count);
 
     /**
      * @brief Remove monomer type prefix from key.

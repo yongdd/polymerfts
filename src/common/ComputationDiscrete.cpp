@@ -52,7 +52,7 @@ ComputationDiscrete<T>::ComputationDiscrete(
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
             if (block.n_segment_left == 0)
                 continue;
-            const int n_aggregated = block.v_u.size()/block.n_repeated;
+            const double n_aggregated = block.n_copies/block.n_repeated;
             single_partition_segment.push_back(std::make_tuple(
                 p,
                 propagator.at(std::get<1>(key))[block.n_segment_left],  // q
@@ -131,7 +131,7 @@ void ComputationDiscrete<T>::compute_propagators(
                         {
                             // Propagators aggregated at a junction (n = 0) are half-bond
                             // states; the others are segments
-                            std::vector<std::pair<BackendArray<T>*, int>> sources;
+                            std::vector<std::pair<BackendArray<T>*, double>> sources;
                             for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                             {
                                 BackendArray<T>* src = (sub_n_segment == 0) ? propagator_half_steps.at(sub_key)[0]
@@ -161,7 +161,7 @@ void ComputationDiscrete<T>::compute_propagators(
                             // O - . - B      . junction, - half bonds, O first segment
                             //     |
                             //     C
-                            std::vector<std::pair<BackendArray<T>*, int>> sources;
+                            std::vector<std::pair<BackendArray<T>*, double>> sources;
                             for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                                 sources.push_back({propagator_half_steps.at(sub_key)[sub_n_segment], sub_n_repeated});
                             this->backend->junction_product(STREAM, q_half[0], sources);
@@ -205,6 +205,7 @@ void ComputationDiscrete<T>::compute_propagators(
             this->single_polymer_partitions[p] = this->backend->inner_product_inverse_weight(
                 q_left, q_right, this->backend->boltzmann_factor(monomer_type))
                 /(n_aggregated*this->cb->get_volume());
+        this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
     }
@@ -334,18 +335,18 @@ void ComputationDiscrete<T>::compute_stress()
                     {
                         if (!left_is_leaf)
                             pairs.push_back({propagator_half_steps.at(key_left)[0], propagator.at(key_right)[N_RIGHT],
-                                             static_cast<double>(block.n_repeated), true});
+                                             block.n_repeated, true});
                     }
                     else if (n == 0 && key_right[0] == '(')   // half bond at the right end (u), a junction
                     {
                         if (!right_is_leaf)
                             pairs.push_back({propagator.at(key_left)[N_LEFT], propagator_half_steps.at(key_right)[0],
-                                             static_cast<double>(block.n_repeated), true});
+                                             block.n_repeated, true});
                     }
                     else if (n > 0)                           // full bond within the block
                     {
                         pairs.push_back({propagator.at(key_left)[N_LEFT-n], propagator.at(key_right)[n],
-                                         static_cast<double>(block.n_repeated), false});
+                                         block.n_repeated, false});
                     }
                 }
                 stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
@@ -405,7 +406,7 @@ std::vector<double> ComputationDiscrete<T>::compute_partition_errors()
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const int n_propagators = block.v_u.size();
+        const double n_propagators = block.n_copies;
         BackendArray<T>* exp_dw = this->backend->boltzmann_factor(block.monomer_type);
 
         for (int n = 1; n <= block.n_segment_right; n++)

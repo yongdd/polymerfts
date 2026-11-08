@@ -113,6 +113,14 @@ protected:
     /// Solvent concentrations and partition functions from the stored fields.
     void compute_solvent_concentrations();
 
+    /**
+     * @brief Throw if a non-integer block multiplicity met a negative propagator.
+     *
+     * A real power of a negative value is NaN, which reaches the partition
+     * function of the polymer, so only Q is checked, once per compute_propagators().
+     */
+    void check_real_power_partitions() const;
+
     /// Contour step ds of the block that propagator `key` belongs to.
     double contour_step(const std::string& key) const;
 

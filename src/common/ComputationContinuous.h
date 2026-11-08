@@ -41,14 +41,14 @@ private:
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;  ///< propagator[key][n], n = 0..max_n_segment
 
     /// One segment per polymer for its partition function: (polymer, q, q†, n_aggregated)
-    std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, int>> single_partition_segment;
+    std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, double>> single_partition_segment;
 
     /// Free the propagator storage (also on a failed construction).
     void free_propagators();
 
     /// Sources (q_i, n_i) of a junction or an aggregated propagator.
-    std::vector<std::pair<BackendArray<T>*, int>> junction_sources(
-        const std::vector<std::tuple<std::string, int, int>>& deps);
+    std::vector<std::pair<BackendArray<T>*, double>> junction_sources(
+        const std::vector<std::tuple<std::string, int, double>>& deps);
 
 public:
     /**

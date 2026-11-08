@@ -52,7 +52,7 @@ private:
     std::map<std::string, std::vector<BackendArray<T>*>> propagator_half_steps;  ///< q(r, n+1/2) where needed, else nullptr
 
     /// One segment per polymer for its partition function: (polymer, q, q†, monomer type, n_aggregated)
-    std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, std::string, int>> single_partition_segment;
+    std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, std::string, double>> single_partition_segment;
 
     /// Free the propagator storage (also on a failed construction).
     void free_propagators();

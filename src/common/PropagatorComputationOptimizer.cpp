@@ -140,7 +140,8 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
         computation_blocks_new_polymer[key_left][key_right].n_segment_right = blocks[b].n_segment;
         computation_blocks_new_polymer[key_left][key_right].n_segment_left = blocks[b].n_segment;
         computation_blocks_new_polymer[key_left][key_right].v_u.push_back(std::make_tuple(v,u));
-        computation_blocks_new_polymer[key_left][key_right].n_repeated = computation_blocks_new_polymer[key_left][key_right].v_u.size();
+        // Equal blocks share the entry: its weight is the copies of all of them
+        computation_blocks_new_polymer[key_left][key_right].n_repeated += blocks[b].n_copies;
 
         v_u_to_right_key[std::make_tuple(v,u)] = key_right;
     }
@@ -165,8 +166,12 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
     }
     this->total_segment_numbers.push_back(total_segment_number);
 
-    // Aggregation
-    if (this->aggregate_propagator_computation)
+    // Aggregation. Its re-keying of downstream blocks (substitute_right_keys) assumes one copy of
+    // each branch at a junction, so polymers with block multiplicities are computed without it.
+    bool has_multiplicity = false;
+    for(const auto& block : blocks)
+        has_multiplicity = has_multiplicity || (block.multiplicity != 1.0);
+    if (this->aggregate_propagator_computation && !has_multiplicity)
     {
         // Aggregated keys (initially empty)
         std::map<std::string, std::vector<std::string>> aggregated_blocks;
@@ -233,7 +238,10 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
 
             int n_segment_right = u_item.second.n_segment_right;
             int n_segment_left = u_item.second.n_segment_left;
-            int n_repeated = u_item.second.n_repeated;
+            double n_repeated = u_item.second.n_repeated;
+            double n_copies = 0.0;
+            for(const auto& [v, u] : u_item.second.v_u)
+                n_copies += pc.get_block(v, u).n_copies;
 
             // Add blocks
             auto key = std::make_tuple(polymer_id, key_v, key_u);
@@ -243,6 +251,7 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
             computation_blocks[key].n_segment_left = n_segment_left;
             computation_blocks[key].v_u = u_item.second.v_u;
             computation_blocks[key].n_repeated = n_repeated;
+            computation_blocks[key].n_copies = n_copies;
             bool is_junction_left = false;
             bool is_junction_right = false;
             if (PropagatorCode::get_height_from_key(key_v) > 0)
@@ -442,7 +451,7 @@ void PropagatorComputationOptimizer::update_computation_propagator_map(
             // Aggregated key or key containing aggregated sub-keys
             // All deps in an aggregated key share the same ds_index as the outer key
             int ds_index = PropagatorCode::get_ds_index_from_key(new_key);
-            std::vector<std::tuple<std::string, int, int>> deps_with_ds_index;
+            std::vector<std::tuple<std::string, int, double>> deps_with_ds_index;
             deps_with_ds_index.reserve(parsed_deps.size());
 
             if (this->model_name == "continuous")
@@ -455,7 +464,7 @@ void PropagatorComputationOptimizer::update_computation_propagator_map(
                 {
                     std::string dep_code = std::get<0>(dep);
                     int length_index = std::get<1>(dep);
-                    int n_repeated = std::get<2>(dep);
+                    double n_repeated = std::get<2>(dep);
                     std::string sub_key = dep_code + "+" + std::to_string(ds_index);
 
                     // Convert length_index to n_segment (handles length_index=0 for slicing)
@@ -499,7 +508,7 @@ void PropagatorComputationOptimizer::update_computation_propagator_map(
  * @brief Check if a node is a junction point.
  *
  * Junctions have more than one adjacent node (branching points).
- * Chain ends have exactly one adjacent node.
+ * Chain ends have exactly one adjacent node, unless copies of their block hang there.
  *
  * @param pc   Polymer graph
  * @param node Node index to check
@@ -507,10 +516,15 @@ void PropagatorComputationOptimizer::update_computation_propagator_map(
  */
 bool PropagatorComputationOptimizer::is_junction(Polymer& pc, int node)
 {
-    if (pc.get_adjacent_nodes()[node].size() == 1)
-        return false;
-    else
+    const auto& adjacent_nodes = pc.get_adjacent_nodes();
+    const auto found = adjacent_nodes.find(node);
+    if (found == adjacent_nodes.end() || found->second.empty())
+        throw_with_line_number("Node " + std::to_string(node) + " is not a node of the polymer.");
+    const auto& neighbors = found->second;
+    if (neighbors.size() > 1)
         return true;
+    // A chain end where the copies of its block hang (multiplicity) joins them
+    return pc.get_branch_multiplicity(node, neighbors[0]) != 1.0;
 }
 
 /**
@@ -524,17 +538,17 @@ bool PropagatorComputationOptimizer::is_junction(Polymer& pc, int node)
  * @param deps Parsed dependencies with length_index (sub_key without ds_index)
  * @return Dependencies with n_segment and sub_key including ds_index
  */
-std::vector<std::tuple<std::string, int, int>> PropagatorComputationOptimizer::convert_deps_to_n_segment(
-    const std::vector<std::tuple<std::string, int, int>>& deps) const
+std::vector<std::tuple<std::string, int, double>> PropagatorComputationOptimizer::convert_deps_to_n_segment(
+    const std::vector<std::tuple<std::string, int, double>>& deps) const
 {
-    std::vector<std::tuple<std::string, int, int>> converted_deps;
+    std::vector<std::tuple<std::string, int, double>> converted_deps;
     converted_deps.reserve(deps.size());
 
     for (const auto& dep : deps)
     {
         std::string sub_key = std::get<0>(dep);
         int length_index = std::get<1>(dep);
-        int n_repeated = std::get<2>(dep);
+        double n_repeated = std::get<2>(dep);
 
         // Convert length_index to n_segment using the mapping
         // The length_index is 1-based, get the contour_length and then n_segment
@@ -651,7 +665,7 @@ void PropagatorComputationOptimizer::display_blocks() const
             std::cout << u_string.substr(0,MAX_PRINT_LENGTH-5) + " ... <omitted>" ;
 
         // Print n_repeat
-        std::cout << ", " + std::to_string(item.second.n_repeated);        
+        std::cout << ", " + PropagatorCode::format_count(item.second.n_repeated);
 
         // Print v_u list
         for(const auto& v_u : item.second.v_u)
@@ -717,7 +731,6 @@ void PropagatorComputationOptimizer::display_statistics() const
 void PropagatorComputationOptimizer::display_propagators() const
 {
     // Print propagators
-    std::vector<std::tuple<std::string, int, int>> sub_deps;
     int total_mde_steps_without_reduction = 0;
     int reduced_mde_steps = 0;
 

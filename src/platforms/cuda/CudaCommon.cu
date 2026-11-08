@@ -234,6 +234,51 @@ __global__ void ker_multi(double* dst, const double* src1, const double* src2, d
     }
 }
 
+__global__ void ker_multi_pow(double* dst, const double* src, double a, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        dst[i] *= pow(src[i], a);
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void ker_multi_int_pow(double* dst, const double* src, const int n, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        // The products of n successive ker_multi calls, in the same order
+        double q = dst[i];
+        const double s = src[i];
+        for (int r = 0; r < n; r++)
+            q = q * s;
+        dst[i] = q;
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void ker_multi_int_pow(cuDoubleComplex* dst, const cuDoubleComplex* src, const int n, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        // The products of n successive ker_multi calls, in the same order
+        cuDoubleComplex q = dst[i];
+        const cuDoubleComplex s = src[i];
+        for (int r = 0; r < n; r++)
+        {
+            cuDoubleComplex t;
+            t.x = q.x * s.x - q.y * s.y;
+            t.y = q.x * s.y + q.y * s.x;
+            q = t;
+        }
+        dst[i] = q;
+        i += blockDim.x * gridDim.x;
+    }
+}
+
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
