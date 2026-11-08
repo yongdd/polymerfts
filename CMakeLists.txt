@@ -102,6 +102,20 @@ IF(MSVC)
     ENDIF()
 ELSE()
     ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-Wall>)
+    # No fused multiply-add from a*b + c: the full- and reduced-memory computations
+    # add the same terms in different groupings and agree bit for bit only when every
+    # product is rounded on its own. Without FMA in the target (-march=x86-64, the
+    # default) this changes nothing; with it (-march=x86-64-v3, native) the host
+    # loops keep separate multiplies and adds, while the FFT libraries are unaffected.
+    # MSVC's default /fp:precise does not contract. A floating-point model chosen in
+    # the flags is kept: Clang and icpx reject a later -ffp-contract under -Werror.
+    STRING(TOUPPER "${CMAKE_BUILD_TYPE}" _fp_config)
+    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|fast-math")
+        MESSAGE(STATUS "Floating-point contraction is left to the -fp-model, -ffp-contract or "
+                       "-ffast-math flags given; full and reduced memory may then differ in the last bits")
+    ELSE()
+        ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+    ENDIF()
     IF(POLYMERFTS_WERROR)
         ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
     ENDIF()

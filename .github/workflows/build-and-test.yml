@@ -88,6 +88,7 @@ jobs:
         set -euo pipefail
         lscpu
         c++ --version | sed -n 1p
+        c++ -Q --help=target | grep -E '^\s+-m(arch=|fma\s)' || true
         ldd --version | sed -n 1p
         python --version
         conda list --show-channel-urls
