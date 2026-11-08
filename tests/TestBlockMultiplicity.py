@@ -16,8 +16,10 @@ models, propagator aggregation on and off and reduced memory on and off:
      copied ends share one computation block.
   2. Real multiplicities (A_n B_n, n = 5.6 and 1.5): check_total_partition(),
      material conservation (< 1e-12), full and reduced memory agree bit for bit
-     (Q, concentrations and stress), the stress equals the central differences of
-     -ln Q / alpha in the box lengths (discrete < 1e-7; continuous < 3e-4 at
+     (Q, concentrations and stress; if not, the test prints whether the stress
+     repeats and at which steps the chain propagators differ), the stress
+     equals the central differences of -ln Q / alpha in the box lengths
+     (discrete < 1e-7; continuous < 3e-4 at
      ds = 0.0125, where its contour quadrature is accurate enough), platforms agree
      (< 1e-10), the uniform-field limit
      Q = exp(-sum copies * length * w) (< 1e-12), ln Q is convex in n, and the
@@ -205,6 +207,47 @@ def stress_mismatch(n, w, platform, chain_model):
     return np.max(np.abs(stress - derivatives)) / np.max(np.abs(derivatives))
 
 
+def print_memory_mode_differences(n, w, platform, chain_model, full, reduced):
+    """Where full and reduced memory part when they do not agree bit for bit"""
+    def digits(stress):
+        return [f"{x:.17g}" for x in stress]
+
+    results = {"full": full, "reduced": reduced}
+    lines = [f"stress, {name}: {digits(result['stress'])}" for name, result in results.items()]
+    try:
+        # Both repeats run before a new solver changes the heap
+        again = {}
+        for name, result in results.items():
+            result["solver"].compute_stress()
+            again[name] = np.asarray(result["solver"].get_stress())
+        fresh = {name: solve(star(n), w, platform, chain_model, reduce_memory=(name == "reduced"),
+                             stress=True)["stress"] for name in results}
+        for name, result in results.items():
+            lines.append(f"{name}, compute_stress() again: {digits(again[name])}, the same: "
+                         f"{np.array_equal(again[name], result['stress'])}")
+            lines.append(f"{name}, a new solver: {digits(fresh[name])}, the same: "
+                         f"{np.array_equal(fresh[name], result['stress'])}")
+        lines.append(f"new solvers, full and reduced agree bit for bit: "
+                     f"{np.array_equal(fresh['full'], fresh['reduced'])}")
+        first_step = 0 if chain_model == "continuous" else 1
+        if chain_model == "discrete":
+            lines.append("propagators (the half-bond states at the junction are not compared):")
+        for v, u in [(0, 1), (1, 0), (0, 2), (2, 0)]:
+            steps, largest = [], 0.0
+            for step in range(first_step, round(0.5 / DS) + 1):
+                a = np.asarray(full["solver"].get_propagator(0, v, u, step))
+                b = np.asarray(reduced["solver"].get_propagator(0, v, u, step))
+                if not np.array_equal(a, b):
+                    steps.append(step)
+                    largest = max(largest, max_abs(a, b))
+            lines.append(f"propagator ({v},{u}): " + (f"differs at steps {steps}, max {largest:.1e}"
+                                                     if steps else "the same at every step"))
+    except Exception as exc:
+        lines.append(f"the comparison stopped: {exc!r}")
+    for line in lines:
+        print(f"        {line}")
+
+
 def check_real_multiplicities(w, platforms):
     print("2. Real multiplicities (A_n B_n stars)")
     for n in [5.6, 1.5]:
@@ -225,6 +268,8 @@ def check_real_multiplicities(w, platforms):
                 stress_diff = max_abs(full["stress"], reduced["stress"])
                 check(same, f"{tag}: full and reduced memory agree bit for bit (|dQ/Q| {q_diff:.1e}, "
                             f"|dphi| {phi_diff:.1e}, |dstress| {stress_diff:.1e})")
+                if not same:
+                    print_memory_mode_differences(n, w, platform, chain_model, full, reduced)
                 dstress = stress_mismatch(n, w, platform, chain_model)
                 check(dstress < STRESS_TOLERANCE[chain_model],
                       f"{tag}: stress against the differences of -ln Q / alpha at ds = "
