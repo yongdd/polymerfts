@@ -59,8 +59,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `examples/charged/ecscft/BrushMultivalentIons.py` (2026-11-11): a polyelectrolyte brush that
   trivalent counterions collapse, in EC-SCFT (Duan, Agrawal and Wang 2025): every charge carries
   its self-energy in the ionic strength around it, screened by charges of their own spread or, as
-  in the paper, by point charges. The script writes the iteration around `PropagatorSolver` in the
-  Na⁺/Y³⁺/NO₃⁻ solution of the experiment of Yu et al. (2016).
+  in the paper, by point charges. The chains are discrete, one charged bead per segment as in the
+  paper (`rs`), and with the spread screening each charge feels the mean potential averaged over
+  itself. The script writes the iteration around `PropagatorSolver` in the Na⁺/Y³⁺/NO₃⁻ solution
+  of the experiment of Yu et al. (2016).
   docs/theory/ElectrostaticCorrelations.md derives the equations and lists where they differ from
   the published ones; docs/validation/BrushMultivalentIons.md compares the model with Figs. 2–4 of
   the paper, the experiment and bulk activity coefficients.

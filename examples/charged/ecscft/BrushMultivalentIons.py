@@ -13,35 +13,41 @@ strength of 6 mM, in contact with the far end of the grid. The script adds Y3+ s
 height h = 2<z> relative to h6, the height in 6 mM NaNO3, and the Y3+ charge taken up by the brush per chain
 charge.
 
-- Chains: continuous Gaussian chains grafted near the wall z = 0, propagated with cn-adi2 in a field per
-  segment, mixed with the solvent as an incompressible lattice gas.
-- Ions: Boltzmann densities in the mean potential psi and their self-energy; psi from Poisson-Boltzmann.
+- Chains: discrete Gaussian chains, as in the paper: each segment is a bead that carries one charge, joined to
+  the next by a Gaussian bond of length b. They are grafted near the wall z = 0, propagated with rs (the bond
+  summed on the grid) in a field per segment, and mixed with the solvent as an incompressible lattice gas.
+- Ions: Boltzmann densities in the mean potential psi and their self-energy; psi from Poisson-Boltzmann. With
+  spread screening each charge, segments included, feels psi averaged over its own Gaussian and is spread in
+  the same way in the Poisson equation, as the Gaussian average of the variational theory gives.
 - Self-energy: every charge is a Gaussian of Born radius a. In a uniform medium a charge of radius a_J has the
   self-energy per z^2
       u_J = (l_B/pi) int_0^inf dk k^2 h_J(k)^2 / (k^2 + sum_K kappa_K^2 h_K(k)^2),   h_K(k)^2 = exp(-a_K^2 k^2/pi),
   minus its value in the bulk solution, where kappa_K^2 = 8 pi l_B I_K is set by the partial ionic strength
   I_K of the charges of radius a_K. Every charge screens with its own spread, as the stationary point of the
   variational free energy requires. The paper screens with point charges (h_K = 1 in the denominator), the
-  limit taken by Wang, Phys. Rev. E 81, 021501 (2010); screening = "point" selects it.
+  limit taken by Wang, Phys. Rev. E 81, 021501 (2010), and takes psi at the centre of each charge;
+  screening = "point" selects these published equations.
 - Local form: each species takes the uniform result at the partial ionic strengths averaged over a Gaussian of
   standard deviation a along z, and feels its self-energy averaged in the same way. The intrachain part of
   the polymer self-energy is left out, as in the brush calculations of the paper, so each segment is screened
-  like a free ion. correlations = False drops the self-energy and gives the mean field (Poisson-Boltzmann).
+  like a free ion. correlations = False drops the self-energy and gives the mean field (Poisson-Boltzmann, of spread
+  charges unless screening = "point").
 
 The Born radii are 1.7725 nm = sqrt(pi) b for the segment charges, 0.25 nm for Na+ and NO3- as in the paper, and
 0.66 nm for Y3+, which fits the mean activity coefficients of Y(NO3)3 up to 0.1 mol/kg (Rard and Spedding, J. Chem.
 Eng. Data 27, 454 (1982)) with point-charge screening and one radius for Y3+ and NO3-; the paper takes 0.25 nm
 for every charge. The self-energy is not part of the polymerfts SCFT class, so the script writes the iteration
 itself (damped steps and Anderson mixing) and takes the chains from PropagatorSolver. Lengths are in nm and
-energies in kT. The run takes about 2.5 minutes on one CPU core. docs/validation/BrushMultivalentIons.md compares
+energies in kT. The run takes about one minute on one CPU core. docs/validation/BrushMultivalentIons.md compares
 the model with Figs. 2 and 4 of the paper and with the experiment.
 """
 
 import os
 
 import numpy as np
-from scipy.linalg import solve_banded
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
+from scipy.sparse import csc_matrix, diags, identity
+from scipy.sparse.linalg import spsolve
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "0"  # One chain: nothing to run in parallel
@@ -63,7 +69,7 @@ correlations = True     # False: mean field, no self-energy
 ionic_strength = 0.006  # Of the solution, mol/L: NaNO3 and Y(NO3)3
 yttrium = [1e-10, 1e-9, 3e-9, 1e-8, 3e-8, 1e-7, 3e-7, 1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4, 5e-4]   # Y3+, mol/L
 
-length, nz, ds = 200.0, 1600, 0.001  # Grid of the brush and the solution next to it, nm; contour step
+length, nz = 200.0, 1600  # Grid of the brush and the solution next to it, nm
 graft_width = 0.5       # Width of the graft layer at the wall, nm
 floor = 6.0             # Lowest field below its largest value, kT per segment
 mixing, history, largest_step, tolerance, max_steps = 0.03, 20, 0.5, 1e-7, 1500
@@ -92,13 +98,20 @@ class Brush:
         self.dz = length / nz
         self.z = (np.arange(nz) + 0.5) * self.dz
         unit = segment * np.sqrt(n_segments)   # R0, the length unit of PropagatorSolver
-        self.solver = PropagatorSolver(nx=[nz], lx=[length / unit], ds=ds, bond_lengths={"A": 1.0},
-                                       bc=["absorbing", "reflecting"], chain_model="continuous",
-                                       numerical_method="cn-adi2")
+        self.solver = PropagatorSolver(nx=[nz], lx=[length / unit], ds=1 / n_segments, bond_lengths={"A": 1.0},
+                                       bc=["absorbing", "reflecting"], chain_model="discrete",
+                                       numerical_method="rs")
         self.solver.add_polymer(1.0, [["A", 1.0, 0, 1]], grafting_points={0: "G"})
         self.graft = np.exp(-0.5 * (self.z / graft_width) ** 2)
         self.screen = radii if screening == "spread" else [0.0] * len(radii)
         self.blurs = [lambda v, a=a: gaussian_filter(v, sigma=a / self.dz, mode="reflect") for a in radii]
+        # The average over a charge of radius a, a Gaussian of standard deviation a / sqrt(pi) along z, as a
+        # symmetric band matrix (reflected at both ends); the paper's equations take the centre of the charge
+        spread = lambda a: gaussian_filter1d(np.eye(nz), a / np.sqrt(np.pi) / self.dz, axis=0, mode="reflect")
+        self.spreads = [csc_matrix(spread(a)) if screening == "spread" else identity(nz, format="csc") for a in radii]
+        off = 1 / self.dz ** 2   # d^2/dz^2 with no field at the wall and psi = 0 at the far end
+        middle = np.r_[-off, np.full(nz - 2, -2 * off), -3 * off]
+        self.laplacian = diags([np.full(nz - 1, off), middle, np.full(nz - 1, off)], [-1, 0, 1], format="csc")
         self.psi = np.zeros(nz)
 
     def set_solution(self, y):
@@ -121,21 +134,23 @@ class Brush:
         return rho * grafting * n_segments / (rho.sum() * self.dz)
 
     def ion_densities(self, psi, u_mono, u_tri):
-        """Na+, Y3+ and NO3- at potential psi and the self-energies per z^2 of the monovalent ions and of Y3+."""
-        s = self.solution
-        return (s["sodium"] * np.exp(-np.clip(psi + u_mono, -300, 300)),
-                s["cation"] * np.exp(-np.clip(3 * psi + 9 * u_tri, -300, 300)),
-                s["anion"] * np.exp(np.clip(psi - u_mono, -300, 300)))
+        """Na+, Y3+ and NO3- at potential psi, averaged over each ion, and the self-energies per z^2 of the
+        monovalent ions and of Y3+."""
+        s, mono, tri = self.solution, self.spreads[1] @ psi, self.spreads[2] @ psi
+        return (s["sodium"] * np.exp(-np.clip(mono + u_mono, -300, 300)),
+                s["cation"] * np.exp(-np.clip(3 * tri + 9 * u_tri, -300, 300)),
+                s["anion"] * np.exp(np.clip(mono - u_mono, -300, 300)))
 
     def poisson_boltzmann(self, rho, u_mono, u_tri):
         """Newton iteration from the last potential, with no field at the wall and the potential of the solution,
-        zero, at the far end."""
-        alpha, off = 4 * np.pi * bjerrum, 1 / self.dz ** 2
+        zero, at the far end. With spread screening every charge, the segments too, is spread over its Gaussian."""
+        alpha, (segments, mono, tri) = 4 * np.pi * bjerrum, self.spreads
+        fixed = segments @ rho
 
         def error(psi):
             sodium, cation, anion = ions = self.ion_densities(psi, u_mono, u_tri)
-            ends = np.concatenate([psi[:1], psi, -psi[-1:]])
-            return (ends[2:] - 2 * psi + ends[:-2]) * off + alpha * (sodium + 3 * cation - anion - rho), ions
+            charge = mono @ (sodium - anion) + 3 * (tri @ cation) - fixed
+            return self.laplacian @ psi + alpha * charge, ions
 
         psi = self.psi
         for _ in range(300):
@@ -143,12 +158,8 @@ class Brush:
             if np.max(np.abs(f)) < 1e-8:
                 self.psi = psi
                 return psi, (sodium, cation, anion)
-            bands = np.zeros((3, nz))
-            bands[0, 1:] = bands[2, :-1] = -off
-            bands[1] = 2 * off + alpha * (sodium + 9 * cation + anion)
-            bands[1, 0] -= off
-            bands[1, -1] += off
-            step = solve_banded((1, 1), bands, f)
+            response = mono @ diags(sodium + anion) @ mono + 9 * (tri @ diags(cation) @ tri)
+            step = spsolve(csc_matrix(alpha * response - self.laplacian), f)
             t, size = 1.0, np.linalg.norm(f)
             while not np.linalg.norm(error(psi + t * step)[0]) < size and t > 1e-6:
                 t /= 2
@@ -162,7 +173,7 @@ class Brush:
         rho = self.segment_density(field)
         psi, (sodium, cation, anion) = self.poisson_boltzmann(rho, felt[1], felt[2])
         phi = np.clip(volume * rho, 0, 0.999)
-        target = chi * (1 - 2 * phi) - np.log1p(-phi) - psi + felt[0]
+        target = chi * (1 - 2 * phi) - np.log1p(-phi) - self.spreads[0] @ psi + felt[0]
         self.state = dict(rho=rho, psi=psi, sodium=sodium, cation=cation, anion=anion)
         if correlations:
             strengths = partial_strengths(rho, sodium, cation, anion)

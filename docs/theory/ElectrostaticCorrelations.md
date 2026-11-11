@@ -42,7 +42,7 @@ L_{\rm ref}[\Psi]=\frac12\iint d\mathbf r\,d\mathbf r'\,\left[\Psi(\mathbf r)+i\
 \qquad\text{(3)}
 ```
 
-The average of the coupling $`e^{-iz_Kh_K*\Psi}`$ over this reference gives every charge the Boltzmann factor $`e^{-z_Kh_K*\psi-u_K}`$. Like Reference 1 (SI Eq. S11), the equations below take the mean potential at the centre of the charge, $`h_K*\psi\to\psi`$, which holds where $`\psi`$ varies little over the radius; the Boltzmann factor is then $`e^{-z_K\psi-u_K}`$, with the self-energy
+The average of the coupling $`e^{-iz_Kh_K*\Psi}`$ over this reference gives every charge the Boltzmann factor $`e^{-z_Kh_K*\psi-u_K}`$, in the mean potential averaged over the charge, with the self-energy
 
 ```math
 u_K(\mathbf r)=\frac{z_K^2}{2}\iint d\mathbf r'd\mathbf r''\,h_K(\mathbf r-\mathbf r')\,G(\mathbf r',\mathbf r'')\,h_K(\mathbf r''-\mathbf r) .
@@ -53,19 +53,19 @@ For grafted chains, a solvent in equilibrium with pure solvent and ions from a r
 
 ```math
 \begin{aligned}
-F_{\rm var}={}&-\ln\tilde Q_P-\lambda_S\int d\mathbf r\,e^{-\omega_S}-\sum_K\lambda_K\int d\mathbf r\,e^{-z_K\psi-u_K}\\
+F_{\rm var}={}&-\ln\tilde Q_P-\lambda_S\int d\mathbf r\,e^{-\omega_S}-\sum_K\lambda_K\int d\mathbf r\,e^{-z_K\textcolor{red}{h_K*}\psi-u_K}\\
 &+\int d\mathbf r\left[\chi v\rho_P\rho_S-\omega_P\rho_P-\omega_S\rho_S\textcolor{red}{+\xi}\left(\rho_P+\rho_S-\frac1v\right)+\frac12\psi\nabla\cdot(\epsilon\nabla\psi)\right]\\
 &+\frac12\iint d\mathbf r\,d\mathbf r'\left[C^{-1}-G^{-1}\right](\mathbf r,\mathbf r')\,G(\mathbf r',\mathbf r)-\frac12\ln\frac{\det G}{\det C} .
 \end{aligned}
 \qquad\text{(5)}
 ```
 
-$`\tilde Q_P`$ is the partition function of the grafted chains in the field $`V_P=\omega_P+z_P\psi+u_P`$ per segment (Section 5), $`\lambda_S=1/v`$, and $`\lambda_K`$ is the activity of ion $`K`$. A chain in $`V_P`$ treats its segments as independent charges; Section 4 gives the intrachain part this leaves out. The sign of $`\xi`$ is that of the main text of Reference 1, opposite to its Supplemental Material (Section 6).
+$`\tilde Q_P`$ is the partition function of the grafted chains in the field $`V_P=\omega_P+z_Ph_P*\psi+u_P`$ per segment (Section 5), $`\lambda_S=1/v`$, and $`\lambda_K`$ is the activity of ion $`K`$. A chain in $`V_P`$ treats its segments as independent charges; Section 4 gives the intrachain part this leaves out. The sign of $`\xi`$ is that of the main text of Reference 1, opposite to its Supplemental Material (Section 6).
 
-The stationary point of $`F_{\rm var}`$ with respect to $`\psi`$ gives the Poisson equation with Boltzmann ions, using $`\delta(-\ln\tilde Q_P)/\delta V_P=\rho_P`$:
+The stationary point of $`F_{\rm var}`$ with respect to $`\psi`$ gives the Poisson equation with Boltzmann ions, using $`\delta(-\ln\tilde Q_P)/\delta V_P=\rho_P`$ and the symmetry of $`h_K`$:
 
 ```math
--\nabla\cdot(\epsilon\nabla\psi)=z_P\rho_P+\sum_Kz_K\rho_K,\qquad \rho_K=\lambda_K\,e^{-z_K\psi-u_K} .
+-\nabla\cdot(\epsilon\nabla\psi)=z_P\textcolor{red}{h_P*}\rho_P+\sum_Kz_K\textcolor{red}{h_K*}\rho_K,\qquad \rho_K=\lambda_K\,e^{-z_K\textcolor{red}{h_K*}\psi-u_K} .
 \qquad\text{(6)}
 ```
 
@@ -169,35 +169,35 @@ Reference 1 drops $`\langle H^{\rm ex}\rangle_0`$ in its brush calculations, and
 
 ## 5. Planar Brush
 
-Chains are grafted at $`\sigma_g`$ chains per area with the grafting weight $`g(z)`$ ($`\int g\,dz=1`$) near a wall at $`z=0`$. The segments carry $`z_P=-1`$. With continuous Gaussian chains and the contour $`s`$ in units of $`N`$, the propagators in the field $`w`$ per segment are
+Chains are grafted at $`\sigma_g`$ chains per area with the grafting weight $`g(z)`$ ($`\int g\,dz=1`$) near a wall at $`z=0`$. As in Reference 1, a chain is discrete: $`N`$ beads, each a charge $`z_P=-1`$, joined by Gaussian bonds of length $`b`$. The propagators of the beads $`i=1,\dots,N`$ in the field $`w`$ per bead are
 
 ```math
-\frac{\partial q}{\partial s}=\frac{Nb^2}{6}\frac{\partial^2q}{\partial z^2}-Nw(z)\,q,\quad q(z,0)=g(z);\qquad
--\frac{\partial q^\dagger}{\partial s}=\frac{Nb^2}{6}\frac{\partial^2q^\dagger}{\partial z^2}-Nw(z)\,q^\dagger,\quad q^\dagger(z,1)=1,
+q_1(z)=g(z)\,e^{-w(z)},\quad q_{i+1}(z)=e^{-w(z)}\int dz'\,\Phi(z-z')\,q_i(z');\qquad
+q_N^\dagger(z)=e^{-w(z)},\quad q_{i-1}^\dagger(z)=e^{-w(z)}\int dz'\,\Phi(z-z')\,q_i^\dagger(z'),
 \qquad\text{(18)}
 ```
 
-with $`q=q^\dagger=0`$ at the wall and no flux at the far end. The segment density and the partition function of the grafted chains of a wall area $`A`$ are
+with the bond $`\Phi(z)=\sqrt{3/(2\pi b^2)}\,e^{-3z^2/(2b^2)}`$ along $`z`$, the wall absorbing and the far end reflecting. The bead density and the partition function of the grafted chains of a wall area $`A`$ are
 
 ```math
-\rho_P(z)=\frac{\sigma_g N}{Q}\int_0^1ds\,q(z,s)\,q^\dagger(z,s),\qquad Q=\int dz\,g(z)\,q^\dagger(z,0),\qquad \ln\tilde Q_P=\sigma_g A\ln Q,
+\rho_P(z)=\frac{\sigma_g}{Q}\sum_{i=1}^Nq_i(z)\,q_i^\dagger(z)\,e^{w(z)},\qquad Q=\int dz\,g(z)\,q_1^\dagger(z),\qquad \ln\tilde Q_P=\sigma_g A\ln Q,
 \qquad\text{(19)}
 ```
 
-so that $`\int\rho_Pdz=\sigma_g N`$ ([Chain Propagators](ChainPropagators.md)). The first segments then lie in $`g(z)\,q^\dagger(z,0)/Q`$: the grafting points move within the width of $`g`$. With fixed grafting points, as in Eq. S30 of Reference 1, the forward propagator would start from $`g(z)/q^\dagger(z,0)`$ and $`\ln\tilde Q_P=\sigma_g A\int dz\,g(z)\ln q^\dagger(z,0)`$. The ions come from a solution of concentrations $`c_K^b`$ at the far end, where $`\psi=0`$; their activities are $`\lambda_K=c_K^b\,e^{u_K^b}`$, with $`u_K^b`$ the self-energy in the solution. Eqs. (6)-(8) become, for the field per segment, the ions and the potential,
+so that $`\int\rho_Pdz=\sigma_g N`$ ([Chain Propagators](ChainPropagators.md)). The first beads then lie in $`g(z)\,q_1^\dagger(z)/Q`$: the grafting points move within the width of $`g`$. With fixed grafting points, as in Eq. S30 of Reference 1, the forward propagator would start from $`g(z)\,e^{-w(z)}/q_1^\dagger(z)`$ and $`\ln\tilde Q_P=\sigma_g A\int dz\,g(z)\ln q_1^\dagger(z)`$. The ions come from a solution of concentrations $`c_K^b`$ at the far end, where $`\psi=0`$; their activities are $`\lambda_K=c_K^b\,e^{u_K^b}`$, with $`u_K^b`$ the self-energy in the solution. Eqs. (6)-(8) become, for the field per bead, the ions and the potential,
 
 ```math
-w(z)=\chi(1-2\phi)-\ln(1-\phi)+z_P\psi+z_P^2\bar U_P,\qquad
-\rho_K(z)=c_K^b\,e^{-z_K\psi-z_K^2\bar U_K},
+w(z)=\chi(1-2\phi)-\ln(1-\phi)+z_P\textcolor{red}{h_P*}\psi+z_P^2\bar U_P,\qquad
+\rho_K(z)=c_K^b\,e^{-z_K\textcolor{red}{h_K*}\psi-z_K^2\bar U_K},
 \qquad\text{(20)}
 ```
 
 ```math
-\frac{d^2\psi}{dz^2}=-4\pi\ell_B\left(\sum_Kz_K\rho_K+z_P\rho_P\right),\qquad \frac{d\psi}{dz}(0)=0,\qquad \psi=0\ \text{in the solution},
+\frac{d^2\psi}{dz^2}=-4\pi\ell_B\left(\sum_Kz_K\textcolor{red}{h_K*}\rho_K+z_P\textcolor{red}{h_P*}\rho_P\right),\qquad \frac{d\psi}{dz}(0)=0,\qquad \psi=0\ \text{in the solution},
 \qquad\text{(21)}
 ```
 
-where $`\bar U_K`$ is the self-energy per $`z_K^2`$ relative to the solution. The brush height is $`h=2\langle z\rangle`$ of $`\rho_P`$. Without self-energy, $`\bar U_K=0`$, these are Poisson-Boltzmann theory with the self-consistent field of the chains.
+where $`\bar U_K`$ is the self-energy per $`z_K^2`$ relative to the solution and $`h_K*`$ averages along $`z`$ over the charge, a Gaussian of standard deviation $`a_K/\sqrt\pi`$ reflected at the wall and at the far end. The brush height is $`h=2\langle z\rangle`$ of $`\rho_P`$. Without self-energy, $`\bar U_K=0`$, these are Poisson-Boltzmann theory of the smeared charges with the self-consistent field of the chains.
 
 Reference 1 solves Eq. (10) for $`G`$, split into a local part and a long-range part that carries the variation of the ionic strength. The local form used here takes for $`G`$ at each point that of a uniform medium (Eq. (11), with the screening of Eq. (9)), at the partial ionic strengths around the charge:
 
@@ -218,7 +218,7 @@ F_c=A\int dz\,f\big(\langle I\rangle(z)\big),\qquad
 
 because the Gaussian average is symmetric. The self-energy that every species feels is then the derivative of one correlation free energy, and Eqs. (20)-(22) are the stationary point of the mean-field grand potential (Eq. (5) without $`u_K`$ and without its last line) plus $`F_c`$. With several radii, the same holds when all species are averaged with one kernel, $`F_c=A\int dz\,f\left(\{\langle I_K\rangle(z)\}\right)`$. The example averages each species over its own radius, as the validation runs did; Eq. (22) is then a closure of the same accuracy rather than such a stationary point.
 
-The example takes $`g(z)\propto e^{-z^2/(2w_g^2)}`$ with $`w_g=0.5`$ nm and the solution of the experiment of Reference 4 (Na⁺, Y³⁺ and NO₃⁻ at an ionic strength of 6 mM), iterates $`w`$ and the three $`U_J`$ (segments, monovalent ions, trivalent ions) with damped steps and Anderson mixing, solves Eq. (21) by Newton's method in each step, and Eq. (18) by `cn-adi2`.
+The example takes $`g(z)\propto e^{-z^2/(2w_g^2)}`$ with $`w_g=0.5`$ nm and the solution of the experiment of Reference 4 (Na⁺, Y³⁺ and NO₃⁻ at an ionic strength of 6 mM), iterates $`w`$ and the three $`U_J`$ (segments, monovalent ions, trivalent ions) with damped steps and Anderson mixing, solves Eq. (21) by Newton's method in each step, and Eq. (18) by `rs`, which sums the bond on the grid.
 
 ## 6. Relation to the Published Equations
 
@@ -227,15 +227,16 @@ The equations of this page differ from those printed in Reference 1 and its Supp
 | Here | Reference 1 | Difference | Effect on the example |
 |---|---|---|---|
 | Eq. (5) | SI Eq. S8 | S8 is the exponent of the partition function, not the action: as an action the ion term has the opposite sign | None |
+| Eqs. (5), (6), (20), (21) | SI Eq. S11 and the equations that follow from it | The SI takes the mean potential at the centre of each charge, $`e^{-z_K\psi-u_K}`$, with point charges in the Poisson equation; the Gaussian average of $`e^{-iz_Kh_K*\Psi}`$ gives $`h_K*\psi`$, and the Poisson equation then has the charges spread | `"point"` takes the published form; at the radii of the example at most 0.001 in $`\log_{10}(h/h_6)`$ |
 | Eqs. (5), (7) | SI Eqs. S11, S27a, S27b, S28, S32 | The SI writes $`-\xi`$, opposite to the main text and to its own ion weights; here $`+\xi`$ | None: $`\xi`$ is eliminated in Eq. (8) |
 | Eq. (7) | SI Eqs. S27a, S27b | The fluctuation terms lack the derivative of $`\epsilon`$ with respect to the densities | None: $`\epsilon`$ is uniform |
 | Eq. (9) | SI Eq. S25, main text Eq. 5 | S25 screens with point charges ($`h_K\to\delta`$, Eq. (10)) without saying so, which is not the stationary point of S11; Eq. (9) is | The default `screening = "spread"`; `"point"` gives the published form |
-| Eqs. (11), (13) | SI Eq. S33 | S33 is the uniform state of point-charge screening, Eq. (14) | At the radii of the example, 0.007–0.014 in $`\log_{10}(h/h_6)`$ |
+| Eqs. (11), (13) | SI Eq. S33 | S33 is the uniform state of point-charge screening, Eq. (14) | At the radii of the example, 0.007–0.013 in $`\log_{10}(h/h_6)`$ |
 | Eq. (17) | SI Eq. S26 | The extra factor $`G(\mathbf r,\mathbf r')`$ is removed | None: the term is dropped, as in Reference 1 |
 | Section 4 | Main text Eq. 3b, SI Eq. S27c | Eq. 3b is an energy per segment with a factor ½ for pairs; used as a field it gives half the density response, and no field per segment is exact | None: the term is dropped |
 | Section 4 | SI Eqs. S21–S22 | The intrachain propagator $`g(\mathbf r,\mathbf r';i,j)`$ needs the start $`g(\mathbf r,\mathbf r';i,i)=e^{-V_P(\mathbf r)}\delta(\mathbf r-\mathbf r')`$, which the SI does not state | None: the term is dropped |
 | Section 4 | SI Eqs. S29–S32 | The intrachain term of a grafted chain needs $`\langle\ln Q\rangle`$ over the grafting points, where $`\ln\langle Q\rangle`$ is used | None: the term is dropped |
-| Eq. (19) | SI Eq. S30 | In the discrete form, the start of the forward propagator at a grafting point lacks the factor $`e^{-V_P}`$ of the first segment | None: continuous chains, grafting points within $`g(z)`$ |
+| Eq. (19) | SI Eq. S30 | The start of the forward propagator at a grafting point lacks the factor $`e^{-V_P}`$ of the first bead | None: $`q_1=g\,e^{-w}`$ carries it, and the grafting points move within $`g(z)`$ |
 
 The main text writes Eqs. 3a and 5 with the wrong integration variables; SI Eqs. S12 and S25 are right. The scaling analysis of Reference 1 (main text Eqs. 6–9, SI Eqs. S34–S42) does not enter these equations. In it, S40 is twice too large (with S41b, S41c and lines 2–3 of Eq. 8), the dilute correlation free energy has $`\pi/24`$ for $`1/(24\pi)`$, line 4 of Eq. 8 vanishes at the $`\chi=1/2`$ used for the figures, the balance stated for S41a does not give its result, S42 lacks a factor $`\rho_b`$, and Fig. 3 puts $`\rho_b`$ in mol/L into Eq. 9.
 
