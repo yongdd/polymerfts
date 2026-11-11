@@ -52,8 +52,8 @@ class LR:
         a box with reflecting walls), which applies 1/J(k) (on the GPU with CUDA).
     axis_bc : list of str, optional
         "periodic" or "wall" for each axis of a box that mixes periodic axes and
-        reflecting walls, which fourier cannot transform: FFT and cosine series
-        (orthonormal) with scipy.fft. Give either fourier or axis_bc.
+        reflecting walls: FFT and cosine series (orthonormal) with scipy.fft.
+        Give either fourier or axis_bc.
 
     Attributes
     ----------

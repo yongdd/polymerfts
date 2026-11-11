@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Electrostatics in closed boxes (walls on every side) with fixed charges, in SCFT and CL-FTS.
+"""Electrostatics in boxes with walls, on every side or next to periodic axes, with fixed charges,
+in SCFT and CL-FTS.
 
 With walls the transforms are cosine series: psi has no normal derivative at the walls.
-1. Input: a box that mixes periodic and wall axes, a fixed charge of the wrong size, box
-   relaxation of a charged SCFT with walls and a mask (SCFT and CL-FTS) are rejected; the
-   counterions neutralize the fixed charge, and 'fixed_charge': None means none.
+1. Input: a fixed charge of the wrong size, box relaxation of a charged SCFT with walls and a
+   mask (SCFT and CL-FTS) are rejected; the counterions neutralize the fixed charge, and
+   'fixed_charge': None means none.
 2. Poisson-Boltzmann: a neutral diblock melt with Na+ and Cl- point ions between two negatively
    charged layers near the walls (1D, 64 points). psi of SCFT equals the solution of the
    Poisson-Boltzmann equation with the same smearing, solved independently in the cosine basis of
@@ -19,6 +20,9 @@ With walls the transforms are cosine series: psi has no normal derivative at the
 6. SCFT in a closed box: the stress (cosine modes of psi and of the ions) equals dF/dL with point
    ions and a fixed charge held at its grid values, and charged chains grafted to a wall (q_init)
    converge to the Poisson equation.
+7. A box with walls along x and a periodic y axis (rs): psi of SCFT between the charged layers is
+   the 1D Poisson-Boltzmann solution of item 2 at every y (1e-9), and the CL-FTS forces of item 3
+   equal central differences of H in that box.
 """
 
 import contextlib
@@ -95,9 +99,6 @@ def inputs(root):
     params = parameters(nx, lx, **scft_options())
     params["bc"] = ["periodic", "periodic"]
     quiet(lambda: SCFT(params))
-    params = parameters([8, 8], [2.0, 2.0], **scft_options())
-    params["bc"] = ["reflecting", "reflecting", "periodic", "periodic"]
-    expect_validation_error(lambda: SCFT(params), "not both")
     params = parameters(nx, lx, **scft_options())
     params["electrostatics"]["fixed_charge"] = np.zeros(63)
     expect_validation_error(lambda: SCFT(params), "one real, finite charge density per grid point")
@@ -116,8 +117,8 @@ def inputs(root):
     assert sim.electrostatics.fixed_charge is None, "'fixed_charge': None"
 
 
-def poisson_boltzmann(root):
-    nx, lx = [64], [4.0]
+def poisson_boltzmann_solution(nx, lx):
+    """psi of the Poisson-Boltzmann equation between the layers, in the cosine basis of scipy.fft.dct."""
     fixed = layers(nx, lx)
     k = np.pi * np.arange(nx[0]) / lx[0]
     concentrations = ((1.0, 0.01 - np.mean(fixed), 0.1), (-1.0, 0.01, 0.15))
@@ -134,7 +135,12 @@ def poisson_boltzmann(root):
         return (dct(charge, norm="ortho") - k * k * np.r_[0.0, modes] / E)[1:]
     solution = solve_root(residual, np.zeros(nx[0] - 1), method="hybr", tol=1e-14)
     assert np.max(np.abs(residual(solution.x))) < 1e-13, "Poisson-Boltzmann reference"
-    psi = idct(np.r_[0.0, solution.x], norm="ortho")
+    return idct(np.r_[0.0, solution.x], norm="ortho")
+
+
+def poisson_boltzmann(root):
+    nx, lx = [64], [4.0]
+    psi = poisson_boltzmann_solution(nx, lx)
 
     sim = quiet(lambda: SCFT(parameters(nx, lx, **scft_options())))
     result = quiet(lambda: sim.run(initial_fields={"A": np.zeros(64), "B": np.zeros(64)}, return_result=True))
@@ -159,15 +165,18 @@ def hamiltonian(sim, w_aux):
     return h + sim.electrostatics.hamiltonian(), phi_smeared
 
 
-def forces(root):
+def forces(root, lateral="reflecting"):
     nx, lx = [10, 8], [2.0, 1.6]
     ions = {"Na": {"valence": 1.0, "concentration": 0.02, "smearing_length": 0.1},
             "Cl": {"valence": -1.0, "concentration": 0.02, "smearing_length": 0.15},
             "K": {"valence": 1.0, "chemical_potential": float(np.log(N * 0.01)), "smearing_length": 0.12},
             "Br": {"valence": -1.0, "chemical_potential": float(np.log(N * 0.01)), "smearing_length": 0.12}}
-    params = parameters(nx, lx, charge_a=0.1, ions=ions, **clfts_options(root / "forces", 2, nbar=1e4))
+    params = parameters(nx, lx, charge_a=0.1, ions=ions, **clfts_options(root / f"forces_{lateral}", 2, nbar=1e4))
     params["chi_n"] = {"A,B": 12.0}
+    if lateral == "periodic":
+        params.update(bc=["reflecting"] * 2 + ["periodic"] * 2, numerical_method="rs")
     sim = quiet(lambda: CLFTS(params))
+    assert sim.prop_solver.fourier.mixed == (lateral == "periodic")
     es, n_grid, M = sim.electrostatics, int(np.prod(nx)), 2
     rng = np.random.default_rng(29)
     w_aux = rng.normal(0.0, 5.0, (M, n_grid)) + 1j * rng.normal(0.0, 1.0, (M, n_grid))
@@ -341,6 +350,20 @@ def closed_scft(root):
     assert result.converged and error < 1e-8, f"grafted chains: Poisson error {error:.2e}"
 
 
+def mixed_box(root):
+    # The 1D Poisson-Boltzmann solution of item 2 at every y of a box periodic along y
+    nx, lx = [64, 4], [4.0, 1.0]
+    psi = poisson_boltzmann_solution(nx[:1], lx[:1])
+    params = parameters(nx, lx, **scft_options())
+    params.update(bc=["reflecting"] * 2 + ["periodic"] * 2, numerical_method="rs")
+    sim = quiet(lambda: SCFT(params))
+    result = quiet(lambda: sim.run(initial_fields={"A": np.zeros(256), "B": np.zeros(256)}, return_result=True))
+    error = np.max(np.abs(np.reshape(result.psi, nx) - psi[:, None]))
+    assert sim.prop_solver.fourier.mixed and result.converged and error < 1e-9 * np.max(np.abs(psi)), \
+        f"SCFT in a box periodic along y: max |psi - PB| = {error:.2e}"
+    forces(root, lateral="periodic")
+
+
 def main():
     if not any(p.startswith("cpu") for p in PlatformSelector.avail_platforms()):
         return 77
@@ -348,7 +371,7 @@ def main():
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("Poisson-Boltzmann", poisson_boltzmann), ("forces", forces),
                             ("restart", restart), ("fixed charges in a periodic box", periodic),
-                            ("closed-box SCFT", closed_scft)):
+                            ("closed-box SCFT", closed_scft), ("walls along x, periodic y", mixed_box)):
             check(root)
             print(f"[PASS] {name}")
     return 0

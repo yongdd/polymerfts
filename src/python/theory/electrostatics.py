@@ -29,8 +29,8 @@ and H is evaluated by Parseval's theorem. The transforms are those of Propagator
 (on the GPU with CUDA).
 Without screening the uniform mode of ψ is zero (electroneutrality); with screening it
 fluctuates, and the system may carry a net charge. A fixed charge density (fixed_charge) adds
-to c. Periodic boxes, or closed boxes with walls on every side: the transforms are then the
-cosine series, so ψ has no normal derivative at the walls (no field through them).
+to c. Along wall axes the transforms are the cosine series, so ψ has no normal derivative at
+the walls (no field through them); a box may mix periodic and wall axes.
 
 Point ions (`ions`) have no volume and no χ: ion s with valence z_s and Gaussian smearing
 length a_s feels its smeared potential z_s (Γ_s * ψ)/N, where a segment of the reference chain
@@ -142,7 +142,7 @@ class Electrostatics:
         (`random_bg.jumped()`): the noise of the auxiliary fields is the same as without
         electrostatics, and neighboring seeds do not share streams.
     fourier : FourierTransform
-        PropagatorSolver.fourier of the simulation (complex fields; periodic or closed box).
+        PropagatorSolver.fourier of the simulation (complex fields).
     ion_concentrations : dict
         Concentration of each canonical point ion with the counterions (validation.point_ion_concentrations).
     open_charges : bool
@@ -476,9 +476,8 @@ class MeanFieldElectrostatics:
     D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state (set_response): R is the Newton
     step of the linearized equation, which keeps the iteration stable where E/k² is large.
     Without screening the uniform mode of ψ is zero in a neutral canonical system; charged
-    grand-canonical ions make it the Donnan potential. Real fields in a periodic box or a closed
-    box with walls on every side; the transforms are those of PropagatorSolver.fourier (Fourier
-    modes, or the cosine modes of a closed box).
+    grand-canonical ions make it the Donnan potential. Real fields; the transforms are those of
+    PropagatorSolver.fourier (Fourier modes along periodic axes, cosine modes along wall axes).
 
     Parameters
     ----------
@@ -490,7 +489,7 @@ class MeanFieldElectrostatics:
     n_segments : float or None
         Segments N of the reference chain, needed by point ions.
     fourier : FourierTransform
-        PropagatorSolver.fourier of the simulation (real fields; periodic or closed box).
+        PropagatorSolver.fourier of the simulation (real fields).
     ion_concentrations : dict
         Concentration of each canonical point ion with the counterions (validation.point_ion_concentrations).
     open_charges : bool
@@ -635,8 +634,8 @@ class MeanFieldElectrostatics:
         -(1/(2E)) <ψ (k² + κ²) ψ> gives -(1/(2E)) Σ_k (∂k²/∂θ) |ψ(k)|²/n², and each ion
         <c_s z_s ((∂Γ_s/∂θ) * ψ)> with ∂Γ_s/∂θ = -(a_s²/2) Γ_s ∂k²/∂θ. coefficients gives the
         transform of a real field at the wavenumbers of k_sq and dk_sq ({stress slot: ∂k²/∂θ}),
-        normalized like numpy.fft.fftn (Smearing.coefficients: Fourier modes, or the cosine modes
-        of a closed box). The smearing of the monomer types is that of Smearing.stress with the
+        normalized like numpy.fft.fftn (Smearing.coefficients: Fourier modes, and cosine modes
+        along walls). The smearing of the monomer types is that of Smearing.stress with the
         fields w_i + z_i ψ.
         """
         result = np.zeros(6)

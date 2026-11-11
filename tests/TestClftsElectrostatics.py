@@ -404,8 +404,7 @@ def input_checks(root):
     expect_validation_error(changed(lambda p: p["electrostatics"].update(psi_dt_scale=0.2)), "unknown keys")
     expect_validation_error(changed(lambda p: p.pop("smearing")), "needs 'smearing'")
     expect_validation_error(changed(lambda p: p["smearing"]["a_int"].update(C=0.0)), "positive smearing length")
-    # Closed boxes are accepted (TestConfinedElectrostatics); a box that mixes walls and periodic axes is not
-    expect_validation_error(changed(lambda p: p.update(bc=["reflecting"] * 2 + ["periodic"] * 2)), "not both")
+    # Closed boxes and boxes that mix walls and periodic axes are accepted (TestConfinedElectrostatics)
     expect_validation_error(changed(lambda p: p["smearing"]["a_int"].pop("C")), "one length for each monomer type")
 
     def random_copolymer(p):

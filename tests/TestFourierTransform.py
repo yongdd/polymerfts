@@ -21,10 +21,17 @@ deviation 5:
    takes the cosine series.
 5. 1D periodic grids (odd and even) and several real fields with an odd number of grid
    points (periodic 5x5x5, 1D reflecting 33), whose fields are not 16-byte aligned when packed.
-6. CPU and CUDA give the same transforms and products (when both are available).
-7. Input checks: multiplier shapes, a handle of another transform, field counts,
+6. Boxes that mix periodic and wall axes (2D and 3D, odd and even sizes, cosine and sine
+   axes, real and complex fields): forward() is numpy.fft.fft along the periodic axes and the
+   halved type-2 series of SciPy along the wall axes, with complex coefficients of shape nx;
+   backward() inverts it; k² is (2πm/L)² and (πm/L)²; a complex multiplier without symmetry
+   and a sum of a matrix and a diagonal term equal the NumPy/SciPy products, real fields
+   taking their real part, which is the product with (M(k) + conj M(-k))/2. PropagatorSolver.fourier
+   of a brush box (periodic x, y over 33 wall points) takes the cosine series along z.
+7. CPU and CUDA give the same transforms and products (when both are available).
+8. Input checks: multiplier shapes, a handle of another transform, field counts,
    non-finite values, complex values on real cosine coefficients, complex fields and
-   coefficients for real transforms, a missing box, mixed periodic and wall axes; a cosine
+   coefficients for real transforms, a missing box, wall axes in an oblique box; a cosine
    transform keeps its box orthogonal while it exists.
 """
 
@@ -53,10 +60,12 @@ def rel_err(a, b):
 
 def solver(platform, nx, lx, bc=None, field_type="real", angles=None):
     bc = bc or ["periodic"] * (2 * len(nx))
-    method = "cn-adi2" if any(b != "periodic" for b in bc) and any(b == "periodic" for b in bc) else None
+    # A box that mixes periodic and wall axes needs a real-space method: rs takes complex fields too
+    mixed_box = any(b != "periodic" for b in bc) and any(b == "periodic" for b in bc)
     with contextlib.redirect_stdout(io.StringIO()):
         s = PropagatorSolver(nx=nx, lx=lx, ds=0.1, bond_lengths={"A": 1.0}, bc=bc,
-                             chain_model="continuous", numerical_method=method, platform=platform,
+                             chain_model="discrete" if mixed_box else "continuous",
+                             numerical_method="rs" if mixed_box else None, platform=platform,
                              field_type=field_type, angles=angles)
         s.add_polymer(1.0, [["A", 1.0, 0, 1]])
     return s
@@ -310,6 +319,87 @@ def walls(platform):
     return results
 
 
+def mixed_series(grids, kinds, inverse=False):
+    """numpy.fft.fft along the periodic axes and the type-2 series of SciPy (or the inverses) along the
+    wall axes after the first; the forward series is halved per wall axis, as forward() defines it."""
+    for axis, kind in enumerate(kinds, start=1):
+        if kind == "periodic":
+            grids = (np.fft.ifft if inverse else np.fft.fft)(grids, axis=axis)
+        elif kind == "reflecting":
+            grids = scipy.fft.idct(grids * 2, type=2, axis=axis) if inverse else scipy.fft.dct(grids, type=2, axis=axis) / 2
+        else:
+            grids = scipy.fft.idst(grids * 2, type=2, axis=axis) if inverse else scipy.fft.dst(grids, type=2, axis=axis) / 2
+    return grids
+
+
+def mixed(platform):
+    """Boxes that mix periodic and wall axes, transformed through the mirror image."""
+    results = {}
+    for kinds, field_type, nx, lx in [(["periodic", "reflecting"], "real", [6, 7], [1.8, 2.2]),
+                                      (["reflecting", "periodic"], "complex", [5, 8], [1.8, 2.2]),
+                                      (["periodic", "periodic", "reflecting"], "complex", [6, 5, 9], [1.2, 1.4, 3.1]),
+                                      (["periodic", "periodic", "reflecting"], "real", [4, 6, 8], [1.2, 1.4, 3.1]),
+                                      (["absorbing", "periodic", "reflecting"], "complex", [5, 6, 7], [1.2, 1.4, 1.1]),
+                                      (["periodic", "absorbing", "absorbing"], "real", [7, 5, 4], [1.2, 1.4, 1.1])]:
+        n = int(np.prod(nx))
+        s = solver(platform, nx, lx, bc=[b for b in kinds for _ in range(2)], field_type=field_type)
+        if "absorbing" in kinds:
+            ft = s._factory.create_fourier_transform(s._computation_box, kinds)
+        else:
+            ft = s.fourier   # PropagatorSolver.fourier of a mixed box
+        fields = RNG.normal(0.0, 5.0, (2, n))
+        if field_type == "complex":
+            fields = fields + 1j * RNG.normal(0.0, 5.0, (2, n))
+        grids = fields.reshape((2,) + tuple(nx))
+        label = f"{platform} mixed {'/'.join(kinds)} {field_type} {nx}"
+        coef = ft.forward(fields)
+        ref = mixed_series(grids, kinds)
+        check(f"{label}: forward is fft and the type-2 series", ft.mixed and not ft.periodic and ft.complex_coefficients
+              and ft.coefficient_shape == tuple(nx) and coef.shape == (2,) + tuple(nx) and rel_err(coef, ref) < 1e-13,
+              f"err {rel_err(coef, ref):.1e}")
+        back = ft.backward(coef)
+        check(f"{label}: backward(forward(f)) = f", back.dtype == fields.dtype and rel_err(back, fields) < 1e-13,
+              f"err {rel_err(back, fields):.1e}")
+        k_axes = [2 * np.pi * np.fft.fftfreq(nn, d=l / nn) if b == "periodic" else np.pi * (np.arange(nn) + (b == "absorbing")) / l
+                  for nn, l, b in zip(nx, lx, kinds)]
+        k_sq_ref = sum(k ** 2 for k in np.meshgrid(*k_axes, indexing="ij"))
+        check(f"{label}: k_squared", rel_err(ft.k_squared(), k_sq_ref) < 1e-14)
+
+        # A complex multiplier without symmetry; real fields take the real part of the result,
+        # the operator (M(k) + conj M(-k))/2 with -k reversing the periodic indices
+        m = np.exp(-0.25 * k_sq_ref) * (1.0 + 0.5j) + 0.3j * RNG.normal(size=tuple(nx))
+        out = ft.apply([(ft.set_multiplier(m), fields)])
+        ref = mixed_series(m * mixed_series(grids, kinds), kinds, inverse=True).reshape(2, n)
+        if field_type == "real":
+            ref = np.real(ref)
+            flip = tuple(np.roll(np.arange(nn)[::-1], 1) if b == "periodic" else np.arange(nn) for nn, b in zip(nx, kinds))
+            m_minus = m[np.ix_(*flip)]
+            ref_hermitian = mixed_series(0.5 * (m + np.conj(m_minus)) * mixed_series(grids, kinds), kinds, inverse=True)
+            check(f"{label}: the real part is the Hermitian part of the multiplier",
+                  rel_err(ref, ref_hermitian.reshape(2, n)) < 1e-12 and np.max(np.abs(np.imag(ref_hermitian))) < 1e-10)
+        check(f"{label}: complex multiplier", out.dtype == fields.dtype and rel_err(out, ref) < 1e-12,
+              f"err {rel_err(out, ref):.1e}")
+        # Matrix multiplier with two terms
+        m23 = RNG.normal(size=(2, 3) + tuple(nx)) + 1j * RNG.normal(size=(2, 3) + tuple(nx))
+        third = RNG.normal(0.0, 5.0, (3, n)).astype(fields.dtype)
+        out2 = ft.apply([(ft.set_multiplier(m23), third), (ft.set_multiplier(m), fields)])
+        f3 = mixed_series(third.reshape((3,) + tuple(nx)), kinds)
+        ref2 = mixed_series(np.einsum("ij...,j...->i...", m23, f3) + m * mixed_series(grids, kinds), kinds, inverse=True)
+        ref2 = (np.real(ref2) if field_type == "real" else ref2).reshape(2, n)
+        check(f"{label}: matrix and diagonal terms", rel_err(out2, ref2) < 1e-12, f"err {rel_err(out2, ref2):.1e}")
+        results[(tuple(kinds), field_type, tuple(nx))] = {"forward": coef, "apply": out, "apply2": out2}
+
+    # The CL-FTS box of a brush: lateral periodic axes over an odd number of wall points
+    nx, lx = [4, 4, 33], [1.0, 1.0, 5.0]
+    s = solver(platform, nx, lx, bc=["periodic"] * 4 + ["absorbing", "reflecting"], field_type="complex")
+    ft = s.fourier
+    fields = RNG.normal(0.0, 5.0, (1, int(np.prod(nx)))) + 1j * RNG.normal(0.0, 5.0, (1, int(np.prod(nx))))
+    ref = mixed_series(fields.reshape((1,) + tuple(nx)), ["periodic", "periodic", "reflecting"])
+    check(f"{platform} mixed brush box {nx}: PropagatorSolver.fourier takes the cosine series along z",
+          rel_err(ft.forward(fields), ref) < 1e-13 and rel_err(ft.backward(ft.forward(fields)), fields) < 1e-13)
+    return results
+
+
 def input_checks(platform):
     s = solver(platform, [6, 4], [1.0, 1.0])
     ft = s.fourier
@@ -340,8 +430,9 @@ def input_checks(platform):
         ("fields of a wrong size", lambda: ft.apply([(h, np.ones(25))])),
         ("no terms", lambda: ft.apply([])),
         ("missing multiplier", lambda: ft.apply([(None, field)])),
-        ("mixed periodic and wall axes",
-         lambda: solver(platform, [6, 4], [1.0, 1.0], bc=["periodic"] * 2 + ["reflecting"] * 2).fourier),
+        ("mixed periodic and wall axes in an oblique box",
+         lambda: s._factory.create_fourier_transform(solver(platform, [6, 4], [1.0, 1.0], angles=[120.0])._computation_box,
+                                                     ["periodic", "reflecting"])),
         ("a missing box", lambda: s._factory.create_fourier_transform(None, ["periodic"] * 2)),
         ("complex fields for a real transform (forward)", lambda: ft.forward(complex_field)),
         ("complex fields for a real transform (apply)", lambda: ft.apply([(h, complex_field)])),
@@ -365,7 +456,7 @@ def main():
     results = {}
     for platform in platforms:
         results[platform] = {"real": periodic_real(platform), "complex": periodic_complex(platform),
-                             "oblique": oblique(platform), "walls": walls(platform)}
+                             "oblique": oblique(platform), "walls": walls(platform), "mixed": mixed(platform)}
         hermitian(platform)
         odd_and_1d(platform)
         input_checks(platform)
@@ -378,6 +469,7 @@ def main():
             RNG = np.random.default_rng(23)
             results[p] = {"real": periodic_real(p), "complex": periodic_complex(p), "hermitian": hermitian(p),
                           **{f"walls {key}": value for key, value in walls(p).items()},
+                          **{f"mixed {key}": value for key, value in mixed(p).items()},
                           **{f"grid {key}": value for key, value in odd_and_1d(p).items()}}
         a, b = results[cpu[0]], results["cuda"]
         err = max(rel_err(b[key][q], a[key][q]) for key in a for q in a[key])

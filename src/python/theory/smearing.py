@@ -93,8 +93,7 @@ class Smearing:
             Boundary conditions, two per axis; None means periodic.
         transform : FourierTransform or None
             PropagatorSolver.fourier of the simulation, with which apply() multiplies by
-            Γ(k) (on the GPU with CUDA). Without it, and in a box that mixes periodic and
-            wall axes, apply() transforms with NumPy/SciPy.
+            Γ(k) (on the GPU with CUDA). Without it apply() transforms with NumPy/SciPy.
         """
         self.nx = list(nx)
         self.lx = list(lx)
@@ -112,10 +111,8 @@ class Smearing:
         self.periodic = all(b == "periodic" for b in self.axis_bc)
 
         # apply() multiplies by Γ(k) with the Fourier transform of the simulation
-        # (PropagatorSolver.fourier, on the GPU with CUDA); a box that mixes periodic and wall
-        # axes, which it does not transform, keeps the NumPy transforms
-        mixed = not self.periodic and "periodic" in self.axis_bc
-        self._transform = None if mixed else transform
+        # (PropagatorSolver.fourier, on the GPU with CUDA)
+        self._transform = transform
         self._multipliers = {}
 
         self.species_fourier = None
@@ -398,9 +395,8 @@ class Smearing:
         """backward(values(k) · forward(field)) with the Fourier transform of the simulation.
 
         values is given on the grid of k_sq; its multiplier is stored once under key (until
-        set_box). Returns None where NumPy/SciPy transform instead: without a transform, in a
-        box that mixes periodic and wall axes, and for a complex field and a transform of real
-        fields.
+        set_box). Returns None where NumPy/SciPy transform instead: without a transform, and for
+        a complex field and a transform of real fields.
         """
         transform = self._transform
         if transform is None or (transform.field_type == "real" and np.iscomplexobj(field)):
@@ -465,10 +461,7 @@ class Smearing:
 
 
 def smearing_of(params, prop_solver):
-    """The Smearing of a simulation. Γ(k) is applied with the platform FFT (PropagatorSolver.fourier),
-    except in a box that mixes periodic and wall axes, which smearing transforms with NumPy/SciPy."""
-    periodic_sides = [b.lower() == "periodic" for b in prop_solver.bc]
-    mixed_box = any(periodic_sides) and not all(periodic_sides)
+    """The Smearing of a simulation. Γ(k) is applied with the platform FFT (PropagatorSolver.fourier)."""
     return Smearing(prop_solver.nx, prop_solver.get_lx(), params.get("smearing", None),
                     angles=prop_solver.get_angles_degrees(), bc=prop_solver.bc,
-                    transform=prop_solver.fourier if params.get("smearing") is not None and not mixed_box else None)
+                    transform=prop_solver.fourier if params.get("smearing") is not None else None)

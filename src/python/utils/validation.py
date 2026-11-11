@@ -589,10 +589,6 @@ def validate_electrostatics(params: Dict[str, Any]) -> None:
         if point_charges:
             raise ValidationError(f"'electrostatics' needs a positive smearing length 'a_int' for the charged "
                                   f"types {point_charges}; a_int = 0 leaves point charges")
-    # Periodic boxes, or closed boxes with walls on every side (ψ then has no normal derivative there)
-    sides = [str(b).lower() == "periodic" for b in params.get("bc") or []]
-    if any(sides) and not all(sides):
-        raise ValidationError("'electrostatics' needs a periodic box or walls on every side, not both")
     if electrostatics.get("fixed_charge") is not None:
         fixed = np.asarray(electrostatics["fixed_charge"])
         if fixed.size != int(np.prod(params["nx"])) or not np.all(np.isfinite(fixed)) or np.iscomplexobj(fixed):

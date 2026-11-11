@@ -446,10 +446,14 @@ current box with the alias convention of `Pseudo`. For real fields the multiplie
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
-the next (cuFFT needs 16-byte aligned real data). Periodic and wall axes cannot be mixed;
-`PropagatorSolver.fourier` uses the cosine series along walls, whose fields have no
-boundary value. The Langevin steps use it for smearing (except in boxes that mix periodic
-and wall axes), the transforms of ψ, the `etd` integrator, the dilation of the smearing
+the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
+is transformed through its mirror image: each wall axis is extended to twice its length by
+the even (cosine) or odd (sine) reflection, the complex FFT of the extended periodic grid
+(FFTW, MKL or cuFFT) gives its modes, and a phase factor per wall axis turns them into the
+series coefficients; the coefficients are complex, with the full spectrum on the periodic
+axes, and real fields take the real part of `backward`. `PropagatorSolver.fourier` uses the
+cosine series along walls, whose fields have no boundary value. The Langevin steps use it
+for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
 (osmotic pressure), the LR compressor of L-FTS in periodic boxes and in boxes with reflecting
 walls only (boxes that mix periodic and wall axes use `scipy.fft`; absorbing walls are refused)
 and, in periodic boxes, WTMD and the samples for the structure functions; boxes with walls

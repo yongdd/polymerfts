@@ -297,13 +297,17 @@ class PropagatorSolver:
         ``apply([(handle, fields), ...])`` returns ``backward(Σ M · forward(fields))``.
 
         Periodic boxes use the FFT: the half spectrum of ``numpy.fft.rfftn`` for
-        real fields, the full ``fftn`` spectrum for complex fields. Boxes with walls
-        use the cosine series Σ_j f_j cos(πm(j+½)/N) along every axis, half of
-        ``scipy.fft.dctn(f, type=2)`` per axis. Real fields need real arrays (complex
-        ones are rejected), and their multipliers act as real operators: on the
-        planes of the half spectrum that hold both k and -k (last index 0 and n/2)
-        ``M`` is replaced by (M(k) + conj M(-k))/2, so an odd derivative i·k loses
-        its Nyquist mode; ``backward`` treats its coefficients the same way.
+        real fields, the full ``fftn`` spectrum for complex fields. Wall axes (any
+        wall type) use the cosine series Σ_j f_j cos(πm(j+½)/N), half of
+        ``scipy.fft.dct(f, type=2)``. A box that mixes periodic and wall axes takes
+        the full ``fft`` spectrum on its periodic axes and the cosine series on its
+        wall axes, with complex coefficients also for real fields (``mixed`` is then
+        True). Real fields need real arrays (complex ones are rejected), and their
+        multipliers act as real operators: on the planes of the half spectrum that
+        hold both k and -k (last index 0 and n/2) ``M`` is replaced by
+        (M(k) + conj M(-k))/2, so an odd derivative i·k loses its Nyquist mode;
+        ``backward`` treats its coefficients the same way. In a mixed box the real
+        part of ``backward`` does this for every coefficient.
 
         ``k_squared()`` gives |k|² in the coefficient shape for the current box; a
         stored multiplier keeps its values, so store it again after the box
@@ -313,8 +317,6 @@ class PropagatorSolver:
         if self._fourier is None:
             periodic = [self.bc[2 * d].lower() == "periodic" and self.bc[2 * d + 1].lower() == "periodic"
                         for d in range(self.dim)]
-            if any(periodic) and not all(periodic):
-                raise ValueError("The Fourier transform cannot mix periodic and wall axes.")
             axes = ["periodic" if p else "reflecting" for p in periodic]
             self._fourier = self._factory.create_fourier_transform(self._computation_box, axes)
         return self._fourier

@@ -43,6 +43,19 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Added
 
+- Electrostatics in boxes that mix periodic axes and walls (2026-11-09): `PropagatorSolver.fourier`
+  transforms such a box through its mirror image. Each wall axis is extended to twice its length by
+  the even (cosine) or odd (sine) reflection, the extended grid is transformed with the complex FFT
+  of FFTW, MKL or cuFFT, and a phase factor per wall axis gives the series coefficients. The
+  coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
+  series along the walls, also for real fields, which take the real part of `backward`. CL-FTS and
+  SCFT accept `electrostatics` in such boxes (SCFT with `cn-adi2` or `rs`, CL-FTS, whose fields are
+  complex, with `rs`), for example a brush with periodic lateral axes, and smearing there uses the
+  platform transform instead of SciPy. Lateral reflecting walls act as walls of vanishing dielectric
+  constant: in a CL-FTS box a few Debye lengths wide their images deplete the ions across the whole
+  box. `TestFourierTransform` checks the mixed transforms against NumPy/SciPy on every platform, and
+  `TestConfinedElectrostatics` the Poisson-Boltzmann solution and the CL-FTS forces in a box
+  periodic along one axis.
 - Blocks take a `multiplicity` (2026-11-07): a block (v, u) with multiplicity m stands for m
   copies of itself and of everything on its u side, attached at v, so a star with n identical
   arms is given by one arm. m may be any real number >= 1: the junction takes the propagator of
