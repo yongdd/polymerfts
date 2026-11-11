@@ -313,7 +313,7 @@ Guide for detailed transform dispatch, ownership and computation hierarchies.
 - Use [Parameter Reference](docs/references/Parameters.md) for complete input formats
   and compatibility rules; avoid copying a second parameter reference into this file.
 - Examples live in `examples/`, grouped by physical system (`block_copolymer/`, `blend/`,
-  `charged/`) and then by method (`scft/`, `lfts/`, `clfts/`); `tools/` holds API examples.
+  `charged/`) and then by method (`scft/`, `ecscft/`, `lfts/`, `clfts/`); `tools/` holds API examples.
   [Tutorials](tutorials/README.md) provides a learning sequence.
 - Explain physical conventions and derivations under `docs/theory/`. Keep measured
   performance results with their problem size, backend, hardware and precision.

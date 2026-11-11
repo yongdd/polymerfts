@@ -3,6 +3,7 @@
 Example scripts, grouped first by physical system and then by simulation method:
 
 - `scft/`: self-consistent field theory, the mean-field saddle point of the field-theoretic Hamiltonian.
+- `ecscft/`: SCFT with electrostatic correlations (EC-SCFT), in which every charge also carries its self-energy in the ionic strength around it; the scripts write the iteration around `PropagatorSolver`.
 - `lfts/`: Langevin field-theoretic simulation, compositional fluctuations with the pressure-like fields at their saddle point.
 - `clfts/`: complex Langevin simulation, in which every field fluctuates; needed where the partial saddle-point approximation of L-FTS does not hold, for example for charged systems.
 
@@ -10,7 +11,7 @@ Example scripts, grouped first by physical system and then by simulation method:
 |--------|------|-------|--------|
 | [Block copolymers](#block-copolymers-block_copolymer) | `block_copolymer/scft/` | `block_copolymer/lfts/` | `block_copolymer/clfts/` |
 | [Blends and coexistence](#blends-and-coexistence-blend) | `blend/scft/` | `blend/lfts/` | `blend/clfts/` |
-| [Charged systems](#charged-systems-charged) | `charged/scft/` | — | `charged/clfts/` |
+| [Charged systems](#charged-systems-charged) | `charged/scft/`, `charged/ecscft/` | — | `charged/clfts/` |
 | [Tools](#tools-tools) | `tools/` (transforms and extension APIs) | | |
 
 What the tests and validation runs check for each example, with the compared numbers and figures, is in [Validation of the Examples](../docs/validation/ExampleValidation.md). [Numerical Validation](../docs/validation/NumericalValidation.md) covers the validation of the library as a whole: the regression tests, the published results and other codes that polymerfts reproduces, and the differences from them.
@@ -57,7 +58,7 @@ What the tests and validation runs check for each example, with the compared num
 
 ## Charged systems (`charged/`)
 
-Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS.
+Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS. EC-SCFT adds the self-energy of each charge to the mean field ([theory](../docs/theory/ElectrostaticCorrelations.md)).
 
 | Example | Description |
 |---------|-------------|
@@ -65,6 +66,7 @@ Smeared Coulomb interactions (`electrostatics`) in SCFT and CL-FTS.
 | `scft/SaltDopedLamella.py` | Salt-doped diblock lamella: ions of one segment with χ, solvated by one block |
 | `scft/PolyelectrolyteBrush.py` | Charged brush on a charged wall of a closed box with point ions (discrete chains, `rs`) |
 | `scft/CounterionsBetweenPlates.py` | Poisson-Boltzmann counterions between charged plates (Netz 2001) ([validation](../docs/validation/Electrolytes.md)) |
+| `ecscft/BrushMultivalentIons.py` | Polyelectrolyte brush collapsed by trivalent counterions in the solution of Yu et al. (2016): EC-SCFT (Duan, Agrawal and Wang 2025), each charge screened with its own spread ([validation](../docs/validation/BrushMultivalentIons.md)) |
 | `clfts/ChargedDiblock.py` | Charged diblock melt with counterions |
 | `clfts/SaltReservoir.py` | Charged melt in contact with a salt reservoir (grand-canonical point ions) |
 | `clfts/CounterionsBetweenPlates.py` | Counterions between charged plates beyond Poisson-Boltzmann (Netz 2001) ([validation](../docs/validation/Electrolytes.md)) |
@@ -109,7 +111,10 @@ python Lamella3D.py
 - M. W. Matsen, and M. Schick, Microphase Separation in Starblock Copolymer Melts, *Macromolecules* **1994**, 27, 6761 (`block_copolymer/scft/Star9ArmsGyroid.py`)
 - M. Kim, W. Kang, J. Cho, D. Yong, and J. U. Kim, Order–Disorder Tricriticality in Symmetric A<sub>n</sub>B<sub>n</sub> Star Polymer Melts, *Macromolecules* **2026**, 59, 11903 (`block_copolymer/scft/StarNonIntegerArms1D.py`)
 - R. R. Netz, Electrostatistics of counter-ions at and between planar charged walls: From Poisson-Boltzmann to the strong-coupling theory, *Eur. Phys. J. E* **2001**, 5, 557 (`charged/scft/CounterionsBetweenPlates.py`, `charged/clfts/CounterionsBetweenPlates.py`)
-- Z.-G. Wang, Fluctuation in electrolyte solutions: The self energy, *Phys. Rev. E* **2010**, 81, 021501 (`charged/clfts/SmearedSaltSelfEnergy.py`)
+- Z.-G. Wang, Fluctuation in electrolyte solutions: The self energy, *Phys. Rev. E* **2010**, 81, 021501 (`charged/clfts/SmearedSaltSelfEnergy.py`, `charged/ecscft/BrushMultivalentIons.py`)
+- C. Duan, N. R. Agrawal, and R. Wang, Electrostatic Correlation Augmented Self-Consistent Field Theory and Its Application to Polyelectrolyte Brushes, *Phys. Rev. Lett.* **2025**, 134, 048101 (`charged/ecscft/BrushMultivalentIons.py`)
+- J. Yu, J. Mao, G. Yuan, S. Satija, Z. Jiang, W. Chen, and M. Tirrell, Structure of Polyelectrolyte Brushes in the Presence of Multivalent Counterions, *Macromolecules* **2016**, 49, 5609 (`charged/ecscft/BrushMultivalentIons.py`)
+- J. A. Rard, and F. H. Spedding, Isopiestic Determination of the Activity Coefficients of Some Aqueous Rare-Earth Electrolyte Solutions at 25 °C. 6. Eu(NO₃)₃, Y(NO₃)₃, and YCl₃, *J. Chem. Eng. Data* **1982**, 27, 454 (`charged/ecscft/BrushMultivalentIons.py`)
 - N. R. Agrawal, and R. Wang, Self-Consistent Description of Vapor-Liquid Interface in Ionic Fluids, *Phys. Rev. Lett.* **2022**, 129, 228001 (`charged/clfts/SmearedSaltSelfEnergy.py`)
 - G. H. Fredrickson, and K. T. Delaney, *Field-Theoretic Simulations in Soft Matter and Quantum Fluids*, Oxford University Press, **2023** (`blend/clfts/HomopolymerSolutionBook.py`)
 - J. Lequieu, Quantitative Equivalence and Performance Comparison of Particle and Field-Theoretic Simulations, *Macromolecules* **2024**, 57, 10870 (`block_copolymer/clfts/SoftBeadDiblockMelt.py`)

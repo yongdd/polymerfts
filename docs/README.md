@@ -17,6 +17,7 @@
 | [ChainPropagators.md](theory/ChainPropagators.md) | Chain propagators, partition functions, and concentrations |
 | [PolymerFieldTheory.md](theory/PolymerFieldTheory.md) | Field theory formulations (monomer, auxiliary fields), smeared and electrostatic interactions |
 | [SelfConsistentFieldTheory.md](theory/SelfConsistentFieldTheory.md) | SCFT saddle-point equations and iterative methods |
+| [ElectrostaticCorrelations.md](theory/ElectrostaticCorrelations.md) | EC-SCFT: self-energy of spread charges, its Green function, the uniform state and the local form for a planar brush |
 | [LangevinFieldTheoreticSimulation.md](theory/LangevinFieldTheoreticSimulation.md) | What L-FTS and CL-FTS share: Langevin dynamics, observables and output files, structure functions, renormalization and calibration |
 | [PartialSaddlePointApproximation.md](theory/PartialSaddlePointApproximation.md) | L-FTS: partial saddle-point approximation, saddle-point iteration and the `LFTS` class |
 | [ComplexLangevinSimulation.md](theory/ComplexLangevinSimulation.md) | CL-FTS: complex Langevin dynamics, correct convergence, stabilization, charged systems, thermodynamic operators and the Gibbs ensemble |
@@ -46,6 +47,7 @@
 | [CoacervateGibbs.md](validation/CoacervateGibbs.md) | Gibbs ensemble of a coacervate against one-loop theory and canonical CL-FTS |
 | [ComplexCoacervate.md](validation/ComplexCoacervate.md) | Salt-free coacervate against Lee, Popov and Fredrickson (2008) and Danielsen et al. (2019) |
 | [Electrolytes.md](validation/Electrolytes.md) | Point ions against Netz (2001), one-loop theory and exact Monte Carlo |
+| [BrushMultivalentIons.md](validation/BrushMultivalentIons.md) | EC-SCFT of a brush with trivalent counterions against Duan et al. (2025), Yu et al. (2016) and bulk activities |
 | [SoftBeadModels.md](validation/SoftBeadModels.md) | Soft-bead models against Lequieu (2024) |
 | [StarNonIntegerArms.md](validation/StarNonIntegerArms.md) | A_nB_n stars with integer and real arm numbers against Kim et al. (2026) |
 
