@@ -18,6 +18,7 @@ write the Poisson-Boltzmann equation, the self-energy and the iteration themselv
 | `multivalent_brush.py` | The model of the paper: `Brush` (chains, ions, residual, damped steps with Anderson mixing, grand potential), and two forms of the self-energy, `LocalSelfEnergy`, screened by point charges as in the paper or with `spread=True` by charges of the ion radius, and `GreenFunction` |
 | `BrushMultivalentIons1D.py` | Planar brush with the local self-energy of the paper, in the box of Fig. 2 of the paper and in the solution of the experiment of Yu et al. with a closed cell; the argument `spread` screens by charges of the ion radius |
 | `duan_scft_check.py`, `models/duan_scft.py` | Independent discrete-chain check of the paper, written up in [reports/DUAN_SCFT_CHECK.md](reports/DUAN_SCFT_CHECK.md) |
+| `clfts/` | Complex Langevin simulations of the brush of `examples/charged/ecscft/BrushMultivalentIons.py` and of its trivalent ions in bulk, written up in [reports/BrushClfts.md](reports/BrushClfts.md) |
 
 `BrushMultivalentIonsGreen1D.py` and `BrushMultivalentIonsLateral.py`, which take `multivalent_brush.py`
 to Fig. 4 of the paper, are in git at commit `2796421c`.

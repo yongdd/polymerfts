@@ -2,7 +2,7 @@
 
 C. Duan, N. R. Agrawal and R. Wang, "Electrostatic Correlation Augmented Self-Consistent Field Theory and Its Application to Polyelectrolyte Brushes", Phys. Rev. Lett. 134, 048101 (2025). [Main text](../../../references/charged_polymers/Duan_2025_Electrostatic_Correlation_Augmented_SCFT.pdf), [SI](../../../references/charged_polymers/Duan_2025_Electrostatic_Correlation_Augmented_SCFT_SI.pdf).
 
-Eqs. 1–9 are the main text, Eqs. S1–S42 the SI. The representative code is [duan_scft.py](../models/duan_scft.py), restored from tag `v0.10.0`, where it is `models/prl_scft.py`. Only its file name, class name, the first line of the class docstring and two error messages changed. The rest of the reproduction code, including `studies/literature_scft.py`, stays in git at that tag under its old names. Every number comes from [duan_scft_check.py](../duan_scft_check.py) with its inputs in [duan_scft_check_data.json](duan_scft_check_data.json), except the electrolyte results, which come from the tag. See [section 12](#12-reproduce). Checked 2026-10-31.
+Eqs. 1–9 are the main text, Eqs. S1–S42 the SI. The representative code is [duan_scft.py](../models/duan_scft.py), restored from tag `v0.10.0`, where it is `models/prl_scft.py`. Only its file name, class name, the first line of the class docstring and two error messages changed. The rest of the reproduction code, including `studies/literature_scft.py`, stays in git at that tag under its old names. Every number comes from [duan_scft_check.py](../duan_scft_check.py) with its inputs in `references/charged_polymers/duan_scft_check_data.json` (outside git), except the electrolyte results, which come from the tag. See [section 12](#12-reproduce). Checked 2026-10-31.
 
 ## Contents
 
@@ -727,7 +727,7 @@ The corrected equations, with their numbers and the list of changes from the pap
 
 ## 12. Reproduce
 
-Run from `devel/charged_polymers`. Each command is one configuration; submit anything over a minute as a job. `duan_scft_check_data.json` holds the pixel readings, the SCFT results and the stored layer scans.
+Run from `devel/charged_polymers`. Each command is one configuration; submit anything over a minute as a job. `references/charged_polymers/duan_scft_check_data.json` (outside git) holds the pixel readings, the SCFT results and the stored layer scans.
 
 ```bash
 python duan_scft_check.py analytic      # sections 3 and 4: S33, Eq. 7, S39, S40, f_ion; 5.1, 5.2, 5.5

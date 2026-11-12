@@ -16,7 +16,7 @@ Run from this folder. Each line is one configuration; anything over a minute bel
   python duan_scft_check.py walk 2 0.001 WARM OUT_DIR --values 0.03,0.02 --background  # fixed 1:1 background salt in M, no C
   python duan_scft_check.py walk 3 1e-06 WARM OUT_DIR --values 0.006 --background --chain 730 --stretch 7.3 --box 800 --dz 0.25
 
-reports/duan_scft_check_data.json holds what cannot be recomputed from this folder alone: pixel readings of Figs. 2-3, the
+references/charged_polymers/duan_scft_check_data.json (outside git) holds what cannot be recomputed from this folder: pixel readings of Figs. 2-3, the
 archived L = 200 nm scan and the extended-box SCFT results, plus the stored layer scans used by default. --layer-dir
 replaces those with the files written by `layer --out`. --scan-dir is the archived scan with one profiles.npz per run.
 
@@ -35,7 +35,7 @@ from scipy.optimize import brentq, fsolve
 from scipy.special import erfcx, logsumexp
 
 HERE = Path(__file__).resolve().parent
-DATA_FILE = HERE / "reports/duan_scft_check_data.json"
+DATA_FILE = HERE.parents[1] / "references/charged_polymers/duan_scft_check_data.json"   # outside git
 FIGURE_DIR = HERE / "figures"
 lB, a, b, N, sigma, chi, MOLAR = 0.7, 0.25, 1.0, 100, 0.1, 0.5, 0.6022
 LS = [200, 2000, 20000, 200000]
