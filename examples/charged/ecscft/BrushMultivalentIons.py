@@ -39,7 +39,7 @@ Eng. Data 27, 454 (1982)) with point-charge screening and one radius for Y3+ and
 for every charge. The self-energy is not part of the polymerfts SCFT class, so the script writes the iteration
 itself (damped steps and Anderson mixing) and takes the chains from PropagatorSolver. Lengths are in nm and
 energies in kT. The run takes about one minute on one CPU core. docs/validation/BrushMultivalentIons.md compares
-the model with Figs. 2 and 4 of the paper and with the experiment.
+the model with Figs. 2 and 4 of the paper, with the experiment and with CL-FTS of the same brush.
 """
 
 import os

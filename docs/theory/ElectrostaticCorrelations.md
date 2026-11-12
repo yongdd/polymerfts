@@ -247,6 +247,8 @@ The main text writes Eqs. 3a and 5 with the wrong integration variables; SI Eqs.
 - **Density fluctuations.** The segments and ions screen as if they could move freely. In a dense incompressible layer ($`\phi\approx0.7`$) this overestimates $`\kappa`$ by about 8 % and the correlation gain by about 4 %.
 - **Local form.** Eq. (22) answers a change of ionic strength at the same point only and selects no length. The layers that Reference 1 finds in a collapsed brush at small cation radii, and lateral structure, need the Green function of Eq. (9) or (10); with Eq. (9) the layers are weaker and appear only below a smaller radius ([validation](../validation/BrushMultivalentIons.md#fig-4-of-duan-et-al)).
 
+- **Against CL-FTS.** At the radii of the example (Y³⁺ 0.66 nm) CL-FTS of the brush, which keeps the fluctuations that these approximations close or leave out, collapses it 0.012–0.041 further in $`\log_{10}(h/h_6)`$ ([validation](../validation/BrushMultivalentIons.md#complex-langevin-simulations)).
+
 ## 8. References
 
 1. C. Duan, N. R. Agrawal and R. Wang, Electrostatic Correlation Augmented Self-Consistent Field Theory and Its Application to Polyelectrolyte Brushes, *Phys. Rev. Lett.* **2025**, 134, 048101, and its Supplemental Material.

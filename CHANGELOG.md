@@ -65,7 +65,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   of the experiment of Yu et al. (2016).
   docs/theory/ElectrostaticCorrelations.md derives the equations and lists where they differ from
   the published ones; docs/validation/BrushMultivalentIons.md compares the model with Figs. 2–4 of
-  the paper, the experiment and bulk activity coefficients.
+  the paper, the experiment, bulk activity coefficients and CL-FTS of the same brush.
 - Blocks take a `multiplicity` (2026-11-07): a block (v, u) with multiplicity m stands for m
   copies of itself and of everything on its u side, attached at v, so a star with n identical
   arms is given by one arm. m may be any real number >= 1: the junction takes the propagator of

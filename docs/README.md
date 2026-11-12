@@ -47,7 +47,7 @@
 | [CoacervateGibbs.md](validation/CoacervateGibbs.md) | Gibbs ensemble of a coacervate against one-loop theory and canonical CL-FTS |
 | [ComplexCoacervate.md](validation/ComplexCoacervate.md) | Salt-free coacervate against Lee, Popov and Fredrickson (2008) and Danielsen et al. (2019) |
 | [Electrolytes.md](validation/Electrolytes.md) | Point ions against Netz (2001), one-loop theory and exact Monte Carlo |
-| [BrushMultivalentIons.md](validation/BrushMultivalentIons.md) | EC-SCFT of a brush with trivalent counterions against Duan et al. (2025), Yu et al. (2016) and bulk activities |
+| [BrushMultivalentIons.md](validation/BrushMultivalentIons.md) | EC-SCFT of a brush with trivalent counterions against Duan et al. (2025), Yu et al. (2016), bulk activities and CL-FTS |
 | [SoftBeadModels.md](validation/SoftBeadModels.md) | Soft-bead models against Lequieu (2024) |
 | [StarNonIntegerArms.md](validation/StarNonIntegerArms.md) | A_nB_n stars with integer and real arm numbers against Kim et al. (2026) |
 
