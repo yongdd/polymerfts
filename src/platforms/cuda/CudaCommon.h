@@ -443,6 +443,9 @@ __global__ void ker_multi_complex_conjugate(cuDoubleComplex* dst, const cuDouble
 
 __global__ void ker_divide(double* dst, const double* src1, const double* src2, double a, const int M);
 __global__ void ker_divide(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);
+/// Divide only at accessible sites; zero mask/weights means an excluded site, not a zero-divisor clamp.
+__global__ void ker_divide_masked(double* dst, const double* src1, const double* src2, double a, const double* mask, const int M);
+__global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const double* mask, const int M);
 
 __global__ void ker_add_multi(double* dst, const double* src1, const double* src2, double a, const int M);
 __global__ void ker_add_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);

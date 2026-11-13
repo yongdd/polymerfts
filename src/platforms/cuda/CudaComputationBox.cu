@@ -212,7 +212,10 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
 
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
         CUDA_CHECK_LAUNCH();
-        ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, N);
+        if (this->get_mask() != nullptr)
+            ker_divide_masked<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_basis_weights_, N);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, N);
         CUDA_CHECK_LAUNCH();
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
         CUDA_CHECK_LAUNCH();
@@ -225,7 +228,10 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
         CUDA_CHECK_LAUNCH();
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_dv, 1.0, this->total_grid);
         CUDA_CHECK_LAUNCH();
-        ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, this->total_grid);
+        if (this->get_mask() != nullptr)
+            ker_divide_masked<<<grid_blocks(this->total_grid, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_dv, this->total_grid);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, this->total_grid);
         CUDA_CHECK_LAUNCH();
         sum = reduce_sum_to_host(this->total_grid);
         return sum;

@@ -4,14 +4,15 @@
 Nonuniform profiles with the symmetry of Pmmm, Im-3m and P-1 give the same
 one-iteration state as the existing reduced-input interface and a full-grid
 solver. Test each available backend, including physical and irreducible bases.
-Full profiles that break the group symmetry are rejected instead of changing
-the graft distribution. No conversion may modify the caller's arrays.
+Full and reduced profiles that break the group symmetry are rejected instead
+of changing the graft distribution. No conversion may modify the caller's arrays.
 """
 
 import contextlib
 import copy
 import io
 import os
+from unittest.mock import patch
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -142,6 +143,93 @@ def check_group(platform, symbol, nx, angles):
     print(f"[PASS] {platform} {symbol}: full/reduced graft profiles and axis ordering")
 
 
+def reject_before_compute(sim, fields, profiles, label):
+    before = {name: value.copy() for name, value in profiles.items()}
+    for value in profiles.values():
+        value.setflags(write=False)
+    with patch.object(sim, "compute_concentrations", side_effect=AssertionError("computed invalid graft")) as compute:
+        try:
+            quiet(lambda: sim.run(fields, q_init=profiles, return_result=True))
+        except ValidationError as error:
+            assert f"q_init[{label!r}]" in str(error) and "symmetry" in str(error), str(error)
+        else:
+            raise AssertionError("Accepted a graft that breaks the full space-group symmetry")
+        compute.assert_not_called()
+    for name, value in profiles.items():
+        np.testing.assert_array_equal(value, before[name])
+
+
+def check_reduced_symmetry(platform):
+    # Im-3m uses a 64-point Pmmm physical basis on this grid, but the full
+    # group has only 10 orbits. Subgroup-invariant grafts need not satisfy it.
+    params = parameters(platform, "Im-3m", [8, 8, 8], [90.0, 90.0, 90.0])
+    params["lx"] = [4.0] * 3
+    params["segment_lengths"]["B"] = 1.0
+    params["polymers"][0]["initial_conditions"] = {0: "G", 2: "H"}
+    for block in params["polymers"][0]["blocks"]:
+        block["length"] = 0.5
+    control = quiet(lambda: SCFT(params))
+    sg = control.sg
+    assert sg.physical_basis_name() == "pmmm"
+    assert sg.get_n_reduced_basis() > sg.get_n_reduced_basis_full()
+    shape = tuple(params["nx"])
+    coordinates = np.meshgrid(*[(np.arange(n) + 0.5) / n for n in shape], indexing="ij")
+    broken = sg.to_reduced_basis((1.0 + 0.6 * np.cos(2 * np.pi * coordinates[0])).ravel())
+    expanded = sg.from_reduced_basis(broken)
+    assert np.max(np.abs(expanded - sg.symmetrize(expanded))) > 0.5
+
+    valid = sg.symmetrize((1.0 + 0.1 * sum(np.cos(4 * np.pi * axis) for axis in coordinates)).ravel())
+    assert np.std(valid) > 0.01 and np.min(valid) > 0.0
+    reduced = {"G": sg.to_reduced_basis(valid), "H": sg.to_reduced_basis(2.0 - valid)}
+    # A roundoff-sized departure is accepted by the symmetry validation
+    # tolerance, but must still reach the propagator unchanged, not averaged.
+    reduced["G"][0] += 2e-13
+    full = {name: sg.from_reduced_basis(value) for name, value in reduced.items()}
+    assert np.max(np.abs(full["G"] - sg.symmetrize(full["G"]))) > 0.0
+    fields = {name: np.zeros(int(np.prod(shape))) for name in ("A", "B")}
+    expected = None
+
+    for order in (None, (0, 1, 2), (2, 0, 1)):
+        for use_reduced in (False, True):
+            source = reduced if use_reduced else full
+            if order is None:
+                p, w = params, fields
+                profiles = {name: value.copy() for name, value in source.items()}
+                bad = broken.copy() if use_reduced else expanded.copy()
+            else:
+                p, w, bad = permuted(params, fields, broken if use_reduced else expanded,
+                                     order, use_reduced)
+                profiles = {name: permuted(params, fields, value, order, use_reduced)[2]
+                            for name, value in source.items()}
+            sim = quiet(lambda: SCFT(p))
+            # Check both labels, including a valid first profile followed by an
+            # invalid second profile, before any native computation can start.
+            for label in ("G", "H"):
+                invalid = {name: value.copy() for name, value in profiles.items()}
+                invalid[label] = bad.copy()
+                reject_before_compute(sim, w, invalid, label)
+
+            before = {name: value.copy() for name, value in profiles.items()}
+            for value in profiles.values():
+                value.setflags(write=False)
+            result = quiet(lambda: sim.run(w, q_init=profiles, return_result=True))
+            for name, value in profiles.items():
+                np.testing.assert_array_equal(value, before[name])
+            for name, start in (("G", 0), ("H", 2)):
+                np.testing.assert_array_equal(sim.prop_solver.get_propagator(0, start, 1, 0), reduced[name])
+            assert quiet(sim.prop_solver.check_total_partition), "forward/backward partition mismatch"
+            np.testing.assert_allclose([np.mean(result.phi[name]) for name in ("A", "B")],
+                                       [0.5, 0.5], rtol=0, atol=2e-11)
+            for name in fields:
+                native = sg.from_reduced_basis(sim.prop_solver.get_concentration(name))
+                np.testing.assert_allclose(result.phi[name], native, rtol=0, atol=2e-11)
+            if expected is None:
+                expected = result
+            else:
+                same_state(result, expected)
+    print(f"[PASS] {platform} Im-3m: reduced graft symmetry, early rejection and exact preservation")
+
+
 def main():
     for platform in PlatformSelector.avail_platforms():
         for symbol, nx, angles in (
@@ -150,6 +238,7 @@ def main():
             ("P-1", [8, 10, 6], [80.0, 100.0, 110.0]),
         ):
             check_group(platform, symbol, nx, angles)
+        check_reduced_symmetry(platform)
     return 1 if cuda_part_missing() else 0
 
 

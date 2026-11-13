@@ -42,6 +42,9 @@ class SCFTResult:
         Stress tensor components (if relax_cell was True).
     lx : list
         Final box dimensions.
+    angles : list or None
+        Final lattice angles [alpha, beta, gamma] in degrees for 2D and 3D,
+        including fixed angles. None in 1D.
     nx : list
         Grid dimensions.
     monomer_types : list
@@ -143,7 +146,8 @@ class IterationInfo:
     lx : list or None
         Current box dimensions (if relax_cell).
     angles : list or None
-        Current lattice angles (if non-orthogonal).
+        Current lattice angles [alpha, beta, gamma] in degrees for 2D and 3D,
+        including fixed angles. None in 1D.
     """
     iteration: int
     error_level: float
@@ -274,9 +278,7 @@ def scft_result(sim, phi, w, energy_total, error_level, iter, total_partitions, 
         monomer_types=sim.monomer_types,
         params=sim.params,
         stress=stress_array if sim.relax_cell else None,
-        angles=list(sim.prop_solver.get_angles_degrees()) if (
-            len(sim.cell.angles_reduced_indices) > 0
-        ) else None,
+        angles=list(sim.prop_solver.get_angles_degrees()) if sim.prop_solver.dim > 1 else None,
         free_energy_homogeneous=sim.free_energy_homogeneous,
         free_energy_absolute=sim.free_energy_absolute,
         chemical_potentials=sim.chemical_potentials,
@@ -296,9 +298,7 @@ def iteration_info(sim, iter, error_level, energy_total, mass_error, total_parti
         mass_error=mass_error,
         partition_functions=total_partitions,
         lx=list(sim.prop_solver.get_lx()) if sim.relax_cell else None,
-        angles=list(sim.prop_solver.get_angles_degrees()) if (
-            sim.relax_cell and len(sim.cell.angles_reduced_indices) > 0
-        ) else None
+        angles=list(sim.prop_solver.get_angles_degrees()) if sim.prop_solver.dim > 1 else None
     )
 
 

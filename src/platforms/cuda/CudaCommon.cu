@@ -382,6 +382,37 @@ __global__ void ker_divide(cuDoubleComplex* dst, const cuDoubleComplex* src1, co
     }
 }
 
+__global__ void ker_divide_masked(double* dst, const double* src1, const double* src2, double a, const double* mask, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        dst[i] = mask[i] == 0.0 ? 0.0 : a * src1[i] / src2[i];
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2,
+                                 double a, const double* mask, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        if (mask[i] == 0.0)
+            dst[i] = make_cuDoubleComplex(0.0, 0.0);
+        else
+        {
+            // Preserve ker_divide's arithmetic and its support for aliased inputs.
+            cuDoubleComplex temp_dst;
+            double denom = src2[i].x * src2[i].x + src2[i].y * src2[i].y;
+            temp_dst.x = a * (src1[i].x * src2[i].x + src1[i].y * src2[i].y) / denom;
+            temp_dst.y = a * (src1[i].y * src2[i].x - src1[i].x * src2[i].y) / denom;
+            dst[i] = temp_dst;
+        }
+        i += blockDim.x * gridDim.x;
+    }
+}
+
 __global__ void ker_add_multi(double* dst, const double* src1, const double* src2, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;

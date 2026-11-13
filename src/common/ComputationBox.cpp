@@ -1054,20 +1054,23 @@ template <typename T>
 T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const T *w)
 {
     T sum{0.0};
+    const double* active_mask = get_mask();
 
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
         double dv_base = volume / total_grid;
         for (int i = 0; i < n_basis_; i++)
-            sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i];
+            if (active_mask == nullptr || active_mask[i] != 0.0)
+                sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i];
         return sum * static_cast<T>(dv_base);
     }
     else
     {
         // Full grid mode
         for (int i = 0; i < total_grid; i++)
-            sum += dv[i] * g[i] * h[i] / w[i];
+            if (active_mask == nullptr || active_mask[i] != 0.0)
+                sum += dv[i] * g[i] * h[i] / w[i];
         return sum;
     }
 }

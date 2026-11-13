@@ -307,8 +307,14 @@ double CpuComputationBackend<T>::absolute_inner_product(
 {
     if (absolute_product.empty())
         absolute_product.resize(n_basis);
+    const double* mask = cb->get_mask();
     for (int i = 0; i < n_basis; ++i)
     {
+        if (mask != nullptr && mask[i] == 0.0)
+        {
+            absolute_product[i] = T(0.0);
+            continue;
+        }
         T product = raw(a)[i] * raw(b)[i];
         if (divisor != nullptr)
             product /= raw(divisor)[i];
@@ -339,8 +345,15 @@ void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi
     if (divisor != nullptr)
     {
         const T* _divisor = raw(divisor);
+        const double* mask = cb->get_mask();
         for (int i = 0; i < n_basis; i++)
-            _phi[i] /= _divisor[i];
+        {
+            // A masked bead has zero density, including when exp(-w ds) underflows.
+            if (mask != nullptr && mask[i] == 0.0)
+                _phi[i] = T(0.0);
+            else
+                _phi[i] /= _divisor[i];
+        }
     }
     for (int i = 0; i < n_basis; i++)
         _phi[i] *= norm;

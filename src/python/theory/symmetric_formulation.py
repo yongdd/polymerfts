@@ -403,9 +403,10 @@ class SymmetricPolymerTheory:
         # Use cb.mean() for correct handling of space group symmetry
         hamiltonian_fields = 0.0
         for i in range(M):
-            if not np.isclose(self.h_coef_mu2[i], 0.0):
+            # Only structural zeros remove a term: a small coefficient can multiply a large field.
+            if self.h_coef_mu2[i] != 0.0:
                 hamiltonian_fields += self.h_coef_mu2[i]*cb.mean(w_aux[i]**2)
-            if not np.isclose(self.h_coef_mu1[i], 0.0):
+            if self.h_coef_mu1[i] != 0.0:
                 hamiltonian_fields += self.h_coef_mu1[i]*cb.mean(w_aux[i])
         
         # Compute Hamiltonian part that total partition functions

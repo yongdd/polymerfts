@@ -36,30 +36,40 @@ constexpr int MAX_PAIRS_PER_LAUNCH = 32;
 
 __global__ void ker_absolute_partition_product(
     double* out, const double* a, const double* b, const double* divisor,
-    const double* weights, int n)
+    const double* weights, const double* mask, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
     {
-        double product = a[i] * b[i];
-        if (divisor != nullptr)
-            product /= divisor[i];
-        out[i] = fabs(product) * weights[i];
+        if (mask != nullptr && mask[i] == 0.0)
+            out[i] = 0.0;
+        else
+        {
+            double product = a[i] * b[i];
+            if (divisor != nullptr)
+                product /= divisor[i];
+            out[i] = fabs(product) * weights[i];
+        }
         i += blockDim.x * gridDim.x;
     }
 }
 
 __global__ void ker_absolute_partition_product(
     cuDoubleComplex* out, const cuDoubleComplex* a, const cuDoubleComplex* b,
-    const cuDoubleComplex* divisor, const double* weights, int n)
+    const cuDoubleComplex* divisor, const double* weights, const double* mask, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
     {
-        cuDoubleComplex product = cuCmul(a[i], b[i]);
-        if (divisor != nullptr)
-            product = cuCdiv(product, divisor[i]);
-        out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
+        if (mask != nullptr && mask[i] == 0.0)
+            out[i] = make_cuDoubleComplex(0.0, 0.0);
+        else
+        {
+            cuDoubleComplex product = cuCmul(a[i], b[i]);
+            if (divisor != nullptr)
+                product = cuCdiv(product, divisor[i]);
+            out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
+        }
         i += blockDim.x * gridDim.x;
     }
 }
@@ -596,7 +606,7 @@ double CudaComputationBackend<T>::absolute_inner_product(
     const int threads = CudaCommon::get_instance().get_n_threads();
     ker_absolute_partition_product<<<grid_blocks(n_basis, threads), threads, 0, stream>>>(
         d_sum.get(), raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor),
-        cb->device_integration_weights(), n_basis);
+        cb->device_integration_weights(), d_q_mask.get(), n_basis);
     CUDA_CHECK_LAUNCH();
     CUDA_CHECK(cuda_reduce_sum(d_partition_temp.get(), partition_temp_bytes, d_sum.get(),
                                d_partition_sum.get(), n_basis, stream));
@@ -637,7 +647,12 @@ void CudaComputationBackend<T>::normalize_concentration(int stream, BackendArray
     CuDeviceData<T>* d_phi = raw(phi);
     cudaStream_t s = streams[stream][0];
     if (divisor != nullptr)
-        ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
+    {
+        if (!d_q_mask.empty())
+            ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, d_q_mask, n_basis);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
+    }
     CUDA_CHECK_LAUNCH();
     ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, to_device_scalar(norm), d_phi, 0.0, d_phi, n_basis);
     CUDA_CHECK_LAUNCH();

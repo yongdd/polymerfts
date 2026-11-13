@@ -562,9 +562,10 @@ class SCFT:
         q_init : dict, optional
             Initial propagator values for grafted polymers (default: None).
             Format: {propagator_key: value_array}. Full-grid arrays follow the
-            input axis_ordering and must have the space-group symmetry when a
-            group is used. Arrays in the solver's active reduced basis are also
-            accepted; they already use standard axes and are not transposed.
+            input axis_ordering. Arrays in the solver's active reduced basis are
+            also accepted; they already use standard axes and are not transposed.
+            Both representations must have the full space-group symmetry when a
+            group is used.
         on_iteration : callable, optional
             Callback function called after each iteration.
             Signature: on_iteration(info: IterationInfo) -> Optional[bool]
@@ -789,7 +790,8 @@ class SCFT:
         Full-grid inputs follow axis_ordering and are converted to the solver's
         active reduced basis after checking the full space-group symmetry.
         Existing reduced inputs already use the standard solver basis, even with
-        axis_ordering. If both sizes coincide, the full-grid interpretation wins.
+        axis_ordering; their full-grid expansion must have the same symmetry.
+        If both sizes coincide, the full-grid interpretation wins.
         Unlike an initial field guess, a graft profile defines the model, so it
         must not be silently averaged over symmetry orbits.
         """
@@ -805,19 +807,22 @@ class SCFT:
                 profile = np.array(profile, dtype=np.float64).reshape(-1)
             if not np.all(np.isfinite(profile)):
                 raise ValidationError(f"q_init[{label!r}] must contain real, finite values at float64 precision")
-            if profile.size == full_size:
+            is_full = profile.size == full_size
+            if is_full:
                 if self._axis_perm is not None:
                     profile = self._to_standard_axes(profile)
-                if self.sg is not None:
-                    symmetric = self.sg.symmetrize(profile)
-                    tolerance = 1e-12 * np.max(np.abs(profile))
-                    if not np.allclose(profile, symmetric, rtol=0.0, atol=tolerance):
-                        raise ValidationError(f"q_init[{label!r}] must have the symmetry of 'space_group'")
-                    profile = self.sg.to_reduced_basis(profile)
             elif self.sg is None or profile.size != reduced_size:
                 sizes = (f"{full_size} full-grid or {reduced_size} reduced-basis values"
                          if self.sg is not None else f"{full_size} grid values")
                 raise ValidationError(f"q_init[{label!r}] needs {sizes}, got {profile.size}")
+            if self.sg is not None:
+                full_profile = profile if is_full else self.sg.from_reduced_basis(profile)
+                symmetric = self.sg.symmetrize(full_profile)
+                tolerance = 1e-12 * np.max(np.abs(full_profile))
+                if not np.allclose(full_profile, symmetric, rtol=0.0, atol=tolerance):
+                    raise ValidationError(f"q_init[{label!r}] must have the symmetry of 'space_group'")
+                if is_full:
+                    profile = self.sg.to_reduced_basis(profile)
             prepared[label] = profile
         return prepared
 

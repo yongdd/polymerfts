@@ -393,7 +393,8 @@ class SaddlePointSearch:
         phi_mean = self.sim.mean_concentrations()
         mean_targets = {}
         for k in self.mpt.aux_fields_imag_idx:
-            if not np.isclose(self.mpt.h_coef_mu2[k], 0.0):
+            # A finite bulk modulus still fixes this mode, however small its reciprocal coefficient.
+            if self.mpt.h_coef_mu2[k] != 0.0:
                 mean_targets[k] = -(self.mpt.h_coef_mu1[k] + np.dot(self.mpt.matrix_a[:, k], phi_mean)) / (2*self.mpt.h_coef_mu2[k])
 
         # Saddle point iteration begins here

@@ -17,6 +17,9 @@ SET(BASIC_TESTS
     TestAbsentPointIons
     TestAbsentSolvent
     TestScftInitialPropagators
+    TestScftResultGeometry
+    TestMaskedDiscreteWeights
+    TestSmallFieldCoefficients
     TestExtensions
     TestPropagatorAnalytic
     TestComplexMask
