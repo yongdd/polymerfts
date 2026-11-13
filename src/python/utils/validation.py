@@ -74,6 +74,21 @@ def _integer(value, name, minimum=1):
         raise ValidationError(f"'{name}' must be an integer >= {minimum}, got {value!r}")
 
 
+def validate_monomer_fractions(fractions, name="monomer_fractions"):
+    """Check random-block fractions without changing their physical values.
+
+    Use the absolute sum tolerance of the system's polymer volume fractions and
+    homogeneous thermodynamics; NumPy's default relative tolerance is too loose.
+    """
+    if not isinstance(fractions, dict) or not fractions:
+        raise ValidationError(f"'{name}' must be a non-empty dict")
+    for monomer, fraction in fractions.items():
+        _finite_number(fraction, f"{name}.{monomer}", nonnegative=True)
+    total = sum(fractions.values())
+    if not np.isclose(total, 1.0, rtol=0.0, atol=1e-10):
+        raise ValidationError(f"'{name}' must sum to 1.0, got {total}")
+
+
 def _discrete_contour_length(contour_length: float, ds: float) -> float:
     """Mirror ContourLengthMapping::discrete_contour_length without a compiled backend.
 
@@ -245,12 +260,10 @@ def validate_system_params(params: Dict[str, Any]) -> None:
                     raise ValidationError(f"'{name}.multiplicity' must be a number >= 1, got {block['multiplicity']!r}")
             if "monomer_fractions" in block:
                 fractions = block["monomer_fractions"]
-                if not isinstance(fractions, dict) or not fractions:
-                    raise ValidationError(f"'{name}.monomer_fractions' must be a non-empty dict")
-                for monomer, fraction in fractions.items():
+                validate_monomer_fractions(fractions, name + ".monomer_fractions")
+                for monomer in fractions:
                     if monomer not in segment_lengths:
                         raise ValidationError(f"Unknown monomer '{monomer}' in '{name}.monomer_fractions'")
-                    _finite_number(fraction, name + ".monomer_fractions." + monomer, nonnegative=True)
     if any("chemical_potential" in polymer for polymer in polymers):
         if total_volume_fraction > 1.0 + 1e-10:
             raise ValidationError(f"Sum of the volume fractions of the canonical polymers must not exceed 1.0, "

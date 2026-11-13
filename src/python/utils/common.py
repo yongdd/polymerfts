@@ -19,12 +19,29 @@ import numpy as np
 from .validation import ValidationError, parse_chi_n  # noqa: F401 (parse_chi_n: former utils API)
 
 
+def numpy_scalar(value):
+    """Convert a NumPy scalar to a Python scalar, including extended precision.
+
+    NumPy's longdouble/clongdouble.item() still returns a NumPy scalar. Portable
+    output uses Python's double precision; reject finite overflow/underflow
+    instead of recording a different non-finite or zero parameter.
+    """
+    result = value.item()
+    if isinstance(result, np.floating):
+        result = float(result)
+        if np.isfinite(value) and (not np.isfinite(result) or (result == 0 and value != 0)):
+            raise ValueError("NumPy floating-point scalar is outside the Python float range")
+    elif isinstance(result, np.complexfloating):
+        result = complex(numpy_scalar(result.real), numpy_scalar(result.imag))
+    return result
+
+
 def json_ready(value):
     """Convert parameter dictionaries to portable JSON values."""
     if isinstance(value, np.ndarray):
         return json_ready(value.tolist())
     if isinstance(value, np.generic):
-        return json_ready(value.item())
+        return json_ready(numpy_scalar(value))
     if isinstance(value, float) and not np.isfinite(value):
         return {"nonfinite_float": str(value)}
     if isinstance(value, dict):
@@ -32,7 +49,7 @@ def json_ready(value):
     if isinstance(value, (list, tuple)):
         return [json_ready(v) for v in value]
     if isinstance(value, complex):
-        return {"real": value.real, "imag": value.imag}
+        return {"real": json_ready(value.real), "imag": json_ready(value.imag)}
     if isinstance(value, os.PathLike):
         return os.fspath(value)
     return value
@@ -41,6 +58,8 @@ def json_ready(value):
 def mat_ready(value):
     """Convert a parameter dictionary for scipy.io.savemat, which has no None: an option
     given as None (its default) is left out, and paths become strings."""
+    if isinstance(value, np.generic):
+        return mat_ready(numpy_scalar(value))
     if isinstance(value, dict):
         return {str(k): mat_ready(v) for k, v in value.items() if v is not None}
     if isinstance(value, (list, tuple)):

@@ -201,6 +201,8 @@ class SaddlePointSearch:
 
     def _create_compressor(self, params):
         """Anderson mixing, linear response or both, with the response measured at w = 0."""
+        if not self.mpt.aux_fields_imag_idx:
+            return None   # The ideal reference limit has no fields to compress.
         M = len(self.monomer_types)
         periodic_sides = [b.lower() == "periodic" for b in self.prop_solver.bc]
         mixed_box = any(periodic_sides) and not all(periodic_sides)
@@ -377,6 +379,15 @@ class SaddlePointSearch:
         # The numbers of real and imaginary fields, respectively
         R = len(self.mpt.aux_fields_real_idx)
         I = len(self.mpt.aux_fields_imag_idx)
+
+        if I == 0:
+            # There is no saddle search, but the run still needs the concentrations and H of this state.
+            phi, _ = self.sim.compute_concentrations(w_aux)
+            total_partitions = [self.prop_solver.get_partition_function(p)
+                                for p in range(self.prop_solver.get_n_polymer_types())]
+            hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
+                                                      include_const_term=True, phi=self.smearing.apply_to_dict(phi))
+            return phi, hamiltonian, 0, 0.0
 
         # Assign large initial value for error
         error_level = 1e20

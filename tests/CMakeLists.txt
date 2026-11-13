@@ -20,6 +20,10 @@ SET(BASIC_TESTS
     TestScftResultGeometry
     TestMaskedDiscreteWeights
     TestSmallFieldCoefficients
+    TestComplexDivisionRange
+    TestLftsIdealLimit
+    TestRandomCopolymerFractions
+    TestNumpyScalarSerialization
     TestExtensions
     TestPropagatorAnalytic
     TestComplexMask
@@ -72,6 +76,7 @@ SET(BASIC_TESTS
     TestCudaDST
     TestCudaSimulationBox
     TestCudaSimulationBoxComplex
+    TestCudaComplexDivision
     TestCudaTridiagonal
     TestCudaPinnedMemory
     TestCudaCubReduceSum

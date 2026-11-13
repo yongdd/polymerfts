@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import yaml
 
-from ..utils.common import atomic_savemat, json_ready, mat_ready, simulation_metadata
+from ..utils.common import atomic_savemat, json_ready, mat_ready, numpy_scalar, simulation_metadata
 
 
 @dataclass
@@ -228,7 +228,7 @@ def save_results(sim, path):
         if isinstance(value, np.ndarray):
             return plain(value.tolist())
         if isinstance(value, np.generic):
-            return plain(value.item())
+            return plain(numpy_scalar(value))
         if isinstance(value, dict):
             return {plain(key): plain(item) for key, item in value.items()}
         if isinstance(value, (list, tuple)):

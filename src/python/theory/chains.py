@@ -15,7 +15,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 
 from ..utils.common import report_partition_consistency
-from ..utils.validation import ValidationError, parse_chi_n
+from ..utils.validation import ValidationError, parse_chi_n, validate_monomer_fractions
 
 DEFAULT_MONOMER_COLORS: List[str] = [
     "red", "blue", "green", "cyan", "magenta", "yellow"
@@ -105,17 +105,14 @@ def process_random_copolymer(
     if len(polymer["blocks"]) != 1:
         raise ValidationError("Only single block random copolymer is allowed.")
 
+    fractions = polymer["blocks"][0]["monomer_fractions"]
+    validate_monomer_fractions(fractions)
     statistical_segment_length = 0
-    total_random_fraction = 0
-    for monomer_type in polymer["blocks"][0]["monomer_fractions"]:
+    for monomer_type in fractions:
         statistical_segment_length += (
-            segment_lengths[monomer_type] ** 2 * polymer["blocks"][0]["monomer_fractions"][monomer_type]
+            segment_lengths[monomer_type] ** 2 * fractions[monomer_type]
         )
-        total_random_fraction += polymer["blocks"][0]["monomer_fractions"][monomer_type]
     statistical_segment_length = np.sqrt(statistical_segment_length)
-
-    if not np.isclose(total_random_fraction, 1.0):
-        raise ValidationError("The sum of volume fractions of random copolymer must be equal to 1.")
 
     random_type_string = polymer["blocks"][0]["type"]
     if random_type_string in segment_lengths:
@@ -124,7 +121,7 @@ def process_random_copolymer(
             "in 'segment_lengths' or other random copolymer"
         )
 
-    return (random_type_string, statistical_segment_length, polymer["blocks"][0]["monomer_fractions"])
+    return (random_type_string, statistical_segment_length, fractions)
 
 
 def read_chains(params):
