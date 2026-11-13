@@ -813,9 +813,7 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
             py::object mask)
         {
             try {
-                long long M = 1;   // 64 bits; ComputationBox rejects grids beyond MAX_GRID_POINTS
-                for(size_t d=0; d<nx.size(); d++)
-                    M *= nx[d];
+                const int M = checked_grid_points(nx);
 
                 py::buffer_info buf_mask;
 

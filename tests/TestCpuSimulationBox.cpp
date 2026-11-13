@@ -12,12 +12,42 @@
 #include <iostream>
 #include <cmath>
 #include <numbers>
+#include <complex>
 #include "CpuComputationBox.h"
+#include "GridLimits.h"
+
+template <typename T>
+void check_overflow_grid()
+{
+    // Exercise the C++ constructors directly, without the Python size guard.
+    for (const bool angles : {false, true})
+    {
+        try
+        {
+            if (angles)
+                CpuComputationBox<T> box({1 << 30, 1 << 30, 16}, {1.0, 1.0, 1.0}, {}, {90.0, 90.0, 90.0});
+            else
+                CpuComputationBox<T> box({1 << 30, 1 << 30, 16}, {1.0, 1.0, 1.0}, {});
+        }
+        catch (const Exception& exc)
+        {
+            if (std::string(exc.what()).find("32-bit") == std::string::npos)
+                throw;
+            continue;
+        }
+        throw std::runtime_error("A grid whose product overflows 64 bits was accepted");
+    }
+}
 
 int main()
 {
     try
     {
+        check_overflow_grid<double>();
+        check_overflow_grid<std::complex<double>>();
+        // The count itself accepts the boundary, without allocating a huge box.
+        if (checked_grid_points({static_cast<int>(MAX_GRID_POINTS)}) != MAX_GRID_POINTS)
+            return -1;
         CpuComputationBox<double> cb({1,2,2}, {4.5,3.5,2.5}, {});
         double sum_w, volume;
         double w[] {-0.81747, -2.02147, -3.52469, 1.43482};

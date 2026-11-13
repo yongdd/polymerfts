@@ -372,6 +372,13 @@ T CpuComputationBackend<T>::solvent_concentration(
         _phi[i] = exp(-_w[i] * ds);
 
     const T partition = cb->mean(_phi);
+    // Keep Q for diagnostics, but an absent species has zero concentration even
+    // when its Boltzmann factors cancel (Q = 0) or are non-finite.
+    if (volume_fraction == 0.0)
+    {
+        std::fill(_phi, _phi + n_basis, T(0.0));
+        return partition;
+    }
     const T norm = volume_fraction / partition;
     for (int i = 0; i < n_basis; i++)
         _phi[i] *= norm;

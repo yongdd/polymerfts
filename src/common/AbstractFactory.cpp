@@ -35,6 +35,14 @@ std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_
 {
     try
     {
+        // Validate before dispatch reads the model or the box geometry.
+        if (cb == nullptr)
+            throw_with_line_number("ComputationBox *cb is a null pointer");
+        if (molecules == nullptr)
+            throw_with_line_number("Molecules *molecules is a null pointer");
+        if (propagator_computation_optimizer == nullptr)
+            throw_with_line_number("PropagatorComputationOptimizer *propagator_computation_optimizer is a null pointer");
+
         if constexpr (std::is_same_v<T, std::complex<double>>)
             if (space_group != nullptr)
                 throw_with_line_number("Space group reduced basis is only supported for real fields.");

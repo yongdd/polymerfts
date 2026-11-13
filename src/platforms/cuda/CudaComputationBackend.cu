@@ -734,6 +734,14 @@ T CudaComputationBackend<T>::solvent_concentration(
 
     const T partition = cb->mean_device(d_phi);
 
+    // Keep Q for diagnostics, but an absent species has zero concentration even
+    // when its Boltzmann factors cancel (Q = 0) or are non-finite.
+    if (volume_fraction == 0.0)
+    {
+        CUDA_CHECK(cudaMemsetAsync(d_phi, 0, sizeof(T)*n_basis, 0));
+        return partition;
+    }
+
     CuDeviceData<T> norm;
     if constexpr (std::is_same_v<T, double>)
         norm = volume_fraction / partition;

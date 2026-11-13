@@ -72,6 +72,43 @@ def test_nan_box(platform):
             rejects(lambda: fac.create_molecules_information(chain_model, ds, {"A": 1.0}))
 
 
+# Isolate null arguments: a regression must fail this test, not kill the test runner.
+FACTORY_CHILD = r"""
+import sys
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except ImportError:
+    pass
+from polymerfts import PlatformSelector
+
+for field_type in ("real", "complex"):
+    for reduced in (False, True):
+        factory = PlatformSelector.create_factory(sys.argv[1], reduced, field_type)
+        box = factory.create_computation_box([4], [1.0])
+        for model, method in (("continuous", "rqm4"), ("discrete", "ps")):
+            molecules = factory.create_molecules_information(model, 0.1, {"A": 1.0})
+            molecules.add_polymer(1.0, [["A", 1.0, 0, 1]])
+            optimizer = factory.create_propagator_computation_optimizer(molecules, False)
+            for args in ((None, molecules, optimizer), (box, None, optimizer), (box, molecules, None)):
+                try:
+                    factory.create_propagator_computation(*args, method)
+                except RuntimeError as exc:
+                    assert "null pointer" in str(exc), str(exc)
+                else:
+                    raise AssertionError("A null factory argument was accepted")
+            # Rejected construction leaves the inputs usable for a valid solver.
+            solver = factory.create_propagator_computation(box, molecules, optimizer, method)
+            del solver
+"""
+
+
+def test_null_factory_arguments(platform):
+    child = subprocess.run([sys.executable, "-c", FACTORY_CHILD, platform],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    assert child.returncode == 0, f"exit={child.returncode}\n{child.stdout}{child.stderr}"
+
+
 def test_single_segment_reduced_basis(platform):
     nx = [8]*3
     sg = _core.SpaceGroup(nx, "Im-3m", 529)
@@ -156,6 +193,7 @@ def test_complex_into_real(platform):
 
 def main():
     for platform in _core.PlatformSelector.avail_platforms():
+        test_null_factory_arguments(platform)
         test_complex_into_real(platform)
         test_underscore_names(platform)
         test_nan_box(platform)

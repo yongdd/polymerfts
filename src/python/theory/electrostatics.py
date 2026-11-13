@@ -258,6 +258,9 @@ class Electrostatics:
                 partition = np.mean(weight)
                 if ion["concentration"] is None:   # grand canonical: e^(βμ_s) Q_s ions per reference chain
                     densities.append(np.exp(ion["chemical_potential"]) * weight / self.n_segments)
+                elif ion["concentration"] == 0.0:
+                    # An absent species contributes nothing even at Q_s = 0; keep Q_s for diagnostics.
+                    densities.append(np.zeros_like(weight))
                 else:
                     densities.append(ion["concentration"] * weight / partition)
                 partitions.append(partition)
@@ -275,6 +278,7 @@ class Electrostatics:
         _, partitions = self.ion_densities()
         with np.errstate(divide="ignore"):
             return [complex(ion["chemical_potential"]) if ion["concentration"] is None
+                    else complex(-np.inf, 0.0) if ion["concentration"] == 0.0
                     else np.log(self.n_segments * ion["concentration"]) - np.log(complex(q))
                     for ion, q in zip(self.ions, partitions)]
 
@@ -348,7 +352,7 @@ class Electrostatics:
             for ion, q in zip(self.ions, partitions):
                 if ion["concentration"] is None:
                     value -= np.exp(ion["chemical_potential"]) * complex(q)
-                else:
+                elif ion["concentration"] != 0.0:
                     value -= self.n_segments * ion["concentration"] * np.log(complex(q))
         if self.coupling <= 0:
             return value
@@ -537,6 +541,8 @@ class MeanFieldElectrostatics:
             partition = float(np.mean(weight))
             if ion["concentration"] is None:
                 densities.append(np.exp(ion["chemical_potential"]) * weight / self.n_segments)
+            elif ion["concentration"] == 0.0:
+                densities.append(np.zeros_like(weight))
             else:
                 densities.append(ion["concentration"] * weight / partition)
             partitions.append(partition)
@@ -599,6 +605,7 @@ class MeanFieldElectrostatics:
         _, partitions = self.ion_densities(psi)
         with np.errstate(divide="ignore"):
             return [ion["chemical_potential"] if ion["concentration"] is None
+                    else -np.inf if ion["concentration"] == 0.0
                     else float(np.log(self.n_segments * ion["concentration"]) - np.log(q))
                     for ion, q in zip(self.ions, partitions)]
 

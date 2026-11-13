@@ -14,6 +14,9 @@ SET(BASIC_TESTS
     TestPairRecords
     TestWtmdLifecycle
     TestAndersonMixing
+    TestAbsentPointIons
+    TestAbsentSolvent
+    TestScftInitialPropagators
     TestExtensions
     TestPropagatorAnalytic
     TestComplexMask

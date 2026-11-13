@@ -199,16 +199,8 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         for(int d=0; d<DIM; d++)
             dx.push_back(lx[d]/nx[d]);
 
-        // The number of grid points, multiplied in 64 bits: grid arrays are indexed
-        // with int, so larger grids are rejected (see GridLimits.h)
-        long long n_points = 1;
-        for(int d=0; d<DIM; d++)
-            n_points *= nx[d];
-        if (n_points > MAX_GRID_POINTS)
-            throw_with_line_number("The grid has " + std::to_string(n_points) + " points; at most " +
-                std::to_string(MAX_GRID_POINTS) + " are supported, because grid arrays are indexed "
-                "with 32-bit integers and the largest of them hold two fields.");
-        total_grid = static_cast<int>(n_points);
+        // Check before multiplication: three valid int dimensions can overflow even 64 bits.
+        total_grid = checked_grid_points(nx);
 
         // Mask
         // Penetrable region == 1.0
@@ -371,16 +363,8 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         for(int d=0; d<DIM; d++)
             dx.push_back(lx[d]/nx[d]);
 
-        // The number of grid points, multiplied in 64 bits: grid arrays are indexed
-        // with int, so larger grids are rejected (see GridLimits.h)
-        long long n_points = 1;
-        for(int d=0; d<DIM; d++)
-            n_points *= nx[d];
-        if (n_points > MAX_GRID_POINTS)
-            throw_with_line_number("The grid has " + std::to_string(n_points) + " points; at most " +
-                std::to_string(MAX_GRID_POINTS) + " are supported, because grid arrays are indexed "
-                "with 32-bit integers and the largest of them hold two fields.");
-        total_grid = static_cast<int>(n_points);
+        // Check before multiplication: three valid int dimensions can overflow even 64 bits.
+        total_grid = checked_grid_points(nx);
 
         // Mask
         if (mask != nullptr)

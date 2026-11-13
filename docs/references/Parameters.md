@@ -86,6 +86,8 @@ Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real
 | `blocks` | list | Block specifications |
 | `initial_conditions` | dict | (Optional) Custom propagator initial conditions per node, e.g. `{0: "G"}` maps node 0 to the initial condition labeled `"G"` in `q_init` (used for grafted chains). Labels may contain letters, digits and underscores only. Only SCFT takes `q_init`: L-FTS and CL-FTS reject grafted chains |
 
+`SCFT.run(..., q_init={"G": profile})` accepts real, finite full-grid graft profiles in the input axis order. With a space group, a full profile must have the group's symmetry and is converted to the solver's active reduced basis; an incompatible profile raises `ValidationError` rather than changing the graft distribution. Existing profiles with `prop_solver.n_grid` values in that reduced basis are also accepted and already use standard axes, regardless of `axis_ordering`. If the full and reduced sizes coincide, the full-grid axis convention applies.
+
 **Block format:** Each block is a dictionary with:
 - `"type"`: Monomer type (string)
 - `"length"`: Contour length (float)
@@ -267,7 +269,7 @@ Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° �
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
+| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and full-grid `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
 
 ### Output
 
@@ -442,6 +444,8 @@ params["electrostatics"] = {"charges": {"A": 0.2}, "bjerrum_length": 0.01,
                             "ions": {"Na": {"valence": 1, "chemical_potential": mu, "smearing_length": 0.1},
                                      "Cl": {"valence": -1, "chemical_potential": mu, "smearing_length": 0.1}}}
 ```
+
+An absent canonical point ion has zero density and energy contribution and chemical potential `-inf`, including when its partition function vanishes. The partition remains available for diagnostics.
 
 The point ions add one chemical potential each to `chemical_potential_history`, after the polymers. [SaltReservoir.py](../../examples/charged/clfts/SaltReservoir.py) runs a charged melt in contact with a salt reservoir.
 

@@ -561,8 +561,10 @@ class SCFT:
             shaped). Typical initialization: small random perturbations around zero.
         q_init : dict, optional
             Initial propagator values for grafted polymers (default: None).
-            Format: {propagator_key: value_array}. Rarely used; for advanced
-            applications like brush layers.
+            Format: {propagator_key: value_array}. Full-grid arrays follow the
+            input axis_ordering and must have the space-group symmetry when a
+            group is used. Arrays in the solver's active reduced basis are also
+            accepted; they already use standard axes and are not transposed.
         on_iteration : callable, optional
             Callback function called after each iteration.
             Signature: on_iteration(info: IterationInfo) -> Optional[bool]
@@ -756,8 +758,7 @@ class SCFT:
         # transposed to the standard [a, b, c] order (the results are in that order)
         if self._axis_perm is not None:
             initial_fields = {m: self._to_standard_axes(f) for m, f in initial_fields.items()}
-            if q_init is not None:
-                q_init = {label: self._to_standard_axes(f) for label, f in q_init.items()}
+        q_init = self._initial_propagators(q_init)
 
         # With a space group the fields are symmetrized and converted to the irreducible basis.
         if self.sg is not None:
@@ -781,6 +782,44 @@ class SCFT:
         else:
             self._pin_field_means(w, None)
         return w, q_init
+
+    def _initial_propagators(self, q_init):
+        """Prepare graft profiles without changing them or the caller's arrays.
+
+        Full-grid inputs follow axis_ordering and are converted to the solver's
+        active reduced basis after checking the full space-group symmetry.
+        Existing reduced inputs already use the standard solver basis, even with
+        axis_ordering. If both sizes coincide, the full-grid interpretation wins.
+        Unlike an initial field guess, a graft profile defines the model, so it
+        must not be silently averaged over symmetry orbits.
+        """
+        if q_init is None:
+            return None
+        prepared = {}
+        full_size, reduced_size = self.prop_solver.total_grid, self.prop_solver.n_grid
+        for label, values in q_init.items():
+            profile = np.asarray(values)
+            if np.iscomplexobj(profile) or not np.all(np.isfinite(profile)):
+                raise ValidationError(f"q_init[{label!r}] must contain real, finite values")
+            with np.errstate(over="ignore", invalid="ignore"):
+                profile = np.array(profile, dtype=np.float64).reshape(-1)
+            if not np.all(np.isfinite(profile)):
+                raise ValidationError(f"q_init[{label!r}] must contain real, finite values at float64 precision")
+            if profile.size == full_size:
+                if self._axis_perm is not None:
+                    profile = self._to_standard_axes(profile)
+                if self.sg is not None:
+                    symmetric = self.sg.symmetrize(profile)
+                    tolerance = 1e-12 * np.max(np.abs(profile))
+                    if not np.allclose(profile, symmetric, rtol=0.0, atol=tolerance):
+                        raise ValidationError(f"q_init[{label!r}] must have the symmetry of 'space_group'")
+                    profile = self.sg.to_reduced_basis(profile)
+            elif self.sg is None or profile.size != reduced_size:
+                sizes = (f"{full_size} full-grid or {reduced_size} reduced-basis values"
+                         if self.sg is not None else f"{full_size} grid values")
+                raise ValidationError(f"q_init[{label!r}] needs {sizes}, got {profile.size}")
+            prepared[label] = profile
+        return prepared
 
     def _start_psi(self, initial_psi, q_init):
         """ψ: the Newton residual of the Poisson equation needs the charge response of the homogeneous
