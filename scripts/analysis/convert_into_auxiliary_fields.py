@@ -15,19 +15,20 @@ Reference: D. Düchs, K. T. Delaney and G. H. Fredrickson, J. Chem. Phys. 141, 1
 
 import argparse
 import json
+from pathlib import Path
+import runpy
 
 import numpy as np
 from scipy.io import loadmat, savemat
 from scipy.io.matlab import MatReadError
 
 
+_MAT = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/mat_fields.py"))
+
+
 def monomer_field(data, name):
     """w of a monomer type: w_<name>, or the real and imaginary parts of CL-FTS."""
-    if 'w_' + name in data:
-        return np.ravel(data['w_' + name])
-    if 'w_' + name + '_real' in data:
-        return np.ravel(data['w_' + name + '_real']) + 1j*np.ravel(data['w_' + name + '_imag'])
-    raise ValueError(f"The file holds no field w_{name}.")
+    return _MAT['read_monomer_fields'](data, [name])[name]
 
 
 def auxiliary_fields(data):
@@ -37,7 +38,8 @@ def auxiliary_fields(data):
     if a_inverse.shape != (len(names), len(names)):
         raise ValueError(f"matrix_a_inverse has the shape {a_inverse.shape}, "
                          f"the file has {len(names)} monomer types {names}.")
-    w = np.stack([monomer_field(data, name) for name in names])
+    fields = _MAT['read_monomer_fields'](data, names)
+    w = np.stack([fields[name] for name in names])
     return a_inverse @ w, names
 
 

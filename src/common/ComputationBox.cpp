@@ -39,6 +39,7 @@
 
 #include "ComputationBox.h"
 #include "GridLimits.h"
+#include "ScaledProduct.h"
 #include "SpaceGroup.h"
 #include "ValidationUtils.h"
 
@@ -1062,15 +1063,15 @@ T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const 
         double dv_base = volume / total_grid;
         for (int i = 0; i < n_basis_; i++)
             if (active_mask == nullptr || active_mask[i] != 0.0)
-                sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i];
-        return sum * static_cast<T>(dv_base);
+                sum += scaled_product::divide(g[i], h[i], w[i], basis_weights_[i] * dv_base);
+        return sum;
     }
     else
     {
         // Full grid mode
         for (int i = 0; i < total_grid; i++)
             if (active_mask == nullptr || active_mask[i] != 0.0)
-                sum += dv[i] * g[i] * h[i] / w[i];
+                sum += scaled_product::divide(g[i], h[i], w[i], dv[i]);
         return sum;
     }
 }

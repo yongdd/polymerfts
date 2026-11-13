@@ -99,7 +99,8 @@ public:
     T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) override;
     double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                   BackendArray<T>* divisor = nullptr) override;
-    void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
+    void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs,
+                              BackendArray<T>* divisor = nullptr) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;

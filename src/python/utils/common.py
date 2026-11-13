@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from .validation import ValidationError, parse_chi_n  # noqa: F401 (parse_chi_n: former utils API)
+from .mat_fields import _encode_mat_fields, decode_mat_fields  # noqa: F401 (public compatibility)
 
 
 def numpy_scalar(value):
@@ -68,85 +69,6 @@ def mat_ready(value):
         return os.fspath(value)
     return value
 
-
-_MAT_FIELD_KEYS = "polymerfts_mat_keys_json"
-
-
-def _encode_mat_fields(value, max_length, *, top_level=False):
-    """Escape only nested struct keys; MAT variable names keep their public API."""
-    if isinstance(value, dict):
-        names = [str(key) for key in value]
-        if len(set(names)) != len(names):
-            raise ValueError("MAT dictionary keys are not unique after conversion to strings")
-        occupied = set(names)
-        result, mapping = {}, {}
-        for name, item in zip(names, value.values()):
-            encoded = name
-            if not top_level and (not name or name[0] == "_" or name[0].isdigit()
-                                  or len(name) > max_length or not name.isascii()
-                                  or name == _MAT_FIELD_KEYS):
-                attempt = 0
-                while True:
-                    source = name if attempt == 0 else json.dumps([name, attempt])
-                    encoded = "field_" + hashlib.sha256(source.encode()).hexdigest()[:24]
-                    if encoded not in occupied:
-                        break
-                    attempt += 1
-                occupied.add(encoded)
-                mapping[encoded] = name
-            result[encoded] = _encode_mat_fields(item, max_length)
-        if mapping:
-            result[_MAT_FIELD_KEYS] = json.dumps({"version": 1, "keys": mapping}, ensure_ascii=True)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_encode_mat_fields(item, max_length) for item in value]
-    if isinstance(value, np.ndarray) and value.dtype == object:
-        result = np.empty(value.shape, dtype=object)
-        for index in np.ndindex(value.shape):
-            result[index] = _encode_mat_fields(value[index], max_length)
-        return result
-    return value
-
-
-def decode_mat_fields(value):
-    """Restore nested keys after ``scipy.io.loadmat(..., simplify_cells=True)``.
-
-    Writers preserve ordinary struct keys and flat variable names. A struct with
-    escaped keys carries ``polymerfts_mat_keys_json``, a versioned JSON mapping
-    from stored keys to original names. Arrays are not converted to Python lists.
-    A legacy numeric field with the marker's name remains an ordinary field.
-    Malformed string mappings raise ValueError rather than overwrite user data.
-    """
-    if isinstance(value, dict):
-        mapping = {}
-        marker = value.get(_MAT_FIELD_KEYS)
-        if isinstance(marker, str):
-            try:
-                record = json.loads(marker)
-                if (not isinstance(record, dict) or set(record) != {"version", "keys"}
-                        or type(record["version"]) is not int or record["version"] != 1
-                        or not isinstance(record["keys"], dict) or not record["keys"]):
-                    raise ValueError("Invalid mapping format or version")
-                mapping = record["keys"]
-                if any(not isinstance(key, str) or not isinstance(name, str)
-                       or key == _MAT_FIELD_KEYS or key not in value
-                       for key, name in mapping.items()):
-                    raise ValueError("Invalid mapped field")
-                names = [mapping.get(key, key) for key in value if key != _MAT_FIELD_KEYS]
-                if len(set(names)) != len(names):
-                    raise ValueError("Mapped fields have duplicate names")
-            except (TypeError, ValueError) as error:
-                raise ValueError("Invalid MAT field-name mapping") from error
-        return {mapping.get(key, key): decode_mat_fields(item)
-                for key, item in value.items() if not mapping or key != _MAT_FIELD_KEYS}
-    if isinstance(value, (list, tuple)):
-        return [decode_mat_fields(item) for item in value]
-    if isinstance(value, np.ndarray) and value.dtype == object:
-        result = np.empty(value.shape, dtype=object)
-        for index in np.ndindex(value.shape):
-            result[index] = decode_mat_fields(value[index])
-        return result
-    return value
 
 
 def settings_json(settings):

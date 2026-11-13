@@ -14,10 +14,15 @@ Options override the values read from the file. See docs/references/Tools.md.
 
 import argparse
 import math
+from pathlib import Path
+import runpy
 
 import numpy as np
 from scipy.integrate import quad
 from scipy.io import loadmat
+
+
+_MAT = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/mat_fields.py"))
 
 
 def _smearing_number(smearing, key, default=None):
@@ -145,7 +150,7 @@ def bare_segment_ratio(chain_model, nx, lx, nbar, n_segments=None, zeta_n=None, 
 
 def read_simulation(path):
     """Settings of a polymerfts fields_*.mat file."""
-    data = loadmat(path, simplify_cells=True)
+    data = _MAT['decode_mat_fields'](loadmat(path, simplify_cells=True))
     params = data.get("initial_params", {})
     angles = params.get("angles", [90.0, 90.0, 90.0])
     if any(abs(float(angle) - 90.0) > 1e-12 for angle in np.atleast_1d(angles)):

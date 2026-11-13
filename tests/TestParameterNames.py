@@ -1,4 +1,4 @@
-"""Input aliases and exact continuation across the parameter-name migration."""
+"""Input aliases, serialized graft nodes and exact parameter-name continuation."""
 
 import contextlib
 import copy
@@ -10,9 +10,10 @@ import tempfile
 
 import numpy as np
 from scipy.io import loadmat
+import yaml
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
-from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
+from polymerfts.utils.common import atomic_savemat, decode_mat_fields, input_hash, settings_json
 from polymerfts.utils.validation import normalize_params, validate_lfts_params
 from TestFtsReliability import parameters, fields, expect_error
 from TestParams import base_params
@@ -88,6 +89,111 @@ def check_aliases(root):
             raise AssertionError("Duplicate alias was accepted")
         except ValidationError as error:
             assert path in str(error)
+
+
+def check_graft_keys():
+    for conditions in (None, {}, {0: "G", 2: "H"}, {"0": "G", "2": "H"},
+                       {np.int64(0): "G", "2": "H"}):
+        for polymer_key in ("polymers", "distinct_polymers"):
+            params = {polymer_key: [{"initial_conditions": conditions}]}
+            before = copy.deepcopy(params)
+            normalized = normalize_params(params)
+            expected = None if conditions is None else {int(k): v for k, v in conditions.items()}
+            assert normalized["polymers"][0]["initial_conditions"] == expected
+            if expected:
+                assert all(type(k) is int for k in normalized["polymers"][0]["initial_conditions"])
+            assert normalize_params(normalized) == normalized
+            assert params == before
+
+    invalid = [[], "G", 0, False, {0: "G", "0": "H"}, {2: "G", "2": "H"}]
+    invalid.extend({node: "G"} for node in (
+        True, np.bool_(False), 0.0, 0.5, np.float64(1.5), -1, None, (0,),
+        "", "00", "01", "+1", "-1", "-0", " 0", "0 ", "0.0", "1e0", "\u0661"))
+    for conditions in invalid:
+        params = {"polymers": [{"initial_conditions": conditions}]}
+        before = copy.deepcopy(params)
+        try:
+            normalize_params(params)
+        except ValidationError as error:
+            assert "polymers[0].initial_conditions" in str(error)
+        else:
+            raise AssertionError(f"Invalid graft node map was accepted: {conditions!r}")
+        assert params == before
+
+
+def check_graft_files(root):
+    """A uniform graft is analytic: Q=1 and the two monomer densities are 1/2."""
+    fields = {"A": np.zeros(4), "B": np.zeros(4)}
+    profiles = {"G": np.ones(4), "H": np.ones(4)}
+
+    def check(calc):
+        assert calc.params["polymers"][0]["initial_conditions"] == {0: "G", 2: "H"}
+        result = calc.run(fields, q_init=profiles, return_result=True)
+        assert result.converged and calc.prop_solver.check_total_partition()
+        np.testing.assert_allclose(result.partition_functions, [1.0], rtol=0, atol=2e-14)
+        for monomer in ("A", "B"):
+            np.testing.assert_allclose(result.phi[monomer], 0.5, rtol=0, atol=2e-14)
+        assert result.chemical_potentials is None
+        return result
+
+    for platform in PlatformSelector.avail_platforms():
+        directory = root / ("graft_" + platform)
+        directory.mkdir()
+        params = {
+            "nx": [4], "lx": [2.0], "ds": 0.25, "chain_model": "continuous",
+            "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 3.0},
+            "polymers": [{"volume_fraction": 1.0, "initial_conditions": {0: "G", 2: "H"},
+                          "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}],
+            "platform": platform, "relax_cell": False, "max_iter": 1, "tolerance": 1e-8,
+            "optimizer": {"name": "am", "max_hist": 5, "start_error": 0.01,
+                          "mix_min": 0.1, "mix_init": 0.1},
+        }
+        before = copy.deepcopy(params)
+        direct = SCFT(params)
+        expected = check(direct)
+        assert params == before
+        for extension in ("json", "yaml"):
+            path = directory / ("input." + extension)
+            path.write_text(json.dumps(params) if extension == "json" else yaml.safe_dump(params))
+            original = path.read_bytes()
+            actual = check(SCFT.from_file(path))
+            for monomer in fields:
+                np.testing.assert_array_equal(actual.phi[monomer], expected.phi[monomer])
+            assert path.read_bytes() == original
+
+        for extension in ("json", "mat"):
+            path = directory / ("result." + extension)
+            direct.save_results(path)
+            saved = (json.loads(path.read_text()) if extension == "json" else
+                     decode_mat_fields(loadmat(path, simplify_cells=True)))
+            restored = saved["initial_params"]
+            # Restore only SciPy's singleton squeezing, independently of the
+            # node-key normalization being tested.
+            restored["nx"] = np.atleast_1d(restored["nx"]).astype(int).tolist()
+            restored["lx"] = np.atleast_1d(restored["lx"]).tolist()
+            restored["relax_cell"] = bool(restored["relax_cell"])
+            if isinstance(restored["polymers"], dict):
+                restored["polymers"] = [restored["polymers"]]
+            for polymer in restored["polymers"]:
+                if isinstance(polymer["blocks"], np.ndarray):
+                    polymer["blocks"] = polymer["blocks"].tolist()
+            assert restored["polymers"][0]["initial_conditions"] == {"0": "G", "2": "H"}
+            original = copy.deepcopy(restored)
+            actual = check(SCFT(restored))
+            for monomer in fields:
+                np.testing.assert_array_equal(actual.phi[monomer], expected.phi[monomer])
+            assert restored == original
+
+        # Key conversion must not bypass the native chain-end membership check.
+        for node in ("1", "99"):
+            invalid = copy.deepcopy(params)
+            invalid["polymers"][0]["initial_conditions"] = {node: "G"}
+            try:
+                SCFT(invalid)
+            except RuntimeError as error:
+                assert "chain-end node" in str(error)
+            else:
+                raise AssertionError(f"Graft on non-end node {node} was accepted")
 
 
 def check_scft(root):
@@ -188,6 +294,8 @@ def main():
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 check_aliases(root)
+                check_graft_keys()
+                check_graft_files(root)
                 check_scft(root)
                 for cls in (LFTS, CLFTS):
                     check_checkpoint(root, cls)

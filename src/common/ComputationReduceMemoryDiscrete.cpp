@@ -274,12 +274,10 @@ void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
             this->for_each_segment_pair(key_left, key_right, N_LEFT+1, 1, N_RIGHT,
                 [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}});
+                    this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}},
+                        this->backend->boltzmann_factor(block.monomer_type));
                 });
-
-            // Remove the shared bead factor; getters apply ensemble normalization.
-            this->backend->normalize_concentration(0, phi, 1.0,
-                                                   this->backend->boltzmann_factor(block.monomer_type));
+            // Getters apply ensemble normalization to the already corrected sum.
         }
         this->backend->synchronize();
 

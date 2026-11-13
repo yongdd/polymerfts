@@ -201,41 +201,14 @@ T CudaComputationBox<T>::inner_product_device(const CuDeviceData<T>* d_g, const 
 template <typename T>
 T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<T>* d_g, const CuDeviceData<T>* d_h, const CuDeviceData<T>* d_w)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    T sum{0.0};
-
-    if (this->space_group_ != nullptr)
-    {
-        int N = this->n_basis_;
-        double dv_base = this->volume / this->total_grid;
-
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        if (this->get_mask() != nullptr)
-            ker_divide_masked<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_basis_weights_, N);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(dv_base);
-    }
-    else
-    {
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_dv, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        if (this->get_mask() != nullptr)
-            ker_divide_masked<<<grid_blocks(this->total_grid, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_dv, this->total_grid);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        sum = reduce_sum_to_host(this->total_grid);
-        return sum;
-    }
+    const int n = this->get_n_basis();
+    const double* weights = device_integration_weights();
+    ker_product_divide<<<grid_blocks(n, N_THREADS), N_THREADS>>>(
+        d_sum.get(), d_g, d_h, d_w, weights,
+        this->get_mask() != nullptr ? weights : nullptr, integration_weight_scale(), n);
+    CUDA_CHECK_LAUNCH();
+    return reduce_sum_to_host(n);
 }
 //-----------------------------------------------------------
 template <typename T>

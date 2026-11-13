@@ -36,6 +36,7 @@
 #include <string>
 
 #include "CudaCommon.h"
+#include "CudaScaledProduct.cuh"
 
 void report_cuda_error(cudaError_t code, const char *file, int line, const char *func)
 {
@@ -365,6 +366,23 @@ __global__ void ker_divide(double* dst, const double* src1, const double* src2, 
         dst[i] = a * src1[i] / src2[i];
         i += blockDim.x * gridDim.x;
     }
+}
+
+__global__ void ker_product_divide(double* dst, const double* a, const double* b, const double* divisor,
+                                  const double* weights, const double* mask, double weight_scale, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        dst[i] = mask != nullptr && mask[i] == 0.0 ? 0.0
+            : scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale);
+}
+
+__global__ void ker_product_divide(cuDoubleComplex* dst, const cuDoubleComplex* a, const cuDoubleComplex* b,
+                                  const cuDoubleComplex* divisor, const double* weights, const double* mask,
+                                  double weight_scale, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        dst[i] = mask != nullptr && mask[i] == 0.0 ? make_cuDoubleComplex(0.0, 0.0)
+            : scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale);
 }
 
 namespace

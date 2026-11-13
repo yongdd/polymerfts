@@ -464,35 +464,22 @@ def build_script(values):
         raise ValueError("Lamella and gyroid seeds require two monomer types. Choose random or mat for larger systems.")
     if initial == "mat":
         if mode == "CL-FTS":
-            read_field = dedent('''\
-                if key in field_data:
-                    field = np.asarray(field_data[key], dtype=np.complex128)
-                elif key + "_real" in field_data and key + "_imag" in field_data:
-                    real = np.asarray(field_data[key + "_real"])
-                    imag = np.asarray(field_data[key + "_imag"])
-                    if real.shape != imag.shape or np.iscomplexobj(real) or np.iscomplexobj(imag):
-                        raise ValueError(f"{key}_real and {key}_imag must be real arrays of the same shape.")
-                    if not np.all(np.isfinite(real)) or not np.all(np.isfinite(imag)):
-                        raise ValueError(f"{key} must contain one finite value per grid point.")
-                    field = real.astype(np.float64) + 1j * imag.astype(np.float64)
-                else:
-                    raise ValueError(f"Initial .mat file needs {key} or both {key}_real and {key}_imag.")
-                ''')
+            read_field = 'field = np.asarray(monomer_fields[monomer], dtype=np.complex128)\n'
         else:
             read_field = dedent('''\
-                if key not in field_data:
-                    raise ValueError(f"Initial .mat file is missing {key}.")
-                if np.iscomplexobj(field_data[key]):
+                if np.iscomplexobj(monomer_fields[monomer]):
                     raise ValueError(f"{key} must be real-valued for SCFT/L-FTS.")
-                field = np.asarray(field_data[key], dtype=np.float64)
+                field = np.asarray(monomer_fields[monomer], dtype=np.float64)
                 ''')
         field_code = dedent(f"""\
             # Relative input paths are resolved next to this script.
             from scipy.io import loadmat
+            from polymerfts.utils.mat_fields import read_monomer_fields
 
             field_data = loadmat(script_dir / {mat_file!r}, squeeze_me=True)
             if "nx" in field_data and not np.array_equal(np.atleast_1d(field_data["nx"]), params["nx"]):
                 raise ValueError("The .mat grid (nx) does not match params['nx'].")
+            monomer_fields = read_monomer_fields(field_data, list(params["segment_lengths"]))
             initial_fields = {{}}
             for monomer in params["segment_lengths"]:
                 key = "w_" + monomer

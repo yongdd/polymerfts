@@ -280,11 +280,10 @@ void ComputationDiscrete<T>::compute_concentrations()
                 std::vector<SegmentPair<T>> pairs;
                 for (int n = 1; n <= N_RIGHT; n++)
                     pairs.push_back({propagator.at(key_left)[N_LEFT-n+1], propagator.at(key_right)[n], 1.0});
-                this->backend->add_segment_products(STREAM, it->second, pairs);
-
-                // Remove the shared bead factor; getters apply ensemble normalization.
-                this->backend->normalize_concentration(STREAM, it->second, 1.0,
-                                                       this->backend->boltzmann_factor(block.monomer_type));
+                // Remove the shared bead before each product is rounded to the
+                // field type. Getters apply ensemble normalization to the sum.
+                this->backend->add_segment_products(STREAM, it->second, pairs,
+                    this->backend->boltzmann_factor(block.monomer_type));
             });
         }
         this->backend->synchronize();

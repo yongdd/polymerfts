@@ -109,6 +109,97 @@ void check_integrand(const std::string& platform, bool reduced_basis)
     }
 }
 
+template <typename T>
+void check_product_range(const std::string& platform, bool reduced_basis)
+{
+    std::unique_ptr<AbstractFactory<T>> factory;
+    if constexpr (std::is_same_v<T, double>)
+        factory = PlatformSelector::create_factory_real(platform, false);
+    else
+        factory = PlatformSelector::create_factory_complex(platform, false);
+    const std::vector<int> nx = {8, 8, 8};
+    SpaceGroup group(nx, "Im-3m", 529);
+    auto cb = factory->create_computation_box(nx, {1.0, 1.0, 1.0}, {});
+    if (reduced_basis)
+        cb->set_space_group(&group);
+    auto molecules = factory->create_molecules_information("discrete", 1.0, {{"A", 1.0}});
+    molecules->add_polymer(0.0, {{"A", 1.0, 0, 1}});
+    const auto& method = resolve_numerical_method("discrete", "ps");
+    std::unique_ptr<ComputationBackend<T>> backend;
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+    if (platform == "cpu-fftw" || platform == "cpu-mkl")
+        backend = std::make_unique<CpuComputationBackend<T>>(
+            cb.get(), molecules.get(), method,
+            platform == "cpu-fftw" ? FFTBackend::FFTW : FFTBackend::MKL,
+            reduced_basis ? &group : nullptr, 2);
+#endif
+#ifdef USE_CUDA
+    if (platform == "cuda")
+        backend = std::make_unique<CudaComputationBackend<T>>(
+            cb.get(), molecules.get(), method, reduced_basis ? &group : nullptr, 2);
+#endif
+    if (!backend)
+        throw std::runtime_error("Missing backend in product-range test.");
+    struct ProductCase { T a, b, divisor, expected; bool first_only = false; };
+    std::vector<ProductCase> cases = {
+        {1e-200, 1e-200, 1e-200, 1e-200},
+        {1e200, 1e200, 1e200, 1e200},
+        {1e308, 1e-308, 1e-308, 1e308},
+        {1e-308, 1e308, 1e308, 1e-308},
+        {std::scalbn(1.0, -800), std::scalbn(1.0, -400),
+         std::scalbn(1.0, -600), std::scalbn(1.0, -600)},
+    };
+    if constexpr (!std::is_same_v<T, double>)
+    {
+        cases.push_back({{1e-200, 1e-200}, {1e-200, -1e-200},
+                         {1e-200, 1e-200}, {1e-200, -1e-200}});
+        cases.push_back({{1e200, 1e200}, {1e200, -1e200},
+                         {1e200, 1e200}, {1e200, -1e200}});
+        // Scaling both components by the larger one would erase the smaller
+        // component here, even though its final value is representable.
+        cases.push_back({{1e150, 1e-200}, {1e100, 0.0},
+                         {1e100, 0.0}, {1e150, 1e-200}});
+    }
+    const int n = cb->get_n_basis();
+    std::vector<T> a(n), b(n), divisor(n), ones(n, T(1.0));
+    std::vector<T> first(n, T(0.0));
+    first[0] = T(1.0);
+    const double first_volume = std::real(cb->integral(first.data()));
+    // Here even a*b/divisor overflows. The volume/orbit weight must be
+    // included before restoring the exponent to retain the finite integral.
+    cases.push_back({1e308, 1.0 / first_volume, 1.0, 1e308, true});
+    auto release = [&](BackendArray<T>* ptr) { backend->deallocate(ptr); };
+    std::unique_ptr<BackendArray<T>, decltype(release)> da(backend->allocate(), release);
+    std::unique_ptr<BackendArray<T>, decltype(release)> db(backend->allocate(), release);
+    std::unique_ptr<BackendArray<T>, decltype(release)> dw(backend->allocate(), release);
+    const double volume = std::real(cb->integral(ones.data()));
+    const auto close = [](double actual, double expected) {
+        return std::isfinite(actual) && (expected == 0.0 ? actual == 0.0
+            : actual != 0.0 && std::abs(actual / expected - 1.0) < 2e-12);
+    };
+    for (const auto& test : cases)
+    {
+        std::fill(a.begin(), a.end(), test.a);
+        if (test.first_only)
+            std::fill(a.begin() + 1, a.end(), T(0.0));
+        std::fill(b.begin(), b.end(), test.b);
+        std::fill(divisor.begin(), divisor.end(), test.divisor);
+        backend->copy_from_host(0, da.get(), a.data());
+        backend->copy_from_host(0, db.get(), b.data());
+        backend->copy_from_host(0, dw.get(), divisor.data());
+        const T partition = backend->inner_product_inverse_weight(da.get(), db.get(), dw.get()) / volume;
+        const double absolute = backend->absolute_inner_product(da.get(), db.get(), dw.get()) / volume;
+        if (!close(std::real(partition), std::real(test.expected)) ||
+            !close(std::imag(partition), std::imag(test.expected)) ||
+            !close(absolute, std::abs(test.expected)))
+        {
+            std::cerr << platform << ": product range expected " << test.expected
+                      << ", partition " << partition << ", absolute " << absolute << '\n';
+            throw std::runtime_error("Weighted shared-bead product lost a representable result.");
+        }
+    }
+}
+
 int main()
 {
     try
@@ -118,6 +209,9 @@ int main()
             check_integrand<double>(platform, false);
             check_integrand<double>(platform, true);
             check_integrand<std::complex<double>>(platform, false);
+            check_product_range<double>(platform, false);
+            check_product_range<double>(platform, true);
+            check_product_range<std::complex<double>>(platform, false);
         }
         return cuda_part_missing() ? 1 : 0;
     }

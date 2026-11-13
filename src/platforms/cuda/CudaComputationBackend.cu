@@ -18,6 +18,7 @@
 #include "CudaSolverPseudoRQM4.h"
 #include "CudaSolverRealSpaceDiscrete.h"
 #include "CudaTypeDispatch.h"
+#include "CudaScaledProduct.cuh"
 
 namespace {
 
@@ -36,7 +37,7 @@ constexpr int MAX_PAIRS_PER_LAUNCH = 32;
 
 __global__ void ker_absolute_partition_product(
     double* out, const double* a, const double* b, const double* divisor,
-    const double* weights, const double* mask, int n)
+    const double* weights, const double* mask, double weight_scale, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
@@ -45,10 +46,10 @@ __global__ void ker_absolute_partition_product(
             out[i] = 0.0;
         else
         {
-            double product = a[i] * b[i];
             if (divisor != nullptr)
-                product /= divisor[i];
-            out[i] = fabs(product) * weights[i];
+                out[i] = fabs(scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale));
+            else
+                out[i] = fabs(a[i] * b[i]) * weights[i];
         }
         i += blockDim.x * gridDim.x;
     }
@@ -56,7 +57,7 @@ __global__ void ker_absolute_partition_product(
 
 __global__ void ker_absolute_partition_product(
     cuDoubleComplex* out, const cuDoubleComplex* a, const cuDoubleComplex* b,
-    const cuDoubleComplex* divisor, const double* weights, const double* mask, int n)
+    const cuDoubleComplex* divisor, const double* weights, const double* mask, double weight_scale, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
@@ -65,10 +66,11 @@ __global__ void ker_absolute_partition_product(
             out[i] = make_cuDoubleComplex(0.0, 0.0);
         else
         {
-            cuDoubleComplex product = cuCmul(a[i], b[i]);
             if (divisor != nullptr)
-                product = cuCdiv(product, divisor[i]);
-            out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
+                out[i] = make_cuDoubleComplex(
+                    cuCabs(scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale)), 0.0);
+            else
+                out[i] = make_cuDoubleComplex(cuCabs(cuCmul(a[i], b[i])) * weights[i], 0.0);
         }
         i += blockDim.x * gridDim.x;
     }
@@ -116,6 +118,27 @@ __global__ void ker_add_segment_products(cuDoubleComplex* phi, SegmentProducts<c
         }
         phi[i] = acc;
         i += blockDim.x * gridDim.x;
+    }
+}
+
+template <typename TD>
+__global__ void ker_add_discrete_segment_products(TD* phi, SegmentProducts<TD> p,
+                                                  const TD* divisor, const double* mask, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if (mask != nullptr && mask[i] == 0.0)
+            continue;
+        TD acc = phi[i];
+        for (int k = 0; k < p.n; ++k)
+        {
+            const TD term = scaled_product::divide(p.q_1[k][i], p.q_2[k][i], divisor[i], p.weight[k]);
+            if constexpr (std::is_same_v<TD, double>)
+                acc += term;
+            else
+                acc = cuCadd(acc, term);
+        }
+        phi[i] = acc;
     }
 }
 
@@ -606,19 +629,19 @@ double CudaComputationBackend<T>::absolute_inner_product(
     const int threads = CudaCommon::get_instance().get_n_threads();
     ker_absolute_partition_product<<<grid_blocks(n_basis, threads), threads, 0, stream>>>(
         d_sum.get(), raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor),
-        cb->device_integration_weights(), d_q_mask.get(), n_basis);
+        cb->device_integration_weights(), d_q_mask.get(), cb->integration_weight_scale(), n_basis);
     CUDA_CHECK_LAUNCH();
     CUDA_CHECK(cuda_reduce_sum(d_partition_temp.get(), partition_temp_bytes, d_sum.get(),
                                d_partition_sum.get(), n_basis, stream));
     CUDA_CHECK(cudaMemcpyAsync(h_partition_sum.get(), d_partition_sum.get(), sizeof(T),
                                cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
-    return std::real(h_partition_sum[0]) * cb->integration_weight_scale();
+    return std::real(h_partition_sum[0]) * (divisor == nullptr ? cb->integration_weight_scale() : 1.0);
 }
 
 template <typename T>
 void CudaComputationBackend<T>::add_segment_products(
-    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
+    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -633,7 +656,11 @@ void CudaComputationBackend<T>::add_segment_products(
             chunk.q_2[k] = raw(pairs[first + k].q_2);
             chunk.weight[k] = pairs[first + k].weight;
         }
-        ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis);
+        if (divisor != nullptr)
+            ker_add_discrete_segment_products<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+                raw(phi), chunk, raw(divisor), d_q_mask.get(), n_basis);
+        else
+            ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis);
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK_LAUNCH();

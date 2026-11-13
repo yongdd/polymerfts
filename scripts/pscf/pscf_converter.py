@@ -29,6 +29,7 @@ from scipy.io.matlab import MatReadError
 
 # Reuse input aliases and validation without importing the compiled package.
 _VALIDATION = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/validation.py"))
+_MAT = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/mat_fields.py"))
 
 
 def real(value):
@@ -376,7 +377,7 @@ def read_input(path):
     suffix = path.suffix.lower()
     if suffix == ".mat":
         try:
-            return loadmat(path, simplify_cells=True)
+            return _MAT['decode_mat_fields'](loadmat(path, simplify_cells=True))
         except (MatReadError, IndexError, NotImplementedError) as exc:
             raise ValueError(f"Cannot read MATLAB file {path}: {exc}. Use a SciPy-compatible MAT file (not HDF5/v7.3).") from None
     if suffix == ".json":

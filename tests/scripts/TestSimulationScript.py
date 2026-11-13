@@ -16,6 +16,7 @@ from scipy.io import savemat
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = runpy.run_path(str(ROOT / "scripts" / "gui" / "simulation_gui.py"))
 VALIDATION = runpy.run_path(str(ROOT / "src" / "python" / "utils" / "validation.py"))
+MAT_FIELDS = runpy.run_path(str(ROOT / "src" / "python" / "utils" / "mat_fields.py"))
 
 
 def execute_export(values, tmp_path, monkeypatch):
@@ -39,6 +40,12 @@ def execute_export(values, tmp_path, monkeypatch):
     fake.lfts = SimpleNamespace(LFTS=Simulation)
     fake.clfts = SimpleNamespace(CLFTS=Simulation)
     monkeypatch.setitem(sys.modules, "polymerfts", fake)
+    # Keep the actual MAT reader while replacing only the computational solver.
+    fake_utils = ModuleType("polymerfts.utils")
+    fake_mat = ModuleType("polymerfts.utils.mat_fields")
+    fake_mat.read_monomer_fields = MAT_FIELDS["read_monomer_fields"]
+    monkeypatch.setitem(sys.modules, "polymerfts.utils", fake_utils)
+    monkeypatch.setitem(sys.modules, "polymerfts.utils.mat_fields", fake_mat)
     for name in ("OMP_NUM_THREADS", "OMP_MAX_ACTIVE_LEVELS", "OMP_STACKSIZE"):
         # Track environment changes made by the generated code for pytest cleanup.
         monkeypatch.setenv(name, os.environ.get(name, "1"))

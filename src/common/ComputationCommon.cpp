@@ -444,6 +444,14 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
         if (p < 0 || p > P-1)
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
+        // An absent GCE species contributes exactly zero even if an unused
+        // propagator integral is nonfinite. Validate its arguments first.
+        if (fugacity == 0.0)
+        {
+            std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
+            return;
+        }
+
         std::vector<BackendArray<T>*> arrays;
         std::vector<T> weights;
         for (const auto& [key, phi_b] : phi_block)

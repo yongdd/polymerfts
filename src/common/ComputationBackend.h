@@ -210,9 +210,12 @@ public:
     virtual double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                           BackendArray<T>* divisor = nullptr) = 0;
 
-    /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i.
+    /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i / divisor.
+    /// Discrete chains remove the shared bead in each term, before a product
+    /// can underflow or overflow; continuous chains omit divisor.
     virtual void add_segment_products(int stream, BackendArray<T>* phi,
-                                      const std::vector<SegmentPair<T>>& pairs) = 0;
+                                      const std::vector<SegmentPair<T>>& pairs,
+                                      BackendArray<T>* divisor = nullptr) = 0;
 
     /**
      * @brief Normalize a block concentration: phi = norm * phi / divisor.

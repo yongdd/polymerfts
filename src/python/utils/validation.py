@@ -28,8 +28,33 @@ def _rename_parameter(mapping, old, new, path=""):
         mapping[new] = mapping.pop(old)
 
 
+def _normalize_initial_conditions(conditions, path):
+    """Restore integer graft nodes from JSON/MAT object keys without merging nodes."""
+    if not isinstance(conditions, dict):
+        raise ValidationError(f"'{path}' must be a dict mapping integer node indices to labels, or None")
+    normalized = {}
+    for node, label in conditions.items():
+        if isinstance(node, (int, np.integer)) and not isinstance(node, (bool, np.bool_)):
+            index = int(node)
+        elif (isinstance(node, str) and node.isascii() and node.isdecimal()
+              and (node == "0" or not node.startswith("0"))):
+            try:
+                index = int(node)
+            except ValueError as error:
+                raise ValidationError(f"Invalid node index {node!r} in '{path}'") from error
+        else:
+            raise ValidationError(f"Node index {node!r} in '{path}' must be a non-negative integer "
+                                  "or its canonical decimal string")
+        if index < 0:
+            raise ValidationError(f"Node index {node!r} in '{path}' must be non-negative")
+        if index in normalized:
+            raise ValidationError(f"Duplicate node index {index} in '{path}' after converting string keys")
+        normalized[index] = label
+    return normalized
+
+
 def normalize_params(params):
-    """Copy input parameters and translate supported legacy names.
+    """Copy input parameters, translate legacy names and restore serialized graft nodes.
 
     Normalization stays at the input boundary so the simulation loops use only
     the documented names. Supplying both names is an error, even if equal.
@@ -45,10 +70,16 @@ def normalize_params(params):
     polymers = params.get("polymers")
     if isinstance(polymers, list):
         for i, polymer in enumerate(polymers):
-            if isinstance(polymer, dict) and isinstance(polymer.get("blocks"), list):
-                for j, block in enumerate(polymer["blocks"]):
-                    if isinstance(block, dict):
-                        _rename_parameter(block, "fraction", "monomer_fractions", f"polymers[{i}].blocks[{j}].")
+            if isinstance(polymer, dict):
+                # Grand-canonical grafts are unsupported; report that domain
+                # restriction before checking the syntax of their node keys.
+                if "chemical_potential" not in polymer and polymer.get("initial_conditions") is not None:
+                    polymer["initial_conditions"] = _normalize_initial_conditions(
+                        polymer["initial_conditions"], f"polymers[{i}].initial_conditions")
+                if isinstance(polymer.get("blocks"), list):
+                    for j, block in enumerate(polymer["blocks"]):
+                        if isinstance(block, dict):
+                            _rename_parameter(block, "fraction", "monomer_fractions", f"polymers[{i}].blocks[{j}].")
     group = params.get("space_group")
     if isinstance(group, dict):
         _rename_parameter(group, "number", "hall_number", "space_group.")

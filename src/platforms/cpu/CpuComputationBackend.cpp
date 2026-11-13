@@ -11,6 +11,7 @@
 #include "CpuComputationBackend.h"
 #include "Exception.h"
 #include "NumericalMethods.h"
+#include "ScaledProduct.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
 #include "CpuSolverPseudoRK2.h"
@@ -305,6 +306,22 @@ template <typename T>
 double CpuComputationBackend<T>::absolute_inner_product(
     BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor)
 {
+    if (divisor != nullptr)
+    {
+        // Include the integration weight before restoring the product's
+        // exponent, including the volume element in a reduced basis.
+        const double* mask = cb->get_mask();
+        const double dv = cb->get_volume() / cb->get_total_grid();
+        const auto& orbits = cb->get_orbit_counts();
+        double sum = 0.0;
+        for (int i = 0; i < n_basis; ++i)
+            if (mask == nullptr || mask[i] != 0.0)
+            {
+                const double weight = space_group != nullptr ? orbits[i] * dv : cb->get_dv(i);
+                sum += std::abs(scaled_product::divide(raw(a)[i], raw(b)[i], raw(divisor)[i], weight));
+            }
+        return sum;
+    }
     if (absolute_product.empty())
         absolute_product.resize(n_basis);
     const double* mask = cb->get_mask();
@@ -316,8 +333,6 @@ double CpuComputationBackend<T>::absolute_inner_product(
             continue;
         }
         T product = raw(a)[i] * raw(b)[i];
-        if (divisor != nullptr)
-            product /= raw(divisor)[i];
         absolute_product[i] = std::abs(product);
     }
     return std::real(cb->integral(absolute_product.data()));
@@ -325,9 +340,23 @@ double CpuComputationBackend<T>::absolute_inner_product(
 
 template <typename T>
 void CpuComputationBackend<T>::add_segment_products(
-    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
+    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor)
 {
     T* _phi = raw(phi);
+    if (divisor != nullptr)
+    {
+        const T* _divisor = raw(divisor);
+        const double* mask = cb->get_mask();
+        for (const SegmentPair<T>& pair : pairs)
+        {
+            const T* q_1 = raw(pair.q_1);
+            const T* q_2 = raw(pair.q_2);
+            for (int i = 0; i < n_basis; ++i)
+                if (mask == nullptr || mask[i] != 0.0)
+                    _phi[i] += scaled_product::divide(q_1[i], q_2[i], _divisor[i], pair.weight);
+        }
+        return;
+    }
     for (const SegmentPair<T>& pair : pairs)
     {
         const T* q_1 = raw(pair.q_1);
