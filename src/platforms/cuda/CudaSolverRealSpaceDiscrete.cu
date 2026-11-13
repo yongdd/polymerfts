@@ -235,6 +235,9 @@ void CudaSolverRealSpaceDiscrete<T>::upload(const RealSpaceBond::Kernels& kernel
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
+    // Uploads replace live buffers in place. If any allocation/copy fails,
+    // neither propagation nor stress may use the mixture of old and new tables.
+    refusal_ = "The rs operator update has not completed. Call update_laplacian_operator() successfully before computing again.";
     try
     {
         if (!cb->is_orthogonal())
@@ -293,18 +296,19 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
             }
         }
         halo = ghosts.halo;
-        refusal_.clear();
         for (int d = 0; d < cb->get_dim(); ++d)
         {
             const size_t count = ghosts.index[d].size();
             if (d_ghost_index[d].size() != count)
-            {
                 d_ghost_index[d].allocate(count);
+            // A previous attempt may have allocated the index but failed while
+            // replacing the sign buffer. Each buffer must be retried separately.
+            if (d_ghost_sign[d].size() != count)
                 d_ghost_sign[d].allocate(count);
-            }
             CUDA_CHECK(cudaMemcpy(d_ghost_index[d], ghosts.index[d].data(), sizeof(int) * count, cudaMemcpyHostToDevice));
             CUDA_CHECK(cudaMemcpy(d_ghost_sign[d], ghosts.sign[d].data(), sizeof(double) * count, cudaMemcpyHostToDevice));
         }
+        refusal_.clear();
     }
     catch (std::exception& exc)
     {
@@ -317,6 +321,9 @@ void CudaSolverRealSpaceDiscrete<T>::update_dw(std::string device, std::map<std:
 {
     try
     {
+        // Even a one-bead chain (with no convolution) needs a completed update.
+        if (!refusal_.empty())
+            throw_with_line_number(refusal_);
         if (device != "gpu" && device != "cpu")
             throw_with_line_number("Invalid device \"" + device + "\".");
 
@@ -493,6 +500,8 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::prepare_stress()
 {
+    if (!refusal_.empty())
+        throw_with_line_number(refusal_);
     const int M = cb->get_total_grid();
     for (int i = 0; i < n_streams; ++i)
     {

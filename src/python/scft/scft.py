@@ -606,6 +606,9 @@ class SCFT:
                     or not np.all(np.isfinite(initial_psi)):
                 raise ValidationError("initial_psi must hold one real, finite value per grid point")
 
+        # Reject invalid input before resetting the optimizer or changing the run state.
+        w, q_init = self._initial_fields(initial_fields, q_init)
+
         # Assign large initial value for the energy and error
         energy_total = 1.0e20
         error_level = 1.0e20
@@ -618,7 +621,6 @@ class SCFT:
         print(", box size" if self.relax_cell else "")
 
         # ---- 1. Initial fields and ψ ----
-        w, q_init = self._initial_fields(initial_fields, q_init)
         es = self.electrostatics
         energy_electrostatic_homogeneous = 0.0
         if es is not None:
@@ -754,6 +756,34 @@ class SCFT:
     def _initial_fields(self, initial_fields, q_init):
         """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
         M = len(self.monomer_types)
+
+        if not isinstance(initial_fields, dict):
+            raise ValidationError("initial_fields must be a dict {monomer_type: field_array}")
+        prepared = {}
+        for name in self.monomer_types:
+            if name not in initial_fields:
+                raise ValidationError(f"initial_fields is missing monomer {name!r}")
+            try:
+                field = np.asarray(initial_fields[name])
+                valid = not np.iscomplexobj(field) and np.all(np.isfinite(field))
+            except (TypeError, ValueError) as error:
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values") from error
+            if not valid:
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values")
+            if field.size != self.prop_solver.total_grid:
+                raise ValidationError(f"initial_fields[{name!r}] needs {self.prop_solver.total_grid} values, "
+                                      f"got {field.size}")
+            try:
+                with np.errstate(over="ignore", invalid="ignore"):
+                    field = np.array(field, dtype=np.float64).reshape(-1)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values "
+                                      "at float64 precision") from error
+            if not np.all(np.isfinite(field)):
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values "
+                                      "at float64 precision")
+            prepared[name] = field
+        initial_fields = prepared
 
         # With axis_ordering the arrays are given in the axis order of nx and lx and are
         # transposed to the standard [a, b, c] order (the results are in that order)

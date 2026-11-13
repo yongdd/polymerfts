@@ -36,7 +36,7 @@ class ThermodynamicOperators:
         if self.record_pressure:
             if not self.record_chemical_potentials:
                 raise ValidationError("'recording.pressure' needs free chains (no initial_conditions)")
-            if any(b != "periodic" for b in self.prop_solver.bc):
+            if any(b.lower() != "periodic" for b in self.prop_solver.bc):
                 raise ValidationError("'recording.pressure' needs a periodic box")
             if not self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
                 raise ValidationError(f"'recording.pressure' needs the stress; "

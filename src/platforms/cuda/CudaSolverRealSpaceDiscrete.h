@@ -56,7 +56,7 @@ private:
     /// Full and half bonds with the kernel of one axis differentiated with respect to the box length
     std::map<std::string, std::array<DeviceKernels, 3>> d_bond_dlength, d_bond_half_dlength;
     std::array<int, 3> halo{};
-    std::string refusal_;   ///< Why the bonds of the current box do not fit a block (empty when they do)
+    std::string refusal_;   ///< Why the current operators are unavailable; empty only after a complete update
     std::array<CudaDeviceBuffer<int>, 3> d_ghost_index;
     std::array<CudaDeviceBuffer<double>, 3> d_ghost_sign;
 

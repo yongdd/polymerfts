@@ -320,7 +320,7 @@ class CLFTS:
         # simulation, so each simulation keeps its own copy of the integrator
         self._joint_psi = False
         if getattr(self.integrator, "linear_response", False):
-            if any(b != "periodic" for b in self.prop_solver.bc):
+            if any(b.lower() != "periodic" for b in self.prop_solver.bc):
                 raise ValidationError(f"The integrator '{self.integrator.name}' (linear_response) needs a periodic box")
             self.integrator = copy.deepcopy(self.integrator)
             self._joint_psi = self.electrostatics is not None and self.electrostatics.coupling > 0

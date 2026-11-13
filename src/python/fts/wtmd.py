@@ -146,6 +146,7 @@ class WTMD:
             k_sq, _ = _periodic_metric(nx, self._metric_inv)
             mag_k = np.sqrt(k_sq[:, :, :nx[2] // 2 + 1])
         self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
+        self._fk_root = np.power(self.fk, 1.0 / self.l)
 
         # Gaussian hill and its derivative at the offsets X = (Ψ - Ψ_sample)/σ of the bins
         X = self.dpsi * np.arange(-self.pad, self.pad + 1) / self.sigma_psi
@@ -167,9 +168,20 @@ class WTMD:
             self.w_aux_k = self._fourier.forward(np.reshape(w_aux[self.exchange_idx], -1))
         else:
             self.w_aux_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))
-        psi = np.sum(np.power(np.absolute(self.w_aux_k), self.l) * self.fk * self.wt)
-        psi = np.power(psi, 1.0 / self.l) / self.M
-        return psi
+        # Absorb the cutoff before scaling: b_k = |w_k| f_k^(1/ell).
+        # Powers of b/max(b) cannot overflow, even for large ell. The half-
+        # spectrum weights are at least one, so b/||b||_ell also stays in [0, 1].
+        magnitude = np.absolute(self.w_aux_k) * self._fk_root
+        scale = np.max(magnitude)
+        self._normalized_modes = np.zeros_like(magnitude)
+        if scale == 0.0:
+            return 0.0
+        self._normalized_modes = magnitude / scale
+        norm = np.power(np.sum(np.power(self._normalized_modes, self.l) * self.wt), 1.0 / self.l)
+        self._normalized_modes /= norm
+        # norm/M <= 1 for ell >= 1; restore the scale without a large product
+        # or an intermediate scale/M that can underflow prematurely.
+        return scale * (norm / self.M)
 
     def store_order_parameter(self, psi, dH):
         self.order_parameter_history.append(psi)
@@ -193,14 +205,15 @@ class WTMD:
             # Calculate derivative of order parameter with respect to w_aux_k
             magnitude = np.absolute(self.w_aux_k)
             direction = np.divide(self.w_aux_k, magnitude, out=np.zeros_like(self.w_aux_k), where=magnitude > 0)
-            # |w_k|^(ell-1) times its phase stays finite at a zero coefficient. The
-            # derivative is zero there for ell>1; ell=1 uses the zero subgradient.
-            dpsi_dwk = np.power(magnitude, self.l - 1.0) * direction * np.power(psi, 1.0 - self.l) * self.fk
+            # f_k^(1/ell) [b_k/||b||_ell]^(ell-1) is bounded and independent
+            # of the field scale. Keep the zero subgradient for ell=1 and the
+            # zero derivative at a zero coefficient for ell>1.
+            dpsi_dwk = self._fk_root * np.power(self._normalized_modes, self.l - 1.0) * direction
             # Calculate derivative of order parameter with respect to w
             if self._fourier is not None:
-                dpsi_dwr = self._fourier.backward(dpsi_dwk) * np.power(self.M, 2.0 - self.l) / self.V
+                dpsi_dwr = self._fourier.backward(dpsi_dwk) * self.M / self.V
             else:
-                dpsi_dwr = np.fft.irfftn(dpsi_dwk, self.nx, axes=tuple(range(len(self.nx)))) * np.power(self.M, 2.0 - self.l) / self.V
+                dpsi_dwr = np.fft.irfftn(dpsi_dwk, self.nx, axes=tuple(range(len(self.nx)))) * self.M / self.V
 
         # Add bias
         bias = np.reshape(self.V * up_hat * dpsi_dwr, self.M)

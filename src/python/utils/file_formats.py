@@ -187,7 +187,8 @@ def save_vtk(
     fields : np.ndarray or dict
         One real field, or {name: field} to store several fields in one file
         (for example SCFTResult.phi). A field has the grid shape (1D, 2D or 3D),
-        or is flat when nx is given.
+        or is flat when nx is given. Spaces in names become underscores;
+        names that then collide raise ValueError before the file is opened.
     lx : list of float
         Box lengths, one per dimension.
     field_name : str
@@ -232,7 +233,10 @@ def save_vtk(
                              "(save the real and imaginary parts separately)")
         if field.size != n_points:
             raise ValueError(f"Field '{name}' has {field.size} values, the grid {nx} has {n_points}")
-        data[str(name).replace(" ", "_")] = np.reshape(field, nx).ravel(order="F")
+        vtk_name = str(name).replace(" ", "_")
+        if vtk_name in data:
+            raise ValueError(f"Field names collide after VTK name conversion: '{vtk_name}'")
+        data[vtk_name] = np.reshape(field, nx).ravel(order="F")
 
     # Pad to three dimensions
     nx3 = nx + [1] * (3 - dim)
@@ -242,7 +246,7 @@ def save_vtk(
     if angles is not None and len(angles) != 3:
         raise ValueError(f"angles must be [alpha, beta, gamma] or [gamma], got {list(angles)}")
     alpha, beta, gamma = np.deg2rad(angles) if angles is not None else (np.pi/2,)*3
-    orthogonal = np.allclose([alpha, beta, gamma], np.pi/2, atol=1e-10)
+    orthogonal = np.allclose([alpha, beta, gamma], np.pi/2, rtol=0.0, atol=1e-10)
     # Fractional offset of the first point of each axis: cell centres, or the nodes of a and b
     offsets = [0.5, 0.5, 0.5]
     if space_group is not None and space_group.uses_hexagonal_axes():

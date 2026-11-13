@@ -17,6 +17,8 @@ SET(BASIC_TESTS
     TestAbsentPointIons
     TestAbsentSolvent
     TestScftInitialPropagators
+    TestScftInitialFields
+    TestPeriodicBoundaryCase
     TestScftResultGeometry
     TestMaskedDiscreteWeights
     TestSmallFieldCoefficients
@@ -24,6 +26,7 @@ SET(BASIC_TESTS
     TestLftsIdealLimit
     TestRandomCopolymerFractions
     TestNumpyScalarSerialization
+    TestVtkFieldIntegrity
     TestExtensions
     TestPropagatorAnalytic
     TestComplexMask
@@ -53,6 +56,7 @@ SET(BASIC_TESTS
     TestPhysicalBasisOperators
     TestSmearingAliases
     TestWtmdZeroModes
+    TestWtmdRange
 
     # CPU FFT (all types)
     TestCpuFFT1D
@@ -77,6 +81,7 @@ SET(BASIC_TESTS
     TestCudaSimulationBox
     TestCudaSimulationBoxComplex
     TestCudaComplexDivision
+    TestCudaRealSpaceRecovery
     TestCudaTridiagonal
     TestCudaPinnedMemory
     TestCudaCubReduceSum
