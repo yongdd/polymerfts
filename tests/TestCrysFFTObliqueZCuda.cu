@@ -14,6 +14,7 @@
  * change followed by a new table.
  */
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
