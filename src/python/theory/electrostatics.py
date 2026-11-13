@@ -71,6 +71,29 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
+def _point_ion_density(ion, potential, n_segments):
+    """Density and diagnostic Q of one point ion with the dimensionless potential u.
+
+    For a grand-canonical ion, mu and u can have a large common Donnan offset:
+    exp(mu - u) stays finite even when exp(mu) or exp(-u) cannot be represented.
+    Q is still the unshifted partition, but it does not enter this density.
+    Canonical ions keep their normalization by Q, including its physical poles.
+    """
+    if ion["concentration"] is None:
+        density = np.exp(ion["chemical_potential"] - potential) / n_segments
+        # Only the diagnostic partition may overflow or underflow here; do not
+        # silence a genuinely non-finite density from the combined exponent.
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            partition = np.mean(np.exp(-potential))
+        return density, partition
+    weight = np.exp(-potential)
+    partition = np.mean(weight)
+    if ion["concentration"] == 0.0:
+        # An absent species contributes nothing even at Q = 0; keep Q for diagnostics.
+        return np.zeros_like(weight), partition
+    return ion["concentration"] * weight / partition, partition
+
+
 def coulomb_coupling(params, n_segments, nbar):
     """E of the `electrostatics` input: `coupling`, or 4π l_B N² √N̄ from `bjerrum_length`."""
     if "coupling" in params:
@@ -254,15 +277,9 @@ class Electrostatics:
         if self._ion_state is None:
             densities, partitions = [], []
             for ion in self.ions:
-                weight = np.exp(-ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments)
-                partition = np.mean(weight)
-                if ion["concentration"] is None:   # grand canonical: e^(βμ_s) Q_s ions per reference chain
-                    densities.append(np.exp(ion["chemical_potential"]) * weight / self.n_segments)
-                elif ion["concentration"] == 0.0:
-                    # An absent species contributes nothing even at Q_s = 0; keep Q_s for diagnostics.
-                    densities.append(np.zeros_like(weight))
-                else:
-                    densities.append(ion["concentration"] * weight / partition)
+                potential = ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
+                density, partition = _point_ion_density(ion, potential, self.n_segments)
+                densities.append(density)
                 partitions.append(partition)
             self._ion_state = (densities, partitions)
         return self._ion_state
@@ -284,9 +301,9 @@ class Electrostatics:
 
     def ion_number_densities(self):
         """Ions per reference chain, N c_s, of each point ion: e^(βμ_s) Q_s for grand-canonical ions."""
-        _, partitions = self.ion_densities()
-        return [np.exp(ion["chemical_potential"]) * complex(q) if ion["concentration"] is None
-                else complex(self.n_segments * ion["concentration"]) for ion, q in zip(self.ions, partitions)]
+        densities, _ = self.ion_densities()
+        return [self.n_segments * np.mean(density) if ion["concentration"] is None
+                else complex(self.n_segments * ion["concentration"]) for ion, density in zip(self.ions, densities)]
 
     def force(self, c):
         """δH/δψ = (∇² - κ²)ψ/E + c; zero without Coulomb coupling (ψ stays zero)."""
@@ -348,10 +365,10 @@ class Electrostatics:
         """
         value = 0.0 if self.fixed_charge is None else np.mean(self._psi * self.fixed_charge)
         if self.ions:
-            _, partitions = self.ion_densities()
-            for ion, q in zip(self.ions, partitions):
+            densities, partitions = self.ion_densities()
+            for ion, density, q in zip(self.ions, densities, partitions):
                 if ion["concentration"] is None:
-                    value -= np.exp(ion["chemical_potential"]) * complex(q)
+                    value -= self.n_segments * np.mean(density)
                 elif ion["concentration"] != 0.0:
                     value -= self.n_segments * ion["concentration"] * np.log(complex(q))
         if self.coupling <= 0:
@@ -537,15 +554,10 @@ class MeanFieldElectrostatics:
         if self.ions:
             psi_k = self._fourier.forward(psi)
         for ion in self.ions:
-            weight = np.exp(-ion["valence"] * self._fourier.backward(ion["gamma"] * psi_k) / self.n_segments)
-            partition = float(np.mean(weight))
-            if ion["concentration"] is None:
-                densities.append(np.exp(ion["chemical_potential"]) * weight / self.n_segments)
-            elif ion["concentration"] == 0.0:
-                densities.append(np.zeros_like(weight))
-            else:
-                densities.append(ion["concentration"] * weight / partition)
-            partitions.append(partition)
+            potential = ion["valence"] * self._fourier.backward(ion["gamma"] * psi_k) / self.n_segments
+            density, partition = _point_ion_density(ion, potential, self.n_segments)
+            densities.append(density)
+            partitions.append(float(partition))
         return densities, partitions
 
     def charge_density(self, phi_smeared, psi):
@@ -591,10 +603,10 @@ class MeanFieldElectrostatics:
             / self.coupling
         if self.fixed_charge is not None:
             value += float(np.mean(psi * self.fixed_charge))
-        _, partitions = self.ion_densities(psi)
-        for ion, q in zip(self.ions, partitions):
+        densities, partitions = self.ion_densities(psi)
+        for ion, density, q in zip(self.ions, densities, partitions):
             if ion["concentration"] is None:
-                value -= np.exp(ion["chemical_potential"]) * q
+                value -= self.n_segments * np.mean(density)
             elif ion["concentration"] > 0:
                 number = self.n_segments * ion["concentration"]
                 value += number * (np.log(number) - 1.0) - number * np.log(q)
@@ -611,9 +623,9 @@ class MeanFieldElectrostatics:
 
     def ion_number_densities(self, psi):
         """Ions per reference chain, N c_s (e^(βμ_s) Q_s for grand-canonical ions)."""
-        _, partitions = self.ion_densities(psi)
-        return [np.exp(ion["chemical_potential"]) * q if ion["concentration"] is None
-                else self.n_segments * ion["concentration"] for ion, q in zip(self.ions, partitions)]
+        densities, _ = self.ion_densities(psi)
+        return [self.n_segments * np.mean(density) if ion["concentration"] is None
+                else self.n_segments * ion["concentration"] for ion, density in zip(self.ions, densities)]
 
     def homogeneous(self, polymer_charge):
         """Uniform ψ₀ (homogeneous_potential) and free energy of the homogeneous state with the net

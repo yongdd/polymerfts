@@ -26,6 +26,8 @@ SET(BASIC_TESTS
     TestLftsIdealLimit
     TestRandomCopolymerFractions
     TestNumpyScalarSerialization
+    TestMatFieldNames
+    TestGceIonRange
     TestVtkFieldIntegrity
     TestExtensions
     TestPropagatorAnalytic
@@ -171,7 +173,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestCnAdiLongLines TestCrysFFTCellChange
-    TestContourPrecision TestDiscreteComposition TestGceZeroPartition TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestContourPrecision TestDiscreteComposition TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
 
 # Generate files named "Test*.cpp"

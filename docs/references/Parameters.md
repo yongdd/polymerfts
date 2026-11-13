@@ -346,6 +346,17 @@ Field checkpoints use format version 3 and are replaced atomically. They store t
 
 Statistics and WTMD files carry `pair_key_format_version` and `pair_keys_json`, a mapping from each stored suffix to its two monomer names. Short alphanumeric names keep suffixes such as `A_B`; names containing underscores or requiring long keys use a `pair__` identifier so distinct pairs cannot overwrite each other. Version-3 checkpoints validate this mapping before restoring state. Version-1/2 checkpoints remain readable with their original keys, except WTMD files whose pair names share a stored key: those histories cannot be recovered and continuation raises `ValidationError`.
 
+MAT files also preserve names that cannot be stored directly as nested structure fields, such as monomer names starting with an underscore or exceeding the MAT field-name limit. Each affected structure stores reversible field identifiers and their original names in `polymerfts_mat_keys_json`. To read these names back, use `decode_mat_fields` on SciPy's simplified output:
+
+```python
+from scipy.io import loadmat
+from polymerfts.utils.common import decode_mat_fields
+
+data = decode_mat_fields(loadmat("fields_000100.mat", simplify_cells=True))
+```
+
+This applies to SCFT result files as well as FTS output. Ordinary nested names and top-level checkpoint variables keep their existing names; `continue_run()` reads checkpoints directly as before.
+
 See [Numerical Validation](../validation/NumericalValidation.md) for regression coverage, provenance and statistical validation jobs. Both `LFTS` and `CLFTS` accept keyword arguments `integrator=` and `callbacks=`; see [Extensions](../internals/Extensions.md) for their contracts and a runnable example.
 
 With WTMD, a fresh `run()` starting at step 1 restores the bias and statistics from WTMD construction and clears pending samples. `continue_run()` restores them from the checkpoint; a manual run starting after step 1 keeps the existing WTMD state. A fresh run does not reset the random-number stream.

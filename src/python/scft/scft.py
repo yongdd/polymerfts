@@ -657,6 +657,8 @@ class SCFT:
             # Residuals of the fields and of the Poisson equation for ψ, and their size
             w_diff = self._field_residual(w, phi_array)
             psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
+            if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
+                raise ValidationError(f"Non-finite SCFT residual at iteration {iter}")
             old_error_level = error_level
             error_level = self._error_level(w, w_diff, psi_diff)
             field_error_level = error_level
@@ -680,6 +682,9 @@ class SCFT:
                     stress_is_current = True
                     error_level = field_error_level + self.cell.error(stress_array)
 
+            if not np.isfinite(error_level):
+                raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
+
             # Print this iteration
             self._print_iteration(iter, mass_error, total_partitions, energy_total, error_level)
 
@@ -700,10 +705,20 @@ class SCFT:
             # New fields, ψ and cell
             w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level, phi_array, phi_total)
 
+        if not np.isfinite(error_level):
+            raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
+        if not np.all(np.isfinite(w)) or not all(np.all(np.isfinite(value)) for value in phi.values()) \
+                or (es is not None and not np.all(np.isfinite(self.psi))):
+            raise ValidationError(f"Non-finite SCFT fields or concentrations at iteration {iter}")
+
         self.cell.check_tied_lengths(stress_array, error_level)
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
+        # Some discretizations have non-positive partitions at intermediate
+        # iterates. They may recover, but a returned state must have finite F.
+        if not np.isfinite(energy_absolute) or not np.isfinite(energy_total):
+            raise ValidationError(f"Non-finite SCFT free energy at iteration {iter}")
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start
