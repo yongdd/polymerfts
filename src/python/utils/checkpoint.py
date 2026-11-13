@@ -53,12 +53,13 @@ def checkpoint_settings(sim):
 def checkpoint_data(sim):
     """Version, compatibility settings and complete RNG/measurement state."""
     settings = checkpoint_settings(sim)
-    data = {"checkpoint_format_version": 2, "checkpoint_settings_json": settings_json(settings),
+    data = {"checkpoint_format_version": 3, "checkpoint_settings_json": settings_json(settings),
             "checkpoint_settings_hash": input_hash(settings),
             "rng_state_json": json.dumps(sim.random_bg.state),
             "simulation_metadata_json": json.dumps(json_ready(sim.metadata)),
             "run_status_json": json.dumps(json_ready(sim.run_status))}
     data["extension_state_json"] = json.dumps(extension_state(sim), allow_nan=False)
+    data.update(pair_key_data(sim.chi_n))
     record = getattr(sim, "_recording_state", None)
     if record is None:
         raise ValidationError("Checkpointing requires the recording state of an accepted run step")
@@ -72,7 +73,8 @@ def system_data(sim):
     for key in sim.chi_n:
         monomer_pair = sorted(key.split(","))
         chi_n[monomer_pair[0] + "," + monomer_pair[1]] = sim.chi_n[key]
-    return {"dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
+    return {**pair_key_data(itertools.combinations_with_replacement(sim.monomer_types, 2)),
+            "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
             "angles": list(sim.prop_solver.get_angles_degrees()), "chi_n": chi_n,
             "chain_model": sim.chain_model, "ds": sim.ds, "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "initial_params": mat_ready(sim.params)}
@@ -147,6 +149,102 @@ def _measurement_key(kind, pair):
     return "record_" + kind + "_" + hashlib.sha256(pair.encode()).hexdigest()[:32]
 
 
+def _pair_names(pair):
+    names = pair.split(",") if isinstance(pair, str) else list(pair)
+    if len(names) != 2 or any(not isinstance(name, str) or not name for name in names):
+        raise ValidationError("A measurement pair must contain two nonempty monomer names")
+    return tuple(sorted(names))
+
+
+def pair_suffix(pair):
+    """MAT suffix of a monomer pair; ordinary A_B names retain their original spelling.
+
+    Encoded names have two consecutive underscores, a namespace separate from the
+    legacy suffix of two alphanumeric names. The longest complete key (a complex
+    structure function) stays within MATLAB's 63-character field-name limit.
+    """
+    names = _pair_names(pair)
+    suffix = "_".join(names)
+    if len(suffix) <= 38 and all(name.isascii() and name.isalnum() for name in names):
+        return suffix
+    return "pair__" + hashlib.sha256(settings_json(list(names)).encode()).hexdigest()[:32]
+
+
+def pair_key_data(pairs):
+    """Pair-name metadata shared by statistics, structure functions and WTMD files."""
+    mapping = {}
+    for pair in pairs:
+        names = _pair_names(pair)
+        suffix = pair_suffix(names)
+        if suffix in mapping and mapping[suffix] != list(names):
+            raise ValidationError("Measurement pair identifiers collide")
+        mapping[suffix] = list(names)
+    return {"pair_key_format_version": 1, "pair_keys_json": settings_json(mapping)}
+
+
+def _pair_mapping(data, expected_pairs=None):
+    def unique_keys(items):
+        mapping = {}
+        for key, value in items:
+            if key in mapping:
+                raise ValidationError("Duplicate measurement pair identifier")
+            mapping[key] = value
+        return mapping
+
+    try:
+        version = data["pair_key_format_version"]
+        if isinstance(version, (bool, np.bool_)) or not isinstance(version, (int, np.integer)) or version != 1:
+            raise ValidationError("Unsupported measurement pair key format")
+        mapping = json.loads(str(data["pair_keys_json"]), object_pairs_hook=unique_keys)
+        if not isinstance(mapping, dict):
+            raise ValidationError("Measurement pair mapping must be a dictionary")
+        seen = set()
+        for suffix, names in mapping.items():
+            if not isinstance(names, list) or list(_pair_names(names)) != names or pair_suffix(names) != suffix:
+                raise ValidationError("Invalid measurement pair mapping")
+            pair = tuple(names)
+            if pair in seen:
+                raise ValidationError("Duplicate measurement pair mapping")
+            seen.add(pair)
+        if expected_pairs is not None and seen != {_pair_names(pair) for pair in expected_pairs}:
+            raise ValidationError("Checkpoint measurement pair mapping does not match its species")
+        return mapping
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValidationError(f"Invalid measurement pair mapping: {exc}") from exc
+
+
+def recorded_pair_suffix(data, pair):
+    """Resolve a pair in a measurement file, using legacy names only without new metadata."""
+    names = _pair_names(pair)
+    if "pair_key_format_version" not in data and "pair_keys_json" not in data:
+        return "_".join(names)
+    mapping = _pair_mapping(data)
+    suffix = pair_suffix(names)
+    if mapping.get(suffix) != list(names):
+        raise ValidationError(f"Measurement pair {names} is missing from the mapping")
+    return suffix
+
+
+def checkpoint_pair_suffix(data, pair):
+    """WTMD keys of v1/v2 and unversioned checkpoints retain their original encoding."""
+    if data.get("checkpoint_format_version", 0) < 3:
+        return "_".join(_pair_names(pair))
+    return recorded_pair_suffix(data, pair)
+
+
+def _reject_ambiguous_wtmd_keys(sim, data):
+    if getattr(sim, "wtmd", None) is None:
+        return
+    groups = {}
+    for pair in sim.chi_n:
+        groups.setdefault("_".join(_pair_names(pair)), []).append(pair)
+    for suffix, pairs in groups.items():
+        if len(pairs) > 1 and any(prefix + suffix in data for prefix in
+                                  ("wtmd_I1_", "wtmd_unscaled_I1_", "wtmd_dH_history_")):
+            raise ValidationError(f"Ambiguous legacy WTMD checkpoint pairs {pairs}: their stored values "
+                                  "share a key and cannot be recovered")
+
+
 def validate_checkpoint(sim, data, *, allow_legacy=False):
     version = data.get("checkpoint_format_version", 0)
     if isinstance(version, (bool, np.bool_)) or not isinstance(version, (int, np.integer)):
@@ -156,9 +254,10 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
             raise ValidationError("Unversioned checkpoint: use allow_legacy=True to accept an unverified continuation")
         if sim.integrator.name != "lm" or sim.callbacks or getattr(sim.integrator, "settings", {}):
             raise ValidationError("Legacy checkpoints cannot restore custom integrators or callbacks")
+        _reject_ambiguous_wtmd_keys(sim, data)
         warnings.warn("Legacy checkpoint: settings are unverified and pending measurements cannot be recovered", RuntimeWarning)
         return
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValidationError(f"Unsupported checkpoint format version {version}")
     try:
         stored = json.loads(str(data["checkpoint_settings_json"]))
@@ -181,7 +280,11 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         different = [key for key in current if current[key] != stored.get(key)]
         if different:
             raise ValidationError("Incompatible checkpoint settings: " + ", ".join(different))
-        if version == 2:
+        if version == 3:
+            _pair_mapping(data, sim.chi_n)
+        else:
+            _reject_ambiguous_wtmd_keys(sim, data)
+        if version >= 2:
             state = json.loads(str(data["extension_state_json"]))
             if not isinstance(state, dict) or set(state) != {"integrator", "callbacks"} or not isinstance(state["callbacks"], dict):
                 raise ValidationError("Invalid extension checkpoint state")
@@ -347,7 +450,7 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
                     np.iscomplexobj(data["wtmd_order_parameter_history"])):
                 raise ValidationError("Invalid checkpoint pending WTMD samples")
             for pair in sim.chi_n:
-                suffix = "_".join(sorted(pair.split(",")))
+                suffix = checkpoint_pair_suffix(data, pair)
                 key = "wtmd_I1_" + suffix
                 if np.any(data["wtmd_I0"]) or key in data:
                     check_wtmd_array(key)
@@ -405,11 +508,12 @@ class RunRecord:
 
     def statistics(self):
         """The arrays of a statistics file."""
-        data = {"sample_count": self.sample_count}
+        data = {"sample_count": self.sample_count,
+                **pair_key_data(name[3:] for name in self.columns if name.startswith("dH "))}
         for name in self.columns:
             key = self.FILE_KEYS.get(name, name)
             if name.startswith("dH "):
-                key = "dH_history_" + "_".join(sorted(name[3:].split(",")))
+                key = "dH_history_" + pair_suffix(name[3:])
             values = self.array(name)
             if self.complex_values and name not in self.REAL_SERIES:
                 data[key + "_real"], data[key + "_imag"] = np.real(values), np.imag(values)

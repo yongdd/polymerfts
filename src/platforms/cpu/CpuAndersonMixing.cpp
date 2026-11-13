@@ -27,6 +27,7 @@
  */
 
 #include <algorithm>
+#include <type_traits>
 #include "CpuAndersonMixing.h"
 
 /**
@@ -98,7 +99,12 @@ T CpuAndersonMixing<T>::dot_product(T *a, T *b)
 {
     T sum{0.0};
     for(int i=0; i<this->n_var; i++)
-        sum += a[i]*b[i];
+    {
+        if constexpr (std::is_same_v<T, double>)
+            sum += a[i]*b[i];
+        else
+            sum += std::conj(a[i])*b[i];
+    }
     return sum;
 }
 template <typename T>
@@ -149,25 +155,11 @@ void CpuAndersonMixing<T>::calculate_new_fields(
         }
         else
         {
-            // Calculate Unm and Vn
-            for(int i=0; i<this->n_anderson; i++)
-            {
-                v_n[i] = cb_w_deriv_dots->get(0, 0)
-                        - cb_w_deriv_dots->get(0, i+1);
-
-                for(int j=0; j<this->n_anderson; j++)
-                {
-                    u_nm[i][j] = cb_w_deriv_dots->get(0, 0)
-                               - cb_w_deriv_dots->get(0, i+1)
-                               - cb_w_deriv_dots->get(0, j+1)
-                               + cb_w_deriv_dots->get(std::min(i+1, j+1),
-                                                      std::abs(i-j));
-                }
-            }
-            // Build pointer array for find_an (which takes T**)
+            // Build the residual least-squares system, then solve for its coefficients.
             std::vector<T*> u_nm_ptrs(this->n_anderson);
             for(int i=0; i<this->n_anderson; i++)
                 u_nm_ptrs[i] = u_nm[i].data();
+            this->build_normal_equations(*cb_w_deriv_dots, u_nm_ptrs.data(), v_n.data(), this->n_anderson);
             this->find_an(u_nm_ptrs.data(), v_n.data(), a_n.data(), this->n_anderson);
 
             // Calculate the new field

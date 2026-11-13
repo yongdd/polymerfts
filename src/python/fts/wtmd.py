@@ -13,6 +13,7 @@ import scipy.signal
 
 from .._core import _periodic_metric
 from ..utils.common import atomic_savemat
+from ..utils.checkpoint import pair_key_data, pair_suffix
 from ..utils.validation import ValidationError, _finite_number
 
 
@@ -103,6 +104,14 @@ class WTMD:
         if I1 is not None:
             self.I1 = {key: np.array(value, dtype=np.float64) / self.CV for key, value in I1.items()}
 
+        # A fresh run restores the state supplied to this constructor, including an
+        # imported bias. Keep its normalized values apart from the evolving arrays;
+        # converting through CV again would change some values in the last bit.
+        self._initial_state = {
+            "u": self.u.copy(), "up": self.up.copy(), "I0": self.I0.copy(),
+            "I1": {key: value.copy() for key, value in self.I1.items()},
+        }
+
         # The hills are Gaussians cut at 8σ, where they fall below 1e-13 of their peak. The
         # histogram of the samples extends by this margin (pad bins) on both sides of the
         # range, so that samples just outside the range deposit their tails inside it.
@@ -142,6 +151,15 @@ class WTMD:
         X = self.dpsi * np.arange(-self.pad, self.pad + 1) / self.sigma_psi
         self.u_kernel = np.exp(-0.5 * X**2)
         self.up_kernel = -X / self.sigma_psi * np.exp(-0.5 * X**2)
+
+    def reset(self):
+        """Restore the constructor's bias and statistics for a fresh run."""
+        self.u = self._initial_state["u"].copy()
+        self.up = self._initial_state["up"].copy()
+        self.I0 = self._initial_state["I0"].copy()
+        self.I1 = {key: value.copy() for key, value in self._initial_state["I1"].items()}
+        self.order_parameter_history = []
+        self.dH_history = {}
 
     # Compute order parameter Ψ
     def compute_order_parameter(self, langevin_step, w_aux):
@@ -234,6 +252,7 @@ class WTMD:
 
     def write_data(self, file_name):
         mdic = {
+            **pair_key_data(self.I1),
             "l": self.l,
             "kc": self.kc,
             "sigma_psi": self.sigma_psi,
@@ -262,8 +281,8 @@ class WTMD:
             I1 = self.I1[key] * self.CV
             dH_psi = I1.copy()
             dH_psi[np.abs(self.I0) > 0] /= self.I0[np.abs(self.I0) > 0]
-            monomer_pair = sorted(key.split(","))
-            mdic["I1_" + monomer_pair[0] + "_" + monomer_pair[1]] = I1
-            mdic["dH_psi_" + monomer_pair[0] + "_" + monomer_pair[1]] = dH_psi
+            suffix = pair_suffix(key)
+            mdic["I1_" + suffix] = I1
+            mdic["dH_psi_" + suffix] = dH_psi
 
         atomic_savemat(file_name, mdic, long_field_names=True, do_compression=True)

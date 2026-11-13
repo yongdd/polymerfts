@@ -56,7 +56,7 @@ private:
      * @brief Compute dot product of two vectors.
      * @param a First vector (length n_var)
      * @param b Second vector (length n_var)
-     * @return Dot product sum_i a[i] * b[i]
+     * @return Dot product sum_i conj(a[i]) * b[i] (ordinary product for real fields)
      */
     T dot_product(T *a, T *b);
 

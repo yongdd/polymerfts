@@ -144,7 +144,10 @@ void CudaAndersonMixingReduceMemory<T>::calculate_new_fields(
                     CUDA_CHECK(cudaMemcpy(d_w_hist1, pinned_cb_w_deriv_hist->get_array(i), sizeof(T)*this->n_var, cudaMemcpyHostToDevice));
                     d_w_deriv_i = d_w_hist1;
                 }
-                ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, 1.0, this->n_var);
+                if constexpr (std::is_same_v<T, double>)
+                    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, 1.0, this->n_var);
+                else
+                    ker_multi_complex_conjugate<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, this->n_var);
                 CUDA_CHECK_LAUNCH();
                 CUDA_CHECK(cuda_reduce_sum(d_temp_storage.get(), temp_storage_bytes, d_sum.get(), d_sum_out.get(), this->n_var, 0));
                 CUDA_CHECK(cudaMemcpy(&w_deriv_dots[i], d_sum_out, sizeof(T),cudaMemcpyDeviceToHost));
@@ -167,21 +170,7 @@ void CudaAndersonMixingReduceMemory<T>::calculate_new_fields(
         }
         else
         {
-            // Calculate Unm and Vn
-            for(int i=0; i<this->n_anderson; i++)
-            {
-                v_n[i] = cb_w_deriv_dots->get(0, 0)
-                        - cb_w_deriv_dots->get(0, i+1);
-
-                for(int j=0; j<this->n_anderson; j++)
-                {
-                    u_nm[i][j] = cb_w_deriv_dots->get(0, 0)
-                                - cb_w_deriv_dots->get(0, i+1)
-                                - cb_w_deriv_dots->get(0, j+1)
-                                + cb_w_deriv_dots->get(std::min(i+1, j+1),
-                                                    std::abs(i-j));
-                }
-            }
+            this->build_normal_equations(*cb_w_deriv_dots, u_nm.data(), v_n.data(), this->n_anderson);
             this->find_an(u_nm.data(), v_n.data(), a_n.data(), this->n_anderson);
 
             // Calculate the new field; the newest residual is d_w_deriv

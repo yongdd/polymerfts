@@ -11,6 +11,9 @@ SET(BASIC_TESTS
     TestParameterNames
     TestFtsReliability
     TestCheckpointValidation
+    TestPairRecords
+    TestWtmdLifecycle
+    TestAndersonMixing
     TestExtensions
     TestPropagatorAnalytic
     TestComplexMask

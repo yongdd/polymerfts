@@ -356,6 +356,8 @@ L-FTS simulations save structure function data in `structure_function_XXXXXX.mat
 
 $`\tilde{\mu}_i`$ is the Fourier transform of the chemical potential field of monomer $`i`$, $`\mu_i = \sum_k A_{ik}\Omega_k/\lambda_k`$, and the average runs over the steps at which the structure function is computed within one recording period; $`\bar{N}`$ is `nbar`; see the [estimator](../theory/LangevinFieldTheoreticSimulation.md#42-estimator). With smearing in a periodic box the recorded $`S`$ is divided by $`\Gamma(\mathbf{k})`$ (modes with $`\Gamma < 10^{-12}`$ are recorded as 0); with walls, where $`\Gamma`$ is defined in the cosine basis, the estimator is recorded as it is.
 
+The pair suffixes in these examples apply to short alphanumeric monomer names. Files also store `pair_key_format_version` and `pair_keys_json`: the JSON object maps each suffix to the two original names. For names containing underscores or long names, use this mapping to select the `pair__` suffix. This convention also applies to `dH_history_*`, WTMD `I1_*` and `dH_psi_*`, and WTMD checkpoint histories. For example, `A,B_C` and `A_B,C` have distinct identifiers. The structure-function and WTMD-statistics notebooks accept two monomer names and resolve the mapping; files without the metadata retain their legacy suffixes.
+
 Fields are stored in Fourier space with dimensions `[nx, ny, nz/2+1]` (real FFT format).
 
 CL-FTS uses complex fields, so its files differ from those of L-FTS:

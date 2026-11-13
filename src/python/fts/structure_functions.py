@@ -12,7 +12,7 @@ import weakref
 
 import numpy as np
 
-from ..utils.checkpoint import system_data
+from ..utils.checkpoint import system_data, pair_suffix
 from ..utils.common import atomic_savemat
 
 
@@ -78,8 +78,7 @@ class LftsStructureFunctions:
             if self.smearing.enabled and self.smearing.periodic:
                 gamma = self.smearing.fourier[..., :self.prop_solver.nx[-1]//2+1]
                 sf_average[key] = np.divide(sf_average[key], gamma, out=np.zeros_like(sf_average[key]), where=gamma > 1e-12)
-            monomer_pair = sorted(key.split(","))
-            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1]] = sf_average[key]
+            mdic["structure_function_" + pair_suffix(key)] = sf_average[key]
         mdic["sample_count"] = sf_sample_count
         mdic["simulation_metadata_json"] = json.dumps(self.sim.metadata)
         atomic_savemat(os.path.join(self.sim.recording["dir"], "structure_function_%06d.mat" % (langevin_step)), mdic, long_field_names=True, do_compression=True)
@@ -218,8 +217,9 @@ class ClftsStructureFunctions:
             if self.smearing.enabled and self.smearing.periodic:
                 gamma = self.smearing.kernel(monomer_pair[0])
                 sf_scaled = np.divide(sf_scaled, gamma, out=np.zeros_like(sf_scaled), where=gamma > 1e-12)
-            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_real"] = np.real(sf_scaled)
-            mdic["structure_function_" + monomer_pair[0] + "_" + monomer_pair[1] + "_imag"] = np.imag(sf_scaled)
+            suffix = pair_suffix(monomer_pair)
+            mdic["structure_function_" + suffix + "_real"] = np.real(sf_scaled)
+            mdic["structure_function_" + suffix + "_imag"] = np.imag(sf_scaled)
         # Structure function of the smeared charge density c = Σ_i z_i Γ_i φ_i: <M> + w <D>
         # with the weight w = -Cov(M, D)/Var(D) of least variance at each wavevector (w = 0:
         # the mixed form, w = 1: the field-field form). Both forms are recorded too: in the

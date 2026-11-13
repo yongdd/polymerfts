@@ -13,20 +13,22 @@ NOTEBOOK = Path(__file__).resolve().parents[2] / 'scripts/analysis/plot_structur
 CELL = ''.join(json.loads(NOTEBOOK.read_text(encoding='utf-8'))['cells'][0]['source'])
 
 
-def aggregate(tmp_path, monkeypatch, spectra, counts=None, lx=(1., 1., 1.), **extra):
+def aggregate(tmp_path, monkeypatch, spectra, counts=None, lx=(1., 1., 1.),
+              pair=("A", "A"), suffix="A_A", **extra):
     """Write exactly the four windows selected by the notebook, then run its actual code."""
     directory = tmp_path / 'data_simulation'
     directory.mkdir()
     for step, full, count in zip(range(100000, 500000, 100000), spectra, counts or [None] * 4):
         nx = full.shape
         data = {'nx': nx, 'lx': list(lx), **extra,
-                'structure_function_A_A': full[:, :, :nx[2] // 2 + 1]}
+                'structure_function_' + suffix: full[:, :, :nx[2] // 2 + 1]}
         if count is not None:
             data['sample_count'] = count
         savemat(directory / f'structure_function_{step:06d}.mat', data)
     monkeypatch.chdir(tmp_path)
     result = {}
-    exec(compile(CELL, str(NOTEBOOK) + ':cell0', 'exec'), result)
+    cell = CELL.replace('type_pair = ("A", "A")', 'type_pair = ' + repr(pair))
+    exec(compile(cell, str(NOTEBOOK) + ':cell0', 'exec'), result)
     return result['k2_unique'], result['y']
 
 
@@ -66,6 +68,28 @@ def test_legacy_windows_keep_equal_file_weights(tmp_path, monkeypatch):
     spectra = [np.full((4, 4, 4), value) for value in (1., 1., 10., 1.)]
     k2, mean = aggregate(tmp_path, monkeypatch, spectra)
     np.testing.assert_allclose(mean[k2 > 0], 3.25)
+
+
+@pytest.mark.parametrize('pair, suffix', [(("A", "B_C"), "pair__first"),
+                                         (("A_B", "C"), "pair__second")])
+def test_pair_mapping_selects_distinct_underscore_names(tmp_path, monkeypatch, pair, suffix):
+    mapping = {"pair__first": ["A", "B_C"], "pair__second": ["A_B", "C"]}
+    spectra = [np.full((4, 4, 4), value) for value in (1., 1., 10., 1.)]
+    k2, mean = aggregate(tmp_path, monkeypatch, spectra, pair=pair, suffix=suffix,
+                         pair_key_format_version=1, pair_keys_json=json.dumps(mapping))
+    np.testing.assert_allclose(mean[k2 > 0], 3.25)
+
+
+@pytest.mark.parametrize('metadata', [
+    {"pair_key_format_version": 1},
+    {"pair_keys_json": '{"A_A":["A","A"]}'},
+    {"pair_key_format_version": 2, "pair_keys_json": '{"A_A":["A","A"]}'},
+    {"pair_key_format_version": 1, "pair_keys_json": '{}'},
+    {"pair_key_format_version": 1, "pair_keys_json": '{"one":["A","A"],"two":["A","A"]}'},
+])
+def test_invalid_pair_mapping_does_not_fall_back_to_legacy(tmp_path, monkeypatch, metadata):
+    with pytest.raises(ValueError, match='pair-name mapping|no unique entry'):
+        aggregate(tmp_path, monkeypatch, [np.ones((4, 4, 4))] * 4, **metadata)
 
 
 def test_legacy_and_counted_windows_cannot_be_mixed(tmp_path, monkeypatch):

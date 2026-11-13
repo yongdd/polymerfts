@@ -23,6 +23,8 @@ from ..utils.checkpoint import (
     RunRecord,
     initialize_extensions,
     restore_extensions,
+    pair_suffix,
+    checkpoint_pair_suffix,
 )
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
@@ -309,13 +311,12 @@ class LFTS:
             # I1 and the samples stored since the last update, so that a continued run
             # carries the same statistics as an uninterrupted one
             for key, value in self.wtmd.I1.items():
-                monomer_pair = sorted(key.split(","))
-                mdic["wtmd_I1_" + monomer_pair[0] + "_" + monomer_pair[1]] = value * self.wtmd.CV
-                mdic["wtmd_unscaled_I1_" + monomer_pair[0] + "_" + monomer_pair[1]] = value
+                suffix = pair_suffix(key)
+                mdic["wtmd_I1_" + suffix] = value * self.wtmd.CV
+                mdic["wtmd_unscaled_I1_" + suffix] = value
             mdic["wtmd_order_parameter_history"] = np.array(self.wtmd.order_parameter_history, dtype=np.float64)
             for key, values in self.wtmd.dH_history.items():
-                monomer_pair = sorted(key.split(","))
-                mdic["wtmd_dH_history_" + monomer_pair[0] + "_" + monomer_pair[1]] = np.array(values, dtype=np.float64)
+                mdic["wtmd_dH_history_" + pair_suffix(key)] = np.array(values, dtype=np.float64)
             mdic["wtmd_params"] = {
                 "l": self.wtmd.l,
                 "sigma_psi": self.wtmd.sigma_psi,
@@ -364,8 +365,7 @@ class LFTS:
             self.wtmd.I1 = {}
             self.wtmd.dH_history = {}
             for key in self.chi_n:
-                monomer_pair = sorted(key.split(","))
-                name = monomer_pair[0] + "_" + monomer_pair[1]
+                name = checkpoint_pair_suffix(load_data, key)
                 if "wtmd_I1_" + name in load_data:
                     self.wtmd.I1[key] = bias("I1_" + name)
                 if n_pending > 0 and "wtmd_dH_history_" + name in load_data:
@@ -402,6 +402,8 @@ class LFTS:
         try:
             if _restart_data is None:
                 restore_extensions(self)
+                if self.wtmd is not None and start_langevin_step in (None, 1):
+                    self.wtmd.reset()
             self._run(initial_fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
             self.run_status["status"] = "completed"
         except SaddlePointError as exc:
