@@ -71,8 +71,31 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
+def _ion_partition(potential):
+    """Q = <exp(-u)> of one point ion, finite whenever |Q| is representable.
+
+    Only real exponentials may overflow here: complex exp of an overflowing
+    argument returns an infinite or NaN imaginary part (C library dependent,
+    as on Windows), and the complex mean then makes the real part NaN as well.
+    The mean is taken after removing the smallest real u, which is restored
+    with log|mean| in one real exponential, so Q overflows only when |Q| does.
+    """
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        offset = np.min(np.real(potential))
+        mean = np.mean(np.exp(-(potential - offset)))
+        size = np.abs(mean)
+        if size == 0.0:
+            return mean  # complex weights that cancel exactly: a true zero of Q
+        scale = np.exp(np.log(size) - offset)
+        if np.isrealobj(mean):
+            return scale
+        # Divide the parts by |mean| separately: complex division overflows
+        # the reciprocal of a subnormal |mean|.
+        return scale * (mean.real / size + 1j * (mean.imag / size))
+
+
 def _point_ion_density(ion, potential, n_segments):
-    """Density and diagnostic Q of one point ion with the dimensionless potential u.
+    """Density and partition Q of one point ion with the dimensionless potential u.
 
     For a grand-canonical ion, mu and u can have a large common Donnan offset:
     exp(mu - u) stays finite even when exp(mu) or exp(-u) cannot be represented.
@@ -83,20 +106,12 @@ def _point_ion_density(ion, potential, n_segments):
         density = np.exp(ion["chemical_potential"] - potential) / n_segments
         # Only the diagnostic partition may overflow or underflow here; do not
         # silence a genuinely non-finite density from the combined exponent.
-        # Remove the smallest real potential first so that only the real scalar
-        # exp(-offset) can overflow: complex exp of an overflowing argument can
-        # return an infinite or NaN imaginary part (C library dependent, as on
-        # Windows), and the complex mean then makes the real part NaN as well.
-        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-            offset = np.min(np.real(potential))
-            partition = np.exp(-offset) * np.mean(np.exp(-(potential - offset)))
-        return density, partition
-    # Keep the unshifted partition for diagnostics, but normalize the density
-    # after removing a common real offset. Even a representable Q such as
-    # exp(-710) can overflow the reciprocal in complex division, although the
-    # canonical density is independent of this offset.
-    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-        partition = np.mean(np.exp(-potential))
+        return density, _ion_partition(potential)
+    # Keep the unshifted partition, which enters H and βμ, but normalize the
+    # density after removing a common real offset. Even a representable Q
+    # such as exp(-710) can overflow the reciprocal in complex division,
+    # although the canonical density is independent of this offset.
+    partition = _ion_partition(potential)
     if ion["concentration"] == 0.0:
         # An absent species contributes nothing even at Q = 0; keep Q for diagnostics.
         return np.zeros_like(potential), partition
