@@ -49,17 +49,18 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Added
 
-- Electrostatics in boxes that mix periodic axes and walls (2026-11-09): `PropagatorSolver.fourier`
-  transforms such a box through its mirror image. Each wall axis is extended to twice its length by
-  the even (cosine) or odd (sine) reflection, the extended grid is transformed with the complex FFT
-  of FFTW, MKL or cuFFT, and a phase factor per wall axis gives the series coefficients. The
-  coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
-  series along the walls, also for real fields, which take the real part of `backward`. CL-FTS and
+- Electrostatics in boxes that mix periodic axes and walls (2026-11-09): the platform Fourier
+  transform handles such a box through its mirror image. Each wall axis is extended to twice its
+  length by the even (cosine) or odd (sine) reflection, the extended grid is transformed with the
+  complex FFT of FFTW, MKL or cuFFT, and a phase factor per wall axis gives the series coefficients.
+  The coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
+  series along the walls, also for real fields, which take the real part of `backward`.
+  `PropagatorSolver.fourier` takes the cosine series along every wall, absorbing ones included, so
+  for electrostatics and smearing every wall is a wall of vanishing dielectric constant. CL-FTS and
   SCFT accept `electrostatics` in such boxes (SCFT with `cn-adi2` or `rs`, CL-FTS, whose fields are
   complex, with `rs`), for example a brush with periodic lateral axes, and smearing there uses the
-  platform transform instead of SciPy. Lateral reflecting walls act as walls of vanishing dielectric
-  constant: in a CL-FTS box a few Debye lengths wide their images deplete the ions across the whole
-  box. `TestFourierTransform` checks the mixed transforms against NumPy/SciPy on every platform, and
+  platform transform instead of SciPy. In a CL-FTS box a few Debye lengths wide the images in the
+  lateral walls deplete the ions across the whole box. `TestFourierTransform` checks the mixed transforms against NumPy/SciPy on every platform, and
   `TestConfinedElectrostatics` the Poisson-Boltzmann solution and the CL-FTS forces in a box
   periodic along one axis.
 - `examples/charged/ecscft/BrushMultivalentIons.py` (2026-11-11): a polyelectrolyte brush that
