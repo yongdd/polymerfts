@@ -197,30 +197,6 @@ struct TridiagonalFactors
 TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const double* h, int M, bool periodic);
 
 /**
- * @brief CUDA kernel: REPEAT systems of size M, one per thread, starting at d_offset with stride INTERVAL.
- *
- * Solves d_x from the right-hand side d_d (which may be the same array) with the factors in table.
- */
-template <bool PERIODIC>
-__global__ void tridiagonal_lines(
-    const double* __restrict__ table, const int M, const double v, const double denom,
-    const double* __restrict__ d_d, double* __restrict__ d_x,
-    const int* __restrict__ d_offset, const int REPEAT, const int INTERVAL);
-
-/**
- * @brief CUDA kernel: REPEAT contiguous systems of size M (system k at k*M), staged in shared memory.
- *
- * A block of blockDim.x threads copies as many systems into shared memory with coalesced reads,
- * each thread solves one there, and the block writes them back. Rows hold an odd number of values
- * so that the threads of a warp use different banks: blockDim.x * (M or M+1) doubles of dynamic
- * shared memory.
- */
-template <bool PERIODIC>
-__global__ void tridiagonal_lines_shared(
-    const double* __restrict__ table, const int M, const double v, const double denom,
-    const double* __restrict__ d_d, double* __restrict__ d_x, const int REPEAT);
-
-/**
  * @class CudaSolverCNADI
  * @brief GPU solver using CN-ADI (Crank-Nicolson ADI) finite difference.
  *

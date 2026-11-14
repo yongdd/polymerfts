@@ -36,8 +36,9 @@
 #include <numeric>
 #include <cuda_runtime.h>
 #include <cuComplex.h>
-#include <cub/iterator/counting_input_iterator.cuh>
-#include <cub/iterator/transform_input_iterator.cuh>
+#include <cub/device/device_reduce.cuh>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 
 #include "CudaComputationBox.h"
 #include "CudaCommon.h"
@@ -220,11 +221,10 @@ T CudaComputationBox<T>::mean_product_device(
     }
 
     const double* counts = this->space_group_ != nullptr ? d_basis_weights_.get() : d_mask_.get();
+    // CUDA 13 (CCCL 3) removed the cub input iterators; the thrust ones exist in CUDA 12 and 13
     using Transform = PartitionProduct<CuDeviceData<T>>;
-    using Input = cub::TransformInputIterator<partition_accumulation::Sum, Transform,
-                                              cub::CountingInputIterator<int>>;
-    const Input input(cub::CountingInputIterator<int>(0),
-                      Transform{g, h, divisor, counts, static_cast<double>(this->total_grid), copies, absolute});
+    const auto input = thrust::make_transform_iterator(thrust::counting_iterator<int>(0),
+        Transform{g, h, divisor, counts, static_cast<double>(this->total_grid), copies, absolute});
     if (d_partition_out_.empty())
     {
         CudaDeviceBuffer<partition_accumulation::Sum> output(1);

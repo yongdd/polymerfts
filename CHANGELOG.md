@@ -10,6 +10,12 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Installation and platforms
 
+- The CUDA backend compiles with CUDA 13 again (2026-11-15): the range-preserving partition
+  reduction used the cub input iterators that CCCL 3 removed; it uses the thrust iterators that
+  CUDA 12 and 13 both provide. The CN-ADI line kernels are templates defined in
+  `CudaTridiagonalLines.cuh`, so that `TestCudaTridiagonal` links: since CUDA 13 a kernel template
+  instantiated in another file has an internal host stub. `TestCrysFFTObliqueZCuda` includes
+  `<algorithm>`, which GCC 12 and later need for `std::max` over an initializer list.
 - The GitHub repository is renamed from `langevin-fts` to `polymerfts`, the name of the
   package and its import (2026-10-27); GitHub redirects the old URLs.
 - The Conda environment and CI use conda-forge (Miniforge) instead of Anaconda's

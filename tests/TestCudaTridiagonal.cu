@@ -6,6 +6,7 @@
 #include <vector>
 #include <CudaCommon.h>
 #include "CudaSolverCNADI.h"
+#include "CudaTridiagonalLines.cuh"
 #include "TestNanSafe.h"
 
 int main()
