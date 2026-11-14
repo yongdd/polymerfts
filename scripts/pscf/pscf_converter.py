@@ -349,7 +349,7 @@ def read_python_params(path):
             # The iterator bindings are checked separately by scoped_nodes. Only
             # output expressions can put a known container into the new result.
             outputs = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
-            return any(references_container(output, containers) for output in outputs)
+            return any(references_container(output, containers - comprehension_bindings(node)) for output in outputs)
         if isinstance(node, ast.Subscript):
             try:
                 if not isinstance(evaluate(node), (dict, list, tuple)):
@@ -411,10 +411,26 @@ def read_python_params(path):
         raise ValueError("Use literal params with simple arithmetic, or a saved SCFT result/configuration file.")
 
     definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    comprehensions = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+    def comprehension_values(node):
+        return (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
+
+    def comprehension_bindings(node):
+        return {part.id for generator in node.generators for part in ast.walk(generator.target)
+                if isinstance(part, ast.Name)}
 
     def scope_nodes(node):
         yield node
-        if not isinstance(node, definitions):
+        if isinstance(node, comprehensions):
+            # Iteration targets belong to the comprehension, not its surrounding
+            # function. Assignment expressions in its values still bind outside.
+            for generator in node.generators:
+                for child in (generator.iter, *generator.ifs):
+                    yield from scope_nodes(child)
+            for child in comprehension_values(node):
+                yield from scope_nodes(child)
+        elif not isinstance(node, definitions):
             for child in ast.iter_child_nodes(node):
                 yield from scope_nodes(child)
 
@@ -439,23 +455,52 @@ def read_python_params(path):
         local = set().union(*(bound_names(part) for part in nodes))
         if not isinstance(node, ast.ClassDef):
             local.update(arg.arg for arg in ast.walk(node.args) if isinstance(arg, ast.arg))
+        local.difference_update(declared)
         return body, local, declared
 
     def scoped_nodes(node, hidden=frozenset(), closure=frozenset()):
         """Nodes with names shadowed in their lexical scope; never execute their bodies."""
+        if isinstance(node, comprehensions):
+            yield node, hidden
+            # Like a nested function, the body cannot see class-local names.
+            inner = closure | comprehension_bindings(node)
+            for index, generator in enumerate(node.generators):
+                # Only the first iterable is evaluated in the enclosing scope.
+                iterator_scope = hidden if index == 0 else inner
+                yield generator, iterator_scope
+                yield from scoped_nodes(generator.iter, iterator_scope, closure if index == 0 else inner)
+                yield from scoped_nodes(generator.target, inner, inner)
+                for condition in generator.ifs:
+                    yield from scoped_nodes(condition, inner, inner)
+            for value in comprehension_values(node):
+                yield from scoped_nodes(value, inner, inner)
+            return
         if isinstance(node, definitions):
             body, local, declared = scope_info(node)
             for child in ast.iter_child_nodes(node):
                 if child not in body:
                     yield from scoped_nodes(child, hidden, closure)
+            if isinstance(node, ast.ClassDef):
+                # Class bodies resolve names before a local binding through the
+                # enclosing scope. Only definite, preceding bindings hide it;
+                # methods do not close over the class namespace.
+                inner = closure - declared
+                for item in body:
+                    yield from scoped_nodes(item, inner, closure)
+                    if (isinstance(item, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                            and not (isinstance(item, ast.AnnAssign) and item.value is None)):
+                        targets = item.targets if isinstance(item, ast.Assign) else [item.target]
+                        bindings = set().union(*(bound_names(part) for target in targets for part in ast.walk(target)))
+                        inner = inner | (bindings - declared)
+                    elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                        inner = inner | (bound_names(item) - declared)
+                    elif isinstance(item, ast.Delete):
+                        inner = inner - set().union(*(bound_names(part) for part in ast.walk(item)))
+                return
             inner = (closure - declared) | local
-            # Class bindings are visible in the class body, but are not closures
-            # of its methods. Functions retain their enclosing function bindings.
-            child_closure = closure if isinstance(node, ast.ClassDef) else inner
-            if not isinstance(node, ast.ClassDef):
-                yield node, inner  # function bodies resolve their globals when called
+            yield node, inner  # function bodies resolve their globals when called
             for item in body:
-                yield from scoped_nodes(item, inner, child_closure)
+                yield from scoped_nodes(item, inner, inner)
             return
         yield node, hidden
         for child in ast.iter_child_nodes(node):
@@ -473,6 +518,16 @@ def read_python_params(path):
 
         def visit(node, hidden):
             assigned.update(bound_names(node) - hidden)
+            if isinstance(node, comprehensions):
+                inner = hidden | comprehension_bindings(node)
+                for index, generator in enumerate(node.generators):
+                    visit(generator.iter, hidden if index == 0 else inner)
+                    visit(generator.target, inner)
+                    for condition in generator.ifs:
+                        visit(condition, inner)
+                for value in comprehension_values(node):
+                    visit(value, inner)
+                return
             if isinstance(node, definitions):
                 body, local, declared = scope_info(node)
                 inner_hidden = (hidden | local) - declared
@@ -652,16 +707,16 @@ def read_python_params(path):
                     params = value
         # Parameter mutations are ambiguous without executing the script.
         containers.update(name for name, value in symbols.items() if isinstance(value, (dict, list, tuple)))
-        for node in ast.walk(statement):
+        for node, hidden in nodes:
             if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping)):
-                for name in bound_names(node) & assigned:
+                for name in (bound_names(node) & assigned) - hidden:
                     if name == "params":
                         raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
                     # Pattern captures store names as strings, without Name(Store)
                     # nodes. Do not reuse a pre-match scalar or container binding.
                     symbols.pop(name, None)
             if (isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
-                    and node.id not in names and node.id in assigned):
+                    and node.id not in names and node.id in assigned and node.id not in hidden):
                 if node.id == "params":
                     raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
                 if isinstance(node.ctx, ast.Store) and node.id in containers:
@@ -671,12 +726,14 @@ def read_python_params(path):
             if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
                 target = node
                 while isinstance(target, ast.Subscript): target = target.value
-                if isinstance(target, ast.Name) and (target.id == "params" or target.id in containers):
+                if (isinstance(target, ast.Name) and target.id not in hidden
+                        and (target.id == "params" or target.id in containers)):
                     raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 target = node.func.value
                 while isinstance(target, ast.Subscript): target = target.value
-                if isinstance(target, ast.Name) and (target.id == "params" or target.id in containers):
+                if (isinstance(target, ast.Name) and target.id not in hidden
+                        and (target.id == "params" or target.id in containers)):
                     raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
         # An imported safe reader can be shadowed by a later assignment or definition.
         if isinstance(statement, (ast.Import, ast.ImportFrom)):

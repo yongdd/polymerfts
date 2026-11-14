@@ -124,6 +124,7 @@ SET(BASIC_TESTS
     TestPseudoLinearDiscrete3D
     TestRealSpaceLinearContinuous3D
     TestRealSpaceDiscrete
+    TestRealSpaceAbsorbingRange
     TestMultipleLocalDs
     TestInitialConditionPropagator
 
@@ -193,7 +194,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestStressRange TestJunctionRange
     TestPartitionVolumeRange TestPolymerFugacityRange
-    TestScftAbsentPolymer
+    TestScftAbsentPolymer TestRealSpaceAbsorbingRange
     TestCnAdiLongLines TestCrysFFTCellChange
     TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)

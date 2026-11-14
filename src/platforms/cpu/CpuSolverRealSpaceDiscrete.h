@@ -8,8 +8,8 @@
  *
  * is summed on the grid instead of being taken through FFTs. The Gaussian bond
  * g factorizes into one kernel per axis of an orthogonal box, so a bond is three
- * one-dimensional stencils. Every term of the sums is a positive weight times q,
- * so each value of q keeps its own relative precision however small it is. An FFT
+ * one-dimensional stencils. Positive real-space weights preserve each value of
+ * q's relative precision however small it is. An FFT
  * leaves an error of about 1e-16 of the largest value at every point, which the
  * Boltzmann factor amplifies when a field drops by tens of kT per chain where q is
  * small (grafted brushes, charged layers).
@@ -17,6 +17,8 @@
  * The walls enter through ghost points: periodic axes wrap, reflecting walls mirror
  * the grid about the cell face (the symmetry of the DCT-II), absorbing walls mirror
  * it with the opposite sign (DST-II). Each end of an axis has its own condition.
+ * Narrow absorbing axes instead reconstruct positive folded entries from a
+ * compact eigenfunction expansion, avoiding cancellation between ghost images.
  *
  * The stress of a bond is sum_r q_1 (dG/dL_a q_2), with dG/dL_a the bond whose kernel along
  * axis a is differentiated with respect to the box length. With a space group the propagators

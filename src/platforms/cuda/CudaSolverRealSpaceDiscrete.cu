@@ -153,6 +153,33 @@ __global__ void ker_bond_pass(const D* __restrict__ in, D* __restrict__ out, con
         }
     }
 }
+
+// Compact eigenfunction tables reconstruct a positive folded entry for each
+// source point. All allocations and trigonometric work happen during the box
+// update, not inside propagation; each output is summed in a fixed order.
+template <typename D>
+__global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ out,
+    const int n, const long inner, const long count, const double* __restrict__ weights,
+    const double* __restrict__ basis, const int modes,
+    const D* __restrict__ factor, const double* __restrict__ mask)
+{
+    for (long m = blockIdx.x * static_cast<long>(blockDim.x) + threadIdx.x;
+         m < count; m += static_cast<long>(blockDim.x) * gridDim.x)
+    {
+        const int i = static_cast<int>((m / inner) % n);
+        const long first = m - i * inner;
+        D sum = zero_of(D{});
+        for (int j = 0; j < n; ++j)
+        {
+            double weight = 0.0;
+            for (int mode = 0; mode < modes; ++mode)
+                weight += weights[mode] * basis[static_cast<long>(mode) * n + i]
+                                       * basis[static_cast<long>(mode) * n + j];
+            sum = added(sum, scaled(weight, in[first + j * inner]));
+        }
+        out[m] = finished(sum, m, factor, mask);
+    }
+}
 }  // namespace
 
 template <typename T>
@@ -221,15 +248,39 @@ template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::upload(const RealSpaceBond::Kernels& kernels, DeviceKernels& device)
 {
     std::vector<double> weights;
+    std::vector<double> folded_weights, folded_basis;
     for (int d = 0; d < 3; ++d)
     {
         device.offset[d] = static_cast<int>(weights.size());
-        device.half[d] = static_cast<int>(kernels[d].size()) - 1;
-        weights.insert(weights.end(), kernels[d].begin(), kernels[d].end());
+        const auto& folded = kernels.folded[d];
+        device.folded_modes[d] = static_cast<int>(folded.weights.size());
+        device.folded_weight_offset[d] = folded_weights.size();
+        device.folded_basis_offset[d] = folded_basis.size();
+        folded_weights.insert(folded_weights.end(), folded.weights.begin(), folded.weights.end());
+        folded_basis.insert(folded_basis.end(), folded.basis.begin(), folded.basis.end());
+        if (folded.weights.empty())
+        {
+            device.half[d] = static_cast<int>(kernels[d].size()) - 1;
+            weights.insert(weights.end(), kernels[d].begin(), kernels[d].end());
+        }
+        else
+        {
+            device.half[d] = 0;
+            weights.push_back(1.0);
+        }
     }
     if (device.weights.size() != weights.size())
         device.weights.allocate(weights.size());
     CUDA_CHECK(cudaMemcpy(device.weights, weights.data(), sizeof(double) * weights.size(), cudaMemcpyHostToDevice));
+    if (device.folded_weights.size() != folded_weights.size())
+        device.folded_weights.allocate(folded_weights.size());
+    if (device.folded_basis.size() != folded_basis.size())
+        device.folded_basis.allocate(folded_basis.size());
+    if (!folded_weights.empty())
+    {
+        CUDA_CHECK(cudaMemcpy(device.folded_weights, folded_weights.data(), sizeof(double) * folded_weights.size(), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(device.folded_basis, folded_basis.data(), sizeof(double) * folded_basis.size(), cudaMemcpyHostToDevice));
+    }
 }
 
 template <typename T>
@@ -245,6 +296,8 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 
         // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
         const std::vector<double> dx = cb->get_dx();
+        const auto nx = cb->get_nx();
+        const auto bc = cb->get_boundary_conditions();
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         const double ds = mapping.get_ds_from_index(0);
         std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
@@ -255,13 +308,13 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
         {
             for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
             {
-                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx);
+                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx, nx, bc);
                 all.push_back(&bond[ds_idx][monomer_type]);
             }
-            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx);
+            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx, nx, bc);
             all.push_back(&bond_half[monomer_type]);
-            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx());
-            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx());
+            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx(), nx, bc);
+            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx(), nx, bc);
         }
         const RealSpaceBond::Ghosts ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
 
@@ -269,7 +322,6 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
         // the derivatives have the lengths of the bonds) is checked before the solver changes. The box
         // has changed already, so a box that does not fit refuses every bond until one fits again,
         // instead of leaving the kernels of the previous box in use.
-        const std::vector<int> nx = cb->get_nx();
         for (int d = 0; d < cb->get_dim(); ++d)
         {
             long inner = 1;
@@ -418,16 +470,25 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
             factor = d_factor;
             mask = d_mask;
         }
-        const double* g = kernels.weights.get() + kernels.offset[axis];
-        const int H = kernels.half[axis];
-        const int* index = d_ghost_index[axis].get() + halo[axis];
-        const double* sign = d_ghost_sign[axis].get() + halo[axis];
-
-        // The tile fits: update_laplacian_operator() refuses kernels that do not
-        const Tile tile = tile_of<D>(n, inner, H);
-        const long tiles = outer * ((n + tile.points - 1) / tile.points) * ((inner + tile.columns - 1) / tile.columns);
-        ker_bond_pass<<<grid_blocks(tiles * tile.threads, tile.threads), dim3(tile.columns, tile.threads / tile.columns),
-                        tile.bytes, stream>>>(src, dst, n, inner, outer, g, H, index, sign, tile.points, factor, mask);
+        if (kernels.folded_modes[axis] > 0)
+        {
+            ker_folded_bond_pass<<<grid_blocks(M, 256), 256, 0, stream>>>(src, dst, n, inner, M,
+                kernels.folded_weights.get() + kernels.folded_weight_offset[axis],
+                kernels.folded_basis.get() + kernels.folded_basis_offset[axis],
+                kernels.folded_modes[axis], factor, mask);
+        }
+        else
+        {
+            const double* g = kernels.weights.get() + kernels.offset[axis];
+            const int H = kernels.half[axis];
+            const int* index = d_ghost_index[axis].get() + halo[axis];
+            const double* sign = d_ghost_sign[axis].get() + halo[axis];
+            // The tile fits: update_laplacian_operator() refuses kernels that do not.
+            const Tile tile = tile_of<D>(n, inner, H);
+            const long tiles = outer * ((n + tile.points - 1) / tile.points) * ((inner + tile.columns - 1) / tile.columns);
+            ker_bond_pass<<<grid_blocks(tiles * tile.threads, tile.threads), dim3(tile.columns, tile.threads / tile.columns),
+                            tile.bytes, stream>>>(src, dst, n, inner, outer, g, H, index, sign, tile.points, factor, mask);
+        }
         CUDA_CHECK_LAUNCH();
         src = dst;
         dst = (dst == d_work_a[STREAM].get()) ? d_work_b[STREAM].get() : d_work_a[STREAM].get();

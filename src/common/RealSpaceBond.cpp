@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
+#include <utility>
 
 #include "Exception.h"
 #include "RealSpaceBond.h"
@@ -43,6 +45,9 @@ struct Axis
 {
     RealSpaceBond::Kernel g;
     RealSpaceBond::Kernel dg_ddx;
+    double width = 0.0;
+    double mean_u = 0.0;
+    double var_u = 0.0;
 };
 
 Axis gaussian_axis(double variance, double dx)
@@ -82,6 +87,9 @@ Axis gaussian_axis(double variance, double dx)
         mean_u2 += w * u * u;
     }
     const double var_u = mean_u2 - mean_u * mean_u;
+    axis.width = s;
+    axis.mean_u = mean_u;
+    axis.var_u = var_u;
     const double ds_ddx = var_u > 0.0 ? -(2.0 * s * s * mean_u - s * s * var_u) / (dx * s * var_u) : 0.0;
     axis.dg_ddx.resize(axis.g.size());
     for (std::size_t d = 0; d < axis.g.size(); ++d)
@@ -91,25 +99,124 @@ Axis gaussian_axis(double variance, double dx)
     }
     return axis;
 }
+
+// Evaluate sin(pi*numerator/denominator) after exact integer range reduction.
+// This also keeps a point near either wall equally accurate.
+double sine_fraction(long long numerator, long long denominator)
+{
+    numerator %= 2 * denominator;
+    if (numerator < 0)
+        numerator += 2 * denominator;
+    double sign = 1.0;
+    if (numerator > denominator)
+    {
+        numerator -= denominator;
+        sign = -1.0;
+    }
+    if (numerator > denominator / 2)
+        numerator = denominator - numerator;
+    return sign * static_cast<double>(std::sin(std::numbers::pi_v<long double>
+                                               * numerator / denominator));
+}
+
+// The Fourier symbol of the infinite sampled Gaussian, evaluated with its
+// Poisson sum. Directly transforming the truncated stencil would retain its
+// absolute roundoff/tail error instead of the tiny surviving eigenvalue.
+std::pair<long double, long double> theta_sum(long double width_sq, long double theta)
+{
+    const long double pi = std::numbers::pi_v<long double>;
+    const int extent = static_cast<int>(std::ceil(std::sqrt(200.0L / width_sq) / (2 * pi))) + 1;
+    long double sum = 0.0L, moment = 0.0L;
+    for (int k = -extent; k <= extent; ++k)
+    {
+        const long double frequency = theta + 2 * pi * k;
+        const long double squared = frequency * frequency;
+        const long double weight = std::exp(-0.5L * width_sq * (squared - theta * theta));
+        sum += weight;
+        moment += squared * weight;
+    }
+    return {sum, moment / sum};
+}
+
+std::pair<RealSpaceBond::FoldedAxis, RealSpaceBond::FoldedAxis> folded_axis(
+    const Axis& axis, double dx, double length, int n, BoundaryCondition low, BoundaryCondition high)
+{
+    using BC = BoundaryCondition;
+    if (axis.width == 0.0 || (low != BC::ABSORBING && high != BC::ABSORBING))
+        return {};
+    const bool both = low == BC::ABSORBING && high == BC::ABSORBING;
+    const long double pi = std::numbers::pi_v<long double>;
+    const long double width = static_cast<long double>(axis.width) / dx;
+    const long double width_sq = width * width;
+    const long double first_theta = pi / (both ? n : 2.0L * n);
+    const long double first_exponent = 0.5L * width_sq * first_theta * first_theta;
+    // Here the first eigenfunction dominates every folded entry. For two
+    // absorbing walls, the sum of higher/first bounds is at most
+    // sum_{m>=2} m^2 exp(-(m^2-1)) < 0.203; mixed walls are smaller still.
+    // Forming each entry before multiplying q preserves positivity and local
+    // relative precision, unlike transforming q and reconstructing it later.
+    if (first_exponent < 1.0L)
+        return {};
+
+    RealSpaceBond::FoldedAxis kernel, derivative;
+    kernel.n = derivative.n = n;
+    const auto [denominator, denominator_moment] = theta_sum(width_sq, 0.0L);
+    // V = s^2 <u> stays fixed as L varies. This includes the sampled-width
+    // correction even when an axis has only one or two grid points.
+    const long double dwidth_sq = -4.0L * width_sq * axis.mean_u / (length * axis.var_u);
+    for (int mode = 0; mode < n; ++mode)
+    {
+        const long double theta = pi * (both ? mode + 1.0L : mode + 0.5L) / n;
+        const long double exponent = 0.5L * width_sq * theta * theta;
+        // The omitted modes are below 1e-41 of the first mode, including their
+        // derivative factors; there are at most ten retained modes.
+        if (exponent - first_exponent > 112.0L)
+            break;
+        const auto [numerator, numerator_moment] = theta_sum(width_sq, theta);
+        const long double eigenvalue = std::exp(-exponent) * numerator / denominator;
+        const long double norm = both && mode == n - 1 ? n : 0.5L * n;
+        kernel.weights.push_back(static_cast<double>(eigenvalue / norm));
+        derivative.weights.push_back(static_cast<double>(
+            -0.5L * dwidth_sq * (numerator_moment - denominator_moment) * eigenvalue / norm));
+        const long long denominator_phase = (both ? 2LL : 4LL) * n;
+        for (int i = 0; i < n; ++i)
+        {
+            long long numerator_phase = (both ? mode + 1LL : 2LL * mode + 1) * (2LL * i + 1);
+            if (low == BC::REFLECTING)
+                numerator_phase = denominator_phase / 2 - numerator_phase;
+            kernel.basis.push_back(sine_fraction(numerator_phase, denominator_phase));
+        }
+    }
+    derivative.basis = kernel.basis;
+    return {std::move(kernel), std::move(derivative)};
+}
 }  // namespace
 
-RealSpaceBond::Kernels RealSpaceBond::gaussian(double variance, const std::vector<double>& dx)
+RealSpaceBond::Kernels RealSpaceBond::gaussian(double variance, const std::vector<double>& dx,
+    const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc)
 {
-    Kernels kernels = {Kernel{1.0}, Kernel{1.0}, Kernel{1.0}};
+    Kernels kernels;
     for (std::size_t d = 0; d < dx.size(); ++d)
-        kernels[d] = gaussian_axis(variance, dx[d]).g;
+    {
+        Axis axis = gaussian_axis(variance, dx[d]);
+        kernels[d] = axis.g;
+        kernels.folded[d] = folded_axis(axis, dx[d], dx[d] * nx[d], nx[d], bc[2*d], bc[2*d+1]).first;
+    }
     return kernels;
 }
 
 std::array<RealSpaceBond::Kernels, 3> RealSpaceBond::length_derivatives(
-    double variance, const std::vector<double>& dx, const std::vector<double>& lx)
+    double variance, const std::vector<double>& dx, const std::vector<double>& lx,
+    const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc)
 {
-    const Kernels kernels = gaussian(variance, dx);
+    const Kernels kernels = gaussian(variance, dx, nx, bc);
     std::array<Kernels, 3> derivatives = {kernels, kernels, kernels};
     for (std::size_t d = 0; d < dx.size(); ++d)
     {
         // The grid spacing is L/n, so d/dL = (dx/L) d/ddx
-        derivatives[d][d] = gaussian_axis(variance, dx[d]).dg_ddx;
+        Axis axis = gaussian_axis(variance, dx[d]);
+        derivatives[d][d] = axis.dg_ddx;
+        derivatives[d].folded[d] = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1]).second;
         for (double& v : derivatives[d][d])
             v *= dx[d] / lx[d];
     }
@@ -133,7 +240,8 @@ RealSpaceBond::Ghosts RealSpaceBond::ghosts(const std::vector<int>& nx, const st
 
         int halo = 0;
         for (const Kernels* k : kernels)
-            halo = std::max(halo, static_cast<int>((*k)[d].size()) - 1);
+            if (k->folded[d].weights.empty())
+                halo = std::max(halo, static_cast<int>((*k)[d].size()) - 1);
         ghosts.halo[d] = halo;
         ghosts.index[d].resize(n + 2 * halo);
         ghosts.sign[d].resize(n + 2 * halo);

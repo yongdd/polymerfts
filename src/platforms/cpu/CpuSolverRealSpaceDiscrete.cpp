@@ -26,6 +26,34 @@
 
 namespace
 {
+// The narrow absorbing kernel has a dominant positive ground mode. Reconstruct
+// each folded entry before applying it, so a small positive input never has to
+// be recovered by cancellation between transformed fields.
+template <typename T>
+void pass_folded(const T* in, T* out, int n, long inner, long outer,
+                 const RealSpaceBond::FoldedAxis& kernel)
+{
+    for (long o = 0; o < outer; ++o)
+    {
+        const T* a = in + o * n * inner;
+        T* b = out + o * n * inner;
+        for (int i = 0; i < n; ++i)
+        {
+            T* bi = b + i * inner;
+            std::fill_n(bi, inner, T(0.0));
+            for (int j = 0; j < n; ++j)
+            {
+                double weight = 0.0;
+                for (std::size_t mode = 0; mode < kernel.weights.size(); ++mode)
+                    weight += kernel.weights[mode] * kernel.basis[mode * n + i] * kernel.basis[mode * n + j];
+                const T* aj = a + j * inner;
+                for (long k = 0; k < inner; ++k)
+                    bi[k] += weight * aj[k];
+            }
+        }
+    }
+}
+
 // out = g * in along one axis of n points; `inner` contiguous values per point, `outer` blocks of n points
 template <typename T>
 void pass_strided(const T* in, T* out, int n, long inner, long outer, const RealSpaceBond::Kernel& g,
@@ -148,6 +176,8 @@ void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 
         // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
         const std::vector<double> dx = cb->get_dx();
+        const auto nx = cb->get_nx();
+        const auto bc = cb->get_boundary_conditions();
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         const double ds = mapping.get_ds_from_index(0);
         std::vector<const RealSpaceBond::Kernels*> all;
@@ -155,13 +185,13 @@ void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
         {
             for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
             {
-                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx);
+                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx, nx, bc);
                 all.push_back(&bond[ds_idx][monomer_type]);
             }
-            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx);
+            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx, nx, bc);
             all.push_back(&bond_half[monomer_type]);
-            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx());
-            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx());
+            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx(), nx, bc);
+            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx(), nx, bc);
         }
         ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
     }
@@ -225,7 +255,9 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
             dst = q_out;
         const int* index = ghosts.index[axis].data() + ghosts.halo[axis];
         const double* sign = ghosts.sign[axis].data() + ghosts.halo[axis];
-        if (inner == 1)
+        if (!kernels.folded[axis].weights.empty())
+            pass_folded(src, dst, n, inner, outer, kernels.folded[axis]);
+        else if (inner == 1)
             pass_contiguous(src, dst, n, outer, kernels[axis], index, sign, line);
         else
             pass_strided(src, dst, n, inner, outer, kernels[axis], index, sign);

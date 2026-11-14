@@ -555,6 +555,85 @@ def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, 
     assert TOOL['read_input'](source) == params()
 
 
+@pytest.mark.parametrize('mutation', (
+    'params["ds"] = .2',
+    'params["ds"] += .1',
+    'del params["ds"]',
+    'params.update(ds=.2)',
+    'params["nested"]["ds"] = .2',
+    'params["nested"].update(ds=.2)',
+))
+@pytest.mark.parametrize('scope', ('argument', 'local', 'closure', 'nonlocal'))
+def test_local_container_mutations_do_not_change_exported_params(tmp_path, mutation, scope):
+    independent = '{"ds": .3, "nested": {"ds": .4}}'
+    if scope == 'argument':
+        code = 'def helper(params):\n    ' + mutation + '\nhelper(' + independent + ')'
+    elif scope == 'local':
+        code = 'def helper():\n    params = ' + independent + '\n    ' + mutation + '\nhelper()'
+    else:
+        declaration = '        nonlocal params\n' if scope == 'nonlocal' else ''
+        code = ('def helper():\n    params = ' + independent + '\n    def inner():\n'
+                + declaration + '        ' + mutation + '\n    inner()\nhelper()')
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    assert TOOL['read_input'](source) == params()
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    destination = TOOL['export_files'](source, tmp_path / 'pscf', fields)
+    assert (destination / 'param').read_text() == TOOL['param_text'](params(), 'orthorhombic')
+
+
+@pytest.mark.parametrize('mutation', ('lengths[0] = 9', 'del lengths[0]', 'lengths.append(9)'))
+def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
+    source = tmp_path / 'input.py'
+    source.write_text('lengths = [2, 3, 4]\nparams = {"nx": lengths}\n'
+                      + 'def helper(lengths):\n    ' + mutation + '\nhelper([5, 6, 7])\n')
+    assert TOOL['read_input'](source) == {'nx': [2, 3, 4]}
+
+
+@pytest.mark.parametrize('code', (
+    'def helper():\n    global params\n    params["ds"] = .2',
+    'def helper():\n    global params\n    del params["ds"]',
+    'def helper():\n    global params\n    params.update(ds=.2)',
+    'def helper():\n    params["polymers"][0]["volume_fraction"] = .5',
+    'def outer():\n    def inner():\n        params.update(ds=.2)',
+    'def outer(params):\n    def inner():\n        global params\n        params.update(ds=.2)',
+    'def helper(params=params):\n    params.update(ds=.2)',
+    'alias = params\ndef helper():\n    alias.update(ds=.2)',
+    'def outer():\n    alias = params\n    def inner():\n        nonlocal alias\n        alias.update(ds=.2)',
+    'def helper(params):\n    params.update(ds=.2)\nhelper(params)',
+    'def helper():\n    [item for params in [] for item in []]\n    params["ds"] = .2',
+    'def helper():\n    (params for params in [])\n    params.update(ds=.2)',
+    'class Helper:\n    params["ds"] = .2\n    params = {}',
+    'class Helper:\n    params.update(ds=.2)\n    params = {}',
+    'class Helper:\n    params: dict\n    params["ds"] = .2',
+    'class Helper:\n    params = {}\n    del params\n    params.update(ds=.2)',
+    'class Helper:\n    params = {}\n    def method(self):\n        params.update(ds=.2)',
+    'class Helper:\n    params = {}\n    [params.update(ds=.2) for item in [0]]',
+    'def outer():\n    seed = {}\n    class Helper:\n        params["ds"] = .2\n        params = {}',
+))
+def test_scope_handling_still_rejects_parameter_mutations(tmp_path, code):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    with pytest.raises(ValueError, match='mutations|method calls|alias bindings|unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('code', (
+    'class Helper:\n    params = {}\n    params["ds"] = .2\n    params.update(ds=.3)',
+    'class Helper:\n    params = {}\n    def method(self, params):\n        params.update(ds=.2)',
+    '[params.update(ds=.2) for params in [{"ds": .3}]]',
+    '{params.update(ds=.2) for params in [{"ds": .3}]}',
+    '{index: params.update(ds=.2) for index in range(1) for params in [{"ds": .3}]}',
+    'list(params.update(ds=.2) for params in [{"ds": .3}])',
+    'def helper():\n    [params.update(ds=.2) for params in [{"ds": .3}]]\nhelper()',
+))
+def test_class_and_comprehension_container_scopes(tmp_path, code):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    assert TOOL['read_input'](source) == params()
+
+
 @pytest.mark.parametrize('argument, setup', (
     ('params', ''),
     ('params["chi_n"]', ''),
