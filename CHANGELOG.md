@@ -534,12 +534,19 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `params` (2026-11-15): `Cylinder2D`, `HCP_Hexagonal` and `PL_Hexagonal` export again, and the
   L-FTS, CL-FTS and Gibbs-ensemble examples are read. The alias checks refused a loop that unpacks
   only numbers (`for y, z in positions`), an element of a list of numbers such as `params["nx"][i]`,
-  arithmetic of such a list with numbers or a new NumPy array, `np.reshape` and `np.broadcast_to` of
-  a new array, the `params` argument of `LFTS`, `CLFTS` and `GibbsEnsemble`, and a copy handed
-  straight to a constructor, as in `SCFT(dict(params, polymers=polymers))`. A parameter container
-  given to a binary operator of an object the converter cannot identify, as in
-  `M() | params["nx"]`, is refused as well. `Fddd` and `MonoclinicLamella3D` give `params["nx"]` to
-  such an operator or NumPy call; they export from a saved SCFT result.
+  arithmetic of such a list with numbers or a NumPy array, comparisons of builtin values,
+  `np.reshape` and `np.broadcast_to` of a new array, and the `params` argument of `LFTS`, `CLFTS`
+  and `GibbsEnsemble`. A constructor's `params` argument must be a literal value, also as a copy
+  such as `SCFT(dict(params, ds=.02))`: its deep copy then runs no code of the script, whose
+  `__deepcopy__` would receive the original containers. `CanonicalCoexistence`, which passes a
+  list built in a function, is therefore refused; its `params` has no `polymers` to export. A
+  parameter container given to an operator of an object the converter cannot identify
+  (arithmetic, a comparison, `in`, an augmented assignment, a subscript key or a `match` value
+  pattern, as in `M() | params["nx"]`) is refused as well, and so are a mutation through an
+  expression such as `(params["polymers"] + [])[0]`, `max` and `min` with `key=` or a non-numeric
+  argument, reflection (`getattr`, `exec`, ..., also by reference), `sys.modules` and the internals
+  of the `copy` module. `Fddd` and `MonoclinicLamella3D` give `params["nx"]` to an operator or a
+  NumPy call on arrays the converter cannot identify; they export from a saved SCFT result.
 - The plots of `scripts/analysis` draw the fields at the grid points of the solvers, in the cell of
   the file's lattice vectors (2026-11-06). The 2D plots fill the grid cell around each point with its
   value, with the second lattice vector pointing up (the images before were mirrored):

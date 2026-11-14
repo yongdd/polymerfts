@@ -561,10 +561,28 @@ def test_earlier_helpers_can_return_scalars_and_independent_copies(tmp_path, def
     'import numpy as np\nw = np.reshape(np.zeros(24), params["nx"])',
     'import numpy as np\nw = np.broadcast_to(np.zeros(1), params["nx"]).copy()',
     'merged = params["chi_n"] | {}',
+    'same = params["nx"] == [2, 3, 4]',
+    'present = "Zed" in params["segment_lengths"]',
+    'total = 0\nfor n in params["nx"]:\n    total += n',
+    'import numpy as np\nmask = np.zeros(3) == params["nx"]',
+    'last = params["nx"][index]',
+    # Comparisons of builtin values give a bool; identity calls no method
+    'present = "polymers" in params',
+    'if params["polymers"] is not None:\n    pass',
+    'if params["polymers"][0]["blocks"] == []:\n    pass',
+    'match params["chain_model"]:\n    case "continuous":\n        pass',
+    'import numpy as np\ngrid = np.array(params["nx"], dtype=float)',
+    'longest = max(params["lx"])',
+    'longest = max(params["lx"], default=0)',
+    'import numpy as np\nw = np.array(params["nx"], float)',
+    'import numpy as np\na = np.zeros(3)\na += params["nx"]',
+    'import numpy as np\nw = np.zeros(10)\nw[params["nx"]] = 1',
+    'label = f"{params[\'nx\']}".replace(" ", "")',
+    'import sys\nsys.argv = ["x"]',
     # The simulation constructors deep-copy params, also a copy handed straight to them
     'from polymerfts import lfts\nsimulation = lfts.LFTS(params=params, random_seed=1)',
     'from polymerfts import CLFTS\nsimulation = CLFTS(params=params)',
-    'from polymerfts import SCFT\ndef run(polymers):\n    return SCFT(dict(params, polymers=polymers))',
+    'from polymerfts import SCFT\ncalculation = SCFT(dict(params, ds=.02))',
 ))
 def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -647,6 +665,34 @@ def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
     'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\n[m * params["nx"] for m in [M()]]',
     'import numpy\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\ndef f(np):\n    return np.array([1]) * params["nx"]\nf(M())',
     'import numpy as np\nclass M:\n    def __or__(self, other):\n        other["Zed,long_B"] = 99\n        return 0\nprint(np.array([M()]) | params["chi_n"])',
+    # Comparisons, augmented assignments and subscript keys call methods of the script too
+    'class M:\n    def __eq__(self, other):\n        other[0] = 99\n        return False\nprint(M() == params["nx"])',
+    'class M:\n    def __contains__(self, item):\n        item[0] = 99\n        return False\nprint(params["nx"] in M())',
+    'class M:\n    def __eq__(self, other):\n        other["volume_fraction"] = .5\n        return False\nprint(M() in params["polymers"])',
+    'class M:\n    def __iadd__(self, other):\n        other[0] = 99\n        return self\nm = M()\nm += params["nx"]',
+    'class M:\n    def __getitem__(self, key):\n        key[0] = 99\nprint(M()[params["nx"]])',
+    # A constructor deep-copies only a literal params: a hook would receive the memo,
+    # which keeps the original parameter containers
+    'from polymerfts import SCFT\nclass X:\n    def __deepcopy__(self, memo):\n        memo[id(memo)][0]["nx"][0] = 99\n        return self\nSCFT(dict(params, extra=X()))',
+    'from polymerfts import SCFT\nclass X:\n    def __getattr__(self, name):\n        return lambda memo: self\nSCFT(dict(params, extra=X()))',
+    'from polymerfts import SCFT\ndef run(polymers):\n    return SCFT(dict(params, polymers=polymers))',
+    'import copy\ncopy._deepcopy_dispatch[list] = print',
+    'import copy\ndef f(x, memo):\n    return x\ngetattr(copy, "_deepcopy" + "_dispatch")[list] = f',
+    'exec("params[\'ds\'] = .2")',
+    'import sys\nsys.modules["copy"]._deepcopy_dispatch[list] = print',
+    # match value patterns and max/min compare with an object of the script
+    'class E:\n    def __eq__(self, other):\n        other[0] = 99\n        return False\nclass K:\n    v = E()\nmatch params["nx"]:\n    case K.v:\n        pass',
+    'class E:\n    def __lt__(self, other):\n        other[0] = 99\n        return False\n    __gt__ = __lt__\nprint(max(params["nx"], E()))',
+    'def f(x):\n    return 0\nprint(max(params["nx"], params["lx"], key=f))',
+    'x = 1\nclass E:\n    def __lt__(self, other):\n        other[0] = 99\n        return False\n    __gt__ = __lt__\ndef f(x):\n    return max(params["nx"], x)\nf(E())',
+    # A mutation through an expression that holds parameter containers
+    '(params["polymers"] + [])[0]["volume_fraction"] = .5',
+    '(params["polymers"] + [])[0].update(volume_fraction=.5)',
+    # Reflection and module internals reached by reference, alias or method
+    'import copy\ncopy._deepcopy_dispatch.update({list: print})',
+    'import copy\nd = copy._deepcopy_dispatch\nd[list] = print',
+    'import copy\ng = getattr\ng(copy, "_deepcopy" + "_dispatch")[list] = print',
+    'import sys\nm = sys.modules["copy"]',
 ))
 def test_scope_handling_still_rejects_parameter_mutations(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -725,7 +771,6 @@ SCFT_EXAMPLES_WITH_FIELD_SETUP = (
 
 @pytest.mark.parametrize('example', (
     *SCFT_EXAMPLES_WITH_FIELD_SETUP,
-    'examples/blend/scft/CanonicalCoexistence.py',
     'examples/block_copolymer/lfts/Gyroid.py',
     'examples/block_copolymer/lfts/Lamella.py',
     'examples/block_copolymer/clfts/Lamella.py',
@@ -735,6 +780,13 @@ def test_shipped_examples_are_read_despite_their_field_setup(example):
     # Loops over positions, arithmetic with new arrays and simulation constructors
     # around the literal params must not count as parameter aliases.
     assert 'nx' in TOOL['read_input'](ROOT / example)
+
+
+def test_constructor_params_of_local_values_are_refused():
+    # SCFT(dict(params, polymers=polymers)) with polymers built in a function: the deep
+    # copy of a value the converter cannot read could run code of the script.
+    with pytest.raises(ValueError, match='alias bindings|unsupported calls'):
+        TOOL['read_input'](ROOT / 'examples/blend/scft/CanonicalCoexistence.py')
 
 
 @pytest.mark.parametrize('example', SCFT_EXAMPLES_WITH_FIELD_SETUP)

@@ -298,6 +298,10 @@ def read_python_params(path):
     symbols, params = {}, None
     imports, rebound = {}, set()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # Reflection reaches objects and modules by names built at run time, which a
+    # reading of the source cannot follow.
+    reflection = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval",
+                  "compile", "__import__", "importlib.import_module"}
 
     def callable_name(node):
         if isinstance(node, ast.Name):
@@ -362,9 +366,14 @@ def read_python_params(path):
                 and callable_name(node.func) in array_makers
                 and all(keyword.arg in ("dtype", "size") for keyword in node.keywords))
 
+    def is_array(node, untrusted):
+        # A new array, or a module name whose last binding was one
+        return new_array(node, untrusted) or (isinstance(node, ast.Name) and node.id in array_names
+                                              and node.id not in untrusted)
+
     def builtin_operand(node, untrusted):
         """Arithmetic with this operand runs builtin or NumPy code, not a method of the script."""
-        if new_array(node, untrusted):
+        if is_array(node, untrusted):
             return True
         if uses(node, untrusted):
             return False
@@ -374,29 +383,62 @@ def read_python_params(path):
             return evaluates_to_flat_scalars(node)
         return True
 
-    def inert_arithmetic(node, containers, untrusted):
+    def operands(node):
+        """The operands of an operator and those it hands to a method of another operand."""
+        if isinstance(node, ast.BinOp):
+            return [node.left, node.right], [node.left, node.right]
+        if isinstance(node, ast.Compare):  # __eq__, __lt__, __contains__, ...
+            if all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops):
+                return None, None  # identity calls no method
+            return [node.left, *node.comparators], [node.left, *node.comparators]
+        if isinstance(node, ast.AugAssign):  # target.__iadd__(value), ...
+            return [node.target, node.value], [node.value]
+        if isinstance(node, ast.Subscript):  # value.__getitem__(key), __setitem__, __delitem__
+            return [node.value, node.slice], [node.slice]
+        return None, None
+
+    def inert_operation(parts, containers, untrusted, result=False):
         # A parameter container given to an operator of another type reaches that type's
-        # method (__rmul__, __or__, ...) as it is. Builtin operands make a new object, in
-        # which a container of scalars leaves only immutable values. An object array hands
-        # each element's method the other operand converted to an array, which keeps a
-        # list of scalars as numbers but a dict as the dict itself.
-        if not (builtin_operand(node.left, untrusted) and builtin_operand(node.right, untrusted)):
+        # method (__rmul__, __eq__, __getitem__, ...) as it is; builtin operators run no
+        # code of the script. An object array hands each element's method the other
+        # operand converted to an array: a list of scalars arrives as numbers, a dict as
+        # itself. With result, the new object (a concatenation, a merged dict) must not
+        # hold a container of the operands either.
+        if not all(builtin_operand(part, untrusted) for part in parts):
             return False
-        mappings = not (new_array(node.left, untrusted) or new_array(node.right, untrusted))
-        return all(evaluates_to_flat_scalars(operand, untrusted, mappings) for operand in (node.left, node.right)
-                   if references_container(operand, containers, untrusted))
+        arrays = any(is_array(part, untrusted) for part in parts)
+        if not (arrays or result):
+            return True
+        return all(evaluates_to_flat_scalars(part, untrusted, not arrays) for part in parts
+                   if references_container(part, containers, untrusted))
 
-    def simulation_params(node):
-        if node.args and not isinstance(node.args[0], ast.Starred):
-            return node.args[0]
-        return next((keyword.value for keyword in node.keywords if keyword.arg == "params"), None)
+    def simulation_params(node, untrusted):
+        """The params argument of a simulation constructor, when it is a literal value.
 
-    def simulation_extras(node):
-        trusted = simulation_params(node)
+        Its deep copy then meets only builtin objects. Any other object could bring a
+        copy hook of the script, and __deepcopy__ receives the memo, which keeps the
+        original parameter containers.
+        """
+        argument = (node.args[0] if node.args and not isinstance(node.args[0], ast.Starred)
+                    else next((keyword.value for keyword in node.keywords if keyword.arg == "params"), None))
+        if argument is None or uses(argument, untrusted):
+            return None
+        try:
+            evaluate(argument)
+        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+            return None
+        return argument
+
+    def simulation_extras(node, untrusted):
+        trusted = simulation_params(node, untrusted)
         return [argument for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
                 if argument is not trusted]
 
-    def independent_result(node):
+    def plain(value):
+        # A constant or a dotted name such as float or np.float64: no call, no container
+        return all(isinstance(part, (ast.Constant, ast.Name, ast.Attribute, ast.Load)) for part in ast.walk(value))
+
+    def independent_result(node, untrusted=frozenset()):
         name = callable_name(node.func)
         if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
                 and isinstance(node.func.value, ast.Call)
@@ -407,9 +449,18 @@ def read_python_params(path):
                     "numpy.zeros", "numpy.ones", "numpy.empty", "numpy.random.normal",
                     "numpy.random.uniform", "numpy.random.random"}:
             return True
-        if name in numeric_readers:
+        if name in numeric_readers and node.args and not uses(node, untrusted):
+            # max and min compare all their arguments and pass them to key=: every argument
+            # must be numbers. NumPy reads the first and dispatches on out= and like=; its
+            # other arguments may be plain values such as a dtype.
             try:
-                return bool(node.args) and numeric(evaluate(node.args[0]))
+                if name.startswith("numpy."):
+                    return (numeric(evaluate(node.args[0])) and all(plain(argument) for argument in node.args[1:])
+                            and all(keyword.arg not in (None, "out", "like", "where") and plain(keyword.value)
+                                    for keyword in node.keywords))
+                return (all(numeric(evaluate(argument)) for argument in node.args)
+                        and all(keyword.arg in ("default", "start") and numeric(evaluate(keyword.value))
+                                for keyword in node.keywords))
             except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
                 pass
         return False
@@ -420,16 +471,22 @@ def read_python_params(path):
             return False
         # A random-field initializer often receives np.prod(params["nx"]). Its
         # scalar result cannot give the initializer access to the original list.
-        if isinstance(node, ast.Call) and independent_result(node):
+        if isinstance(node, ast.Call) and independent_result(node, untrusted):
             return False
+        if isinstance(node, ast.JoinedStr):
+            return False  # an f-string makes a new str
         if isinstance(node, ast.Call) and callable_name(node.func) in simulations:
             # The simulation holds a deep copy of params, and its other arguments as given.
-            return any(references_container(argument, containers, untrusted) for argument in simulation_extras(node))
+            return any(references_container(argument, containers, untrusted)
+                       for argument in simulation_extras(node, untrusted))
         if (isinstance(node, ast.Call) and callable_name(node.func) in shape_readers
                 and node.args and new_array(node.args[0], untrusted)):
             return references_container(node.args[0], containers, untrusted)  # a view; the shape is not kept
-        if isinstance(node, ast.BinOp) and inert_arithmetic(node, containers, untrusted):
-            return False
+        if isinstance(node, ast.BinOp) and inert_operation(operands(node)[0], containers, untrusted, result=True):
+            return False  # a new object without a container of the operands
+        if isinstance(node, ast.Compare) and (operands(node)[0] is None
+                                              or inert_operation(operands(node)[0], containers, untrusted)):
+            return False  # a bool, or a new array of them
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             # The iterator bindings are checked separately by scoped_nodes. Only
             # output expressions can put a known container into the new result.
@@ -643,6 +700,9 @@ def read_python_params(path):
                 while isinstance(owner, (ast.Attribute, ast.Subscript)):
                     owner = owner.value
                 if isinstance(owner, ast.Name) and owner.id not in hidden and owner.id in imports:
+                    if imports[owner.id].split(".")[0] in ("copy", "copyreg"):
+                        raise ValueError("Changes to the copy module may cause parameter mutations when a "
+                                         "simulation constructor copies params; use a saved SCFT result.")
                     assigned.add(owner.id)
             for child in ast.iter_child_nodes(node):
                 visit(child, hidden)
@@ -651,7 +711,7 @@ def read_python_params(path):
         return assigned
 
     deferred_bodies = []
-    constructor_copies = set()  # ids of copy calls that are direct constructor arguments
+    array_names = set()  # module names bound to a new base-class ndarray
     for statement in tree.body:
         if isinstance(statement, ast.Import):
             for alias in statement.names:
@@ -736,8 +796,32 @@ def read_python_params(path):
                 if aliases:
                     raise ValueError("Runtime container alias bindings may cause parameter mutations; "
                                      "use direct assignments or saved SCFT result/JSON/YAML parameters.")
-            if isinstance(node, ast.BinOp) and not inert_arithmetic(node, containers - hidden, untrusted) and any(
-                    references_container(operand, containers - hidden, untrusted) for operand in (node.left, node.right)):
+            if isinstance(node, ast.Attribute) or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                                                   and node.id not in hidden):
+                # Also a reference, such as g = getattr, or a table reached through a module
+                reached = callable_name(node)
+                if (reached in reflection or reached.removeprefix("builtins.") in reflection
+                        or reached in ("__builtins__", "sys.modules") or reached.startswith("copy._")):
+                    raise ValueError("Reflection and module internals (getattr, exec, sys.modules, copy._...) "
+                                     "may cause parameter mutations that a reading of the script cannot follow; "
+                                     "use a saved SCFT result.")
+            parts, given = operands(node)
+            if isinstance(node, ast.Match) and references_container(node.subject, containers - hidden, untrusted):
+                # A value pattern compares the subject with its value (__eq__), a class
+                # pattern runs isinstance, which a metaclass of the script can define.
+                for part in (part for case in node.cases for part in ast.walk(case.pattern)):
+                    if ((isinstance(part, ast.MatchValue) and not builtin_operand(part.value, untrusted))
+                            or (isinstance(part, ast.MatchClass) and not (
+                                isinstance(part.cls, ast.Name) and part.cls.id not in untrusted
+                                and callable_name(part.cls) in ("int", "float", "complex", "str", "bool",
+                                                                "list", "tuple", "dict")))):
+                        raise ValueError("Runtime params containers given to operators of unsupported objects may "
+                                         "cause mutations; use a saved SCFT result or JSON/YAML parameters.")
+            operand_untrusted = untrusted
+            if node is statement and isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                operand_untrusted = untrusted - {node.target.id}  # the old value is the operand
+            if parts is not None and any(references_container(part, containers - hidden, untrusted) for part in given) \
+                    and not inert_operation(parts, containers - hidden, operand_untrusted):
                 raise ValueError("Runtime params containers given to operators of unsupported objects may cause "
                                  "mutations; use a saved SCFT result or JSON/YAML parameters.")
             if not isinstance(node, ast.Call):
@@ -761,19 +845,14 @@ def read_python_params(path):
                                                           "numpy.ones", "numpy.empty", "numpy.full"})
             arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
             if name in simulations:
-                # params is deep-copied; a shallow copy handed straight in, as in
-                # SCFT(dict(params, ...)), too. The copy's own name is checked below.
-                trusted = simulation_params(node)
-                if isinstance(trusted, ast.Call):
-                    constructor_copies.add(id(trusted))
-                arguments = simulation_extras(node)
+                arguments = simulation_extras(node, untrusted)  # a literal params is deep-copied
             if name in numeric_readers:
-                safe = independent_result(node)
+                safe = independent_result(node, untrusted)
             elif name in ("list", "tuple", "dict"):
                 try:
                     evaluate(node)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    safe = id(node) in constructor_copies
+                    safe = False
             elif name in shape_readers:
                 # ndarray.reshape and broadcast_to read the shape; another first
                 # argument could pass the shape list to its own reshape method.
@@ -847,12 +926,25 @@ def read_python_params(path):
                 if (isinstance(target, ast.Name) and target.id not in hidden
                         and (target.id == "params" or target.id in containers)):
                     raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
+                # An expression, such as (params["polymers"] + [])[0], can hold the containers
+                if not isinstance(target, ast.Name) and references_container(node.value, containers - hidden,
+                                                                              hidden | assigned):
+                    raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 target = node.func.value
                 while isinstance(target, ast.Subscript): target = target.value
                 if (isinstance(target, ast.Name) and target.id not in hidden
                         and (target.id == "params" or target.id in containers)):
                     raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
+                if not isinstance(target, ast.Name) and references_container(node.func.value, containers - hidden,
+                                                                              hidden | assigned):
+                    raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
+        # ndarray.__iadd__ and the like keep the array; any other binding ends it
+        if not (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)):
+            array_names.difference_update(assigned)
+        if (isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets)
+                and new_array(statement.value, assigned)):
+            array_names.update(target.id for target in statement.targets)
         # An imported safe reader can be shadowed by a later assignment or definition.
         if isinstance(statement, (ast.Import, ast.ImportFrom)):
             continue  # The direct import above establishes its new binding.

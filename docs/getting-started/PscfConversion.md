@@ -81,7 +81,12 @@ module-level `params` dictionary and simple numerical expressions such as
 configuration loading, recognized parameter mutations (including through
 container aliases), and constants changed by unsupported assignments or control
 flow are rejected. Literal helper containers and indexing are supported;
-container method calls are rejected. Other runtime code, including Python
+container method calls are rejected, and so is a parameter container given to
+code of the script: an unsupported call, an operator of an object the converter
+cannot identify, a simulation constructor whose `params` is not a literal value,
+reflection (`getattr`, `exec`, ...) or a change to the `copy` module. The check
+reads the source; code written to hide what it does can still change `params`
+when it runs. Other runtime code, including Python
 initial-field generation and calls to external functions, is not executed or
 extracted. Use a saved result or JSON/YAML configuration for a model assembled
 or changed at runtime.
