@@ -421,9 +421,9 @@ T CpuComputationBackend<T>::solvent_concentration(
         std::fill(_phi, _phi + n_basis, T(0.0));
         return partition;
     }
-    const T norm = volume_fraction / partition;
+    const auto norm = make_density_normalization(volume_fraction, 1.0, 1.0, 1.0, partition);
     for (int i = 0; i < n_basis; i++)
-        _phi[i] *= norm;
+        _phi[i] = apply_density_normalization(_phi[i], norm);
 
     // No solvent inside impenetrable regions (the mask is in the field basis)
     const double* mask = cb->get_mask();
@@ -435,16 +435,17 @@ T CpuComputationBackend<T>::solvent_concentration(
 
 template <typename T>
 void CpuComputationBackend<T>::sum_to_host(
-    T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights)
+    T* out, const std::vector<BackendArray<T>*>& arrays,
+    const std::vector<DensityNormalization<T>>& weights)
 {
     for (int i = 0; i < n_basis; i++)
         out[i] = 0.0;
     for (size_t a = 0; a < arrays.size(); a++)
     {
         const T* _a = raw(arrays[a]);
-        const T weight = weights[a];
+        const auto& weight = weights[a];
         for (int i = 0; i < n_basis; i++)
-            out[i] += _a[i]*weight;
+            out[i] += apply_density_normalization(_a[i], weight);
     }
 }
 

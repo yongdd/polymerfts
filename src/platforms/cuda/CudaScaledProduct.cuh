@@ -20,6 +20,20 @@ __device__ inline cuDoubleComplex divide(cuDoubleComplex a, cuDoubleComplex b,
     const Complex result = divide_finite(a.x, a.y, b.x, b.y, divisor.x, divisor.y, weight);
     return make_cuDoubleComplex(result.real, result.imag);
 }
+
+__device__ inline cuDoubleComplex divide(cuDoubleComplex a, cuDoubleComplex b,
+                                         cuDoubleComplex divisor, Number weight)
+{
+    if ((divisor.x == 0.0 && divisor.y == 0.0) || !finite(a.x) || !finite(a.y)
+        || !finite(b.x) || !finite(b.y) || !finite(divisor.x) || !finite(divisor.y))
+    {
+        const cuDoubleComplex multiplier = cuCdiv(
+            make_cuDoubleComplex(scalbn(weight.mantissa, weight.exponent), 0.0), divisor);
+        return cuCmul(cuCmul(a, b), multiplier);
+    }
+    const Complex result = divide_finite(a.x, a.y, b.x, b.y, divisor.x, divisor.y, weight);
+    return make_cuDoubleComplex(result.real, result.imag);
+}
 } // namespace scaled_product
 
 #endif

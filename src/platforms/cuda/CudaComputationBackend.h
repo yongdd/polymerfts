@@ -136,7 +136,8 @@ public:
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;
-    void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights) override;
+    void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
+                     const std::vector<DensityNormalization<T>>& weights) override;
 };
 
 #endif

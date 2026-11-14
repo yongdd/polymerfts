@@ -42,6 +42,7 @@ from ..utils.common import (
 from ..utils.checkpoint import (
     RunRecord,
     fields_data,
+    auxiliary_field_key,
     load_checkpoint,
     start_run_status,
     initialize_extensions,
@@ -508,8 +509,9 @@ class CLFTS:
         # Convert monomer chemical potential fields into auxiliary fields
         w_aux = self.mpt.to_aux_fields(w)
         self.mpt.pin_dropped_fields(w_aux)
-        if _restart_data is not None and "w_aux" in _restart_data:
-            w_aux = np.asarray(_restart_data["w_aux"], dtype=np.complex128).reshape(M, self.prop_solver.n_grid).copy()
+        saved_aux = None if _restart_data is None else _restart_data.get(auxiliary_field_key(_restart_data))
+        if saved_aux is not None:
+            w_aux = np.asarray(saved_aux, dtype=np.complex128).reshape(M, self.prop_solver.n_grid).copy()
         if not np.all(np.isfinite(w_aux)):
             raise ValidationError("Initial fields must be finite")
 
@@ -550,7 +552,7 @@ class CLFTS:
         # the forces of the next step use the concentrations of the same fields.
         # Smearing implements finite-range interactions: φ_Γ = FFT⁻¹[FFT[φ]·Γ(k)]
         # Reference: Matsen et al., J. Chem. Phys. 164, 014905 (2026)
-        if _restart_data is not None and "w_aux" in _restart_data:
+        if saved_aux is not None:
             phi = {m: (np.asarray(_restart_data["phi_" + m + "_real"]) +
                        1j * np.asarray(_restart_data["phi_" + m + "_imag"])).reshape(self.prop_solver.n_grid)
                    for m in self.monomer_types}

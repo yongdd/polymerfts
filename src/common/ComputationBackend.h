@@ -49,6 +49,8 @@
 #include <utility>
 #include <vector>
 
+#include "DensityNormalization.h"
+
 /// True if a junction power is an integer. The backends raise a propagator to an integer
 /// power with an integer exponent (std::pow on the CPU, repeated multiplication on CUDA),
 /// the same operation as for explicit arms; other powers come from non-integer block
@@ -246,9 +248,9 @@ public:
     virtual T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w,
                                     double ds, double volume_fraction) = 0;
 
-    /// out = Σ_i weight_i a_i, where out is a host array of get_n_basis() elements.
+    /// Sum ensemble-normalized densities into a host array of get_n_basis() elements.
     virtual void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
-                             const std::vector<T>& weights) = 0;
+                             const std::vector<DensityNormalization<T>>& weights) = 0;
 };
 
 #endif

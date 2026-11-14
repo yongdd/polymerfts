@@ -60,6 +60,13 @@ POLYMERFTS_PRODUCT_HD inline double quotient(Number numerator, Number denominato
                   numerator.exponent - denominator.exponent);
 }
 
+POLYMERFTS_PRODUCT_HD inline Number ratio(Number numerator, Number denominator)
+{
+    Number result = split(numerator.mantissa / denominator.mantissa);
+    result.exponent += numerator.exponent - denominator.exponent;
+    return result;
+}
+
 POLYMERFTS_PRODUCT_HD inline bool finite(double value)
 {
 #ifdef __CUDA_ARCH__
@@ -86,6 +93,15 @@ POLYMERFTS_PRODUCT_HD inline double divide(double a, double b, double divisor, d
     return quotient(multiply(multiply(split(weight), split(a)), split(b)), split(divisor));
 }
 
+// The prefactor can itself lie outside the double range. Restore its exponent
+// only after multiplying the density and dividing by its partition function.
+POLYMERFTS_PRODUCT_HD inline double divide(double a, double b, double divisor, Number weight)
+{
+    if (divisor == 0.0 || !finite(a) || !finite(b) || !finite(divisor))
+        return (a * b) * (scalbn(weight.mantissa, weight.exponent) / divisor);
+    return quotient(multiply(multiply(weight, split(a)), split(b)), split(divisor));
+}
+
 struct Complex
 {
     double real;
@@ -96,7 +112,7 @@ struct Complex
 // product has its own exponent, so a small component is not discarded just
 // because the other component of the same complex input is large.
 POLYMERFTS_PRODUCT_HD inline Complex divide_finite(
-    double ar, double ai, double br, double bi, double wr, double wi, double weight)
+    double ar, double ai, double br, double bi, double wr, double wi, Number factor)
 {
     const Number a_real = split(ar), a_imag = split(ai);
     const Number b_real = split(br), b_imag = split(bi);
@@ -106,9 +122,14 @@ POLYMERFTS_PRODUCT_HD inline Complex divide_finite(
     const Number norm = add(multiply(w_real, w_real), multiply(w_imag, w_imag));
     const Number real_numerator = add(multiply(product_real, w_real), multiply(product_imag, w_imag));
     const Number imag_numerator = add(multiply(product_imag, w_real), negate(multiply(product_real, w_imag)));
-    const Number factor = split(weight);
     return {quotient(multiply(real_numerator, factor), norm),
             quotient(multiply(imag_numerator, factor), norm)};
+}
+
+POLYMERFTS_PRODUCT_HD inline Complex divide_finite(
+    double ar, double ai, double br, double bi, double wr, double wi, double weight)
+{
+    return divide_finite(ar, ai, br, bi, wr, wi, split(weight));
 }
 
 inline std::complex<double> divide(std::complex<double> a, std::complex<double> b,
@@ -120,6 +141,17 @@ inline std::complex<double> divide(std::complex<double> a, std::complex<double> 
         || (ordinary(a.real()) && ordinary(a.imag()) && ordinary(b.real()) && ordinary(b.imag())
             && ordinary(divisor.real()) && ordinary(divisor.imag()) && ordinary(weight)))
         return weight * a * b / divisor;
+    const Complex result = divide_finite(a.real(), a.imag(), b.real(), b.imag(),
+                                         divisor.real(), divisor.imag(), weight);
+    return {result.real, result.imag};
+}
+
+inline std::complex<double> divide(std::complex<double> a, std::complex<double> b,
+                                    std::complex<double> divisor, Number weight)
+{
+    if (divisor == std::complex<double>(0.0) || !finite(a.real()) || !finite(a.imag())
+        || !finite(b.real()) || !finite(b.imag()) || !finite(divisor.real()) || !finite(divisor.imag()))
+        return (a * b) * (scalbn(weight.mantissa, weight.exponent) / divisor);
     const Complex result = divide_finite(a.real(), a.imag(), b.real(), b.imag(),
                                          divisor.real(), divisor.imag(), weight);
     return {result.real, result.imag};

@@ -95,8 +95,19 @@ def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
             "random_state_inc": str(sim.random_bg.state["state"]["inc"]),
             "normal_noise_prev": normal_noise_prev}
     data.update(checkpoint_data(sim))
-    data["w_aux"] = sim.mpt.to_aux_fields(w) if w_aux is None else w_aux
+    auxiliary = sim.mpt.to_aux_fields(w) if w_aux is None else w_aux
+    # Keep the auxiliary matrix outside the public w_<monomer> namespace: aux
+    # is a valid monomer name, whose LFTS field is w_aux. Preserve the historical
+    # matrix alias where it cannot collide, for existing analysis scripts.
+    data["checkpoint_aux_fields"] = auxiliary
+    if sim.prop_solver.field_type == "complex" or "aux" not in sim.monomer_types:
+        data["w_aux"] = auxiliary
     return data
+
+
+def auxiliary_field_key(data):
+    """The full auxiliary matrix of a current or older fields checkpoint."""
+    return "checkpoint_aux_fields" if "checkpoint_aux_fields" in data else "w_aux"
 
 
 def load_checkpoint(sim, file_name, allow_legacy=False):
@@ -315,12 +326,13 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
                         if type(count) is not int or count < 0:
                             raise ValidationError(f"Invalid checkpoint run counter '{counter}'")
         n_fields = len(sim.monomer_types)
-        for key in ("w_aux", "normal_noise_prev"):
+        aux_key = auxiliary_field_key(data)
+        for key in (aux_key, "normal_noise_prev"):
             if key not in data or not np.all(np.isfinite(data[key])):
                 raise ValidationError(f"Checkpoint has missing or non-finite '{key}'")
             if np.iscomplexobj(data[key]) and (key == "normal_noise_prev" or sim.prop_solver.field_type == "real"):
                 raise ValidationError(f"Checkpoint '{key}' must be real")
-        if np.size(data["w_aux"]) != n_fields * sim.prop_solver.n_grid:
+        if np.size(data[aux_key]) != n_fields * sim.prop_solver.n_grid:
             raise ValidationError("Checkpoint auxiliary field shape is incompatible")
         if "record_sample_count" not in data or "rng_state_json" not in data:
             raise ValidationError("Checkpoint is missing measurement or RNG state")

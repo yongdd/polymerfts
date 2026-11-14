@@ -125,8 +125,10 @@ protected:
     double contour_step(const std::string& key) const;
 
     /// Normalization of a block concentration, φ = norm · Σ_n c_n q q†:
-    /// norm = ds · volume fraction / alpha · n_repeated / Q.
-    T concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const;
+    /// norm = ds · volume fraction / alpha · copies / Q. A negative copies
+    /// argument selects the computation block's n_repeated.
+    DensityNormalization<T> concentration_norm(
+        const std::tuple<int, std::string, std::string>& block_key, double copies = -1.0) const;
 
     /// Compare canonical Q relatively and zero-weight species on the scale of
     /// their absolute contour integrands (which need not cancel when Q does).

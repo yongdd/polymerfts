@@ -273,6 +273,93 @@ def test_result_export_import_preserves_fields_cell_and_custom_names(tmp_path, s
         np.testing.assert_array_equal(imported['w_' + name], data['w_' + name].ravel())
 
 
+@pytest.mark.parametrize('suffix', ('.mat', '.json', '.yaml'))
+@pytest.mark.parametrize('separator', (',', '_', '/', ' '))
+@pytest.mark.parametrize('boundary', ('periodic', 'Periodic', 'PeRiOdIc'))
+def test_saved_result_option_spellings_export_identically(tmp_path, suffix, separator, boundary):
+    p = params()
+    p['chi_n'] = {separator.join(('long_B', 'Zed')): 20.}
+    p['bc'] = [boundary] * 6
+    data = result(p)
+    # SCFT results retain the input spelling and also write canonical top-level chi_n.
+    data['chi_n'] = {'Zed,long_B': 20.}
+    before = json.dumps(data, default=lambda x: x.tolist())
+    prepared, _, lattice, _ = TOOL['prepare_export'](data)
+    text = TOOL['param_text'](prepared, lattice)
+    assert json.dumps(data, default=lambda x: x.tolist()) == before
+    assert '      0 1 20\n' in text
+
+    source = tmp_path / ('source' + suffix)
+    if suffix == '.mat':
+        savemat(source, data, long_field_names=True)
+    elif suffix == '.json':
+        source.write_text(before)
+    else:
+        yaml = pytest.importorskip('yaml')
+        source.write_text(yaml.safe_dump(json.loads(before), sort_keys=False))
+    TOOL['export_files'](source, tmp_path / 'actual')
+
+    control = tmp_path / 'control.json'
+    control.write_text(json.dumps(result(), default=lambda x: x.tolist()))
+    TOOL['export_files'](control, tmp_path / 'expected')
+    for relative in ('param', 'command', 'in/omega', 'metadata.json'):
+        assert (tmp_path / 'actual' / relative).read_bytes() == (tmp_path / 'expected' / relative).read_bytes()
+
+
+@pytest.mark.parametrize('names', (('A', 'B'), ('Zed', 'long_B')))
+@pytest.mark.parametrize('reverse', (False, True))
+def test_unique_compact_interaction_keys_remain_supported(names, reverse):
+    p = params()
+    p['segment_lengths'] = dict(zip(names, (1., 1.2)))
+    for block, name in zip(p['polymers'][0]['blocks'], names):
+        block['type'] = name
+    p['chi_n'] = {''.join(names[::-1] if reverse else names): 20.}
+    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
+    assert '      0 1 20\n' in TOOL['param_text'](prepared, lattice)
+
+
+@pytest.mark.parametrize('interactions', (
+    {'Zed_long_B': 20., 'long_B/Zed': 20.},
+    {'Zed,long_B': 20., 'long_BZed': 20.},
+    {'unknown,Zed': 20.}, {'Zed,Zed': 20.}, {'unknown': 20.}, {0: 20.},
+    {'Zed_long_B': float('nan')}, {'Zed/long_B': float('inf')},
+))
+def test_invalid_interactions_still_fail_before_writing(tmp_path, interactions):
+    p = params()
+    p['chi_n'] = interactions
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(result(p), default=lambda x: x.tolist()))
+    with pytest.raises(ValueError):
+        TOOL['export_files'](source, tmp_path / 'pscf')
+    assert not (tmp_path / 'pscf').exists()
+
+
+@pytest.mark.parametrize('names,pair,message', (
+    (('A', 'AB', 'B', 'BB'), 'ABB', 'ambiguous'),
+    (('A', 'B_C', 'A_B', 'C'), 'A_B_C', 'ambiguous'),
+    # A unique compact interpretation must not override invalid separator syntax.
+    (('A', 'A_'), 'A_A', 'self interaction'),
+    (('A', 'B_C', 'A_B', 'C', 'A_'), 'A_B_C', 'ambiguous'),
+))
+def test_ambiguous_compact_and_legacy_interactions_are_rejected(names, pair, message):
+    p = params()
+    p['segment_lengths'] = dict.fromkeys(names, 1.)
+    for block, name in zip(p['polymers'][0]['blocks'], names):
+        block['type'] = name
+    p['chi_n'] = {pair: 20.}
+    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
+    with pytest.raises(ValueError, match=message):
+        TOOL['param_text'](prepared, lattice)
+
+
+@pytest.mark.parametrize('boundary', ('Reflecting', 'ABSORBING', None, 1))
+def test_case_insensitive_periodic_check_keeps_rejecting_other_boundaries(boundary):
+    p = params()
+    p['bc'] = [boundary] * 6
+    with pytest.raises(ValueError, match='periodic'):
+        TOOL['prepare_export'](result(p))
+
+
 def test_legacy_keys_and_branched_vertices_are_normalized(tmp_path):
     p = params()
     p['distinct_polymers'] = p.pop('polymers')

@@ -444,7 +444,8 @@ def prepare_export(source, field_source=None, lattice=None):
         raise ValueError("Electrostatics cannot be transferred to this PSCF input.")
     bc = params.get("bc")
     if bc is not None and (not isinstance(bc, (list, tuple, np.ndarray))
-            or len(bc) != 2 * len(params["nx"]) or any(value != "periodic" for value in bc)):
+            or len(bc) != 2 * len(params["nx"])
+            or any(not isinstance(value, str) or value.lower() != "periodic" for value in bc)):
         raise ValueError("Export supports one periodic boundary condition for each cell face only.")
     if params.get("axis_ordering") is not None:
         raise ValueError("Use a saved SCFT result with normalized axes instead of axis_ordering parameters.")
@@ -515,11 +516,22 @@ def param_text(params, lattice):
     lines += [f"    ds {params['ds']:.17g}", "  }", "  Interaction{", "    chi("]
     interactions = {}
     for pair, chi in params["chi_n"].items():
-        if not isinstance(pair, str): raise ValueError("chi_n keys must name two monomers, e.g. 'A,B'.")
-        candidates = [tuple(pair.split(","))] if "," in pair else [(a, b) for i, a in enumerate(names) for b in names[i+1:] if pair in (a+b, b+a)]
-        if len(candidates) != 1: raise ValueError(f"Ambiguous interaction key: {pair}. Use 'type1,type2'.")
-        a, b = [name.strip() for name in candidates[0]] if len(candidates[0]) == 2 else (None, None)
-        if a not in indices or b not in indices or a == b: raise ValueError(f"Invalid interaction: {pair}.")
+        try:
+            normalized = _VALIDATION["parse_chi_n"]({pair: chi}, params["segment_lengths"])
+            a, b = next(iter(normalized)).split(",")
+        except _VALIDATION["ValidationError"] as exc:
+            # Older converter inputs also accepted concatenated names (AB).
+            # A recognized separator syntax must retain its validation error,
+            # including self-interactions and ambiguous names.
+            if (not isinstance(pair, str) or "," in pair
+                    or any(pair == a + separator + b for a in names for b in names
+                           for separator in (" ", "_", "/"))):
+                raise ValueError(str(exc)) from None
+            candidates = [(a, b) for i, a in enumerate(names) for b in names[i+1:]
+                          if pair in (a+b, b+a)]
+            if len(candidates) != 1:
+                raise ValueError(str(exc)) from None
+            a, b = candidates[0]
         key = tuple(sorted((indices[a], indices[b])))
         if key in interactions: raise ValueError(f"Repeated interaction: {pair}.")
         interactions[key] = chi

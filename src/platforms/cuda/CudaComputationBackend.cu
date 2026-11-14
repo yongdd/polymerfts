@@ -32,6 +32,70 @@ CuDeviceData<T> to_device_scalar(T value)
         return stdToCuDoubleComplex(value);
 }
 
+template <typename T>
+DensityNormalization<CuDeviceData<T>> to_device_normalization(const DensityNormalization<T>& normalization)
+{
+    return {normalization.factor, to_device_scalar(normalization.partition),
+            to_device_scalar(normalization.multiplier), normalization.multiplier_available};
+}
+
+// Fuse physical normalization with the density, restoring the exponent only
+// after its raw value and partition have both been included. In the ordinary
+// range use the same arithmetic as ker_lin_comb, including its accumulation.
+template <typename TD, bool Add>
+__global__ void ker_normalize_density(
+    TD* out, const TD* density, DensityNormalization<TD> normalization, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if constexpr (std::is_same_v<TD, double>)
+        {
+            if (normalization.factor.mantissa == 0.0)
+            {
+                if constexpr (!Add)
+                    out[i] = 0.0;
+                continue;
+            }
+            const double raw_density = density[i];
+            const double previous = Add ? out[i] : 0.0 * raw_density;
+            if (normalization.multiplier_available && scaled_product::ordinary(raw_density))
+                out[i] = normalization.multiplier * raw_density + previous;
+            else
+                out[i] = scaled_product::divide(raw_density, 1.0, normalization.partition,
+                                                normalization.factor) + previous;
+        }
+        else
+        {
+            if (normalization.factor.mantissa == 0.0)
+            {
+                if constexpr (!Add)
+                    out[i] = make_cuDoubleComplex(0.0, 0.0);
+                continue;
+            }
+            const cuDoubleComplex raw_density = density[i];
+            const cuDoubleComplex previous = Add ? out[i]
+                : make_cuDoubleComplex(0.0 * raw_density.x, 0.0 * raw_density.y);
+            cuDoubleComplex result;
+            if (normalization.multiplier_available && scaled_product::ordinary(raw_density.x)
+                && scaled_product::ordinary(raw_density.y))
+            {
+                result.x = normalization.multiplier.x * raw_density.x
+                         - normalization.multiplier.y * raw_density.y + previous.x;
+                result.y = normalization.multiplier.x * raw_density.y
+                         + normalization.multiplier.y * raw_density.x + previous.y;
+            }
+            else
+            {
+                result = scaled_product::divide(raw_density, make_cuDoubleComplex(1.0, 0.0),
+                                                 normalization.partition, normalization.factor);
+                result.x += previous.x;
+                result.y += previous.y;
+            }
+            out[i] = result;
+        }
+    }
+}
+
 /// Segment pairs added to a concentration in one launch (passed as kernel parameters)
 constexpr int MAX_PAIRS_PER_LAUNCH = 32;
 
@@ -784,12 +848,16 @@ T CudaComputationBackend<T>::solvent_concentration(
         return partition;
     }
 
-    CuDeviceData<T> norm;
-    if constexpr (std::is_same_v<T, double>)
-        norm = volume_fraction / partition;
-    else
-        norm = cuCdiv(make_cuDoubleComplex(volume_fraction, 0.0), stdToCuDoubleComplex(partition));
-    ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_phi, norm, d_phi, 0.0, d_phi, n_basis);
+    const auto normalization = make_density_normalization(volume_fraction, 1.0, 1.0, 1.0, partition);
+    auto norm = to_device_normalization(normalization);
+    if constexpr (!std::is_same_v<T, double>)
+    {
+        // Preserve the existing CUDA solvent coefficient in its safe range.
+        if (norm.multiplier_available)
+            norm.multiplier = cuCdiv(make_cuDoubleComplex(volume_fraction, 0.0), stdToCuDoubleComplex(partition));
+    }
+    ker_normalize_density<CuDeviceData<T>, false><<<grid_blocks(n_basis, N_THREADS), N_THREADS>>>(
+        d_phi, d_phi, norm, n_basis);
     CUDA_CHECK_LAUNCH();
 
     // No solvent inside impenetrable regions (the mask is in the field basis)
@@ -803,15 +871,16 @@ T CudaComputationBackend<T>::solvent_concentration(
 
 template <typename T>
 void CudaComputationBackend<T>::sum_to_host(
-    T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights)
+    T* out, const std::vector<BackendArray<T>*>& arrays,
+    const std::vector<DensityNormalization<T>>& weights)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
     CUDA_CHECK(cudaMemset(d_sum, 0, sizeof(T)*n_basis));
     for (size_t a = 0; a < arrays.size(); a++)
     {
-        ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_sum, to_device_scalar(weights[a]), raw(arrays[a]), 1.0, d_sum, n_basis);
+        ker_normalize_density<CuDeviceData<T>, true><<<grid_blocks(n_basis, N_THREADS), N_THREADS>>>(
+            d_sum, raw(arrays[a]), to_device_normalization(weights[a]), n_basis);
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK(cudaMemcpy(out, d_sum, sizeof(T)*n_basis, cudaMemcpyDeviceToHost));

@@ -169,15 +169,15 @@ double ComputationCommon<T>::contour_step(const std::string& key) const
 }
 
 template <typename T>
-T ComputationCommon<T>::concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const
+DensityNormalization<T> ComputationCommon<T>::concentration_norm(
+    const std::tuple<int, std::string, std::string>& block_key, double copies) const
 {
     const int p = std::get<0>(block_key);
     const auto& block = this->propagator_computation_optimizer->get_computation_block(block_key);
     Polymer& pc = this->molecules->get_polymer(p);
-    if (pc.get_volume_fraction() == 0.0)
-        return T(0.0);
-    return (contour_step(std::get<2>(block_key))*pc.get_volume_fraction()/pc.get_alpha()*block.n_repeated)
-           /this->single_polymer_partitions[p];
+    return make_density_normalization(contour_step(std::get<2>(block_key)),
+        pc.get_volume_fraction(), copies < 0.0 ? block.n_repeated : copies,
+        pc.get_alpha(), this->single_polymer_partitions[p]);
 }
 
 template <typename T>
@@ -364,15 +364,15 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
         // A name that is not a monomer type (a typo) is an error, not a zero field
         validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
         std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
+        std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
             if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
-                const T norm = concentration_norm(key);
-                if (norm == T(0.0))
+                const auto norm = concentration_norm(key);
+                if (norm.factor.mantissa == 0.0)
                     continue;
                 arrays.push_back(phi_b);
                 weights.push_back(norm);
@@ -383,7 +383,7 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
             if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
             {
                 arrays.push_back(phi_solvent[s]);
-                weights.push_back(1.0);
+                weights.push_back(make_density_normalization(1.0, 1.0, 1.0, 1.0, T(1.0)));
             }
         }
         backend->sum_to_host(phi, arrays, weights);
@@ -408,15 +408,15 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
         std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
+        std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
             if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
-                const T norm = concentration_norm(key);
-                if (norm == T(0.0))
+                const auto norm = concentration_norm(key);
+                if (norm.factor.mantissa == 0.0)
                     continue;
                 arrays.push_back(phi_b);
                 weights.push_back(norm);
@@ -453,7 +453,7 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
         }
 
         std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
+        std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
@@ -462,7 +462,8 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
             {
                 arrays.push_back(phi_b);
                 const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-                weights.push_back(fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
+                weights.push_back(make_density_normalization(fugacity,
+                    contour_step(std::get<2>(key)), block.n_repeated, 1.0, T(1.0)));
             }
         }
         backend->sum_to_host(phi, arrays, weights);
@@ -501,23 +502,18 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
             auto block_it = phi_block.find(block_key);
             if (block_it == phi_block.end())
                 throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
-            const T norm = concentration_norm(block_key);
-            if (norm == T(0.0))
+            // Identical blocks share one raw entry. Normalize directly with
+            // this original block's copies, without first forming the total
+            // density of every copy (which need not be representable).
+            const auto norm = concentration_norm(block_key, blocks[b].n_copies);
+            if (norm.factor.mantissa == 0.0)
             {
                 std::fill_n(&phi[b*N], N, T(0.0));
                 continue;
             }
             backend->copy_to_host(&phi[b*N], block_it->second);
             for (int i = 0; i < N; i++)
-                phi[b*N + i] *= norm;
-
-            // Identical blocks (e.g. the equal arms of a star) share one entry, which
-            // holds the copies of all of them; each block gets the share of its copies
-            const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
-            const double n_copies = blocks[b].n_copies;
-            if (n_repeated != n_copies)
-                for (int i = 0; i < N; i++)
-                    phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
+                phi[b*N + i] = apply_density_normalization(phi[b*N + i], norm);
         }
     }
     catch (std::exception& exc)
