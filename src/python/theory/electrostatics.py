@@ -83,8 +83,13 @@ def _point_ion_density(ion, potential, n_segments):
         density = np.exp(ion["chemical_potential"] - potential) / n_segments
         # Only the diagnostic partition may overflow or underflow here; do not
         # silence a genuinely non-finite density from the combined exponent.
+        # Remove the smallest real potential first so that only the real scalar
+        # exp(-offset) can overflow: complex exp of an overflowing argument can
+        # return an infinite or NaN imaginary part (C library dependent, as on
+        # Windows), and the complex mean then makes the real part NaN as well.
         with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-            partition = np.mean(np.exp(-potential))
+            offset = np.min(np.real(potential))
+            partition = np.exp(-offset) * np.mean(np.exp(-(potential - offset)))
         return density, partition
     weight = np.exp(-potential)
     partition = np.mean(weight)
