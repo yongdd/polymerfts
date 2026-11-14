@@ -79,9 +79,14 @@ protected:
     std::unique_ptr<Scheduler> sc;                   ///< Order in which the propagators are computed
     int n_streams;                   ///< Number of propagators computed concurrently
 
-    /// Unnormalized segment-product integral of each block; getters apply the
-    /// canonical or fugacity normalization, including when volume fraction is zero.
+    /// Mantissas of each block's segment-product integral (ordinary doubles
+    /// when its exponent is zero); getters apply the canonical or fugacity
+    /// normalization, including when volume fraction is zero.
     std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*> phi_block;
+
+    /// Binary exponents for the block integrals, independently per real/imag
+    /// component. Zero keeps the usual raw-double accumulator representation.
+    std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*> phi_block_exponent;
 
     /// Indexed access in map order. The block map is fixed after construction.
     std::vector<typename decltype(phi_block)::const_iterator> phi_block_iterators;

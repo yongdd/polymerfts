@@ -267,6 +267,8 @@ void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
 
             // A block without segments has no concentration
             this->backend->set_zero(0, phi);
+            BackendArray<T>* exponent = this->phi_block_exponent.at(key);
+            this->backend->set_zero(0, exponent);
             if (N_RIGHT == 0)
                 continue;
 
@@ -275,7 +277,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
                 [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
                     this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}},
-                        this->backend->boltzmann_factor(block.monomer_type));
+                        this->backend->boltzmann_factor(block.monomer_type), exponent);
                 });
             // Getters apply ensemble normalization to the already corrected sum.
         }

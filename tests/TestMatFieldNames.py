@@ -48,8 +48,11 @@ def check_encoding(root):
     array = np.arange(12.0).reshape(3, 4)
     cells = np.empty(2, dtype=object)
     cells[0], cells[1] = {"_left": 10}, {"_right": 11}
+    unicode_key = "concentration_Na⁺_real"
+    top_collision = "field_" + hashlib.sha256(unicode_key.encode()).hexdigest()[:24]
     original = {"metadata": values, "array": array, "cells": cells,
-                "records": [{"_record": 12}, {"_record": 13}], "w_" + "L" * 70: array}
+                "records": [{"_record": 12}, {"_record": 13}], "w_" + "L" * 70: array,
+                unicode_key: array, "concentration_Cl⁻_imag": -array, top_collision: array + 1}
     for long_fields in (False, True):
         path = root / f"encoding_{long_fields}.mat"
         with warnings.catch_warnings():
@@ -61,12 +64,19 @@ def check_encoding(root):
         assert all(len(key) <= (63 if long_fields else 31) for key in raw_fields)
         assert ("M" * 40 in raw_fields) == long_fields
         assert raw_fields["A"] == 1 and raw_fields["A,B"] == 8
+        assert MARKER in raw and unicode_key not in raw
+        assert all(key.isascii() for key in raw)
+        np.testing.assert_array_equal(raw[top_collision], array + 1)
         restored = decode_mat_fields(raw)
         assert restored["metadata"] == values
         assert list(restored["cells"]) == [{"_left": 10}, {"_right": 11}]
         assert list(restored["records"]) == [{"_record": 12}, {"_record": 13}]
         np.testing.assert_array_equal(restored["array"], array)
         np.testing.assert_array_equal(restored["w_" + "L" * 70], array)
+        np.testing.assert_array_equal(restored[unicode_key], array)
+        np.testing.assert_array_equal(restored["concentration_Cl⁻_imag"], -array)
+        unsqueezed = decode_mat_fields(loadmat(path))
+        np.testing.assert_array_equal(unsqueezed[unicode_key], array)
         assert restored["array"] is raw["array"], "Decoder copied an ordinary numeric field"
     assert original["metadata"] == values and original["cells"][0] == {"_left": 10}
     np.testing.assert_array_equal(original["array"], np.arange(12.0).reshape(3, 4))
@@ -239,6 +249,42 @@ def check_fts(root, platform, name, cls):
         compare_files(paths["full"], paths["continued"], "wtmd_final.mat", ("I0", "I1_", "dH_psi_", "u", "up"))
 
 
+def check_unicode_ions(root, platform):
+    """Unicode ion concentrations survive statistics output and pending-sample restarts."""
+    paths = {label: root / label for label in ("full", "partial", "continued")}
+    sims = {}
+    for label, steps, seed in (("full", 4, 17), ("partial", 2, 17), ("continued", 4, 99)):
+        params = fts_parameters(paths[label], platform, "A", CLFTS, steps)
+        params.update(nx=[4], lx=[2.0], ds=0.5, chain_model="discrete",
+                      smearing={"type": "gaussian", "a_int": 0.1},
+                      electrostatics={"charges": {"A": 0.0, "B": 0.0}, "coupling": 5.0,
+                                     "counterion": None, "ions": {
+                                         "Na⁺": {"valence": 1.0, "concentration": 0.01, "smearing_length": 0.1},
+                                         "Cl⁻": {"valence": -1.0, "concentration": 0.01, "smearing_length": 0.1}}})
+        params["recording"]["concentrations"] = True
+        sims[label] = quiet(CLFTS, params, random_seed=seed)
+        sims[label].draw_architectures = False
+    initial = dict(zip(("A", "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 4))))
+    for label in ("full", "partial"):
+        assert quiet(sims[label].run, initial)["status"] == "completed"
+        assert quiet(sims[label].prop_solver.check_total_partition)
+    checkpoint = paths["partial"] / "fields_000002.mat"
+    assert read_mat(checkpoint)["record_sample_count"] == 2
+    assert quiet(sims["continued"].continue_run, checkpoint)["status"] == "completed"
+    assert sims["full"].electrostatics.random_bg.state == sims["continued"].electrostatics.random_bg.state
+    filename = "structure_function_000003.mat"
+    full, continued = (read_mat(paths[label] / filename) for label in ("full", "continued"))
+    for ion in ("Na⁺", "Cl⁻"):
+        for suffix in ("real", "imag"):
+            key = f"concentration_{ion}_{suffix}"
+            np.testing.assert_array_equal(continued[key], full[key])
+        np.testing.assert_allclose(np.mean(full[f"concentration_{ion}_real"]), 0.01, rtol=0, atol=1e-14)
+    assert MARKER in loadmat(paths["full"] / filename, squeeze_me=True)
+    for step in (3, 4):
+        compare_files(paths["full"], paths["continued"], f"fields_{step:06d}.mat",
+                      ("w_", "phi_", "record_", "psi_", "normal_noise", "rng_state"))
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts_mat_fields_") as directory:
         root = Path(directory)
@@ -249,6 +295,7 @@ def main():
                 check_scft(output / "scft", platform, name)
                 for cls in (LFTS, CLFTS):
                     check_fts(output / cls.__name__, platform, name, cls)
+            check_unicode_ions(root / platform / "unicode_ions", platform)
             print(f"[PASS] {platform}: MAT names, SCFT roundtrips, LFTS/CLFTS/WTMD restarts")
     return int(cuda_part_missing())
 

@@ -215,9 +215,12 @@ public:
     /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i / divisor.
     /// Discrete chains remove the shared bead in each term, before a product
     /// can underflow or overflow; continuous chains omit divisor.
+    /// When exponent is supplied, (phi, exponent) keeps each real/imaginary
+    /// component in scaled form until sum_to_host applies its normalization.
     virtual void add_segment_products(int stream, BackendArray<T>* phi,
                                       const std::vector<SegmentPair<T>>& pairs,
-                                      BackendArray<T>* divisor = nullptr) = 0;
+                                      BackendArray<T>* divisor = nullptr,
+                                      BackendArray<T>* exponent = nullptr) = 0;
 
     /**
      * @brief Normalize a block concentration: phi = norm * phi / divisor.
@@ -249,8 +252,10 @@ public:
                                     double ds, double volume_fraction) = 0;
 
     /// Sum ensemble-normalized densities into a host array of get_n_basis() elements.
+    /// Optional exponents correspond to the arrays; nullptr denotes an unscaled field.
     virtual void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
-                             const std::vector<DensityNormalization<T>>& weights) = 0;
+                             const std::vector<DensityNormalization<T>>& weights,
+                             const std::vector<BackendArray<T>*>& exponents = {}) = 0;
 };
 
 #endif

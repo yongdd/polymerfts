@@ -859,6 +859,7 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
         // keep_alive: the C++ objects hold raw pointers to their arguments, so the
         // Python wrappers of those arguments must outlive the created object
         .def("create_propagator_computation_optimizer", &AbstractFactory<T>::create_propagator_computation_optimizer,
+            py::arg("molecules").none(false), py::arg("aggregate_propagator_computation"),
             py::keep_alive<0, 2>())
         .def("create_propagator_computation", &AbstractFactory<T>::create_propagator_computation,
             py::arg("cb"), py::arg("molecules"), py::arg("propagator_computation_optimizer"),

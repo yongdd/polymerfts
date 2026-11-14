@@ -209,6 +209,8 @@ void ComputationContinuous<T>::compute_concentrations()
 
                 // A block without segments has no concentration
                 this->backend->set_zero(STREAM, it->second);
+                BackendArray<T>* exponent = this->phi_block_exponent.at(it->first);
+                this->backend->set_zero(STREAM, exponent);
                 if (N_RIGHT == 0)
                     return;
 
@@ -217,7 +219,7 @@ void ComputationContinuous<T>::compute_concentrations()
                 std::vector<SegmentPair<T>> pairs;
                 for (int n = 0; n <= N_RIGHT; n++)
                     pairs.push_back({propagator.at(key_left)[N_LEFT-n], propagator.at(key_right)[n], simpson[n]});
-                this->backend->add_segment_products(STREAM, it->second, pairs);
+                this->backend->add_segment_products(STREAM, it->second, pairs, nullptr, exponent);
 
                 // Getters normalize the integral for the requested ensemble.
             });

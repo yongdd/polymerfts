@@ -425,6 +425,138 @@ def test_mutations_through_python_aliases_are_rejected(tmp_path, code):
         TOOL['read_input'](source)
 
 
+@pytest.mark.parametrize('argument, setup', (
+    ('params', ''),
+    ('params["chi_n"]', ''),
+    ('alias', 'alias = params["chi_n"]\n'),
+    ('wrapper', 'wrapper = {"nested": params}\n'),
+    ('alias', 'alias = list(params["polymers"])\n'),
+    ('alias', 'alias = params["polymers"][:]\n'),
+    ('alias', 'alias = dict(config=params)\n'),
+    ('np.min([params])', 'import numpy as np\n'),
+    ('config=params', ''),
+    ('**params', ''),
+))
+def test_helper_arguments_cannot_hide_parameter_mutations(tmp_path, argument, setup):
+    marker = tmp_path / 'executed'
+    source = tmp_path / 'input.py'
+    source.write_text('from pathlib import Path\nparams = ' + repr(params()) + '\n' + setup
+                      + f'def helper(*args, **kwargs):\n    Path({str(marker)!r}).touch()\n'
+                      + f'helper({argument})\n', encoding='utf-8')
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['export_files'](source, tmp_path / 'pscf', fields)
+    assert not marker.exists() and not (tmp_path / 'pscf').exists()
+
+
+@pytest.mark.parametrize('imports, constructor', (
+    ('from polymerfts import scft', 'scft.SCFT'),
+    ('from polymerfts import SCFT as MeanField', 'MeanField'),
+    ('import polymerfts as pfts', 'pfts.SCFT'),
+))
+def test_known_scft_constructors_and_initial_field_shapes_are_safe(tmp_path, imports, constructor):
+    source = tmp_path / 'input.py'
+    source.write_text(imports + '\nimport numpy as np\nparams = ' + repr(params())
+                      + '\nw = np.zeros(list(params["nx"]))\n'
+                      + 'n = np.prod(params["nx"])\nprint(params)\n'
+                      + 'noise = np.random.normal(0, 1, np.prod(params["nx"]))\n'
+                      + 'noise = np.random.normal(0, 1, size=params["nx"])\n'
+                      + 'grid = np.asarray(params["nx"])\n'
+                      + 'loaded = np.asarray(initial["w_Zed"]).reshape(params["nx"])\n'
+                      + f'calculation = {constructor}(params=params)\n'
+                      + 'calculation.run(initial_fields={"Zed": w, "long_B": w})\n', encoding='utf-8')
+    assert TOOL['read_input'](source) == params()
+    assert TOOL['read_input'](ROOT / 'examples/block_copolymer/scft/Gyroid.py')['chi_n'] == {'A,B': 20}
+
+
+@pytest.mark.parametrize('binding, call', (
+    ('from polymerfts import SCFT\nSCFT = helper', 'SCFT'),
+    ('from polymerfts import scft\nscft.SCFT = helper', 'scft.SCFT'),
+))
+def test_shadowed_constructor_is_an_unsupported_helper(tmp_path, binding, call):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params())
+                      + '\ndef helper(config):\n    config["ds"] = .02\n' + binding + '\n'
+                      + call + '(params)\n')
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    np = 0\n    n = 1',
+    'class Helper:\n    np = 0\n    n = 1',
+    'def helper(np):\n    np = 0\n    n = 1',
+    'class Helper:\n    def method(self):\n        np = 0\n        n = 1',
+))
+def test_local_bindings_preserve_module_imports_and_constants(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text('import numpy as np\nn = 4\n' + definition
+                      + '\nparams = {"nx": [n]}\nw = np.zeros(params["nx"])\n')
+    assert TOOL['read_input'](source) == {'nx': [4]}
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    global SCFT\n    SCFT = tweak',
+    'class Helper:\n    global SCFT\n    SCFT = tweak',
+))
+def test_explicit_global_writes_still_invalidate_constructor_imports(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text('from polymerfts import SCFT\ndef tweak(p):\n    p["ds"] = .2\n'
+                      + definition + '\nparams = {"ds": .1}\nSCFT(params)\n')
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('body', (
+    'if True:\n    SCFT = tweak\n    SCFT(params)',
+    'for i in [0]:\n    SCFT = tweak\n    SCFT(params)',
+    'if True:\n    from other_module import SCFT\n    SCFT(params)',
+))
+def test_compound_statement_rebinding_is_checked_before_its_calls(tmp_path, body):
+    source = tmp_path / 'input.py'
+    source.write_text('from polymerfts import SCFT\ndef tweak(p):\n    p["ds"] = .2\n'
+                      + 'params = {"ds": .1}\n' + body + '\n')
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    SCFT = tweak\n    SCFT(params)\nhelper()',
+    'class Helper:\n    SCFT = tweak\n    SCFT(params)',
+    'def helper(SCFT=tweak):\n    SCFT(params)\nhelper()',
+    'def helper():\n    SCFT = tweak\n    def inner():\n        SCFT(params)\n    inner()\nhelper()',
+    'def helper():\n    global SCFT\n    SCFT = tweak\n    SCFT(params)\nhelper()',
+))
+def test_local_constructor_aliases_cannot_escape_container_checks(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text('from polymerfts import SCFT\ndef tweak(p):\n    p["ds"] = .2\n'
+                      + 'params = {"ds": .1}\n' + definition + '\n')
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    def inner():\n        SCFT = 0\n    return SCFT(params)',
+    'class Helper:\n    SCFT = 0\n    def method(self):\n        return SCFT(params)',
+))
+def test_nested_scope_locals_do_not_shadow_a_global_constructor_call(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text('from polymerfts import SCFT\nparams = ' + repr(params()) + '\n' + definition + '\n')
+    assert TOOL['read_input'](source) == params()
+
+
+@pytest.mark.parametrize('expression', (
+    'make_array().reshape(params["nx"])',
+    'def helper():\n    np = other_library\n    np.asarray(initial).reshape(params["nx"])',
+))
+def test_arbitrary_reshape_methods_cannot_receive_parameter_containers(tmp_path, expression):
+    source = tmp_path / 'input.py'
+    source.write_text('import numpy as np\nparams = {"nx": [4]}\n' + expression + '\n')
+    with pytest.raises(ValueError, match='unsupported calls'):
+        TOOL['read_input'](source)
+
+
 @pytest.mark.parametrize('code', ('lengths.append(8)', 'lengths[0] = 8', 'del lengths[0]'))
 def test_mutated_helper_containers_are_rejected(tmp_path, code):
     source = tmp_path / 'input.py'

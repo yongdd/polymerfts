@@ -85,6 +85,13 @@ from polymerfts import PlatformSelector
 for field_type in ("real", "complex"):
     for reduced in (False, True):
         factory = PlatformSelector.create_factory(sys.argv[1], reduced, field_type)
+        for aggregate in (False, True):
+            try:
+                factory.create_propagator_computation_optimizer(None, aggregate)
+            except (TypeError, RuntimeError):
+                pass
+            else:
+                raise AssertionError("A null optimizer molecules argument was accepted")
         box = factory.create_computation_box([4], [1.0])
         for model, method in (("continuous", "rqm4"), ("discrete", "ps")):
             molecules = factory.create_molecules_information(model, 0.1, {"A": 1.0})

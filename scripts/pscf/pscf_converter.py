@@ -296,7 +296,55 @@ def write_rgrid(path, nx, lattice, cell, fields):
 def read_python_params(path):
     """Read simple module-level parameter expressions, never execute user Python."""
     symbols, params = {}, None
+    imports, rebound = {}, set()
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    def callable_name(node):
+        if isinstance(node, ast.Name):
+            return imports.get(node.id, node.id if node.id not in rebound else "")
+        if isinstance(node, ast.Attribute):
+            owner = callable_name(node.value)
+            return owner + "." + node.attr if owner else ""
+        return ""
+
+    # These calls consume literal configuration values without modifying them.
+    # Resolve imported names, rather than trusting an arbitrary function named SCFT.
+    readers = {"polymerfts.SCFT", "polymerfts.scft.SCFT", "print", "len", "sum", "min", "max",
+               "range", "list", "tuple", "dict",
+               *("numpy." + name for name in ("zeros", "ones", "empty", "full", "array", "asarray", "prod", "sum", "mean", "min", "max")),
+               *("numpy.random." + name for name in ("normal", "uniform", "random"))}
+    numeric_readers = {"sum", "min", "max", *("numpy." + name for name in ("array", "asarray", "prod", "sum", "mean", "min", "max"))}
+
+    def numeric(value):
+        return (isinstance(value, (int, float, complex))
+                or isinstance(value, (list, tuple)) and all(numeric(item) for item in value))
+
+    def independent_result(node):
+        name = callable_name(node.func)
+        if name in {"polymerfts.SCFT", "polymerfts.scft.SCFT", "print", "len", "range",
+                    "numpy.zeros", "numpy.ones", "numpy.empty", "numpy.random.normal",
+                    "numpy.random.uniform", "numpy.random.random"}:
+            return True
+        if name in numeric_readers:
+            try:
+                return bool(node.args) and numeric(evaluate(node.args[0]))
+            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                pass
+        return False
+
+    def references_container(node, containers):
+        # A random-field initializer often receives np.prod(params["nx"]). Its
+        # scalar result cannot give the initializer access to the original list.
+        if isinstance(node, ast.Call) and independent_result(node):
+            return False
+        if isinstance(node, ast.Subscript):
+            try:
+                if not isinstance(evaluate(node), (dict, list, tuple)):
+                    return False
+            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                pass
+        return ((isinstance(node, ast.Name) and node.id in containers)
+                or any(references_container(child, containers) for child in ast.iter_child_nodes(node)))
 
     def evaluate(node):
         if isinstance(node, ast.Name):
@@ -308,10 +356,24 @@ def read_python_params(path):
             return [evaluate(v) for v in node.elts]
         if isinstance(node, ast.Dict):
             return {evaluate(k): evaluate(v) for k, v in zip(node.keys, node.values)}
+        if isinstance(node, ast.Slice):
+            return slice(*(None if value is None else evaluate(value) for value in (node.lower, node.upper, node.step)))
         if isinstance(node, ast.Subscript):
             container, index = evaluate(node.value), evaluate(node.slice)
-            if isinstance(container, (dict, list, tuple)) and isinstance(index, (str, int)):
+            if isinstance(container, (dict, list, tuple)) and isinstance(index, (str, int, slice)):
                 return container[index]
+        if isinstance(node, ast.Call):
+            name = callable_name(node.func)
+            constructor = {"list": list, "tuple": tuple, "dict": dict}.get(name)
+            if constructor is not None and len(node.args) <= 1 and (not node.keywords or name == "dict"):
+                # Shallow copies must retain their nested aliases in symbols.
+                value = constructor(*(evaluate(arg) for arg in node.args))
+                for keyword in node.keywords:
+                    if keyword.arg is None:
+                        value.update(evaluate(keyword.value))
+                    else:
+                        value[keyword.arg] = evaluate(keyword.value)
+                return value
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = evaluate(node.operand)
             return value if isinstance(node.op, ast.UAdd) else -value
@@ -326,8 +388,149 @@ def read_python_params(path):
             if isinstance(node.op, ast.Pow) and abs(b) <= 100: return a ** b
         raise ValueError("Use literal params with simple arithmetic, or a saved SCFT result/configuration file.")
 
+    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+    def scope_nodes(node):
+        yield node
+        if not isinstance(node, definitions):
+            for child in ast.iter_child_nodes(node):
+                yield from scope_nodes(child)
+
+    def bound_names(node):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return {node.id}
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return {node.name}
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return {alias.asname or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name)
+                    for alias in node.names}
+        return set()
+
+    def scope_info(node):
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        nodes = [part for item in body for part in scope_nodes(item)]
+        declared = {name for part in nodes if isinstance(part, ast.Global) for name in part.names}
+        local = set().union(*(bound_names(part) for part in nodes))
+        if not isinstance(node, ast.ClassDef):
+            local.update(arg.arg for arg in ast.walk(node.args) if isinstance(arg, ast.arg))
+        return body, local, declared
+
+    def scoped_calls(node, hidden=frozenset(), closure=frozenset()):
+        """Calls with names shadowed in their lexical scope; never execute their bodies."""
+        if isinstance(node, definitions):
+            body, local, declared = scope_info(node)
+            for child in ast.iter_child_nodes(node):
+                if child not in body:
+                    yield from scoped_calls(child, hidden, closure)
+            inner = (closure - declared) | local
+            # Class bindings are visible in the class body, but are not closures
+            # of its methods. Functions retain their enclosing function bindings.
+            child_closure = closure if isinstance(node, ast.ClassDef) else inner
+            for item in body:
+                yield from scoped_calls(item, inner, child_closure)
+            return
+        if isinstance(node, ast.Call):
+            yield node, hidden
+        for child in ast.iter_child_nodes(node):
+            yield from scoped_calls(child, hidden, closure)
+
+    def module_bindings(statement):
+        """Names changed in the module namespace, including explicit global writes.
+
+        A function or class has its own local bindings. Inspect its body for
+        declared globals and mutations of imported objects, without treating a
+        local variable called np or SCFT as a change to the module import.
+        """
+
+        assigned = set()
+
+        def visit(node, hidden):
+            assigned.update(bound_names(node) - hidden)
+            if isinstance(node, definitions):
+                body, local, declared = scope_info(node)
+                inner_hidden = (hidden | local) - declared
+                # Defaults, decorators and class bases are evaluated in the containing scope.
+                for child in ast.iter_child_nodes(node):
+                    if child not in body:
+                        visit(child, hidden)
+                for item in body:
+                    visit(item, inner_hidden)
+                return
+            if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                owner = node.value
+                while isinstance(owner, (ast.Attribute, ast.Subscript)):
+                    owner = owner.value
+                if isinstance(owner, ast.Name) and owner.id not in hidden and owner.id in imports:
+                    assigned.add(owner.id)
+            for child in ast.iter_child_nodes(node):
+                visit(child, hidden)
+
+        visit(statement, set())
+        return assigned
+
     for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                imports[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+        elif isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                imports[alias.asname or alias.name] = (statement.module or "") + "." + alias.name
+        assigned = module_bindings(statement)
+        # We do not execute control flow. Any binding it might change must be
+        # untrusted before looking at calls later in that same compound statement.
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Import, ast.ImportFrom,
+                                      ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for name in assigned:
+                imports.pop(name, None)
+            rebound.update(assigned)
         containers = {name for name, value in symbols.items() if isinstance(value, (dict, list, tuple))}
+        # Check escapes before unsupported assignments discard their old symbols.
+        # Passing a parameter container to arbitrary Python can mutate any nested
+        # value; observing its AST cannot establish the configuration afterwards.
+        for node, hidden in scoped_calls(statement):
+            owner = node.func
+            while isinstance(owner, ast.Attribute):
+                owner = owner.value
+            name = "" if isinstance(owner, ast.Name) and owner.id in hidden else callable_name(node.func)
+            safe = name in readers
+            if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
+                    and isinstance(node.func.value, ast.Call)):
+                # Generated SCFT scripts reshape a loaded NumPy field to params["nx"].
+                # Trust this shape-only operation on a known NumPy constructor,
+                # not an arbitrary object's method with the same name.
+                constructor = node.func.value.func
+                root = constructor
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                safe = (not (isinstance(root, ast.Name) and root.id in hidden)
+                        and callable_name(constructor) in {"numpy.asarray", "numpy.array", "numpy.zeros",
+                                                          "numpy.ones", "numpy.empty", "numpy.full"})
+            if name in numeric_readers:
+                safe = independent_result(node)
+            elif name in ("list", "tuple", "dict"):
+                try:
+                    evaluate(node)
+                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                    safe = False
+            elif name == "numpy.full":
+                # Object fill values can retain a reference to a parameter dict.
+                fill = node.args[1] if len(node.args) > 1 else next(
+                    (kw.value for kw in node.keywords if kw.arg == "fill_value"), None)
+                safe = fill is None or not references_container(fill, containers)
+            if safe:
+                continue
+            for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
+                if isinstance(argument, ast.Starred):
+                    argument = argument.value
+                try:
+                    value = evaluate(argument)
+                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                    escaped = references_container(argument, containers)
+                else:
+                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers)
+                if escaped:
+                    raise ValueError("Runtime params container arguments to unsupported calls may cause mutations; "
+                                     "use a saved SCFT result or JSON/YAML parameters.")
         names = []
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
@@ -350,7 +553,8 @@ def read_python_params(path):
         # Parameter mutations are ambiguous without executing the script.
         containers.update(name for name, value in symbols.items() if isinstance(value, (dict, list, tuple)))
         for node in ast.walk(statement):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.id not in names:
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+                    and node.id not in names and node.id in assigned):
                 if node.id == "params":
                     raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
                 if isinstance(node.ctx, ast.Store) and node.id in containers:
@@ -367,6 +571,12 @@ def read_python_params(path):
                 while isinstance(target, ast.Subscript): target = target.value
                 if isinstance(target, ast.Name) and (target.id == "params" or target.id in containers):
                     raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
+        # An imported safe reader can be shadowed by a later assignment or definition.
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            continue  # The direct import above establishes its new binding.
+        for name in assigned:
+            imports.pop(name, None)
+        rebound.update(assigned)
     if not isinstance(params, dict):
         raise ValueError("The Python file needs a module-level params dictionary.")
     return params

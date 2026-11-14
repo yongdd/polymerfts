@@ -25,7 +25,11 @@ SET(BASIC_TESTS
     TestComplexDivisionRange
     TestDiscreteProductRange
     TestConcentrationNormalizationRange
+    TestConcentrationAccumulationRange
+    TestCanonicalIonRange
+    TestThinObliqueCell
     TestDensityNormalization
+    TestDensityAccumulator
     TestAuxFieldCheckpointNames
     TestLftsIdealLimit
     TestRandomCopolymerFractions
@@ -39,6 +43,7 @@ SET(BASIC_TESTS
     TestComputationSafety
     TestComputationState
     TestInputChecks
+    TestPropagatorParserSafety
     TestMoleculesValidation
     TestPartitionGuard
     TestPartitionIntegrand
@@ -78,6 +83,7 @@ SET(BASIC_TESTS
     TestCpuTridiagonal
     # Fourier multipliers of whole fields on every platform (Python)
     TestFourierTransform
+    TestFourierRange
 
     # CUDA FFT & utilities
     TestCudaFFT
@@ -177,7 +183,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestCnAdiLongLines TestCrysFFTCellChange
-    TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
 
 # Generate files named "Test*.cpp"

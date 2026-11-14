@@ -1,7 +1,7 @@
 #ifndef POLYMERFTS_DENSITY_NORMALIZATION_H_
 #define POLYMERFTS_DENSITY_NORMALIZATION_H_
 
-#include "ScaledProduct.h"
+#include "DensityAccumulator.h"
 
 // Physical density = raw_density * factor / partition. Keep the real factor
 // as a mantissa/exponent because population/Q or fugacity*copies can overflow
@@ -54,6 +54,36 @@ T apply_density_normalization(T density, const DensityNormalization<T>& normaliz
         && scaled_product::ordinary(std::real(density)) && scaled_product::ordinary(std::imag(density)))
         return density * normalization.multiplier;
     return scaled_product::divide(density, T(1.0), normalization.partition, normalization.factor);
+}
+
+// A contour accumulator stores each component with its own binary exponent.
+// Do not reconstruct the raw density: only its physical normalization needs
+// to fit in the field type.
+inline double apply_density_normalization(
+    double density, const DensityNormalization<double>& normalization, double exponent)
+{
+    if (normalization.factor.mantissa == 0.0)
+        return 0.0;
+    if (exponent == 0.0)
+        return apply_density_normalization(density, normalization);
+    return scaled_product::quotient(
+        scaled_product::multiply(density_accumulation::stored(density, exponent), normalization.factor),
+        scaled_product::split(normalization.partition));
+}
+
+inline std::complex<double> apply_density_normalization(
+    std::complex<double> density, const DensityNormalization<std::complex<double>>& normalization,
+    std::complex<double> exponent)
+{
+    if (normalization.factor.mantissa == 0.0)
+        return 0.0;
+    if (exponent == std::complex<double>(0.0))
+        return apply_density_normalization(density, normalization);
+    const auto result = density_accumulation::normalize(
+        density_accumulation::stored(density.real(), exponent.real()),
+        density_accumulation::stored(density.imag(), exponent.imag()),
+        normalization.partition.real(), normalization.partition.imag(), normalization.factor);
+    return {result.real, result.imag};
 }
 
 #endif

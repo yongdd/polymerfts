@@ -273,6 +273,8 @@ void ComputationDiscrete<T>::compute_concentrations()
 
                 // A block without segments has no concentration
                 this->backend->set_zero(STREAM, it->second);
+                BackendArray<T>* exponent = this->phi_block_exponent.at(it->first);
+                this->backend->set_zero(STREAM, exponent);
                 if (N_RIGHT == 0)
                     return;
 
@@ -283,7 +285,7 @@ void ComputationDiscrete<T>::compute_concentrations()
                 // Remove the shared bead before each product is rounded to the
                 // field type. Getters apply ensemble normalization to the sum.
                 this->backend->add_segment_products(STREAM, it->second, pairs,
-                    this->backend->boltzmann_factor(block.monomer_type));
+                    this->backend->boltzmann_factor(block.monomer_type), exponent);
             });
         }
         this->backend->synchronize();

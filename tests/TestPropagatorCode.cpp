@@ -12,6 +12,7 @@
 #include <iostream>
 #include <cmath>
 #include <numbers>
+#include <stdexcept>
 
 #include "Molecules.h"
 #include "PropagatorComputationOptimizer.h"
@@ -21,6 +22,19 @@ int main()
 {
     try
     {
+        // The native entry point needs the same guard as the Python binding.
+        bool rejected_null = false;
+        try
+        {
+            PropagatorComputationOptimizer(nullptr, false);
+        }
+        catch (const std::exception&)
+        {
+            rejected_null = true;
+        }
+        if (!rejected_null)
+            throw std::runtime_error("A null optimizer molecules pointer was accepted.");
+
         std::vector<BlockInput> blocks = {
             {"A",0.4,0,1},
             {"A",1.2,0,2},

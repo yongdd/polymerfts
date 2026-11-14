@@ -91,12 +91,19 @@ def _point_ion_density(ion, potential, n_segments):
             offset = np.min(np.real(potential))
             partition = np.exp(-offset) * np.mean(np.exp(-(potential - offset)))
         return density, partition
-    weight = np.exp(-potential)
-    partition = np.mean(weight)
+    # Keep the unshifted partition for diagnostics, but normalize the density
+    # after removing a common real offset. Even a representable Q such as
+    # exp(-710) can overflow the reciprocal in complex division, although the
+    # canonical density is independent of this offset.
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        partition = np.mean(np.exp(-potential))
     if ion["concentration"] == 0.0:
         # An absent species contributes nothing even at Q = 0; keep Q for diagnostics.
-        return np.zeros_like(weight), partition
-    return ion["concentration"] * weight / partition, partition
+        return np.zeros_like(potential), partition
+    weight = np.exp(-(potential - np.min(np.real(potential))))
+    # Do not clip this mean: cancellation of the complex weights is a physical
+    # partition zero, where an occupied canonical species really has a pole.
+    return ion["concentration"] * (weight / np.mean(weight)), partition
 
 
 def coulomb_coupling(params, n_segments, nbar):

@@ -83,6 +83,8 @@ bool ComparePropagatorKey::operator()(const std::string& str1, const std::string
  */
 PropagatorComputationOptimizer::PropagatorComputationOptimizer(Molecules* molecules, bool aggregate_propagator_computation)
 {
+    if (molecules == nullptr)
+        throw_with_line_number("A propagator computation optimizer needs molecules (null pointer).");
     if(molecules->get_n_polymer_types() == 0)
         throw_with_line_number("There is no chain. Add polymers first.");
 

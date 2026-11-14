@@ -44,7 +44,8 @@ DensityNormalization<CuDeviceData<T>> to_device_normalization(const DensityNorma
 // range use the same arithmetic as ker_lin_comb, including its accumulation.
 template <typename TD, bool Add>
 __global__ void ker_normalize_density(
-    TD* out, const TD* density, DensityNormalization<TD> normalization, int n)
+    TD* out, const TD* density, DensityNormalization<TD> normalization, int n,
+    const TD* exponents = nullptr)
 {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
     {
@@ -58,7 +59,11 @@ __global__ void ker_normalize_density(
             }
             const double raw_density = density[i];
             const double previous = Add ? out[i] : 0.0 * raw_density;
-            if (normalization.multiplier_available && scaled_product::ordinary(raw_density))
+            if (exponents != nullptr && exponents[i] != 0.0)
+                out[i] = scaled_product::quotient(scaled_product::multiply(
+                    density_accumulation::stored(raw_density, exponents[i]), normalization.factor),
+                    scaled_product::split(normalization.partition)) + previous;
+            else if (normalization.multiplier_available && scaled_product::ordinary(raw_density))
                 out[i] = normalization.multiplier * raw_density + previous;
             else
                 out[i] = scaled_product::divide(raw_density, 1.0, normalization.partition,
@@ -76,7 +81,16 @@ __global__ void ker_normalize_density(
             const cuDoubleComplex previous = Add ? out[i]
                 : make_cuDoubleComplex(0.0 * raw_density.x, 0.0 * raw_density.y);
             cuDoubleComplex result;
-            if (normalization.multiplier_available && scaled_product::ordinary(raw_density.x)
+            if (exponents != nullptr && (exponents[i].x != 0.0 || exponents[i].y != 0.0))
+            {
+                const auto normalized = density_accumulation::normalize(
+                    density_accumulation::stored(raw_density.x, exponents[i].x),
+                    density_accumulation::stored(raw_density.y, exponents[i].y),
+                    normalization.partition.x, normalization.partition.y, normalization.factor);
+                result.x = normalized.real + previous.x;
+                result.y = normalized.imag + previous.y;
+            }
+            else if (normalization.multiplier_available && scaled_product::ordinary(raw_density.x)
                 && scaled_product::ordinary(raw_density.y))
             {
                 result.x = normalization.multiplier.x * raw_density.x
@@ -151,51 +165,82 @@ struct SegmentProducts
 
 // phi += Σ_k weight_k q_1k q_2k in the order of the pairs, with the same arithmetic as one
 // ker_add_multi per pair, but phi is read and written once per launch
-__global__ void ker_add_segment_products(double* phi, SegmentProducts<double> p, const int M)
+__global__ void ker_add_segment_products(double* phi, SegmentProducts<double> p, const int M,
+                                         double* exponents)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < M)
     {
         double acc = phi[i];
+        double exponent = exponents == nullptr ? 0.0 : exponents[i];
         for (int k = 0; k < p.n; ++k)
-            acc += p.weight[k] * p.q_1[k][i] * p.q_2[k][i];
+        {
+            if (exponents == nullptr)
+                acc += p.weight[k] * p.q_1[k][i] * p.q_2[k][i];
+            else
+                density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i], p.weight[k]);
+        }
         phi[i] = acc;
+        if (exponents != nullptr)
+            exponents[i] = exponent;
         i += blockDim.x * gridDim.x;
     }
 }
 
-__global__ void ker_add_segment_products(cuDoubleComplex* phi, SegmentProducts<cuDoubleComplex> p, const int M)
+__global__ void ker_add_segment_products(cuDoubleComplex* phi, SegmentProducts<cuDoubleComplex> p, const int M,
+                                         cuDoubleComplex* exponents)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < M)
     {
         cuDoubleComplex acc = phi[i];
+        cuDoubleComplex exponent = exponents == nullptr ? make_cuDoubleComplex(0.0, 0.0) : exponents[i];
         for (int k = 0; k < p.n; ++k)
         {
             const cuDoubleComplex a = p.q_1[k][i];
             const cuDoubleComplex b = p.q_2[k][i];
             const double w = p.weight[k];
+            if (exponents != nullptr)
+            {
+                density_accumulation::accumulate(acc, exponent, a, b, w, nullptr);
+                continue;
+            }
             const double tx = w * (a.x * b.x - a.y * b.y);
             const double ty = w * (a.x * b.y + a.y * b.x);
             acc.x += tx;
             acc.y += ty;
         }
         phi[i] = acc;
+        if (exponents != nullptr)
+            exponents[i] = exponent;
         i += blockDim.x * gridDim.x;
     }
 }
 
 template <typename TD>
 __global__ void ker_add_discrete_segment_products(TD* phi, SegmentProducts<TD> p,
-                                                  const TD* divisor, const double* mask, int n)
+                                                  const TD* divisor, const double* mask, int n, TD* exponents)
 {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
     {
         if (mask != nullptr && mask[i] == 0.0)
             continue;
         TD acc = phi[i];
+        TD exponent{};
+        if (exponents != nullptr)
+            exponent = exponents[i];
         for (int k = 0; k < p.n; ++k)
         {
+            if (exponents != nullptr)
+            {
+                if constexpr (std::is_same_v<TD, double>)
+                    density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i],
+                                                     p.weight[k], divisor[i]);
+                else
+                    density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i],
+                                                     p.weight[k], &divisor[i]);
+                continue;
+            }
             const TD term = scaled_product::divide(p.q_1[k][i], p.q_2[k][i], divisor[i], p.weight[k]);
             if constexpr (std::is_same_v<TD, double>)
                 acc += term;
@@ -203,6 +248,8 @@ __global__ void ker_add_discrete_segment_products(TD* phi, SegmentProducts<TD> p
                 acc = cuCadd(acc, term);
         }
         phi[i] = acc;
+        if (exponents != nullptr)
+            exponents[i] = exponent;
     }
 }
 
@@ -705,7 +752,8 @@ double CudaComputationBackend<T>::absolute_inner_product(
 
 template <typename T>
 void CudaComputationBackend<T>::add_segment_products(
-    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor)
+    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor,
+    BackendArray<T>* exponent)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -722,9 +770,9 @@ void CudaComputationBackend<T>::add_segment_products(
         }
         if (divisor != nullptr)
             ker_add_discrete_segment_products<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-                raw(phi), chunk, raw(divisor), d_q_mask.get(), n_basis);
+                raw(phi), chunk, raw(divisor), d_q_mask.get(), n_basis, raw(exponent));
         else
-            ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis);
+            ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis, raw(exponent));
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK_LAUNCH();
@@ -872,7 +920,8 @@ T CudaComputationBackend<T>::solvent_concentration(
 template <typename T>
 void CudaComputationBackend<T>::sum_to_host(
     T* out, const std::vector<BackendArray<T>*>& arrays,
-    const std::vector<DensityNormalization<T>>& weights)
+    const std::vector<DensityNormalization<T>>& weights,
+    const std::vector<BackendArray<T>*>& exponents)
 {
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
@@ -880,7 +929,8 @@ void CudaComputationBackend<T>::sum_to_host(
     for (size_t a = 0; a < arrays.size(); a++)
     {
         ker_normalize_density<CuDeviceData<T>, true><<<grid_blocks(n_basis, N_THREADS), N_THREADS>>>(
-            d_sum, raw(arrays[a]), to_device_normalization(weights[a]), n_basis);
+            d_sum, raw(arrays[a]), to_device_normalization(weights[a]), n_basis,
+            exponents.empty() ? nullptr : raw(exponents[a]));
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK(cudaMemcpy(out, d_sum, sizeof(T)*n_basis, cudaMemcpyDeviceToHost));

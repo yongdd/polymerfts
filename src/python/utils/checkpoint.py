@@ -15,7 +15,7 @@ import warnings
 import numpy as np
 from scipy.io import loadmat
 
-from .common import fields_hash, input_hash, json_ready, mat_ready, settings_json
+from .common import decode_mat_fields, fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .validation import normalize_params, ValidationError
 
 
@@ -112,7 +112,7 @@ def auxiliary_field_key(data):
 
 def load_checkpoint(sim, file_name, allow_legacy=False):
     """Reads a checkpoint, checks it and restores the extensions, the metadata and the random numbers."""
-    data = loadmat(file_name, squeeze_me=True)
+    data = decode_mat_fields(loadmat(file_name, squeeze_me=True))
     validate_checkpoint(sim, data, allow_legacy=allow_legacy)
     restore_extensions(sim, data)
     if "simulation_metadata_json" in data:

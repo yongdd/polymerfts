@@ -340,9 +340,116 @@ double CpuComputationBackend<T>::absolute_inner_product(
 
 template <typename T>
 void CpuComputationBackend<T>::add_segment_products(
-    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor)
+    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor,
+    BackendArray<T>* exponent)
 {
     T* _phi = raw(phi);
+    if (exponent != nullptr)
+    {
+        T* _exponent = raw(exponent);
+        const T* _divisor = divisor == nullptr ? nullptr : raw(divisor);
+        const double* mask = divisor == nullptr ? nullptr : cb->get_mask();
+        for (const SegmentPair<T>& pair : pairs)
+        {
+            const T* q_1 = raw(pair.q_1);
+            const T* q_2 = raw(pair.q_2);
+            const double weight = pair.weight;
+            // Classify a cache-sized tile with a SIMD reduction, then retain
+            // the original vectorizable arithmetic for ordinary fields. A
+            // per-point branch containing frexp/scalbn prevents that loop
+            // from vectorizing even when none of its slow paths are taken.
+            constexpr int TILE = 256;
+            const auto ordinary_value = [](T value)
+            {
+                const auto component = [](double x)
+                {
+                    const double magnitude = std::abs(x);
+                    return static_cast<int>(magnitude == 0.0)
+                         | (static_cast<int>(magnitude >= 0x1p-200)
+                          & static_cast<int>(magnitude <= 0x1p200));
+                };
+                return component(std::real(value)) & component(std::imag(value));
+            };
+            for (int begin = 0, end = 0; begin < n_basis; begin = end)
+            {
+                end = begin + std::min(TILE, n_basis - begin);
+                int regular = scaled_product::ordinary(weight);
+                if (_divisor == nullptr)
+                {
+                    if constexpr (std::is_same_v<T, double>)
+                    {
+                        double minimum = 1.0, maximum = 1.0, maximum_exponent = 0.0;
+                        #pragma omp simd reduction(min:minimum) reduction(max:maximum,maximum_exponent)
+                        for (int i = begin; i < end; ++i)
+                        {
+                            const double a = std::abs(q_1[i]), b = std::abs(q_2[i]);
+                            minimum = std::min(minimum, std::min(a, b));
+                            maximum = std::max(maximum, std::max(a, b));
+                            maximum_exponent = std::max(maximum_exponent, std::abs(_exponent[i]));
+                        }
+                        regular &= minimum >= 0x1p-200 && maximum <= 0x1p200 && maximum_exponent == 0.0;
+                        // Zero operands are safe, but must not hide a tiny
+                        // nonzero operand elsewhere in the same tile.
+                        if (minimum == 0.0 && maximum <= 0x1p200 && maximum_exponent == 0.0)
+                        {
+                            regular = scaled_product::ordinary(weight);
+                            #pragma omp simd reduction(&:regular)
+                            for (int i = begin; i < end; ++i)
+                                regular &= ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
+                        }
+                        // The bounded nonzero products lie in [2^-600,2^600].
+                        // Adding one to any finite unscaled accumulator is
+                        // safe: near DBL_MAX half an ulp is at least 2^970.
+                        // No lower bound on that accumulator is needed either.
+                        // A NaN operand may be ignored by min/max, but its
+                        // product stays NaN with the original IEEE arithmetic;
+                        // it cannot conceal an exceptional finite product.
+                    }
+                    else
+                    {
+                        #pragma omp simd reduction(&:regular)
+                        for (int i = begin; i < end; ++i)
+                            regular &= (_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
+                                     & ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
+                    }
+                }
+                else
+                {
+                    #pragma omp simd reduction(&:regular)
+                    for (int i = begin; i < end; ++i)
+                    {
+                        const int safe = (_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
+                                       & ordinary_value(q_1[i]) & ordinary_value(q_2[i])
+                                       & ordinary_value(_divisor[i]) & (_divisor[i] != T(0.0));
+                        regular &= safe | (mask != nullptr && mask[i] == 0.0);
+                    }
+                }
+                if (regular)
+                {
+                    if (_divisor == nullptr)
+                        for (int i = begin; i < end; ++i)
+                            _phi[i] += weight * q_1[i] * q_2[i];
+                    else
+                        for (int i = begin; i < end; ++i)
+                            if (mask == nullptr || mask[i] != 0.0)
+                                _phi[i] += weight * q_1[i] * q_2[i] / _divisor[i];
+                    continue;
+                }
+                for (int i = begin; i < end; ++i)
+                {
+                    if (mask != nullptr && mask[i] == 0.0)
+                        continue;
+                    if constexpr (std::is_same_v<T, double>)
+                        density_accumulation::accumulate(_phi[i], _exponent[i], q_1[i], q_2[i], weight,
+                                                         _divisor == nullptr ? 1.0 : _divisor[i]);
+                    else
+                        density_accumulation::accumulate(_phi[i], _exponent[i], q_1[i], q_2[i], weight,
+                                                         _divisor == nullptr ? nullptr : &_divisor[i]);
+                }
+            }
+        }
+        return;
+    }
     if (divisor != nullptr)
     {
         const T* _divisor = raw(divisor);
@@ -436,16 +543,18 @@ T CpuComputationBackend<T>::solvent_concentration(
 template <typename T>
 void CpuComputationBackend<T>::sum_to_host(
     T* out, const std::vector<BackendArray<T>*>& arrays,
-    const std::vector<DensityNormalization<T>>& weights)
+    const std::vector<DensityNormalization<T>>& weights,
+    const std::vector<BackendArray<T>*>& exponents)
 {
     for (int i = 0; i < n_basis; i++)
         out[i] = 0.0;
     for (size_t a = 0; a < arrays.size(); a++)
     {
         const T* _a = raw(arrays[a]);
+        const T* exponent = exponents.empty() || exponents[a] == nullptr ? nullptr : raw(exponents[a]);
         const auto& weight = weights[a];
         for (int i = 0; i < n_basis; i++)
-            out[i] += apply_density_normalization(_a[i], weight);
+            out[i] += apply_density_normalization(_a[i], weight, exponent == nullptr ? T(0.0) : exponent[i]);
     }
 }
 

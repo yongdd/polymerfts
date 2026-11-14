@@ -40,13 +40,13 @@ def field_file(names, split, metadata):
     return data, fields, inverse
 
 
-@pytest.mark.parametrize("names", (("A", "B"), ("A", "A_real"), ("A", "A_real", "A_imag")))
+@pytest.mark.parametrize("names", (("A", "B"), ("A", "A_real"), ("A", "A_real", "A_imag"), ("Na⁺", "Cl⁻")))
 @pytest.mark.parametrize("split", (False, True))
 @pytest.mark.parametrize("metadata", (False, True))
 def test_auxiliary_reader_uses_file_representation(names, split, metadata, tmp_path):
     data, fields, inverse = field_file(names, split, metadata)
     path = tmp_path / "fields.mat"
-    savemat(path, data)
+    write_encoded(path, data)
     loaded = loadmat(path, squeeze_me=True)
     decoded = MAT["read_monomer_fields"](loaded)
     for name, expected in zip(names, fields):
@@ -57,6 +57,25 @@ def test_auxiliary_reader_uses_file_representation(names, split, metadata, tmp_p
     assert AUX["main"]([str(path), "-o", str(output)]) == 0
     np.testing.assert_allclose(loadmat(output, squeeze_me=True)["w_aux"], inverse @ fields,
                                rtol=1e-13, atol=1e-13)
+
+
+@pytest.mark.parametrize("names", (("A", "B"), ("Na⁺", "Cl⁻")))
+@pytest.mark.parametrize("split", (False, True))
+def test_field_reader_accepts_raw_and_decoded_reserved_names(names, split, tmp_path):
+    data, fields, _ = field_file(names, split, True)
+    marker = "polymerfts_mat_keys_json"
+    data[marker] = "user variable"
+    data["metadata"] = {marker: "user metadata"}
+    path = tmp_path / "reserved.mat"
+    write_encoded(path, data)
+    raw = loadmat(path, simplify_cells=True)
+    restored = MAT["decode_mat_fields"](raw)
+    assert restored[marker] == "user variable"
+    assert restored["metadata"][marker] == "user metadata"
+    for source in (raw, restored, {**raw, "metadata": restored["metadata"]}):
+        actual = MAT["read_monomer_fields"](source)
+        for name, expected in zip(names, fields):
+            np.testing.assert_array_equal(actual[name], expected)
 
 
 @pytest.mark.parametrize("mode,split", (("SCFT", False), ("L-FTS", False), ("CL-FTS", True)))

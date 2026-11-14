@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <numeric>
 #include <string>
 #include <type_traits>
 
@@ -180,7 +181,12 @@ void FourierTransform<T>::make_hermitian(std::complex<double>* values, long long
                     const long long idx_neg = (static_cast<long long>(i_neg) * tcoef[1] + j_neg) * tcoef[2] + l;
                     if (idx_neg < idx)
                         continue;   // the pair was done at its partner
-                    const std::complex<double> average = 0.5 * (block[idx] + std::conj(block[idx_neg]));
+                    // Each component of the mean can be finite even if the
+                    // sum overflows. midpoint also retains subnormal values
+                    // that would be lost by halving both operands first.
+                    const std::complex<double> average{
+                        std::midpoint(block[idx].real(), block[idx_neg].real()),
+                        std::midpoint(block[idx].imag(), -block[idx_neg].imag())};
                     block[idx] = average;
                     block[idx_neg] = std::conj(average);
                 }
@@ -248,11 +254,8 @@ std::vector<double> FourierTransform<T>::get_k_squared() const
         Gd = {0.0, 0.0, recip_metric[0]};
         Gij = 0.0; Gik = 0.0; Gjk = 0.0;
     }
-    const double G_diag_max = std::max({std::abs(Gd[0]), std::abs(Gd[1]), std::abs(Gd[2])});
-    const bool oblique = (std::abs(Gij) > 1e-12 * G_diag_max ||
-                          std::abs(Gik) > 1e-12 * G_diag_max ||
-                          std::abs(Gjk) > 1e-12 * G_diag_max);
     const IndexMetric index_metric{Gd[0], Gd[1], Gd[2], Gij, Gik, Gjk};
+    const bool oblique = index_metric_has_coupling(index_metric);
     auto form = [&](double a, double b, double c) {
         return Gd[0] * a * a + Gd[1] * b * b + Gd[2] * c * c +
                2.0 * (Gij * a * b + Gik * a * c + Gjk * b * c);

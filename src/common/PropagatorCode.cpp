@@ -301,8 +301,9 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
     int state = 1;
     // States: 1 = reading key, 2 = reading n_segment, 3 = reading n_repeated
 
-    // First pass: check if key uses ; separator format (has ; at depth 1)
-    // If so, use ; for ALL deps; otherwise use digit-based parsing
+    // Validate all delimiters before parsing dependencies, including the part
+    // after the first semicolon. Public callers may supply malformed keys.
+    // A semicolon at depth 1 selects that format for ALL dependencies.
     bool use_semicolon_format = false;
     {
         std::stack<char> temp_stack;
@@ -321,13 +322,21 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
             else if(key[i] == '(' || key[i] == '[')
                 temp_stack.push(key[i]);
             else if(key[i] == ')' || key[i] == ']')
-                temp_stack.pop();
-            else if(key[i] == ';' && temp_stack.size() == 1)
             {
-                use_semicolon_format = true;
-                break;
+                if (temp_stack.empty() ||
+                    (temp_stack.top() == '(' ? key[i] != ')' : key[i] != ']'))
+                    throw_with_line_number("Failed to match parentheses or braces in propagator key.");
+                temp_stack.pop();
             }
+            else if (key[i] == '}')
+            {
+                throw_with_line_number("Unmatched initial condition label brace in propagator key.");
+            }
+            else if(key[i] == ';' && temp_stack.size() == 1)
+                use_semicolon_format = true;
         }
+        if (in_label || !temp_stack.empty())
+            throw_with_line_number("Unclosed parentheses or initial condition label in propagator key.");
     }
 
     bool in_label = false;
@@ -357,7 +366,7 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
             }
             // For non-aggregated keys: look for first digit after alpha (length_index)
             // Only use digit-based parsing if the key doesn't use ; format
-            else if(state==1 && isdigit(key[i]) && !use_semicolon_format)
+            else if(state==1 && std::isdigit(static_cast<unsigned char>(key[i])) && !use_semicolon_format)
             {
                 // Remove a comma
                 if (key[pos_start] == ',')
@@ -377,7 +386,7 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
                 pos_start = i+1;
             }
             // It was reading n_segment (or length_index) and have found a non-digit
-            else if(state==2 && !isdigit(key[i]))
+            else if(state==2 && !std::isdigit(static_cast<unsigned char>(key[i])))
             {
                 sub_n_segment = std::stoi(key.substr(pos_start, i-pos_start));
 
@@ -388,7 +397,7 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
             }
             // It was reading n_repeated (digits, and a decimal point for a real count) and
             // have found another character
-            else if(state==3 && !isdigit(key[i]) && key[i] != '.')
+            else if(state==3 && !std::isdigit(static_cast<unsigned char>(key[i])) && key[i] != '.')
             {
                 sub_n_repeated = parse_count(key.substr(pos_start, i-pos_start));
 
@@ -407,6 +416,8 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
         }
         else if(key[i] == ')' || key[i] == ']')
         {
+            if (stack_brace.empty())
+                throw_with_line_number("Unmatched closing bracket in propagator key.");
             if((stack_brace.top() == '(' && key[i] == ')') ||
                (stack_brace.top() == '[' && key[i] == ']'))
             {

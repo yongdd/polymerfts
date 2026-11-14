@@ -100,13 +100,14 @@ public:
     double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                   BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs,
-                              BackendArray<T>* divisor = nullptr) override;
+                              BackendArray<T>* divisor = nullptr, BackendArray<T>* exponent = nullptr) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;
     void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
-                     const std::vector<DensityNormalization<T>>& weights) override;
+                     const std::vector<DensityNormalization<T>>& weights,
+                     const std::vector<BackendArray<T>*>& exponents = {}) override;
 };
 
 #endif

@@ -14,7 +14,7 @@ _MAT_FIELD_KEYS = "polymerfts_mat_keys_json"
 
 
 def _encode_mat_fields(value, max_length, *, top_level=False):
-    """Escape only nested struct keys; MAT variable names keep their public API."""
+    """Escape unsafe struct keys and Unicode variables, preserving public ASCII names."""
     if isinstance(value, dict):
         names = [str(key) for key in value]
         if len(set(names)) != len(names):
@@ -23,9 +23,9 @@ def _encode_mat_fields(value, max_length, *, top_level=False):
         result, mapping = {}, {}
         for name, item in zip(names, value.values()):
             encoded = name
-            if not top_level and (not name or name[0] == "_" or name[0].isdigit()
-                                  or len(name) > max_length or not name.isascii()
-                                  or name == _MAT_FIELD_KEYS):
+            if (not name.isascii() or name == _MAT_FIELD_KEYS
+                    or (not top_level and (not name or name[0] == "_" or name[0].isdigit()
+                                           or len(name) > max_length))):
                 attempt = 0
                 while True:
                     source = name if attempt == 0 else json.dumps([name, attempt])
@@ -49,18 +49,21 @@ def _encode_mat_fields(value, max_length, *, top_level=False):
     return value
 
 
-def decode_mat_fields(value):
-    """Restore nested keys after ``scipy.io.loadmat(..., simplify_cells=True)``.
+def decode_mat_fields(value, *, recursive=True):
+    """Restore variable names and nested keys after ``scipy.io.loadmat``.
 
-    Writers preserve ordinary struct keys and flat variable names. A struct with
+    Writers preserve ordinary struct keys and ASCII variable names. A dictionary with
     escaped keys carries ``polymerfts_mat_keys_json``, a versioned JSON mapping
     from stored keys to original names. Arrays are not converted to Python lists.
     A legacy numeric field with the marker's name remains an ordinary field.
     Malformed string mappings raise ValueError rather than overwrite user data.
+    Set recursive=False to restore only a dictionary's flat variable names.
     """
     if isinstance(value, dict):
         mapping = {}
         marker = value.get(_MAT_FIELD_KEYS)
+        if isinstance(marker, np.ndarray) and marker.dtype.kind in "US" and marker.size == 1:
+            marker = marker.item()
         if isinstance(marker, str):
             try:
                 record = json.loads(marker)
@@ -78,8 +81,10 @@ def decode_mat_fields(value):
                     raise ValueError("Mapped fields have duplicate names")
             except (TypeError, ValueError) as error:
                 raise ValueError("Invalid MAT field-name mapping") from error
-        return {mapping.get(key, key): decode_mat_fields(item)
+        return {mapping.get(key, key): decode_mat_fields(item) if recursive else item
                 for key, item in value.items() if not mapping or key != _MAT_FIELD_KEYS}
+    if not recursive:
+        return value
     if isinstance(value, (list, tuple)):
         return [decode_mat_fields(item) for item in value]
     if isinstance(value, np.ndarray) and value.dtype == object:
@@ -113,6 +118,14 @@ def read_monomer_fields(data, names=None):
     if requested is None:
         raise ValueError("The file needs monomer_types, or the reader must supply the monomer names")
     all_names = stored_names if stored_names is not None else requested
+    # Only Unicode variable names need decoding at this boundary. Callers may
+    # already have decoded the file, including legitimate user strings under
+    # the reserved marker key. Do not interpret those strings a second time,
+    # or traverse unrelated nested metadata merely to read flat fields.
+    if _MAT_FIELD_KEYS in data and any(
+            not name.isascii() and not any("w_" + name + suffix in data for suffix in ("", "_real", "_imag"))
+            for name in all_names):
+        data = decode_mat_fields(data, recursive=False)
     if any(name not in all_names for name in requested):
         missing = ["w_" + name for name in requested if name not in all_names]
         raise ValueError("The file holds no monomer field " + ", ".join(missing))

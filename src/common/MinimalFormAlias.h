@@ -12,9 +12,13 @@
  * the minimum, and the factors of k and -k then differ. The form of the centered
  * representative bounds the search instead: every alias with a form not above
  * it satisfies |u_d| <= sqrt(f(m) (G⁻¹)_dd), so enumerating that box is exact.
- * Where the minimum lies within one period, the box is inside the old window
- * and the aliases are visited in the same (a, b, c) order, so the results do not
- * change there.
+ * Within each coupled component, aliases are visited in the same (a, b, c)
+ * order as the former one-period search.
+ *
+ * Numerically orthogonal components (normalized coupling at most 1e-12) are
+ * minimized separately. Their bounds and tie tolerances use only their own
+ * forms, so an arbitrarily short orthogonal axis cannot inflate a plane's
+ * search or hide differences between its aliases in floating-point addition.
  *
  * Axes with N_d <= 1 or a zero diagonal metric (the padded axes of 1D and 2D
  * grids) are not searched.
@@ -32,8 +36,69 @@ struct IndexMetric
     double g11, g22, g33, g12, g13, g23;
 };
 
+/// Whether two reciprocal axes are coupled beyond orthogonal-angle roundoff.
+/// Normalize by this pair's lengths: a short, unrelated third axis must not
+/// hide an oblique plane. Separate divisions avoid forming gii * gjj.
+inline bool reciprocal_axes_coupled(double gii, double gjj, double gij)
+{
+    return gii > 0.0 && gjj > 0.0 &&
+        std::abs(gij) / std::sqrt(gii) / std::sqrt(gjj) > 1e-12;
+}
+
+inline bool index_metric_has_coupling(const IndexMetric& g)
+{
+    return reciprocal_axes_coupled(g.g11, g.g22, g.g12) ||
+           reciprocal_axes_coupled(g.g11, g.g33, g.g13) ||
+           reciprocal_axes_coupled(g.g22, g.g33, g.g23);
+}
+
 namespace min_form_alias_detail
 {
+/// Connected components of the searched axes. Numerically orthogonal axes
+/// have independent alias minima. Searching each component separately keeps
+/// a large constant form on one axis out of another component's search bound
+/// and tie tolerance (e.g. a thin z direction above an oblique xy plane).
+inline int components(const std::array<int, 3>& n, const IndexMetric& g, std::array<int, 3>& masks)
+{
+    const double G[3][3] = {{g.g11, g.g12, g.g13}, {g.g12, g.g22, g.g23}, {g.g13, g.g23, g.g33}};
+    int remaining = 0;
+    for (int d = 0; d < 3; ++d)
+        if (n[d] > 1 && G[d][d] > 0.0)
+            remaining |= 1 << d;
+    int count = 0;
+    while (remaining != 0)
+    {
+        int mask = remaining & -remaining;
+        int previous;
+        do
+        {
+            previous = mask;
+            for (int i = 0; i < 3; ++i)
+                if (mask & (1 << i))
+                    for (int j = 0; j < 3; ++j)
+                        if ((remaining & (1 << j)) && reciprocal_axes_coupled(G[i][i], G[j][j], G[i][j]))
+                            mask |= 1 << j;
+        } while (mask != previous);
+        masks[count++] = mask;
+        remaining &= ~mask;
+    }
+    return count;
+}
+
+inline void component_parameters(
+    const std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, int mask,
+    std::array<int, 3>& sub_m, std::array<int, 3>& sub_n, IndexMetric& sub_g)
+{
+    for (int d = 0; d < 3; ++d)
+    {
+        sub_m[d] = (mask & (1 << d)) ? m[d] : 0;
+        sub_n[d] = (mask & (1 << d)) ? n[d] : 1;
+    }
+    sub_g = {mask & 1 ? g.g11 : 0.0, mask & 2 ? g.g22 : 0.0, mask & 4 ? g.g33 : 0.0,
+             (mask & 3) == 3 ? g.g12 : 0.0, (mask & 5) == 5 ? g.g13 : 0.0,
+             (mask & 6) == 6 ? g.g23 : 0.0};
+}
+
 /// Ranges of the period shifts (a, b, c) that can hold an alias whose form does
 /// not exceed f_center, the form of m itself.
 inline void search_box(
@@ -102,14 +167,30 @@ inline void search_box(
  * @brief Replace m by its alias of least form.
  *
  * `form(u1, u2, u3)` evaluates the form; callers pass their own expression so
- * that its rounding is unchanged. The aliases are visited in (a, b, c) order and
- * one replaces the current choice only when its form is strictly smaller, so m
- * itself is kept on ties, as with the old one-period window.
+ * that its rounding is unchanged. In each coupled component the aliases are
+ * visited in (a, b, c) order and replace the current choice only when their
+ * form is strictly smaller, so its centered representative is kept on ties.
  */
 template <typename Form>
 inline void min_form_alias_rep(
     std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, Form&& form)
 {
+    std::array<int, 3> masks{};
+    const int n_components = min_form_alias_detail::components(n, g, masks);
+    if (n_components > 1)
+    {
+        for (int i = 0; i < n_components; ++i)
+        {
+            std::array<int, 3> sub_m, sub_n;
+            IndexMetric sub_g;
+            min_form_alias_detail::component_parameters(m, n, g, masks[i], sub_m, sub_n, sub_g);
+            min_form_alias_rep(sub_m, sub_n, sub_g, form);
+            for (int d = 0; d < 3; ++d)
+                if (masks[i] & (1 << d))
+                    m[d] = sub_m[d];
+        }
+        return;
+    }
     const double f_center = form(m[0], m[1], m[2]);
     std::array<int, 3> lo, hi;
     min_form_alias_detail::search_box(m, n, g, f_center, lo, hi);
@@ -136,14 +217,55 @@ inline void min_form_alias_rep(
 }
 
 /**
- * @brief Visit, in (a, b, c) order, every alias of m whose form lies within
- *        rel_tol * minimum of the minimum; returns the number visited.
+ * @brief Visit, in (a, b, c) order, every least-form alias of m; returns the
+ *        number visited. Each independent metric component has tolerance
+ *        rel_tol * its minimum, so a large orthogonal contribution cannot
+ *        turn nonminimal aliases of another component into ties.
  */
 template <typename Form, typename Visit>
 inline int for_each_min_form_alias(
     const std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g,
     Form&& form, double rel_tol, Visit&& visit)
 {
+    std::array<int, 3> masks{};
+    const int n_components = min_form_alias_detail::components(n, g, masks);
+    if (n_components > 1)
+    {
+        std::array<int, 3> lo{0, 0, 0}, hi{0, 0, 0};
+        std::array<double, 3> limits{};
+        for (int i = 0; i < n_components; ++i)
+        {
+            std::array<int, 3> sub_m, sub_n, sub_lo, sub_hi;
+            IndexMetric sub_g;
+            min_form_alias_detail::component_parameters(m, n, g, masks[i], sub_m, sub_n, sub_g);
+            min_form_alias_detail::search_box(sub_m, sub_n, sub_g, form(sub_m[0], sub_m[1], sub_m[2]), sub_lo, sub_hi);
+            min_form_alias_rep(sub_m, sub_n, sub_g, form);
+            const double best = form(sub_m[0], sub_m[1], sub_m[2]);
+            limits[i] = best + rel_tol * best;
+            for (int d = 0; d < 3; ++d)
+                if (masks[i] & (1 << d))
+                {
+                    lo[d] = sub_lo[d];
+                    hi[d] = sub_hi[d];
+                }
+        }
+        int count = 0;
+        for (int a = lo[0]; a <= hi[0]; ++a)
+            for (int b = lo[1]; b <= hi[1]; ++b)
+                for (int c = lo[2]; c <= hi[2]; ++c)
+                {
+                    const int t1 = m[0] + a * n[0], t2 = m[1] + b * n[1], t3 = m[2] + c * n[2];
+                    bool tied = true;
+                    for (int i = 0; i < n_components && tied; ++i)
+                        tied = form(masks[i] & 1 ? t1 : 0, masks[i] & 2 ? t2 : 0, masks[i] & 4 ? t3 : 0) <= limits[i];
+                    if (tied)
+                    {
+                        visit(t1, t2, t3);
+                        ++count;
+                    }
+                }
+        return count;
+    }
     const double f_center = form(m[0], m[1], m[2]);
     std::array<int, 3> lo, hi;
     min_form_alias_detail::search_box(m, n, g, f_center, lo, hi);

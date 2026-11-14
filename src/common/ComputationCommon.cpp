@@ -45,7 +45,10 @@ ComputationCommon<T>::ComputationCommon(
         n_streams = backend->get_n_streams();
 
         for (const auto& item : propagator_computation_optimizer->get_computation_blocks())
+        {
             phi_block[item.first] = backend->allocate();
+            phi_block_exponent[item.first] = backend->allocate();
+        }
 
         phi_block_iterators.reserve(phi_block.size());
         for (auto it = phi_block.cbegin(); it != phi_block.cend(); ++it)
@@ -79,6 +82,8 @@ void ComputationCommon<T>::release()
     {
         for (const auto& item : phi_block)
             backend->deallocate(item.second);
+        for (const auto& item : phi_block_exponent)
+            backend->deallocate(item.second);
         for (const auto& item : phi_solvent)
             backend->deallocate(item);
         for (const auto& item : w)
@@ -86,6 +91,7 @@ void ComputationCommon<T>::release()
         backend.reset();
     }
     phi_block.clear();
+    phi_block_exponent.clear();
     phi_solvent.clear();
     w.clear();
 }
@@ -364,6 +370,7 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
         // A name that is not a monomer type (a typo) is an error, not a zero field
         validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
         std::vector<BackendArray<T>*> arrays;
+        std::vector<BackendArray<T>*> exponents;
         std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
@@ -375,6 +382,7 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
                 if (norm.factor.mantissa == 0.0)
                     continue;
                 arrays.push_back(phi_b);
+                exponents.push_back(phi_block_exponent.at(key));
                 weights.push_back(norm);
             }
         }
@@ -383,10 +391,11 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
             if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
             {
                 arrays.push_back(phi_solvent[s]);
+                exponents.push_back(nullptr);
                 weights.push_back(make_density_normalization(1.0, 1.0, 1.0, 1.0, T(1.0)));
             }
         }
-        backend->sum_to_host(phi, arrays, weights);
+        backend->sum_to_host(phi, arrays, weights, exponents);
     }
     catch (std::exception& exc)
     {
@@ -408,6 +417,7 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
         std::vector<BackendArray<T>*> arrays;
+        std::vector<BackendArray<T>*> exponents;
         std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
@@ -419,10 +429,11 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
                 if (norm.factor.mantissa == 0.0)
                     continue;
                 arrays.push_back(phi_b);
+                exponents.push_back(phi_block_exponent.at(key));
                 weights.push_back(norm);
             }
         }
-        backend->sum_to_host(phi, arrays, weights);
+        backend->sum_to_host(phi, arrays, weights, exponents);
     }
     catch (std::exception& exc)
     {
@@ -453,6 +464,7 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
         }
 
         std::vector<BackendArray<T>*> arrays;
+        std::vector<BackendArray<T>*> exponents;
         std::vector<DensityNormalization<T>> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
@@ -461,12 +473,13 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
             if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
                 arrays.push_back(phi_b);
+                exponents.push_back(phi_block_exponent.at(key));
                 const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
                 weights.push_back(make_density_normalization(fugacity,
                     contour_step(std::get<2>(key)), block.n_repeated, 1.0, T(1.0)));
             }
         }
-        backend->sum_to_host(phi, arrays, weights);
+        backend->sum_to_host(phi, arrays, weights, exponents);
     }
     catch (std::exception& exc)
     {
@@ -511,9 +524,8 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
                 std::fill_n(&phi[b*N], N, T(0.0));
                 continue;
             }
-            backend->copy_to_host(&phi[b*N], block_it->second);
-            for (int i = 0; i < N; i++)
-                phi[b*N + i] = apply_density_normalization(phi[b*N + i], norm);
+            backend->sum_to_host(&phi[b*N], {block_it->second}, {norm},
+                                 {phi_block_exponent.at(block_key)});
         }
     }
     catch (std::exception& exc)

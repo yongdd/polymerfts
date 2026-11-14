@@ -174,6 +174,8 @@ void ComputationReduceMemoryContinuous<T>::compute_concentrations()
 
             // A block without segments has no concentration
             this->backend->set_zero(0, phi);
+            BackendArray<T>* exponent = this->phi_block_exponent.at(key);
+            this->backend->set_zero(0, exponent);
             if (N_RIGHT == 0)
                 continue;
 
@@ -182,7 +184,7 @@ void ComputationReduceMemoryContinuous<T>::compute_concentrations()
             this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
                 [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
+                    this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}}, nullptr, exponent);
                 });
 
             // Getters normalize the integral for the requested ensemble.
