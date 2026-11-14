@@ -142,14 +142,14 @@ protected:
         const std::vector<std::vector<double>>& absolute_integrals) const;
 
     /// Stress of a block: the sum over its segments times the contour step ds.
-    void scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const;
+    void scale_by_contour_step(StressAccumulator<T>& stress, const std::string& key_right) const;
 
     /**
      * @brief Sum the stresses of the blocks of each polymer into dq_dl and
      *        convert them to lattice derivatives.
      * @param stress_of_block One entry per block, in the order of phi_block.
      */
-    void set_stress_from_blocks(const std::vector<std::array<T, 6>>& stress_of_block);
+    void set_stress_from_blocks(const std::vector<StressAccumulator<T>>& stress_of_block);
 
     /**
      * @brief Turn the summed v⊗v components in dq_dl into lattice-parameter

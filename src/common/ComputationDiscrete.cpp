@@ -311,7 +311,7 @@ void ComputationDiscrete<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds
-        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
+        std::vector<StressAccumulator<T>> stress_of_block(this->phi_block.size());
         ParallelErrors errors;
         #pragma omp parallel for num_threads(this->n_streams)
         for (size_t b = 0; b < this->phi_block_iterators.size(); b++)

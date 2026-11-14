@@ -211,7 +211,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: Simpson's rule over the segment stresses
-        std::vector<std::array<T, 6>> stress_of_block;
+        std::vector<StressAccumulator<T>> stress_of_block;
         for (const auto& [key, phi] : this->phi_block)
         {
             const auto& [p, key_left, key_right] = key;
@@ -219,7 +219,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
             const int N_LEFT  = block.n_segment_left;
             const int N_RIGHT = block.n_segment_right;
 
-            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            StressAccumulator<T> stress{};
             if (N_RIGHT > 0)
             {
                 // Every segment contributes, the chain ends included (see ComputationContinuous)
@@ -227,7 +227,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
                 this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
                     [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
                     {
-                        const std::array<T, 6> segment = this->backend->block_stress(
+                        const StressAccumulator<T> segment = this->backend->block_stress(
                             0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
                         for (int d = 0; d < 6; d++)
                             stress[d] += segment[d];

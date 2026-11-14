@@ -1,5 +1,6 @@
 """PSCF conversion format and CLI regressions; no compiled backend or simulation."""
 
+import hashlib
 import itertools
 import json
 import math
@@ -273,6 +274,33 @@ def test_result_export_import_preserves_fields_cell_and_custom_names(tmp_path, s
         np.testing.assert_array_equal(imported['w_' + name], data['w_' + name].ravel())
 
 
+@pytest.mark.parametrize('names', (
+    ['A', 'B'],
+    ['α', 'B'],
+    ['α', 'α_real'],
+    ['α', 'polymerfts_mat_keys_json'],
+    ['α', 'field_' + hashlib.sha256('w_α'.encode()).hexdigest()[:24]],
+))
+def test_field_import_preserves_unicode_and_encoding_like_names(tmp_path, names):
+    omega = rgrid(tmp_path / 'omega', [2, 3])
+    rho = rgrid(tmp_path / 'rho', [2, 3], values=np.arange(6) / 10)
+    output = TOOL['import_files'](omega, tmp_path / 'imported.mat', rho=rho, monomers=names)
+    raw = loadmat(output, simplify_cells=True)
+    restored = TOOL['_MAT']['decode_mat_fields'](raw)
+    potentials = TOOL['_MAT']['read_monomer_fields'](raw)
+    assert list(restored['monomer_types']) == names
+    for kind, source in (('w_', omega), ('phi_', rho)):
+        expected = TOOL['read_rgrid'](source)['fields']
+        for i, name in enumerate(names):
+            np.testing.assert_array_equal(restored[kind + name], expected[i].ravel())
+            if name.isascii():
+                np.testing.assert_array_equal(raw[kind + name], expected[i].ravel())
+            if kind == 'w_':
+                np.testing.assert_array_equal(potentials[name], expected[i].ravel())
+    if all(name.isascii() for name in names):
+        assert 'polymerfts_mat_keys_json' not in raw
+
+
 @pytest.mark.parametrize('suffix', ('.mat', '.json', '.yaml'))
 @pytest.mark.parametrize('separator', (',', '_', '/', ' '))
 @pytest.mark.parametrize('boundary', ('periodic', 'Periodic', 'PeRiOdIc'))
@@ -425,6 +453,54 @@ def test_mutations_through_python_aliases_are_rejected(tmp_path, code):
         TOOL['read_input'](source)
 
 
+@pytest.mark.parametrize('code', (
+    'other, = [params]\nother["lx"] = [2., 4., 5.]',
+    '[other] = [params]\nother["lx"] = [2., 4., 5.]',
+    'other, *rest = [params, params]\nother["lx"] = [2., 4., 5.]',
+    'for other in [params]:\n    other["lx"] = [2., 4., 5.]',
+    'for other, in [(params,)]:\n    other["lx"] = [2., 4., 5.]',
+    'for block in params["polymers"][0]["blocks"]:\n    block["length"] *= 2',
+    'if True:\n    other = params\n    other["lx"] = [2., 4., 5.]',
+    'def helper():\n    other, = [params]\n    other["lx"] = [2., 4., 5.]\nhelper()',
+    '[other.update(lx=[2., 4., 5.]) for other in [params]]',
+    'other = [params for _ in range(1)]\nother[0]["lx"] = [2., 4., 5.]',
+    'other = {name: params for name in ["saved"]}\nother["saved"]["lx"] = [2., 4., 5.]',
+    '(other := params)\nother["lx"] = [2., 4., 5.]',
+    'match params:\n    case other:\n        other["lx"] = [2., 4., 5.]',
+    'match [params]:\n    case [other]:\n        other["lx"] = [2., 4., 5.]',
+    'match params:\n    case {"polymers": polymers}:\n        polymers[0]["volume_fraction"] = .5',
+    'match [params]:\n    case [*others]:\n        others[0]["lx"] = [2., 4., 5.]',
+    'match params:\n    case {**other}:\n        other["polymers"][0]["volume_fraction"] = .5',
+))
+def test_export_rejects_unsupported_container_alias_bindings(tmp_path, code):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    destination = tmp_path / 'pscf'
+    with pytest.raises(ValueError, match='alias bindings'):
+        TOOL['export_files'](source, destination, fields)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize('code', (
+    'first, second, third = params["lx"]',
+    'for length in params["lx"]:\n    print(length)',
+    'for name in params["segment_lengths"]:\n    print(name)',
+    'names = [name for name in params["segment_lengths"]]',
+    'if True:\n    copied = list(params["nx"])\n    copied[0] = 9',
+    'def helper():\n    copied = list(params["nx"])\n    copied[0] = 9',
+    'def helper(params):\n    other, = [params]\n    for alias in [params]:\n        pass',
+    'match params["chain_model"]:\n    case name:\n        print(name)',
+    'match params:\n    case _:\n        pass',
+    'def helper(params):\n    match params:\n        case other:\n            pass',
+))
+def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, code):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    assert TOOL['read_input'](source) == params()
+
+
 @pytest.mark.parametrize('argument, setup', (
     ('params', ''),
     ('params["chi_n"]', ''),
@@ -565,7 +641,10 @@ def test_mutated_helper_containers_are_rejected(tmp_path, code):
         TOOL['read_input'](source)
 
 
-@pytest.mark.parametrize('code', ('f = load_value()', 'if True:\n    f = .6', 'f += .2', 'f, g = .6, 1.'))
+@pytest.mark.parametrize('code', ('f = load_value()', 'if True:\n    f = .6', 'f += .2', 'f, g = .6, 1.',
+                                'match .6:\n    case f:\n        pass',
+                                'match [.6]:\n    case [*f]:\n        pass',
+                                'match {"fraction": .6}:\n    case {**f}:\n        pass'))
 def test_runtime_constants_do_not_reuse_stale_values(tmp_path, code):
     source = tmp_path / 'input.py'
     source.write_text('f = .4\n' + code + '\nparams = {"fraction": f}\n')

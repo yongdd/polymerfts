@@ -83,7 +83,7 @@ PropagatorComputation<T>::PropagatorComputation(
 
     // Allocate memory for dq_dl (6 components: dH/dL1..3, dH/dγ, dH/dβ, dH/dα)
     for(int p=0; p<molecules->get_n_polymer_types(); p++){
-        dq_dl.push_back({0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+        dq_dl.emplace_back();
     }
 }
 template <typename T>
@@ -173,8 +173,21 @@ std::vector<T> PropagatorComputation<T>::get_stress()
         if (pc.get_volume_fraction() == 0.0)
             continue;
         for(int d=0; d<N_STRESS; d++){
-            stress[d] += (this->dq_dl[p][d] * pc.get_volume_fraction() /
-                 pc.get_alpha()) / this->single_polymer_partitions[p];
+            const auto& derivative = this->dq_dl[p][d];
+            const T partition = this->single_polymer_partitions[p];
+            // Keep the ordinary evaluation order; the scaled path divides by Q
+            // only after the lattice and population factors have been included.
+            if (derivative.exponent == T(0.0)
+                && scaled_product::ordinary(std::real(derivative.value))
+                && scaled_product::ordinary(std::imag(derivative.value))
+                && scaled_product::ordinary(pc.get_volume_fraction())
+                && scaled_product::ordinary(pc.get_alpha())
+                && partition != T(0.0) && scaled_product::ordinary(std::real(partition))
+                && scaled_product::ordinary(std::imag(partition)))
+                stress[d] += (derivative.value * pc.get_volume_fraction() / pc.get_alpha()) / partition;
+            else
+                stress[d] += derivative.normalized(make_density_normalization(
+                    pc.get_volume_fraction(), 1.0, 1.0, pc.get_alpha(), partition));
         }
     }
     return stress;
@@ -212,7 +225,15 @@ std::vector<T> PropagatorComputation<T>::get_stress_gce(std::vector<double> fuga
         if (fugacities[p] == 0.0)
             continue;
         for(int d=0; d<N_STRESS; d++){
-            stress[d] += static_cast<T>(fugacities[p]) * this->dq_dl[p][d];
+            const auto& derivative = this->dq_dl[p][d];
+            if (derivative.exponent == T(0.0)
+                && scaled_product::ordinary(std::real(derivative.value))
+                && scaled_product::ordinary(std::imag(derivative.value))
+                && scaled_product::ordinary(fugacities[p]))
+                stress[d] += static_cast<T>(fugacities[p]) * derivative.value;
+            else
+                stress[d] += derivative.normalized(make_density_normalization(
+                    fugacities[p], 1.0, 1.0, 1.0, T(1.0)));
         }
     }
     return stress;

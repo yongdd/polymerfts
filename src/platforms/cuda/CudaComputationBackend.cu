@@ -19,8 +19,151 @@
 #include "CudaSolverRealSpaceDiscrete.h"
 #include "CudaTypeDispatch.h"
 #include "CudaScaledProduct.cuh"
+#include "CudaJunctionProduct.cuh"
 
 namespace {
+
+constexpr int STRESS_RANGE_THREADS = 256;
+
+// Fuse the existing stress-pair copies with the magnitude scan. The two
+// metadata buffers follow the same copy/kernel-stream ownership as the pairs.
+template <typename TD>
+__global__ void ker_copy_stress_pair(
+    TD* pair, const TD* first, const TD* second, double* maxima, int n, int contraction)
+{
+    double maximum[4] = {};
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        TD a = first[i], b = second[i];
+        if constexpr (std::is_same_v<TD, double>)
+        {
+            maximum[0] = fmax(maximum[0], fabs(a));
+            maximum[2] = fmax(maximum[2], fabs(b));
+        }
+        else
+        {
+            if (contraction >= 0)
+            {
+                a = make_cuDoubleComplex(contraction / 2 == 0 ? a.x : a.y, 0.0);
+                b = make_cuDoubleComplex(contraction % 2 == 0 ? b.x : b.y, 0.0);
+            }
+            maximum[0] = fmax(maximum[0], fabs(a.x));
+            maximum[1] = fmax(maximum[1], fabs(a.y));
+            maximum[2] = fmax(maximum[2], fabs(b.x));
+            maximum[3] = fmax(maximum[3], fabs(b.y));
+        }
+        pair[i] = a;
+        pair[n + i] = b;
+    }
+    __shared__ double local_maxima[4][STRESS_RANGE_THREADS];
+    for (int component = 0; component < 4; ++component)
+        local_maxima[component][threadIdx.x] = maximum[component];
+    __syncthreads();
+    for (int stride = STRESS_RANGE_THREADS / 2; stride > 0; stride /= 2)
+    {
+        if (threadIdx.x < stride)
+            for (int component = 0; component < 4; ++component)
+                local_maxima[component][threadIdx.x] = fmax(local_maxima[component][threadIdx.x],
+                                                          local_maxima[component][threadIdx.x + stride]);
+        __syncthreads();
+    }
+    if (threadIdx.x == 0)
+        for (int component = 0; component < 4; ++component)
+            // Positive doubles have the same ordering as their unsigned bits.
+            atomicMax(reinterpret_cast<unsigned long long*>(&maxima[component]),
+                      static_cast<unsigned long long>(__double_as_longlong(local_maxima[component][0])));
+}
+
+template <typename TD>
+__global__ void ker_scale_stress_pair(TD* pair, const double* maxima, int n)
+{
+    const int first_shift = stress_accumulation::input_shift(fmax(maxima[0], maxima[1]));
+    const int second_shift = stress_accumulation::input_shift(fmax(maxima[2], maxima[3]));
+    if (first_shift == 0 && second_shift == 0)
+        return;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if constexpr (std::is_same_v<TD, double>)
+        {
+            pair[i] = scalbn(pair[i], -first_shift);
+            pair[n + i] = scalbn(pair[n + i], -second_shift);
+        }
+        else
+        {
+            pair[i].x = scalbn(pair[i].x, -first_shift);
+            pair[i].y = scalbn(pair[i].y, -first_shift);
+            pair[n + i].x = scalbn(pair[n + i].x, -second_shift);
+            pair[n + i].y = scalbn(pair[n + i].y, -second_shift);
+        }
+    }
+}
+
+template <typename TD>
+__global__ void ker_accumulate_stress(
+    TD* block, TD* segment, const double* maxima, double weight, int n, int contraction, int pair_index)
+{
+    const int shift = stress_accumulation::input_shift(fmax(maxima[0], maxima[1]))
+                    + stress_accumulation::input_shift(fmax(maxima[2], maxima[3]));
+    if constexpr (!std::is_same_v<TD, double>)
+        if (threadIdx.x == 0 && blockIdx.x == 0
+            && (stress_accumulation::needs_component_split(maxima[0], maxima[1])
+                || stress_accumulation::needs_component_split(maxima[2], maxima[3])))
+        {
+            block[12] = make_cuDoubleComplex(1.0, 0.0);
+            block[13 + pair_index] = make_cuDoubleComplex(1.0, 0.0);
+        }
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if constexpr (std::is_same_v<TD, double>)
+        {
+            const auto result = stress_accumulation::accumulate_segment(
+                {block[i], block[6 + i]}, segment[i], shift, weight);
+            block[i] = result.value;
+            block[6 + i] = result.exponent;
+        }
+        else
+        {
+            cuDoubleComplex value = segment[i];
+            if (contraction >= 0)
+                value = (contraction == 1 || contraction == 2)
+                    ? make_cuDoubleComplex(0.0, value.x)
+                    : make_cuDoubleComplex((contraction == 3 ? -1.0 : 1.0) * value.x, 0.0);
+            if (contraction < 0)
+            {
+                const auto real = stress_accumulation::accumulate_segment(
+                    {block[i].x, block[6 + i].x}, value.x, shift, weight);
+                const auto imag = stress_accumulation::accumulate_segment(
+                    {block[i].y, block[6 + i].y}, value.y, shift, weight);
+                block[i] = make_cuDoubleComplex(real.value, imag.value);
+                block[6 + i] = make_cuDoubleComplex(real.exponent, imag.exponent);
+            }
+            else
+            {
+                // Finish the four terms of one pair before adding its weighted
+                // result to the contour sum, also in reduce-memory mode.
+                const auto real = stress_accumulation::add(
+                    contraction == 0 ? stress_accumulation::Component{0.0, 0.0}
+                                     : stress_accumulation::Component{segment[6 + i].x, segment[12 + i].x},
+                    stress_accumulation::shifted(value.x, shift));
+                const auto imag = stress_accumulation::add(
+                    contraction == 0 ? stress_accumulation::Component{0.0, 0.0}
+                                     : stress_accumulation::Component{segment[6 + i].y, segment[12 + i].y},
+                    stress_accumulation::shifted(value.y, shift));
+                segment[6 + i] = make_cuDoubleComplex(real.value, imag.value);
+                segment[12 + i] = make_cuDoubleComplex(real.exponent, imag.exponent);
+                if (contraction == 3)
+                {
+                    const auto total_real = stress_accumulation::add({block[i].x, block[6 + i].x},
+                        stress_accumulation::multiply(real, weight));
+                    const auto total_imag = stress_accumulation::add({block[i].y, block[6 + i].y},
+                        stress_accumulation::multiply(imag, weight));
+                    block[i] = make_cuDoubleComplex(total_real.value, total_imag.value);
+                    block[6 + i] = make_cuDoubleComplex(total_real.exponent, total_imag.exponent);
+                }
+            }
+        }
+    }
+}
 
 /// Host scalar to the device scalar type.
 template <typename T>
@@ -301,6 +444,7 @@ CudaComputationBackend<T>::CudaComputationBackend(
             CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&streams[i][1])));  // copies
             CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&kernel_done[i], cudaEventDisableTiming)));
             CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&copy_done[i], cudaEventDisableTiming)));
+            d_junction_product[i].allocate(n_basis);
         }
 
         switch (method_info.id)
@@ -349,12 +493,22 @@ CudaComputationBackend<T>::CudaComputationBackend(
         {
             d_q_pair[i][0].allocate(2*M);
             d_q_pair[i][1].allocate(2*M);
+            d_stress_pair_maximum[i][0].allocate(4);
+            d_stress_pair_maximum[i][1].allocate(4);
+        }
+        if constexpr (!std::is_same_v<T, double>)
+        {
+            int max_pairs = 0;
+            for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
+                for (const auto& block : molecules->get_polymer(p).get_blocks())
+                    max_pairs = std::max(max_pairs, block.n_segment + 1);
+            stress_storage_size += max_pairs;
         }
         for (int i = 0; i < MAX_STREAMS; i++)
         {
-            d_segment_stress[i].allocate(6);
-            d_block_stress[i].allocate(6);
-            h_block_stress[i].allocate(6);
+            d_segment_stress[i].allocate(18);
+            d_block_stress[i].allocate(stress_storage_size);
+            h_block_stress[i].allocate(stress_storage_size);
         }
 
         solver->update_laplacian_operator();
@@ -398,8 +552,11 @@ void CudaComputationBackend<T>::release()
 
     for (int i = 0; i < MAX_STREAMS; i++)
     {
+        d_junction_product[i].release();
         d_q_pair[i][0].release();
         d_q_pair[i][1].release();
+        d_stress_pair_maximum[i][0].release();
+        d_stress_pair_maximum[i][1].release();
         d_segment_stress[i].release();
         d_block_stress[i].release();
         h_block_stress[i].release();
@@ -584,26 +741,23 @@ void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendAr
 }
 
 template <typename T>
-void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q, const CuDeviceData<T>* d_src, double power)
+void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q,
+    const CuDeviceData<T>* d_src, double power, bool first, bool last)
 {
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    if (is_integer_power(power))
+    if constexpr (std::is_same_v<T, double>)
     {
-        // q_i^n as n multiplications in one launch
-        ker_multi_int_pow<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-            d_q, d_src, static_cast<int>(power), n_basis);
-        CUDA_CHECK_LAUNCH();
-    }
-    else if constexpr (std::is_same_v<T, double>)
-    {
-        // Real power from a block multiplicity
-        ker_multi_pow<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-            d_q, d_src, power, n_basis);
+        junction_product::accumulate<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            d_q, d_junction_product[stream].get(), d_src, power, first, last, n_basis);
         CUDA_CHECK_LAUNCH();
     }
     else
     {
-        throw_with_line_number(complex_real_power_message(power));
+        if (!is_integer_power(power))
+            throw_with_line_number(complex_real_power_message(power));
+        junction_product::accumulate<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            d_q, d_junction_product[stream].get(), d_src, static_cast<int>(power), first, last, n_basis);
+        CUDA_CHECK_LAUNCH();
     }
 }
 
@@ -630,10 +784,11 @@ void CudaComputationBackend<T>::junction_product(
 {
     CuDeviceData<T>* d_q = raw(q);
 
-    CUDA_CHECK(cudaMemcpyAsync(d_q, d_q_unity, sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
-    for (const auto& [src, n_repeated] : sources)
-        multiply_power(stream, d_q, raw(src), n_repeated);
+    if (sources.empty())
+        set_unity(stream, q);
+    for (size_t index = 0; index < sources.size(); ++index)
+        multiply_power(stream, d_q, raw(sources[index].first), sources[index].second,
+                       index == 0, index + 1 == sources.size());
 }
 
 template <typename T>
@@ -665,13 +820,14 @@ void CudaComputationBackend<T>::junction_product(
     // The stress pair buffer is free while propagators are computed; stage each checkpoint in it
     CuDeviceData<T>* d_stage = d_q_pair[stream][0];
 
-    CUDA_CHECK(cudaMemcpyAsync(d_q, d_q_unity, sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
-    for (const auto& [src, n_repeated] : sources)
+    if (sources.empty())
+        set_unity(stream, q);
+    for (size_t index = 0; index < sources.size(); ++index)
     {
+        const auto& [src, n_repeated] = sources[index];
         CUDA_CHECK(cudaMemcpyAsync(d_stage, raw(src), sizeof(T)*n_basis,
                                         cudaMemcpyHostToDevice, streams[stream][0]));
-        multiply_power(stream, d_q, d_stage, n_repeated);
+        multiply_power(stream, d_q, d_stage, n_repeated, index == 0, index + 1 == sources.size());
     }
 }
 
@@ -804,10 +960,10 @@ void CudaComputationBackend<T>::prepare_stress()
 }
 
 template <typename T>
-std::array<T, 6> CudaComputationBackend<T>::block_stress(
+StressAccumulator<T> CudaComputationBackend<T>::block_stress(
     int stream, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
 {
-    std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    StressAccumulator<T> stress{};
     if (pairs.empty())
         return stress;
 
@@ -822,56 +978,77 @@ std::array<T, 6> CudaComputationBackend<T>::block_stress(
     CuDeviceData<T>* d_segment = d_segment_stress[stream];
     CuDeviceData<T>* d_block   = d_block_stress[stream];
     CUDA_CHECK(cudaMemsetAsync(d_segment, 0, sizeof(T)*6, s_kernel));
-    CUDA_CHECK(cudaMemsetAsync(d_block,   0, sizeof(T)*6, s_kernel));
 
     cudaEvent_t kernel_done_s = kernel_done[stream];
     cudaEvent_t copy_done_s   = copy_done[stream];
 
-    // The pairs may still be computed on the kernel stream (reduce-memory
-    // recomputation): the copies wait for it
-    CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-    CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-
-    // The solver reads the pair as one contiguous [q_1 | q_2] buffer; copy the
-    // next pair on the copy stream while the current one is computed.
-    auto copy_pair = [&](size_t i, CuDeviceData<T>* d_pair)
+    // Normal pairs keep the original complex FFT path. Only when common
+    // scaling would lose a component do we retry the block as four real
+    // bilinear forms. The flag travels with the existing block-result copy:
+    // there is no per-segment host check or additional ordinary-path sync.
+    auto run_block = [&](bool split_components)
     {
-        CUDA_CHECK(cudaMemcpyAsync(&d_pair[0], raw(pairs[i].q_1), sizeof(T)*n_basis,
-                                        cudaMemcpyDeviceToDevice, s_copy));
-        CUDA_CHECK(cudaMemcpyAsync(&d_pair[n_basis], raw(pairs[i].q_2), sizeof(T)*n_basis,
-                                        cudaMemcpyDeviceToDevice, s_copy));
-        CUDA_CHECK(cudaEventRecord(copy_done_s, s_copy));
-    };
-
-    int prev = 0, next = 1;
-    copy_pair(0, d_q_pair[stream][prev]);
-    CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-
-    for (size_t i = 0; i < pairs.size(); i++)
-    {
-        if (i + 1 < pairs.size())
-            copy_pair(i + 1, d_q_pair[stream][next]);
-
-        // block += weight * segment, summed on the device
-        solver->compute_single_segment_stress(stream, d_q_pair[stream][prev], d_segment,
-                                              monomer_type, pairs[i].is_half_bond_length);
-        ker_lin_comb<<<1, 32, 0, s_kernel>>>(d_block, 1.0, d_block, pairs[i].weight, d_segment, N_STRESS_DIM);
-        CUDA_CHECK_LAUNCH();
+        std::vector<std::pair<size_t, int>> sequence;
+        for (size_t i = 0; i < pairs.size(); ++i)
+        {
+            const bool split_pair = split_components && std::real(h_block_stress[stream][13 + i]) != 0.0;
+            if (split_pair)
+                for (int component = 0; component < 4; ++component)
+                    sequence.push_back({i, component});
+            else
+                sequence.push_back({i, -1});
+        }
+        CUDA_CHECK(cudaMemsetAsync(d_block, 0, sizeof(T)*stress_storage_size, s_kernel));
         CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-
         CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-        CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-        std::swap(prev, next);
-    }
+        const size_t count = sequence.size();
+        auto copy_pair = [&](size_t step, int buffer)
+        {
+            const auto [i, contraction] = sequence[step];
+            double* maxima = d_stress_pair_maximum[stream][buffer];
+            CUDA_CHECK(cudaMemsetAsync(maxima, 0, 4*sizeof(double), s_copy));
+            ker_copy_stress_pair<<<grid_blocks(n_basis, STRESS_RANGE_THREADS), STRESS_RANGE_THREADS, 0, s_copy>>>(
+                static_cast<CuDeviceData<T>*>(d_q_pair[stream][buffer]), raw(pairs[i].q_1), raw(pairs[i].q_2),
+                maxima, n_basis, contraction);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaEventRecord(copy_done_s, s_copy));
+        };
 
-    // One copy per block; waiting on this stream only lets the other streams run on
-    CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*N_STRESS_DIM,
-                                    cudaMemcpyDeviceToHost, s_kernel));
-    CUDA_CHECK(cudaStreamSynchronize(s_kernel));
-    CUDA_CHECK(cudaStreamSynchronize(s_copy));
+        int prev = 0, next = 1;
+        copy_pair(0, prev);
+        CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
+        for (size_t step = 0; step < count; ++step)
+        {
+            if (step + 1 < count)
+                copy_pair(step + 1, next);
+            const auto [i, contraction] = sequence[step];
+            double* maxima = d_stress_pair_maximum[stream][prev];
+            ker_scale_stress_pair<<<grid_blocks(n_basis, STRESS_RANGE_THREADS), STRESS_RANGE_THREADS, 0, s_kernel>>>(
+                static_cast<CuDeviceData<T>*>(d_q_pair[stream][prev]), maxima, n_basis);
+            CUDA_CHECK_LAUNCH();
+            solver->compute_single_segment_stress(stream, d_q_pair[stream][prev], d_segment,
+                                                  monomer_type, pairs[i].is_half_bond_length);
+            ker_accumulate_stress<<<1, 32, 0, s_kernel>>>(
+                d_block, d_segment, maxima, pairs[i].weight, N_STRESS_DIM, contraction, static_cast<int>(i));
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
+            CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
+            CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
+            std::swap(prev, next);
+        }
+        const size_t result_size = std::is_same_v<T, double> ? 12 : 13 + pairs.size();
+        CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*result_size,
+                                  cudaMemcpyDeviceToHost, s_kernel));
+        CUDA_CHECK(cudaStreamSynchronize(s_kernel));
+        CUDA_CHECK(cudaStreamSynchronize(s_copy));
+    };
+    run_block(false);
+    if constexpr (!std::is_same_v<T, double>)
+        if (std::real(h_block_stress[stream][12]) != 0.0)
+            run_block(true);
 
     for (int d = 0; d < N_STRESS_DIM; d++)
-        stress[d] = h_block_stress[stream][d];
+        stress[d] = {h_block_stress[stream][d], h_block_stress[stream][6 + d]};
     return stress;
 }
 

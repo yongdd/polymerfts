@@ -45,6 +45,10 @@ private:
     static T* raw(BackendArray<T>* a) { return reinterpret_cast<T*>(a); }
     static T* raw(CheckpointArray<T>* a) { return reinterpret_cast<T*>(a); }
 
+    // Allocated only when an extreme stress pair needs scaling; each worker
+    // owns its copies and reuses them for subsequent segments.
+    std::vector<std::array<std::vector<T>, 2>> stress_pairs;
+
     void sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
     void multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
 
@@ -102,7 +106,7 @@ public:
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs,
                               BackendArray<T>* divisor = nullptr, BackendArray<T>* exponent = nullptr) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
-    std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
+    StressAccumulator<T> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;
     void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,

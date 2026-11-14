@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "DensityNormalization.h"
+#include "StressAccumulator.h"
 
 /// True if a junction power is an integer. The backends raise a propagator to an integer
 /// power with an integer exponent (std::pow on the CPU, repeated multiplication on CUDA),
@@ -241,7 +242,7 @@ public:
      * [V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃] in the deformation-vector basis;
      * components the solver does not compute are zero.
      */
-    virtual std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
+    virtual StressAccumulator<T> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                           const std::string& monomer_type) = 0;
 
     /**

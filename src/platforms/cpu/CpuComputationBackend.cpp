@@ -12,6 +12,7 @@
 #include "Exception.h"
 #include "NumericalMethods.h"
 #include "ScaledProduct.h"
+#include "JunctionProduct.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
 #include "CpuSolverPseudoRK2.h"
@@ -27,6 +28,7 @@ CpuComputationBackend<T>::CpuComputationBackend(
 {
     n_basis = cb->get_n_basis();
     n_streams = std::min(this->n_streams_from_env(/*default_n_streams=*/4), max_n_streams);
+    stress_pairs.resize(n_streams);
 
     switch (method_info.id)
     {
@@ -204,26 +206,28 @@ void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<con
 template <typename T>
 void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
-    for (int i = 0; i < n_basis; i++)
-        q[i] = 1.0;
-    for (const auto& [src, n_repeated] : sources)
+    if constexpr (!std::is_same_v<T, double>)
     {
-        if (is_integer_power(n_repeated))
+        for (const auto& source : sources)
+            if (!is_integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
+    }
+    for (int i = 0; i < n_basis; i++)
+    {
+        junction_product::Accumulator<T> product;
+        for (const auto& [src, n_repeated] : sources)
         {
-            // pow(q, int), the call explicit arms take as well
-            const int n_integer = static_cast<int>(n_repeated);
-            for (int i = 0; i < n_basis; i++)
-                q[i] *= pow(src[i], n_integer);
+            if constexpr (std::is_same_v<T, double>)
+                product.multiply(src[i], n_repeated);
+            else
+                product.multiply(src[i].real(), src[i].imag(), static_cast<int>(n_repeated));
         }
-        else if constexpr (std::is_same_v<T, double>)
-        {
-            // Real power from a block multiplicity
-            for (int i = 0; i < n_basis; i++)
-                q[i] *= std::pow(src[i], n_repeated);
-        }
+        if constexpr (std::is_same_v<T, double>)
+            q[i] = product.value();
         else
         {
-            throw_with_line_number(complex_real_power_message(n_repeated));
+            const auto value = product.value();
+            q[i] = T(value.real, value.imag);
         }
     }
 }
@@ -496,17 +500,75 @@ void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi
 }
 
 template <typename T>
-std::array<T, 6> CpuComputationBackend<T>::block_stress(
-    int, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
+StressAccumulator<T> CpuComputationBackend<T>::block_stress(
+    int stream, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
 {
-    std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    StressAccumulator<T> stress{};
     for (const SegmentPair<T>& pair : pairs)
     {
-        // The solver expands/reduces internally when a space group is set
-        std::vector<T> segment_stress = solver->compute_single_segment_stress(
-            raw(pair.q_1), raw(pair.q_2), monomer_type, pair.is_half_bond_length);
-        for (int d = 0; d < 6; d++)
-            stress[d] += segment_stress[d]*pair.weight;
+        T* original[2] = {raw(pair.q_1), raw(pair.q_2)};
+        double maxima[2][2] = {};
+        bool split_components = false;
+        for (int side = 0; side < 2; ++side)
+        {
+            for (int i = 0; i < n_basis; ++i)
+            {
+                maxima[side][0] = std::max(maxima[side][0], std::abs(std::real(original[side][i])));
+                if constexpr (!std::is_same_v<T, double>)
+                    maxima[side][1] = std::max(maxima[side][1], std::abs(std::imag(original[side][i])));
+            }
+            split_components = split_components || stress_accumulation::needs_component_split(
+                maxima[side][0], maxima[side][1]);
+        }
+
+        // Ordinary complex pairs retain their two FFTs. A rare pair with a
+        // component too small for common scaling uses Re/Re, Re/Im, Im/Re,
+        // Im/Im contractions; their signs/phases are restored after the FFT.
+        StressAccumulator<T> pair_stress{};
+        for (int contraction = 0; contraction < (split_components ? 4 : 1); ++contraction)
+        {
+            T* inputs[2] = {original[0], original[1]};
+            int shift = 0;
+            for (int side = 0; side < 2; ++side)
+            {
+                const int component = side == 0 ? contraction / 2 : contraction % 2;
+                const double maximum = split_components ? maxima[side][component]
+                    : std::max(maxima[side][0], maxima[side][1]);
+                const int exponent = stress_accumulation::input_shift(maximum);
+                shift += exponent;
+                if (exponent != 0 || split_components)
+                {
+                    auto& scaled = stress_pairs[stream][side];
+                    scaled.resize(n_basis);
+                    for (int i = 0; i < n_basis; ++i)
+                    {
+                        if constexpr (std::is_same_v<T, double>)
+                            scaled[i] = std::scalbn(original[side][i], -exponent);
+                        else if (split_components)
+                            scaled[i] = T(std::scalbn(component == 0 ? original[side][i].real()
+                                                                 : original[side][i].imag(), -exponent), 0.0);
+                        else
+                            scaled[i] = {std::scalbn(original[side][i].real(), -exponent),
+                                         std::scalbn(original[side][i].imag(), -exponent)};
+                    }
+                    inputs[side] = scaled.data();
+                }
+            }
+            // The solver expands/reduces internally when a space group is set.
+            const std::vector<T> segment_stress = solver->compute_single_segment_stress(
+                inputs[0], inputs[1], monomer_type, pair.is_half_bond_length);
+            for (int d = 0; d < 6; d++)
+            {
+                T segment = segment_stress[d];
+                if constexpr (!std::is_same_v<T, double>)
+                    if (split_components)
+                        segment = (contraction == 1 || contraction == 2)
+                            ? T(0.0, segment.real()) : T((contraction == 3 ? -1.0 : 1.0) * segment.real(), 0.0);
+                pair_stress[d] += StressValue<T>::shifted(segment, shift);
+            }
+        }
+        for (int d = 0; d < 6; ++d)
+            stress[d] += pair_stress[d] * pair.weight;
     }
     return stress;
 }

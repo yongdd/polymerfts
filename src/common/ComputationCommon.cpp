@@ -205,7 +205,7 @@ std::vector<double> ComputationCommon<T>::partition_errors_from_contours(
 }
 
 template <typename T>
-void ComputationCommon<T>::scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const
+void ComputationCommon<T>::scale_by_contour_step(StressAccumulator<T>& stress, const std::string& key_right) const
 {
     const double ds = contour_step(key_right);
     for (int d = 0; d < 6; d++)
@@ -213,11 +213,11 @@ void ComputationCommon<T>::scale_by_contour_step(std::array<T, 6>& stress, const
 }
 
 template <typename T>
-void ComputationCommon<T>::set_stress_from_blocks(const std::vector<std::array<T, 6>>& stress_of_block)
+void ComputationCommon<T>::set_stress_from_blocks(const std::vector<StressAccumulator<T>>& stress_of_block)
 {
     for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
         for (int d = 0; d < 6; d++)
-            this->dq_dl[p][d] = 0.0;
+            this->dq_dl[p][d] = {};
     size_t b = 0;
     for (const auto& item : this->phi_block)
     {
@@ -271,9 +271,9 @@ void ComputationCommon<T>::convert_stress_to_lattice_derivatives()
 
     for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
     {
-        T V_11 = this->dq_dl[p][0];
-        T V_22 = (DIM >= 2) ? this->dq_dl[p][1] : T(0.0);
-        T V_33 = T(0.0), V_12 = T(0.0), V_13 = T(0.0), V_23 = T(0.0);
+        StressValue<T> V_11 = this->dq_dl[p][0];
+        StressValue<T> V_22 = (DIM >= 2) ? this->dq_dl[p][1] : StressValue<T>{};
+        StressValue<T> V_33{}, V_12{}, V_13{}, V_23{};
         if (DIM == 3)
         {
             V_33 = this->dq_dl[p][2];
@@ -296,13 +296,13 @@ void ComputationCommon<T>::convert_stress_to_lattice_derivatives()
         // ∂g₁₂/∂γ = -L₁L₂sinγ → ∂H/∂γ = -L₁L₂sinγ·V₁₂, and likewise for β and α
         if (DIM == 3)
         {
-            this->dq_dl[p][3] = -L1 * L2 * sin_g * V_12 / norm;  // dH/dγ
-            this->dq_dl[p][4] = -L1 * L3 * sin_b * V_13 / norm;  // dH/dβ
-            this->dq_dl[p][5] = -L2 * L3 * sin_a * V_23 / norm;  // dH/dα
+            this->dq_dl[p][3] = ((V_12 * -L1) * L2) * sin_g / norm;  // dH/dγ
+            this->dq_dl[p][4] = ((V_13 * -L1) * L3) * sin_b / norm;  // dH/dβ
+            this->dq_dl[p][5] = ((V_23 * -L2) * L3) * sin_a / norm;  // dH/dα
         }
         else if (DIM == 2)
         {
-            this->dq_dl[p][2] = -L1 * L2 * sin_g * V_12 / norm;  // dH/dγ
+            this->dq_dl[p][2] = ((V_12 * -L1) * L2) * sin_g / norm;  // dH/dγ
         }
     }
 }

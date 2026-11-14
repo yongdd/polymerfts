@@ -247,7 +247,7 @@ void ComputationContinuous<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: Simpson's rule over the segment stresses
-        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
+        std::vector<StressAccumulator<T>> stress_of_block(this->phi_block.size());
         ParallelErrors errors;
         #pragma omp parallel for num_threads(this->n_streams)
         for (size_t b = 0; b < this->phi_block_iterators.size(); b++)
@@ -261,7 +261,7 @@ void ComputationContinuous<T>::compute_stress()
                 const int N_LEFT  = block.n_segment_left;
                 const int N_RIGHT = block.n_segment_right;
 
-                stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+                stress_of_block[b] = {};
                 if (N_RIGHT == 0)
                     return;
 

@@ -321,6 +321,11 @@ def read_python_params(path):
 
     def independent_result(node):
         name = callable_name(node.func)
+        if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
+                and isinstance(node.func.value, ast.Call)
+                and callable_name(node.func.value.func) in {"numpy.asarray", "numpy.array", "numpy.zeros",
+                                                           "numpy.ones", "numpy.empty", "numpy.full"}):
+            return True  # the shape cannot alias the array produced by this call
         if name in {"polymerfts.SCFT", "polymerfts.scft.SCFT", "print", "len", "range",
                     "numpy.zeros", "numpy.ones", "numpy.empty", "numpy.random.normal",
                     "numpy.random.uniform", "numpy.random.random"}:
@@ -337,6 +342,11 @@ def read_python_params(path):
         # scalar result cannot give the initializer access to the original list.
         if isinstance(node, ast.Call) and independent_result(node):
             return False
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            # The iterator bindings are checked separately by scoped_nodes. Only
+            # output expressions can put a known container into the new result.
+            outputs = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
+            return any(references_container(output, containers) for output in outputs)
         if isinstance(node, ast.Subscript):
             try:
                 if not isinstance(evaluate(node), (dict, list, tuple)):
@@ -345,6 +355,15 @@ def read_python_params(path):
                 pass
         return ((isinstance(node, ast.Name) and node.id in containers)
                 or any(references_container(child, containers) for child in ast.iter_child_nodes(node)))
+
+    def container_ids(value):
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, (list, tuple)):
+            children = value
+        else:
+            return set()
+        return {id(value)}.union(*(container_ids(child) for child in children))
 
     def evaluate(node):
         if isinstance(node, ast.Name):
@@ -399,6 +418,10 @@ def read_python_params(path):
     def bound_names(node):
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             return {node.id}
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
+            return {node.name}
+        if isinstance(node, ast.MatchMapping) and node.rest is not None:
+            return {node.rest}
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             return {node.name}
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -415,24 +438,23 @@ def read_python_params(path):
             local.update(arg.arg for arg in ast.walk(node.args) if isinstance(arg, ast.arg))
         return body, local, declared
 
-    def scoped_calls(node, hidden=frozenset(), closure=frozenset()):
-        """Calls with names shadowed in their lexical scope; never execute their bodies."""
+    def scoped_nodes(node, hidden=frozenset(), closure=frozenset()):
+        """Nodes with names shadowed in their lexical scope; never execute their bodies."""
         if isinstance(node, definitions):
             body, local, declared = scope_info(node)
             for child in ast.iter_child_nodes(node):
                 if child not in body:
-                    yield from scoped_calls(child, hidden, closure)
+                    yield from scoped_nodes(child, hidden, closure)
             inner = (closure - declared) | local
             # Class bindings are visible in the class body, but are not closures
             # of its methods. Functions retain their enclosing function bindings.
             child_closure = closure if isinstance(node, ast.ClassDef) else inner
             for item in body:
-                yield from scoped_calls(item, inner, child_closure)
+                yield from scoped_nodes(item, inner, child_closure)
             return
-        if isinstance(node, ast.Call):
-            yield node, hidden
+        yield node, hidden
         for child in ast.iter_child_nodes(node):
-            yield from scoped_calls(child, hidden, closure)
+            yield from scoped_nodes(child, hidden, closure)
 
     def module_bindings(statement):
         """Names changed in the module namespace, including explicit global writes.
@@ -484,10 +506,47 @@ def read_python_params(path):
                 imports.pop(name, None)
             rebound.update(assigned)
         containers = {name for name, value in symbols.items() if isinstance(value, (dict, list, tuple))}
+        known_containers = set().union(*(container_ids(symbols[name]) for name in containers))
         # Check escapes before unsupported assignments discard their old symbols.
         # Passing a parameter container to arbitrary Python can mutate any nested
         # value; observing its AST cannot establish the configuration afterwards.
-        for node, hidden in scoped_calls(statement):
+        for node, hidden in scoped_nodes(statement):
+            # Only direct module assignments to names are evaluated below. Other
+            # bindings must not hide an alias that later mutates a known container.
+            # Iterating a dictionary yields its scalar keys; numeric shape loops
+            # and the generated script's monomer-name comprehension remain safe.
+            expression, unpack = None, False
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                expression = node.value
+                unpack = all(isinstance(target, (ast.Tuple, ast.List)) for target in targets)
+                if node is statement and all(isinstance(target, ast.Name) for target in targets):
+                    try:
+                        evaluate(expression)
+                    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                        pass
+                    else:
+                        expression = None  # this assignment retains its aliases in symbols below
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                expression, unpack = node.iter, True
+            elif isinstance(node, ast.NamedExpr):
+                expression = node.value
+            elif isinstance(node, ast.Match) and any(
+                    bound_names(part) for case in node.cases for part in ast.walk(case.pattern)):
+                expression = node.subject
+            if expression is not None and references_container(expression, containers - hidden):
+                try:
+                    value = evaluate(expression)
+                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                    aliases = True
+                else:
+                    values = value if unpack and isinstance(value, (dict, list, tuple)) else (value,)
+                    aliases = any(container_ids(item) & known_containers for item in values)
+                if aliases:
+                    raise ValueError("Runtime container alias bindings may cause parameter mutations; "
+                                     "use direct assignments or saved SCFT result/JSON/YAML parameters.")
+            if not isinstance(node, ast.Call):
+                continue
             owner = node.func
             while isinstance(owner, ast.Attribute):
                 owner = owner.value
@@ -553,6 +612,13 @@ def read_python_params(path):
         # Parameter mutations are ambiguous without executing the script.
         containers.update(name for name, value in symbols.items() if isinstance(value, (dict, list, tuple)))
         for node in ast.walk(statement):
+            if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping)):
+                for name in bound_names(node) & assigned:
+                    if name == "params":
+                        raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
+                    # Pattern captures store names as strings, without Name(Store)
+                    # nodes. Do not reuse a pre-match scalar or container binding.
+                    symbols.pop(name, None)
             if (isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
                     and node.id not in names and node.id in assigned):
                 if node.id == "params":
@@ -834,7 +900,8 @@ def import_files(omega, output, rho=None, monomers=None, metadata=None, chain_mo
     if output.suffix.lower() != ".mat": raise ValueError("Import output must have a .mat extension.")
     with output.open("xb") as handle:
         try:
-            savemat(handle, result, long_field_names=True, do_compression=True)
+            encoded = _MAT['_encode_mat_fields'](result, 63, top_level=True)
+            savemat(handle, encoded, long_field_names=True, do_compression=True)
         except Exception:
             output.unlink()
             raise

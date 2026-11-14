@@ -303,7 +303,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds (see ComputationDiscrete)
-        std::vector<std::array<T, 6>> stress_of_block;
+        std::vector<StressAccumulator<T>> stress_of_block;
         for (const auto& [key, phi] : this->phi_block)
         {
             const auto& [p, key_left, key_right] = key;
@@ -314,10 +314,10 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
             const bool left_is_leaf  = this->propagator_computation_optimizer->get_computation_propagator(key_left).deps.size() == 0;
             const bool right_is_leaf = this->propagator_computation_optimizer->get_computation_propagator(key_right).deps.size() == 0;
 
-            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            StressAccumulator<T> stress{};
             auto add_bond = [&](BackendArray<T>* q, BackendArray<T>* q_dagger, bool is_half_bond_length)
             {
-                const std::array<T, 6> bond = this->backend->block_stress(
+                const StressAccumulator<T> bond = this->backend->block_stress(
                     0, {{q, q_dagger, weight, is_half_bond_length}}, block.monomer_type);
                 for (int d = 0; d < 6; d++)
                     stress[d] += bond[d];

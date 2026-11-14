@@ -76,6 +76,7 @@
 #include "SpaceGroup.h"
 #include "Exception.h"
 #include "PartitionFunctionCheck.h"
+#include "StressAccumulator.h"
 
 /// Relative tolerance for contour partition consistency (including complex phase).
 constexpr double PARTITION_TOLERANCE = 1e-7;
@@ -135,7 +136,7 @@ protected:
      * For 2D: [dH/dL₁, dH/dL₂, dH/dγ, 0, 0, 0]. For 1D: only index 0.
      * Used for box relaxation in SCFT.
      */
-    std::vector<std::array<T,6>> dq_dl;
+    std::vector<StressAccumulator<T>> dq_dl;
 
     /**
      * @brief Space group for reduced basis representation (optional).

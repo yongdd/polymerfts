@@ -26,6 +26,9 @@ SET(BASIC_TESTS
     TestDiscreteProductRange
     TestConcentrationNormalizationRange
     TestConcentrationAccumulationRange
+    TestStressRange
+    TestJunctionRange
+    TestJunctionProduct
     TestCanonicalIonRange
     TestThinObliqueCell
     TestDensityNormalization
@@ -182,6 +185,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
     TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
+    TestStressRange TestJunctionRange
     TestCnAdiLongLines TestCrysFFTCellChange
     TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
