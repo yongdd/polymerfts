@@ -45,6 +45,14 @@ ComputationCommon<T>::ComputationCommon(
         backend = create_backend();
         n_streams = backend->get_n_streams();
 
+        // Identical branches are one source raised to a power; only a junction of
+        // different branches carries a product state from one source to the next.
+        size_t max_junction_sources = 0;
+        for (const auto& [key, edge] : propagator_computation_optimizer->get_computation_propagators())
+            if (key[0] == '(')
+                max_junction_sources = std::max(max_junction_sources, edge.deps.size());
+        backend->prepare_junction_products(static_cast<int>(max_junction_sources));
+
         for (const auto& item : propagator_computation_optimizer->get_computation_blocks())
         {
             phi_block[item.first] = backend->allocate();

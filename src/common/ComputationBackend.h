@@ -193,6 +193,13 @@ public:
     virtual void junction_product(int stream, BackendArray<T>* q,
                                   const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
+    /**
+     * @brief Called once after construction with the largest number of sources of
+     *        any junction_product(); a backend that keeps the product state between
+     *        sources allocates it here. The default does nothing.
+     */
+    virtual void prepare_junction_products(int /*max_sources*/) {}
+
     /// q = q * mask (impenetrable regions); does nothing without a mask.
     virtual void apply_mask(int stream, BackendArray<T>* q) = 0;
 

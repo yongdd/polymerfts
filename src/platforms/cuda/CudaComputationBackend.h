@@ -51,7 +51,7 @@ private:
     cudaStream_t streams[MAX_STREAMS][2];  ///< [kernels, copies] per stream index
 
     CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (full grid)
-    CudaDeviceBuffer<junction_product::Accumulator<T>> d_junction_product[MAX_STREAMS]; ///< Product state across junction sources
+    CudaDeviceBuffer<junction_product::Accumulator<T>> d_junction_product[MAX_STREAMS]; ///< Product state across junction sources; empty unless a junction has several sources
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
     CudaDeviceBuffer<int> d_reduced_basis_indices;                   ///< Space group: reduced -> full index (lent to the solver)
     CudaDeviceBuffer<int> d_full_to_reduced_map;                     ///< Space group: full -> reduced index (lent to the solver)
@@ -126,6 +126,7 @@ public:
                       const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
                           const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
+    void prepare_junction_products(int max_sources) override;
     void apply_mask(int stream, BackendArray<T>* q) override;
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 

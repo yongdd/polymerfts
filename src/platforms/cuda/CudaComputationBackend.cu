@@ -444,7 +444,6 @@ CudaComputationBackend<T>::CudaComputationBackend(
             CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&streams[i][1])));  // copies
             CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&kernel_done[i], cudaEventDisableTiming)));
             CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&copy_done[i], cudaEventDisableTiming)));
-            d_junction_product[i].allocate(n_basis);
         }
 
         switch (method_info.id)
@@ -745,6 +744,8 @@ void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q,
     const CuDeviceData<T>* d_src, double power, bool first, bool last)
 {
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    if (!(first && last) && d_junction_product[stream].empty())
+        throw_with_line_number("A junction of several sources needs prepare_junction_products() first.");
     if constexpr (std::is_same_v<T, double>)
     {
         junction_product::accumulate<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
@@ -759,6 +760,18 @@ void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q,
             d_q, d_junction_product[stream].get(), d_src, static_cast<int>(power), first, last, n_basis);
         CUDA_CHECK_LAUNCH();
     }
+}
+
+template <typename T>
+void CudaComputationBackend<T>::prepare_junction_products(int max_sources)
+{
+    // One source is raised to its power within one launch and needs no state.
+    // The state takes 40 (real) or 72 (complex) bytes per point and stream.
+    if (max_sources < 2)
+        return;
+    for (int i = 0; i < n_streams; i++)
+        if (d_junction_product[i].empty())
+            d_junction_product[i].allocate(n_basis);
 }
 
 template <typename T>

@@ -740,6 +740,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- On CUDA the product state of a junction is allocated only when a junction has two or more
+  different sources (2026-11-15). It takes 40 (real fields) or 72 (complex fields) bytes per grid
+  point and stream, and was allocated for every stream of every computation: 2.7 GB at 256³ with
+  real fields and four streams, also for a diblock, which never uses it.
 - On CUDA an integer power at a junction, a repeated branch such as `A10:5` or an integer block
   multiplicity, takes one kernel launch instead of one per factor (2026-11-08); the propagators
   are bitwise unchanged.
