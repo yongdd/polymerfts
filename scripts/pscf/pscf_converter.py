@@ -309,7 +309,19 @@ def read_python_params(path):
 
     # These calls consume literal configuration values without modifying them.
     # Resolve imported names, rather than trusting an arbitrary function named SCFT.
-    readers = {"polymerfts.SCFT", "polymerfts.scft.SCFT", "print", "len", "sum", "min", "max",
+    # The simulation constructors deep-copy their params argument; they keep the
+    # others (callbacks, an integrator) as given, so those are checked as usual.
+    simulations = {"polymerfts.SCFT", "polymerfts.scft.SCFT", "polymerfts.scft.scft.SCFT",
+                   "polymerfts.LFTS", "polymerfts.lfts.LFTS", "polymerfts.fts.lfts.LFTS",
+                   "polymerfts.CLFTS", "polymerfts.clfts.CLFTS", "polymerfts.fts.clfts.CLFTS",
+                   "polymerfts.GibbsEnsemble", "polymerfts.fts.gibbs_ensemble.GibbsEnsemble"}
+    # Shape-only functions; on an array from array_makers they run ndarray code.
+    shape_readers = {"numpy.reshape", "numpy.broadcast_to"}
+    # Without `like=` these return a base-class ndarray (or a float), whose arithmetic
+    # and reshape pass no operand or shape list on to code of the script.
+    array_makers = {*("numpy." + name for name in ("array", "asarray", "zeros", "ones", "empty", "full")),
+                    *("numpy.random." + name for name in ("normal", "uniform", "random"))}
+    readers = {"print", "len", "sum", "min", "max",
                "range", "list", "tuple", "dict",
                *("numpy." + name for name in ("zeros", "ones", "empty", "full", "array", "asarray", "prod", "sum", "mean", "min", "max")),
                *("numpy.random." + name for name in ("normal", "uniform", "random"))}
@@ -319,6 +331,71 @@ def read_python_params(path):
         return (isinstance(value, (int, float, complex))
                 or isinstance(value, (list, tuple)) and all(numeric(item) for item in value))
 
+    def flat_scalars(value, mappings=True):
+        # An element of such a container is immutable, and arithmetic or a slice
+        # makes a new container: neither can alias a parameter container.
+        scalar = (int, float, complex, str, type(None))
+        if isinstance(value, scalar):
+            return True
+        if isinstance(value, dict):
+            items = value.values() if mappings else None
+        else:
+            items = value if isinstance(value, (list, tuple)) else None
+        return items is not None and all(isinstance(item, scalar) for item in items)
+
+    # `untrusted` holds the names whose module literal may not be their value here:
+    # locals of a function or comprehension, and names a compound statement rebinds.
+    def uses(node, untrusted):
+        return any(isinstance(part, ast.Name) and part.id in untrusted for part in ast.walk(node))
+
+    def evaluates_to_flat_scalars(node, untrusted=frozenset(), mappings=True):
+        if not uses(node, untrusted):
+            try:
+                return flat_scalars(evaluate(node), mappings)
+            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+                pass
+        # An element or slice of a flat container is a scalar or a new list, whatever the index.
+        return isinstance(node, ast.Subscript) and evaluates_to_flat_scalars(node.value, untrusted)
+
+    def new_array(node, untrusted=frozenset()):
+        return (isinstance(node, ast.Call) and not uses(node.func, untrusted)
+                and callable_name(node.func) in array_makers
+                and all(keyword.arg in ("dtype", "size") for keyword in node.keywords))
+
+    def builtin_operand(node, untrusted):
+        """Arithmetic with this operand runs builtin or NumPy code, not a method of the script."""
+        if new_array(node, untrusted):
+            return True
+        if uses(node, untrusted):
+            return False
+        try:
+            evaluate(node)
+        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+            return evaluates_to_flat_scalars(node)
+        return True
+
+    def inert_arithmetic(node, containers, untrusted):
+        # A parameter container given to an operator of another type reaches that type's
+        # method (__rmul__, __or__, ...) as it is. Builtin operands make a new object, in
+        # which a container of scalars leaves only immutable values. An object array hands
+        # each element's method the other operand converted to an array, which keeps a
+        # list of scalars as numbers but a dict as the dict itself.
+        if not (builtin_operand(node.left, untrusted) and builtin_operand(node.right, untrusted)):
+            return False
+        mappings = not (new_array(node.left, untrusted) or new_array(node.right, untrusted))
+        return all(evaluates_to_flat_scalars(operand, untrusted, mappings) for operand in (node.left, node.right)
+                   if references_container(operand, containers, untrusted))
+
+    def simulation_params(node):
+        if node.args and not isinstance(node.args[0], ast.Starred):
+            return node.args[0]
+        return next((keyword.value for keyword in node.keywords if keyword.arg == "params"), None)
+
+    def simulation_extras(node):
+        trusted = simulation_params(node)
+        return [argument for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
+                if argument is not trusted]
+
     def independent_result(node):
         name = callable_name(node.func)
         if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
@@ -326,7 +403,7 @@ def read_python_params(path):
                 and callable_name(node.func.value.func) in {"numpy.asarray", "numpy.array", "numpy.zeros",
                                                            "numpy.ones", "numpy.empty", "numpy.full"}):
             return True  # the shape cannot alias the array produced by this call
-        if name in {"polymerfts.SCFT", "polymerfts.scft.SCFT", "print", "len", "range",
+        if name in {"print", "len", "range",
                     "numpy.zeros", "numpy.ones", "numpy.empty", "numpy.random.normal",
                     "numpy.random.uniform", "numpy.random.random"}:
             return True
@@ -337,7 +414,7 @@ def read_python_params(path):
                 pass
         return False
 
-    def references_container(node, containers):
+    def references_container(node, containers, untrusted=frozenset()):
         if isinstance(node, ast.Lambda):
             # Defaults and the result are checked in their own lexical scopes.
             return False
@@ -345,19 +422,31 @@ def read_python_params(path):
         # scalar result cannot give the initializer access to the original list.
         if isinstance(node, ast.Call) and independent_result(node):
             return False
+        if isinstance(node, ast.Call) and callable_name(node.func) in simulations:
+            # The simulation holds a deep copy of params, and its other arguments as given.
+            return any(references_container(argument, containers, untrusted) for argument in simulation_extras(node))
+        if (isinstance(node, ast.Call) and callable_name(node.func) in shape_readers
+                and node.args and new_array(node.args[0], untrusted)):
+            return references_container(node.args[0], containers, untrusted)  # a view; the shape is not kept
+        if isinstance(node, ast.BinOp) and inert_arithmetic(node, containers, untrusted):
+            return False
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             # The iterator bindings are checked separately by scoped_nodes. Only
             # output expressions can put a known container into the new result.
             outputs = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
-            return any(references_container(output, containers - comprehension_bindings(node)) for output in outputs)
+            bound = comprehension_bindings(node)
+            return any(references_container(output, containers - bound, untrusted | bound) for output in outputs)
         if isinstance(node, ast.Subscript):
             try:
-                if not isinstance(evaluate(node), (dict, list, tuple)):
+                if not uses(node, untrusted) and not isinstance(evaluate(node), (dict, list, tuple)):
                     return False
             except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
                 pass
+            # An index unknown statically still selects a scalar, or slices a new list.
+            if evaluates_to_flat_scalars(node.value, untrusted):
+                return False
         return ((isinstance(node, ast.Name) and node.id in containers)
-                or any(references_container(child, containers) for child in ast.iter_child_nodes(node)))
+                or any(references_container(child, containers, untrusted) for child in ast.iter_child_nodes(node)))
 
     def container_ids(value):
         if isinstance(value, dict):
@@ -367,6 +456,17 @@ def read_python_params(path):
         else:
             return set()
         return {id(value)}.union(*(container_ids(child) for child in children))
+
+    def bound_values(target, value):
+        """Values that assigning value to target gives to names: unpacking binds the items."""
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (dict, list, tuple)):
+            items = list(value)
+            if (len(items) == len(target.elts)
+                    and not any(isinstance(element, ast.Starred) for element in target.elts)):
+                return [bound for element, item in zip(target.elts, items)
+                        for bound in bound_values(element, item)]
+            return items  # a starred name gets a new list of the remaining items
+        return [value]
 
     def evaluate(node):
         if isinstance(node, ast.Name):
@@ -551,6 +651,7 @@ def read_python_params(path):
         return assigned
 
     deferred_bodies = []
+    constructor_copies = set()  # ids of copy calls that are direct constructor arguments
     for statement in tree.body:
         if isinstance(statement, ast.Import):
             for alias in statement.names:
@@ -590,12 +691,12 @@ def read_python_params(path):
             # bindings must not hide an alias that later mutates a known container.
             # Iterating a dictionary yields its scalar keys; numeric shape loops
             # and the generated script's monomer-name comprehension remain safe.
-            expression, unpack = None, False
+            # targets: what the value (or each iterated item) is assigned to; None binds it whole.
+            expression, iterated, targets = None, False, [None]
             expressions = []
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 expression = node.value
-                unpack = all(isinstance(target, (ast.Tuple, ast.List)) for target in targets)
                 if node is statement and all(isinstance(target, ast.Name) for target in targets):
                     try:
                         evaluate(expression)
@@ -604,36 +705,41 @@ def read_python_params(path):
                     else:
                         expression = None  # this assignment retains its aliases in symbols below
             elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-                expression, unpack = node.iter, True
+                expression, iterated, targets = node.iter, True, [node.target]
             elif isinstance(node, ast.NamedExpr):
                 expression = node.value
             elif isinstance(node, ast.arguments):
                 # Defaults bind before entering the function's scope, including
                 # defaults of lambdas and keyword-only arguments.
-                expressions = [(value, False) for value in [*node.defaults, *node.kw_defaults]
-                               if value is not None]
+                expressions = [value for value in [*node.defaults, *node.kw_defaults] if value is not None]
             elif isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom)):
-                expression, unpack = node.value, isinstance(node, ast.YieldFrom)
+                expression, iterated = node.value, isinstance(node, ast.YieldFrom)
             elif isinstance(node, ast.Lambda):
                 expression = node.body
             elif isinstance(node, ast.Match) and any(
                     bound_names(part) for case in node.cases for part in ast.walk(case.pattern)):
                 expression = node.subject
             if expression is not None:
-                expressions.append((expression, unpack))
-            for expression, unpack in expressions:
-                if not references_container(expression, containers - hidden):
+                expressions.append(expression)
+            untrusted = hidden | assigned
+            for expression in expressions:
+                if not references_container(expression, containers - hidden, untrusted):
                     continue
                 try:
                     value = evaluate(expression)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
                     aliases = True
                 else:
-                    values = value if unpack and isinstance(value, (dict, list, tuple)) else (value,)
+                    items = list(value) if iterated and isinstance(value, (dict, list, tuple)) else [value]
+                    values = [bound for item in items for target in targets for bound in bound_values(target, item)]
                     aliases = any(container_ids(item) & known_containers for item in values)
                 if aliases:
                     raise ValueError("Runtime container alias bindings may cause parameter mutations; "
                                      "use direct assignments or saved SCFT result/JSON/YAML parameters.")
+            if isinstance(node, ast.BinOp) and not inert_arithmetic(node, containers - hidden, untrusted) and any(
+                    references_container(operand, containers - hidden, untrusted) for operand in (node.left, node.right)):
+                raise ValueError("Runtime params containers given to operators of unsupported objects may cause "
+                                 "mutations; use a saved SCFT result or JSON/YAML parameters.")
             if not isinstance(node, ast.Call):
                 continue
             owner = node.func
@@ -653,29 +759,41 @@ def read_python_params(path):
                 safe = (not (isinstance(root, ast.Name) and root.id in hidden)
                         and callable_name(constructor) in {"numpy.asarray", "numpy.array", "numpy.zeros",
                                                           "numpy.ones", "numpy.empty", "numpy.full"})
+            arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+            if name in simulations:
+                # params is deep-copied; a shallow copy handed straight in, as in
+                # SCFT(dict(params, ...)), too. The copy's own name is checked below.
+                trusted = simulation_params(node)
+                if isinstance(trusted, ast.Call):
+                    constructor_copies.add(id(trusted))
+                arguments = simulation_extras(node)
             if name in numeric_readers:
                 safe = independent_result(node)
             elif name in ("list", "tuple", "dict"):
                 try:
                     evaluate(node)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    safe = False
+                    safe = id(node) in constructor_copies
+            elif name in shape_readers:
+                # ndarray.reshape and broadcast_to read the shape; another first
+                # argument could pass the shape list to its own reshape method.
+                safe = bool(node.args) and new_array(node.args[0], untrusted)
             elif name == "numpy.full":
                 # Object fill values can retain a reference to a parameter dict.
                 fill = node.args[1] if len(node.args) > 1 else next(
                     (kw.value for kw in node.keywords if kw.arg == "fill_value"), None)
-                safe = fill is None or not references_container(fill, containers - hidden)
+                safe = fill is None or not references_container(fill, containers - hidden, untrusted)
             if safe:
                 continue
-            for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
+            for argument in arguments:
                 if isinstance(argument, ast.Starred):
                     argument = argument.value
                 try:
                     value = evaluate(argument)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    escaped = references_container(argument, containers - hidden)
+                    escaped = references_container(argument, containers - hidden, untrusted)
                 else:
-                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers - hidden)
+                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers - hidden, untrusted)
                 if escaped:
                     raise ValueError("Runtime params container arguments to unsupported calls may cause mutations; "
                                      "use a saved SCFT result or JSON/YAML parameters.")

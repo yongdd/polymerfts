@@ -530,6 +530,16 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `scripts/pscf/pscf_converter.py` reads again most examples that build their initial fields after
+  `params` (2026-11-15): `Cylinder2D`, `HCP_Hexagonal` and `PL_Hexagonal` export again, and the
+  L-FTS, CL-FTS and Gibbs-ensemble examples are read. The alias checks refused a loop that unpacks
+  only numbers (`for y, z in positions`), an element of a list of numbers such as `params["nx"][i]`,
+  arithmetic of such a list with numbers or a new NumPy array, `np.reshape` and `np.broadcast_to` of
+  a new array, the `params` argument of `LFTS`, `CLFTS` and `GibbsEnsemble`, and a copy handed
+  straight to a constructor, as in `SCFT(dict(params, polymers=polymers))`. A parameter container
+  given to a binary operator of an object the converter cannot identify, as in
+  `M() | params["nx"]`, is refused as well. `Fddd` and `MonoclinicLamella3D` give `params["nx"]` to
+  such an operator or NumPy call; they export from a saved SCFT result.
 - The plots of `scripts/analysis` draw the fields at the grid points of the solvers, in the cell of
   the file's lattice vectors (2026-11-06). The 2D plots fill the grid cell around each point with its
   value, with the second lattice vector pointing up (the images before were mirrored):

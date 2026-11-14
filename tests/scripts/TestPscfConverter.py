@@ -481,6 +481,10 @@ def test_mutations_through_python_aliases_are_rejected(tmp_path, code):
     'def obtain():\n    return list(params["polymers"])\nother = obtain()\nother[0]["volume_fraction"] = .5',
     'def obtain():\n    yield params\nother = next(obtain())\nother["ds"] = .02',
     'def obtain():\n    yield from [params]\nother = next(obtain())\nother["ds"] = .02',
+    'for name, block in [("Zed", params["polymers"][0]["blocks"][0])]:\n    block["length"] = .5',
+    'other = params["polymers"] + []\nother[0]["volume_fraction"] = .5',
+    'other = [params["polymers"][index] for index in range(1)]\nother[0]["volume_fraction"] = .5',
+    'import numpy as np\nother = np.reshape(np.array(params["polymers"]), -1)\nother[0]["volume_fraction"] = .5',
 ))
 def test_export_rejects_unsupported_container_alias_bindings(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -548,6 +552,19 @@ def test_earlier_helpers_can_return_scalars_and_independent_copies(tmp_path, def
     'def outer(params):\n    def inner(p=params):\n        return p\n    return inner',
     'def helper(params):\n    return unknown(params)',
     'def helper():\n    yield params["ds"]\n    yield from params',
+    # Unpacking that binds only numbers, and arithmetic or indexing on lists of numbers
+    'positions = [[0., 0.], [.5, .5]]\nfor y, z in positions:\n    print(y + z)',
+    'pairs = [("Zed", [1, 2])]\nfor name, (first, second) in pairs:\n    print(name, first)',
+    'first, *rest = params["lx"]',
+    'factors = [params["nx"][i] / 2 for i in range(3)]',
+    'import numpy as np\nindex = np.round(np.array([.5, .5, .5]) * params["nx"]).astype(int)',
+    'import numpy as np\nw = np.reshape(np.zeros(24), params["nx"])',
+    'import numpy as np\nw = np.broadcast_to(np.zeros(1), params["nx"]).copy()',
+    'merged = params["chi_n"] | {}',
+    # The simulation constructors deep-copy params, also a copy handed straight to them
+    'from polymerfts import lfts\nsimulation = lfts.LFTS(params=params, random_seed=1)',
+    'from polymerfts import CLFTS\nsimulation = CLFTS(params=params)',
+    'from polymerfts import SCFT\ndef run(polymers):\n    return SCFT(dict(params, polymers=polymers))',
 ))
 def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -611,6 +628,25 @@ def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
     'class Helper:\n    params = {}\n    def method(self):\n        params.update(ds=.2)',
     'class Helper:\n    params = {}\n    [params.update(ds=.2) for item in [0]]',
     'def outer():\n    seed = {}\n    class Helper:\n        params["ds"] = .2\n        params = {}',
+    'def run(polymers):\n    return helper(dict(params, polymers=polymers))',
+    # A parameter container given to code of the script through NumPy, an operator or a constructor
+    'import numpy as np\nnp.reshape(params["polymers"], -1)[0]["volume_fraction"] = .5',
+    'import numpy as np\nnp.reshape(params["polymers"], -1)[0].update(volume_fraction=.5)',
+    'import numpy as np\nnp.broadcast_to(params["polymers"], (1,))[0]["volume_fraction"] = .5',
+    'import numpy as np\nclass M:\n    def reshape(self, shape, order="C"):\n        shape[0] = 8\nnp.reshape(M(), params["nx"])',
+    'import numpy as np\nclass M:\n    def reshape(self, shape, order="C"):\n        shape[0] = 8\nx = np.reshape(M(), params["nx"])',
+    'class M:\n    def __rmul__(self, other):\n        other[0] = 8\n        return 0\nx = params["nx"] * M()',
+    'class M:\n    def __or__(self, other):\n        other.append(5)\n        return 0\nprint(M() | params["nx"])',
+    'import numpy as np\nx = np.array([unknown]) * params["polymers"]',
+    'from polymerfts import LFTS\nsimulation = LFTS(params, callbacks={"x": params["polymers"]})',
+    'from polymerfts import LFTS\nLFTS(params, callbacks={"m": params["polymers"].append})',
+    # Names that shadow a module literal, and object arrays, which hand a dict on as it is
+    'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\ndef f(m):\n    return m * params["nx"]\nf(M())',
+    'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\ng = lambda m: m * params["nx"]\ng(M())',
+    'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\nfor m in [M()]:\n    m * params["nx"]',
+    'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\n[m * params["nx"] for m in [M()]]',
+    'import numpy\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\ndef f(np):\n    return np.array([1]) * params["nx"]\nf(M())',
+    'import numpy as np\nclass M:\n    def __or__(self, other):\n        other["Zed,long_B"] = 99\n        return 0\nprint(np.array([M()]) | params["chi_n"])',
 ))
 def test_scope_handling_still_rejects_parameter_mutations(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -643,6 +679,7 @@ def test_class_and_comprehension_container_scopes(tmp_path, code):
     ('alias', 'alias = params["polymers"][:]\n'),
     ('alias', 'alias = dict(config=params)\n'),
     ('np.min([params])', 'import numpy as np\n'),
+    ('params["polymers"] + []', ''),
     ('config=params', ''),
     ('**params', ''),
 ))
@@ -677,6 +714,34 @@ def test_known_scft_constructors_and_initial_field_shapes_are_safe(tmp_path, imp
                       + 'calculation.run(initial_fields={"Zed": w, "long_B": w})\n', encoding='utf-8')
     assert TOOL['read_input'](source) == params()
     assert TOOL['read_input'](ROOT / 'examples/block_copolymer/scft/Gyroid.py')['chi_n'] == {'A,B': 20}
+
+
+SCFT_EXAMPLES_WITH_FIELD_SETUP = (
+    'examples/block_copolymer/scft/phases/Cylinder2D.py',
+    'examples/block_copolymer/scft/phases/HCP_Hexagonal.py',
+    'examples/block_copolymer/scft/phases/PL_Hexagonal.py',
+)
+
+
+@pytest.mark.parametrize('example', (
+    *SCFT_EXAMPLES_WITH_FIELD_SETUP,
+    'examples/blend/scft/CanonicalCoexistence.py',
+    'examples/block_copolymer/lfts/Gyroid.py',
+    'examples/block_copolymer/lfts/Lamella.py',
+    'examples/block_copolymer/clfts/Lamella.py',
+    'examples/blend/clfts/GibbsEnsemble.py',
+))
+def test_shipped_examples_are_read_despite_their_field_setup(example):
+    # Loops over positions, arithmetic with new arrays and simulation constructors
+    # around the literal params must not count as parameter aliases.
+    assert 'nx' in TOOL['read_input'](ROOT / example)
+
+
+@pytest.mark.parametrize('example', SCFT_EXAMPLES_WITH_FIELD_SETUP)
+def test_shipped_scft_examples_export(example):
+    p = TOOL['read_input'](ROOT / example)
+    fields = {'w_' + name: np.zeros(math.prod(p['nx'])) for name in p['segment_lengths']}
+    TOOL['prepare_export'](p, fields)
 
 
 @pytest.mark.parametrize('binding, call', (
