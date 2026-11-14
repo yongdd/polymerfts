@@ -126,18 +126,21 @@ int main()
         complex_zero.multiply(0.0, 0.0, 1);
         check(complex_zero, {0.0, 0.0});
 
-        // The ordinary CPU path keeps its previous arithmetic exactly.
+        // The ordinary CPU path keeps its previous arithmetic exactly. The inputs are
+        // volatile so that the reference is computed at run time, as the junction is:
+        // GCC 13 and later fold the constant complex expression with another rounding.
+        volatile double re_1 = 1.2, im_1 = 0.1, re_2 = -0.7, im_2 = 0.2;
         junction_product::Real ordinary;
-        ordinary.multiply(1.2, 3.0);
-        ordinary.multiply(-0.7, 2.0);
-        if (ordinary.value() != std::pow(1.2, 3.0) * std::pow(-0.7, 2.0))
+        ordinary.multiply(re_1, 3.0);
+        ordinary.multiply(re_2, 2.0);
+        if (ordinary.value() != std::pow(re_1, 3.0) * std::pow(re_2, 2.0))
             throw std::runtime_error("The ordinary real junction arithmetic changed.");
         junction_product::Complex ordinary_complex;
-        ordinary_complex.multiply(1.2, 0.1, 3);
-        ordinary_complex.multiply(-0.7, 0.2, 2);
+        ordinary_complex.multiply(re_1, im_1, 3);
+        ordinary_complex.multiply(re_2, im_2, 2);
         const auto result = ordinary_complex.value();
-        const auto expected = std::pow(std::complex<double>(1.2, 0.1), 3)
-                            * std::pow(std::complex<double>(-0.7, 0.2), 2);
+        const auto expected = std::pow(std::complex<double>(re_1, im_1), 3)
+                            * std::pow(std::complex<double>(re_2, im_2), 2);
         if (result.real != expected.real() || result.imag != expected.imag())
             throw std::runtime_error("The ordinary complex junction arithmetic changed.");
 

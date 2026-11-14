@@ -831,6 +831,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestJunctionProduct` computes the reference of the ordinary junction arithmetic at run time
+  (2026-11-15). GCC 13 and later at `-O3` folded the constant complex reference with another
+  rounding, one ulp off the run-time product, and the test failed although the junction was right.
 - `TestCpuMakhoulTransform` compares the DCT and DST of `FftwFFT` and `MklFFT` with their O(N^2)
   definitions on grids of one to three axes with even, odd and unit lengths, every mix of cosine and
   sine axes, real and complex fields of standard deviation 5, and concurrent calls (2026-11-02).
