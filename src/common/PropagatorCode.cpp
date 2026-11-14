@@ -42,6 +42,7 @@
 #include <sstream>
 #include <stack>
 #include <set>
+#include <utility>
 
 #include "Molecules.h"
 #include "PropagatorCode.h"
@@ -95,7 +96,7 @@ std::string merge_branch_codes(std::vector<std::pair<std::string, double>> branc
 
 /*
  * Code of the propagator that leaves in_node along the block (in_node, out_node), built
- * recursively from the chain ends and memoized per directed edge.
+ * from the chain ends with a heap-backed traversal and memoized per directed edge.
  *
  * The codes of the branches that arrive at in_node, sorted and with their copies there
  * (Polymer::get_branch_multiplicity), form the junction part "(...)"; if the copies of the
@@ -111,39 +112,85 @@ std::string generate_edge_code(
     const ContourLengthMapping* mapping,
     int in_node, int out_node)
 {
-    const auto edge = std::make_pair(in_node, out_node);
-    if (validation::contains(memory, edge))
-        return memory[edge];
+    const auto requested_edge = std::make_pair(in_node, out_node);
+    if (validation::contains(memory, requested_edge))
+        return memory.at(requested_edge);
 
-    // Branches meeting at in_node, each with its number of copies there
-    std::vector<std::pair<std::string, double>> branches;
-    for (const int neighbor : pc.get_adjacent_nodes()[in_node])
+    // A linear multiblock chain can have one dependency per block. Keep its
+    // traversal frames on the heap instead of exhausting the process stack.
+    struct Frame
     {
-        if (neighbor != out_node)
-            branches.push_back({
-                generate_edge_code(memory, pc, chain_end_to_q_init, mapping, neighbor, in_node),
-                pc.get_branch_multiplicity(in_node, neighbor)});
+        int in_node;
+        int out_node;
+        size_t next_neighbor = 0;
+        bool copies_checked = false;
+    };
+    std::vector<Frame> pending{{in_node, out_node}};
+    while (!pending.empty())
+    {
+        Frame& frame = pending.back();
+        const auto edge = std::make_pair(frame.in_node, frame.out_node);
+        if (validation::contains(memory, edge))
+        {
+            pending.pop_back();
+            continue;
+        }
+
+        const auto& neighbors = pc.get_adjacent_nodes().at(frame.in_node);
+        bool waiting = false;
+        while (frame.next_neighbor < neighbors.size())
+        {
+            const int neighbor = neighbors[frame.next_neighbor++];
+            if (neighbor != frame.out_node
+                && !validation::contains(memory, std::make_pair(neighbor, frame.in_node)))
+            {
+                pending.push_back({neighbor, frame.in_node});
+                waiting = true;
+                break;  // push_back may have invalidated frame
+            }
+        }
+        if (waiting)
+            continue;
+
+        // Resolve the other copies after the adjacent branches, as in the
+        // original traversal. The polymer's validated multiplicities make
+        // these directed dependencies acyclic as well.
+        const double copies_out = pc.get_branch_multiplicity(frame.in_node, frame.out_node);
+        if (!frame.copies_checked)
+        {
+            frame.copies_checked = true;
+            if (copies_out != 1.0
+                && !validation::contains(memory, std::make_pair(frame.out_node, frame.in_node)))
+            {
+                pending.push_back({frame.out_node, frame.in_node});
+                continue;  // do not use frame after growing pending
+            }
+        }
+
+        // All dependencies are memoized now. Preserve the original branch
+        // order and merging so every generated key remains identical.
+        std::vector<std::pair<std::string, double>> branches;
+        for (const int neighbor : neighbors)
+            if (neighbor != frame.out_node)
+                branches.push_back({memory.at(std::make_pair(neighbor, frame.in_node)),
+                    pc.get_branch_multiplicity(frame.in_node, neighbor)});
+        if (copies_out != 1.0)
+            branches.push_back({memory.at(std::make_pair(frame.out_node, frame.in_node)), copies_out - 1.0});
+
+        std::string code;
+        if (!branches.empty())
+            code = merge_branch_codes(branches);
+        else if (validation::contains(chain_end_to_q_init, frame.in_node))
+            code = "{" + chain_end_to_q_init.at(frame.in_node) + "}";
+
+        const Block& block = pc.get_blocks()[pc.get_block_index_from_edge(frame.in_node, frame.out_node)];
+        code += block.monomer_type;
+        code += std::to_string(mapping != nullptr ? mapping->get_length_index(block.contour_length)
+                                                  : block.n_segment);
+        memory.emplace(edge, std::move(code));
+        pending.pop_back();
     }
-    // The other copies of the branch that this propagator enters
-    const double copies_out = pc.get_branch_multiplicity(in_node, out_node);
-    if (copies_out != 1.0)
-        branches.push_back({
-            generate_edge_code(memory, pc, chain_end_to_q_init, mapping, out_node, in_node),
-            copies_out - 1.0});
-
-    std::string code;
-    if (!branches.empty())
-        code = merge_branch_codes(branches);
-    else if (validation::contains(chain_end_to_q_init, in_node))
-        code = "{" + chain_end_to_q_init[in_node] + "}";
-
-    const Block& block = pc.get_blocks()[pc.get_block_index_from_edge(in_node, out_node)];
-    code += block.monomer_type;
-    code += std::to_string(mapping != nullptr ? mapping->get_length_index(block.contour_length)
-                                              : block.n_segment);
-
-    memory[edge] = code;
-    return code;
+    return memory.at(requested_edge);
 }
 
 // Codes of both directions of every block, as (from node, to node, code)

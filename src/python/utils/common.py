@@ -157,17 +157,20 @@ def report_partition_consistency(prop_solver):
 
 
 def check_partition_functions(prop_solver, state):
-    """Reject an accepted state whose partition functions are not positive and finite.
+    """Reject an accepted state with a non-positive or non-finite occupied partition.
 
     With real fields Q is a sum of positive Boltzmann weights. Intermediate iterates can
     still give Q <= 0 (the Richardson extrapolation of rqm4 or Crank-Nicolson steps on a
     coarse grid in strong fields), so only accepted states are checked: the final SCFT
     fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
-    finite. Complex fields (CL-FTS) have no sign to check.
+    finite. An absent canonical polymer contributes no log Q term, including when
+    a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
     """
     if prop_solver.field_type != "real":
         return
     for p in range(prop_solver.get_n_polymer_types()):
+        if prop_solver.get_polymer(p).get_volume_fraction() == 0.0:
+            continue
         Q = prop_solver.get_partition_function(p)
         if not (np.isfinite(Q) and Q > 0):
             raise ValidationError(

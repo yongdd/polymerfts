@@ -17,6 +17,7 @@ SET(BASIC_TESTS
     TestAbsentPointIons
     TestAbsentSolvent
     TestScftInitialPropagators
+    TestScftAbsentPolymer
     TestScftInitialFields
     TestPeriodicBoundaryCase
     TestScftResultGeometry
@@ -65,6 +66,7 @@ SET(BASIC_TESTS
     TestCircularBuffer
     TestScheduler
     TestPropagatorCode
+    TestPropagatorCodeStack
     TestPropagatorCodeReduction
     TestCompareBranchKey
     TestContourLengthMapping
@@ -191,6 +193,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestStressRange TestJunctionRange
     TestPartitionVolumeRange TestPolymerFugacityRange
+    TestScftAbsentPolymer
     TestCnAdiLongLines TestCrysFFTCellChange
     TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
