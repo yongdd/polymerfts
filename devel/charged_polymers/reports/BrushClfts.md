@@ -7,6 +7,7 @@ Complex Langevin simulations (CL-FTS) of the brush of [BrushMultivalentIons.py](
 | [clfts/bulk_clfts.py](../clfts/bulk_clfts.py) | Bulk CL-FTS of a 3:1 salt, one state per run, $`\mu_{\rm ex}`$ per $`10^4`$ steps against one loop on the same grid |
 | [clfts/plot_bulk.py](../clfts/plot_bulk.py) | The figure of Section 1, from the runs in `references/charged_polymers/brush_clfts_bulk/` (outside git) |
 | [clfts/brush_clfts.py](../clfts/brush_clfts.py) | 3D CL-FTS of the brush, started from 1D SCFT or from a checkpoint (`--restart`, `--start-from`) |
+| [clfts/ecscft_clfts_model.py](../clfts/ecscft_clfts_model.py) | The EC-SCFT example in the model and box of the CL-FTS runs (compressibility, smeared interactions, closed top), for the comparison of the validation page |
 
 ## 1. Trivalent ions in bulk CL-FTS
 
