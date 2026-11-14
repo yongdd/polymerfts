@@ -13,7 +13,7 @@
  * 2. Connected (all nodes reachable from first block)
  * 3. Has unique edges (no duplicate blocks between same nodes)
  *
- * Uses depth-first search to detect cycles and isolated nodes.
+ * Uses union-find over the blocks to detect loops and disconnected nodes.
  *
  * **Propagator Key Assignment:**
  *
@@ -143,7 +143,7 @@ Polymer::Polymer(
     {
         adjacent_nodes[v[i]].push_back(u[i]);
         adjacent_nodes[u[i]].push_back(v[i]);
-        // V and u must be a non-negative integer for depth first search
+        // Node labels are non-negative integers
         validation::require_non_negative(v[i], "v[" + std::to_string(i) + "]");
         validation::require_non_negative(u[i], "u[" + std::to_string(i) + "]");
         if( v[i] == u[i] )
@@ -176,59 +176,52 @@ Polymer::Polymer(
         }
     }
 
-    // Detect a cycle and isolated nodes in the block copolymer graph using depth first search
-    std::map<int, bool> is_visited;
+    // The blocks must form a tree. Union-find over the blocks: every node starts as its own
+    // group, and a block joins the groups of its two nodes. A block whose nodes are already in
+    // one group closes a loop. Groups are merged by size and paths are halved during the
+    // search, so each block costs nearly constant time.
+    std::map<int, int> group_parent;
+    std::map<int, int> group_size;
     for (size_t i = 0; i < v.size(); i++)
-        is_visited[v[i]] = false;
-    for (size_t i = 0; i < u.size(); i++)
-        is_visited[u[i]] = false;
-
-    std::stack<std::pair<int,int>> connected_nodes;
-    // Starting node is v[0]
-    connected_nodes.push(std::make_pair(v[0],-1));
-    // Perform depth first search
-    while (!connected_nodes.empty())
     {
-        // Get one item and visit
-        int cur = connected_nodes.top().first;
-        int parent = connected_nodes.top().second;
-        is_visited[cur] = true;
-
-        // Remove the item
-        connected_nodes.pop();
-
-        // Add adjacent_nodes at stack 
-        auto nodes = adjacent_nodes[cur];
-        for(size_t i=0; i<nodes.size();i++)
+        group_parent.emplace(v[i], v[i]);
+        group_parent.emplace(u[i], u[i]);
+        group_size.emplace(v[i], 1);
+        group_size.emplace(u[i], 1);
+    }
+    auto find_group = [&group_parent](int node)
+    {
+        while (group_parent[node] != node)
         {
-            if (is_visited[nodes[i]] && nodes[i] != parent)
-            {
-                throw_with_line_number("A cycle is detected, which contains nodes " 
-                    + std::to_string(nodes[i]) + " and " + std::to_string(parent)
-                    + ". Only acyclic branched polymers are allowed.");
-            }
-            else if(!is_visited[nodes[i]])
-            {
-                connected_nodes.push(std::make_pair(nodes[i], cur));
-            }
+            group_parent[node] = group_parent[group_parent[node]];
+            node = group_parent[node];
         }
+        return node;
+    };
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        int group_v = find_group(v[i]);
+        int group_u = find_group(u[i]);
+        if (group_v == group_u)
+        {
+            throw_with_line_number("Block " + std::to_string(i) + " (nodes " + std::to_string(v[i])
+                + " and " + std::to_string(u[i]) + ") closes a loop with the preceding blocks. "
+                + "Only acyclic branched polymers are allowed.");
+        }
+        if (group_size[group_v] < group_size[group_u])
+            std::swap(group_v, group_u);
+        group_parent[group_u] = group_v;
+        group_size[group_v] += group_size[group_u];
     }
 
-    // Collect isolated nodes
-    std::set<int> isolated_nodes_set;
-    for (size_t i=0; i<v.size(); i++)
+    // Without a loop, the blocks are connected if all nodes are in the group of v[0]
+    const int group_start = find_group(v[0]);
+    std::vector<int> isolated_nodes;
+    for (const auto& [node, parent] : group_parent)
     {
-        if (!is_visited[v[i]])
-            isolated_nodes_set.insert(v[i]);
+        if (find_group(node) != group_start)
+            isolated_nodes.push_back(node);
     }
-    for (size_t i=0; i<u.size(); i++)
-    {
-        if (!is_visited[u[i]])
-            isolated_nodes_set.insert(u[i]);
-    }
-
-    // Print isolated nodes
-    std::vector<int> isolated_nodes(isolated_nodes_set.begin(), isolated_nodes_set.end());
     if (isolated_nodes.size() > 0)
     {
         std::string error_message = "There is no route from node " + std::to_string(v[0]) + " to nodes: "

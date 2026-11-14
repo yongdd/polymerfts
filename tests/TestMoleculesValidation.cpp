@@ -19,6 +19,9 @@
  * - A rejected polymer registers no contour lengths in the mapping.
  * - NaN lengths are rejected like non-positive ones.
  * - A polymer without blocks is rejected instead of reading an empty vertex list.
+ * - The blocks must form a tree: loops (also through parallel blocks or a block
+ *   from a node to itself) and disconnected blocks are rejected; trees with any
+ *   non-negative node labels are accepted.
  */
 
 #include <iostream>
@@ -43,6 +46,20 @@ static bool throws(const std::function<void()>& call)
     catch (std::exception&)
     {
         return true;
+    }
+    return false;
+}
+
+// True if the call throws an exception whose message contains the given text
+static bool throws_with(const std::function<void()>& call, const std::string& text)
+{
+    try
+    {
+        call();
+    }
+    catch (std::exception& exc)
+    {
+        return std::string(exc.what()).find(text) != std::string::npos;
     }
     return false;
 }
@@ -115,6 +132,36 @@ int main()
             ok &= check(molecules.get_n_polymer_types() == 1, "one polymer type");
             ok &= check(mapping.get_n_unique_lengths() == 1 && mapping.get_n_unique_ds() == 1,
                 "only the accepted polymer's contour length and ds are mapped");
+        }
+
+        std::cout << "=== Polymer topology ===" << std::endl;
+        {
+            Molecules molecules("continuous", 0.1, {{"A", 1.0}, {"B", 1.0}});
+            auto add = [&](std::vector<BlockInput> blocks) { molecules.add_polymer(0.1, blocks, {}); };
+
+            // Trees, also with node labels that are not consecutive
+            ok &= check(!throws([&]{ add({{"A", 0.5, 0, 1}, {"B", 0.5, 1, 2}}); }), "a linear chain is accepted");
+            ok &= check(!throws([&]{ add({{"A", 0.4, 0, 1}, {"A", 0.4, 0, 2}, {"B", 0.3, 0, 3}}); }),
+                "a three-arm star is accepted");
+            ok &= check(!throws([&]{ add({{"A", 0.3, 10, 20}, {"B", 0.3, 35, 20}, {"A", 0.2, 20, 7},
+                {"B", 0.2, 7, 4}}); }), "a branched polymer with arbitrary node labels is accepted");
+
+            // Loops: a block closing a triangle, a loop between later blocks, two blocks
+            // between the same nodes and a block from a node to itself
+            ok &= check(throws_with([&]{ add({{"A", 0.3, 0, 1}, {"B", 0.3, 1, 2}, {"A", 0.3, 2, 0}}); },
+                "Block 2 (nodes 2 and 0) closes a loop"), "a three-block ring is rejected at its closing block");
+            ok &= check(throws_with([&]{ add({{"A", 0.2, 0, 1}, {"B", 0.2, 1, 2}, {"A", 0.2, 2, 3},
+                {"B", 0.2, 3, 1}, {"A", 0.2, 3, 4}}); }, "Block 3 (nodes 3 and 1) closes a loop"),
+                "a loop between later blocks is rejected at its closing block");
+            ok &= check(throws([&]{ add({{"A", 0.5, 0, 1}, {"B", 0.5, 1, 0}}); }), "a two-block ring is rejected");
+            ok &= check(throws([&]{ add({{"A", 0.5, 0, 1}, {"B", 0.5, 2, 2}}); }),
+                "a block from a node to itself is rejected");
+
+            // Disconnected blocks: every node that cannot be reached from the first one is named
+            ok &= check(throws_with([&]{ add({{"A", 0.5, 0, 1}, {"B", 0.5, 2, 3}, {"A", 0.5, 3, 5}}); },
+                "There is no route from node 0 to nodes: 2, 3, 5."), "disconnected blocks are rejected");
+
+            ok &= check(molecules.get_n_polymer_types() == 3, "only the three trees were added");
         }
 
         std::cout << "=== NaN values ===" << std::endl;
