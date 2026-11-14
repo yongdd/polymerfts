@@ -202,9 +202,8 @@ void ComputationDiscrete<T>::compute_propagators(
 
         // Partition function of each polymer: Q = ∫ q(r,n) q†(r,N+1-n) / exp(-w ds) dr / V
         for (const auto& [p, q_left, q_right, monomer_type, n_aggregated] : single_partition_segment)
-            this->single_polymer_partitions[p] = this->backend->inner_product_inverse_weight(
-                q_left, q_right, this->backend->boltzmann_factor(monomer_type))
-                /(n_aggregated*this->cb->get_volume());
+            this->single_polymer_partitions[p] = this->backend->partition_product(
+                q_left, q_right, this->backend->boltzmann_factor(monomer_type), n_aggregated);
         this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
@@ -414,15 +413,13 @@ std::vector<double> ComputationDiscrete<T>::compute_partition_errors()
         {
             BackendArray<T>* q = propagator.at(key_left)[block.n_segment_left-n+1];
             BackendArray<T>* q_dagger = propagator.at(key_right)[n];
-            T total_partition = this->backend->inner_product_inverse_weight(
-                q, q_dagger, exp_dw)*(block.n_repeated/this->cb->get_volume());
-            total_partition /= n_propagators;
+            T total_partition = this->backend->partition_product(
+                q, q_dagger, exp_dw, n_propagators/block.n_repeated);
             total_partitions[p].push_back(total_partition);
             if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
             {
-                double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
-                                  *(block.n_repeated/this->cb->get_volume());
-                integral /= n_propagators;
+                double integral = this->backend->absolute_partition_product(
+                    q, q_dagger, exp_dw, n_propagators/block.n_repeated);
                 absolute_integrals[p].push_back(integral);
             }
         }

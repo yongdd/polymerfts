@@ -338,6 +338,9 @@ def read_python_params(path):
         return False
 
     def references_container(node, containers):
+        if isinstance(node, ast.Lambda):
+            # Defaults and the result are checked in their own lexical scopes.
+            return False
         # A random-field initializer often receives np.prod(params["nx"]). Its
         # scalar result cannot give the initializer access to the original list.
         if isinstance(node, ast.Call) and independent_result(node):
@@ -449,6 +452,8 @@ def read_python_params(path):
             # Class bindings are visible in the class body, but are not closures
             # of its methods. Functions retain their enclosing function bindings.
             child_closure = closure if isinstance(node, ast.ClassDef) else inner
+            if not isinstance(node, ast.ClassDef):
+                yield node, inner  # function bodies resolve their globals when called
             for item in body:
                 yield from scoped_nodes(item, inner, child_closure)
             return
@@ -490,6 +495,7 @@ def read_python_params(path):
         visit(statement, set())
         return assigned
 
+    deferred_bodies = []
     for statement in tree.body:
         if isinstance(statement, ast.Import):
             for alias in statement.names:
@@ -498,6 +504,17 @@ def read_python_params(path):
             for alias in statement.names:
                 imports[alias.asname or alias.name] = (statement.module or "") + "." + alias.name
         assigned = module_bindings(statement)
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for name in bound_names(node) & assigned:
+                    if name == "*":
+                        raise ValueError("Star imports may rebind parameter values; use explicit imports "
+                                         "or saved SCFT result/JSON/YAML parameters.")
+                    if name == "params" and params is not None:
+                        raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
+                    # Imported values are not evaluated. A previous literal with
+                    # the same name must not stand in for the new binding.
+                    symbols.pop(name, None)
         # We do not execute control flow. Any binding it might change must be
         # untrusted before looking at calls later in that same compound statement.
         if not isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Import, ast.ImportFrom,
@@ -510,12 +527,16 @@ def read_python_params(path):
         # Check escapes before unsupported assignments discard their old symbols.
         # Passing a parameter container to arbitrary Python can mutate any nested
         # value; observing its AST cannot establish the configuration afterwards.
-        for node, hidden in scoped_nodes(statement):
+        nodes = list(scoped_nodes(statement))
+        # A function can read a global container that is defined after it.
+        # Revisit its body as later module bindings become known.
+        for node, hidden in [*deferred_bodies, *nodes]:
             # Only direct module assignments to names are evaluated below. Other
             # bindings must not hide an alias that later mutates a known container.
             # Iterating a dictionary yields its scalar keys; numeric shape loops
             # and the generated script's monomer-name comprehension remain safe.
             expression, unpack = None, False
+            expressions = []
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 expression = node.value
@@ -531,10 +552,23 @@ def read_python_params(path):
                 expression, unpack = node.iter, True
             elif isinstance(node, ast.NamedExpr):
                 expression = node.value
+            elif isinstance(node, ast.arguments):
+                # Defaults bind before entering the function's scope, including
+                # defaults of lambdas and keyword-only arguments.
+                expressions = [(value, False) for value in [*node.defaults, *node.kw_defaults]
+                               if value is not None]
+            elif isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom)):
+                expression, unpack = node.value, isinstance(node, ast.YieldFrom)
+            elif isinstance(node, ast.Lambda):
+                expression = node.body
             elif isinstance(node, ast.Match) and any(
                     bound_names(part) for case in node.cases for part in ast.walk(case.pattern)):
                 expression = node.subject
-            if expression is not None and references_container(expression, containers - hidden):
+            if expression is not None:
+                expressions.append((expression, unpack))
+            for expression, unpack in expressions:
+                if not references_container(expression, containers - hidden):
+                    continue
                 try:
                     value = evaluate(expression)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
@@ -575,7 +609,7 @@ def read_python_params(path):
                 # Object fill values can retain a reference to a parameter dict.
                 fill = node.args[1] if len(node.args) > 1 else next(
                     (kw.value for kw in node.keywords if kw.arg == "fill_value"), None)
-                safe = fill is None or not references_container(fill, containers)
+                safe = fill is None or not references_container(fill, containers - hidden)
             if safe:
                 continue
             for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
@@ -584,12 +618,19 @@ def read_python_params(path):
                 try:
                     value = evaluate(argument)
                 except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    escaped = references_container(argument, containers)
+                    escaped = references_container(argument, containers - hidden)
                 else:
-                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers)
+                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers - hidden)
                 if escaped:
                     raise ValueError("Runtime params container arguments to unsupported calls may cause mutations; "
                                      "use a saved SCFT result or JSON/YAML parameters.")
+        for node, hidden in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for item in node.body:
+                    deferred_bodies.extend(scoped_nodes(item, hidden, hidden))
+            elif isinstance(node, ast.Lambda):
+                deferred_bodies.append((node, hidden))
+                deferred_bodies.extend(scoped_nodes(node.body, hidden, hidden))
         names = []
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]

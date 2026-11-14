@@ -310,6 +310,9 @@ public:
      */
     virtual T get_total_partition(int polymer) = 0;
 
+    /// exp(log_fugacity) * Q, without materializing exp(log_fugacity).
+    T get_total_partition_gce_log(double log_fugacity, int polymer);
+
     /**
      * @brief Get chain propagator at specific contour position.
      *
@@ -387,6 +390,7 @@ public:
      * @param phi         Output concentration field
      */
     virtual void get_total_concentration_gce  (double fugacity, int polymer, std::string monomer_type, T *phi) = 0;
+    virtual void get_total_concentration_gce_log(double log_fugacity, int polymer, std::string monomer_type, T* phi) = 0;
 
     /**
      * @brief Get stress for grand canonical ensemble.
@@ -395,6 +399,9 @@ public:
      * @return Stress vector weighted by fugacities
      */
     virtual std::vector<T> get_stress_gce(std::vector<double> fugacities);
+
+    /// Logarithmic activities; -inf denotes a polymer with zero GCE weight.
+    std::vector<T> get_stress_gce_log(std::vector<double> log_fugacities);
 
     /**
      * @brief Relative partition function error of each polymer.

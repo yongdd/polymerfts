@@ -217,9 +217,8 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
             this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
             this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 1));
             this->backend->synchronize();
-            this->single_polymer_partitions[p] = this->backend->inner_product_inverse_weight(
-                this->q_work[0], this->q_work[1], this->backend->boltzmann_factor(monomer_type))
-                /(n_aggregated*this->cb->get_volume());
+            this->single_polymer_partitions[p] = this->backend->partition_product(
+                this->q_work[0], this->q_work[1], this->backend->boltzmann_factor(monomer_type), n_aggregated);
         }
         this->check_real_power_partitions();
 
@@ -411,15 +410,13 @@ std::vector<double> ComputationReduceMemoryDiscrete<T>::compute_partition_errors
             this->for_each_segment_pair(key_left, key_right, block.n_segment_left+1, 1, block.n_segment_right,
                 [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    T total_partition = this->backend->inner_product_inverse_weight(q, q_dagger, exp_dw)
-                                        *(block.n_repeated/this->cb->get_volume());
-                    total_partition /= n_propagators;
+                    T total_partition = this->backend->partition_product(
+                        q, q_dagger, exp_dw, n_propagators/block.n_repeated);
                     total_partitions[p].push_back(total_partition);
                     if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
                     {
-                        double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
-                                          *(block.n_repeated/this->cb->get_volume());
-                        integral /= n_propagators;
+                        double integral = this->backend->absolute_partition_product(
+                            q, q_dagger, exp_dw, n_propagators/block.n_repeated);
                         absolute_integrals[p].push_back(integral);
                     }
                 });

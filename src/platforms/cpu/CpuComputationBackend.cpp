@@ -12,6 +12,7 @@
 #include "Exception.h"
 #include "NumericalMethods.h"
 #include "ScaledProduct.h"
+#include "PartitionAccumulator.h"
 #include "JunctionProduct.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
@@ -298,6 +299,26 @@ template <typename T>
 T CpuComputationBackend<T>::inner_product(BackendArray<T>* a, BackendArray<T>* b)
 {
     return cb->inner_product(raw(a), raw(b));
+}
+
+template <typename T>
+T CpuComputationBackend<T>::partition_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
+{
+    return cb->mean_product(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor), copies);
+}
+
+template <typename T>
+double CpuComputationBackend<T>::absolute_partition_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
+{
+    const double integral_value = absolute_inner_product(a, b, divisor);
+    const double result = integral_value / (copies * cb->get_volume());
+    if (partition_accumulation::ordinary_result(integral_value)
+        && partition_accumulation::ordinary_result(result))
+        return result;
+    return std::real(cb->mean_product(raw(a), raw(b),
+        divisor == nullptr ? nullptr : raw(divisor), copies, true));
 }
 
 template <typename T>

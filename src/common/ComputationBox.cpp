@@ -40,6 +40,7 @@
 #include "ComputationBox.h"
 #include "GridLimits.h"
 #include "ScaledProduct.h"
+#include "PartitionAccumulator.h"
 #include "SpaceGroup.h"
 #include "ValidationUtils.h"
 
@@ -1016,7 +1017,38 @@ T ComputationBox<T>::integral(const T *g)
 template <typename T>
 T ComputationBox<T>::mean(const T *g)
 {
-    return integral(g) / static_cast<T>(volume);
+    return mean_product(g);
+}
+
+template <typename T>
+T ComputationBox<T>::mean_product(const T* g, const T* h, const T* divisor,
+                                  double copies, bool absolute)
+{
+    if (!absolute && (h != nullptr || divisor == nullptr))
+    {
+        const T integral_value = h == nullptr ? integral(g)
+            : divisor == nullptr ? inner_product(g, h) : inner_product_inverse_weight(g, h, divisor);
+        const T result = integral_value / (copies * volume);
+        if (partition_accumulation::ordinary_result(integral_value)
+            && partition_accumulation::ordinary_result(result))
+            return result;
+    }
+
+    partition_accumulation::Sum sum;
+    const double* mask = get_mask();
+    for (int i = 0; i < n_basis_; ++i)
+    {
+        const double count = space_group_ != nullptr ? basis_weights_[i]
+            : mask == nullptr ? 1.0 : mask[i];
+        if (count == 0.0)
+            continue;
+        const T right = h == nullptr ? T(1.0) : h[i];
+        const T weight = divisor == nullptr ? T(1.0) : divisor[i];
+        sum = partition_accumulation::Add{}(sum, partition_accumulation::product(
+            std::real(g[i]), std::imag(g[i]), std::real(right), std::imag(right),
+            std::real(weight), std::imag(weight), count, total_grid, copies, absolute));
+    }
+    return partition_accumulation::value<T>(sum);
 }
 
 /**

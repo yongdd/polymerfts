@@ -146,8 +146,18 @@ class CLFTS:
         for polymer in self.polymers:
             self.prop_solver.add_polymer(polymer.get("volume_fraction", 0.0), polymer["blocks_input"],
                                          polymer.get("initial_conditions", None))
-        self.polymer_chemical_potentials = np.array([polymer.get("chemical_potential", np.nan) for polymer in self.polymers])
-        self.fugacities = np.where(np.isnan(self.polymer_chemical_potentials), 0.0, np.exp(self.polymer_chemical_potentials))
+        self.polymer_chemical_potentials = np.array(
+            [polymer.get("chemical_potential", np.nan) for polymer in self.polymers], dtype=np.float64)
+        self.log_fugacities = np.where(np.isnan(self.polymer_chemical_potentials), -np.inf,
+                                      self.polymer_chemical_potentials)
+        # The chemical potential is finite even when its fugacity is not representable.
+        # Keep the usual arithmetic where exp(mu) is normal; otherwise native scaled
+        # products combine it with the propagators before restoring the physical density.
+        # A subnormal fugacity would already have lost precision before that product.
+        with np.errstate(over="ignore", under="ignore"):
+            self.fugacities = np.exp(self.log_fugacities)
+        self._log_fugacity_required = np.isfinite(self.log_fugacities) & (
+            ~np.isfinite(self.fugacities) | (self.fugacities < np.finfo(float).tiny))
         self.grand_canonical = [p for p, polymer in enumerate(self.polymers) if "chemical_potential" in polymer]
         self.canonical_fraction = sum(polymer.get("volume_fraction", 0.0) for polymer in self.polymers)
         self.prop_solver.display_platform_info()
@@ -296,9 +306,11 @@ class CLFTS:
 
         # Grand-canonical chains: e^(βμ_p) times their unnormalized segment densities
         for p in self.grand_canonical:
+            concentration = (self.prop_solver.get_concentration_gce_log if self._log_fugacity_required[p]
+                             else self.prop_solver.get_concentration_gce)
+            weight = self.log_fugacities[p] if self._log_fugacity_required[p] else self.fugacities[p]
             for monomer_type in self.monomer_types:
-                phi[monomer_type] = phi[monomer_type] + self.prop_solver.get_concentration_gce(
-                    self.fugacities[p], p, monomer_type)
+                phi[monomer_type] = phi[monomer_type] + concentration(weight, p, monomer_type)
 
         check_partition_once(self)
         return phi, elapsed_time

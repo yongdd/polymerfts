@@ -471,6 +471,16 @@ def test_mutations_through_python_aliases_are_rejected(tmp_path, code):
     'match params:\n    case {"polymers": polymers}:\n        polymers[0]["volume_fraction"] = .5',
     'match [params]:\n    case [*others]:\n        others[0]["lx"] = [2., 4., 5.]',
     'match params:\n    case {**other}:\n        other["polymers"][0]["volume_fraction"] = .5',
+    'def tweak(p=params):\n    p["ds"] = .02\ntweak()',
+    'def tweak(*, p=params):\n    p["ds"] = .02\ntweak()',
+    'tweak = lambda p=params: p.update(ds=.02)\ntweak()',
+    'def tweak(p=dict(params)):\n    p["polymers"][0]["volume_fraction"] = .5\ntweak()',
+    'def outer():\n    def tweak(p=params):\n        p["ds"] = .02\n    tweak()\nouter()',
+    'def obtain():\n    return params\nother = obtain()\nother["ds"] = .02',
+    'obtain = lambda: params\nother = obtain()\nother["ds"] = .02',
+    'def obtain():\n    return list(params["polymers"])\nother = obtain()\nother[0]["volume_fraction"] = .5',
+    'def obtain():\n    yield params\nother = next(obtain())\nother["ds"] = .02',
+    'def obtain():\n    yield from [params]\nother = next(obtain())\nother["ds"] = .02',
 ))
 def test_export_rejects_unsupported_container_alias_bindings(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -481,6 +491,40 @@ def test_export_rejects_unsupported_container_alias_bindings(tmp_path, code):
     with pytest.raises(ValueError, match='alias bindings'):
         TOOL['export_files'](source, destination, fields)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize('definition, mutation', (
+    ('def obtain():\n    return params', 'other = obtain()\nother["ds"] = .02'),
+    ('def obtain():\n    other = params\n    return other', 'other = obtain()\nother["ds"] = .02'),
+    ('obtain = lambda: params', 'other = obtain()\nother["ds"] = .02'),
+    ('def obtain():\n    return list(params["polymers"])',
+     'other = obtain()\nother[0]["volume_fraction"] = .5'),
+    ('def obtain():\n    yield params', 'other = next(obtain())\nother["ds"] = .02'),
+    ('def obtain():\n    yield from [params]', 'other = next(obtain())\nother["ds"] = .02'),
+))
+def test_export_rejects_aliases_returned_by_earlier_helpers(tmp_path, definition, mutation):
+    source = tmp_path / 'input.py'
+    source.write_text(definition + '\nparams = ' + repr(params()) + '\n' + mutation + '\n')
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    destination = tmp_path / 'pscf'
+    with pytest.raises(ValueError, match='alias bindings'):
+        TOOL['export_files'](source, destination, fields)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    return params["ds"]',
+    'def helper():\n    return list(params["nx"])',
+    'helper = lambda: tuple(params["nx"])',
+    'def helper():\n    yield params["ds"]\n    yield from params',
+    'def helper(params=()):\n    return sorted(params)',
+    'from polymerfts import SCFT\ndef helper():\n    return SCFT(params)',
+))
+def test_earlier_helpers_can_return_scalars_and_independent_copies(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text(definition + '\nparams = ' + repr(params()) + '\nhelper()\n')
+    assert TOOL['read_input'](source) == params()
 
 
 @pytest.mark.parametrize('code', (
@@ -494,6 +538,16 @@ def test_export_rejects_unsupported_container_alias_bindings(tmp_path, code):
     'match params["chain_model"]:\n    case name:\n        print(name)',
     'match params:\n    case _:\n        pass',
     'def helper(params):\n    match params:\n        case other:\n            pass',
+    'def helper(value=params["ds"], *, count=2):\n    return value\nhelper()',
+    'helper = lambda value=params["ds"]: value\nhelper()',
+    'def helper(copied=list(params["nx"]), *, value=round(.4)):\n    copied[0] = 9',
+    'def helper():\n    return tuple(params["nx"])',
+    'helper = lambda: list(params["nx"])',
+    'def helper(params):\n    return params',
+    'helper = lambda params: params',
+    'def outer(params):\n    def inner(p=params):\n        return p\n    return inner',
+    'def helper(params):\n    return unknown(params)',
+    'def helper():\n    yield params["ds"]\n    yield from params',
 ))
 def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -650,6 +704,47 @@ def test_runtime_constants_do_not_reuse_stale_values(tmp_path, code):
     source.write_text('f = .4\n' + code + '\nparams = {"fraction": f}\n')
     with pytest.raises(ValueError, match='statically'):
         TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('binding', (
+    'from math import pi as chi',
+    'import math as chi',
+    'import chi',
+    'if True:\n    from math import pi as chi',
+    'def helper():\n    global chi\n    from math import pi as chi\nhelper()',
+))
+def test_export_rejects_stale_constants_after_imports(tmp_path, binding):
+    p = params()
+    p['chi_n'] = {'Zed,long_B': '__CHI__'}
+    source = tmp_path / 'input.py'
+    source.write_text('chi = 20.\n' + binding + '\nparams = '
+                      + repr(p).replace("'__CHI__'", 'chi') + '\n')
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    destination = tmp_path / 'pscf'
+    with pytest.raises(ValueError, match='statically'):
+        TOOL['export_files'](source, destination, fields)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize('binding', ('from settings import params', 'import settings as params',
+                                   'from settings import *'))
+def test_imports_cannot_replace_an_existing_params_dictionary(tmp_path, binding):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + binding + '\n')
+    with pytest.raises(ValueError, match='assignments|Star imports'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('definition', (
+    'def helper():\n    from math import pi as chi',
+    'def helper():\n    import math as chi',
+    'class Helper:\n    from math import pi as chi',
+))
+def test_local_imports_do_not_invalidate_module_constants(tmp_path, definition):
+    source = tmp_path / 'input.py'
+    source.write_text('chi = 20.\n' + definition + '\nparams = {"chi": chi}\n')
+    assert TOOL['read_input'](source) == {'chi': 20.}
 
 
 def test_unchanged_literal_containers_and_indexing_are_supported(tmp_path):

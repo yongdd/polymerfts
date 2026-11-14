@@ -40,6 +40,7 @@
 
 #include "PropagatorComputation.h"
 #include "ValidationUtils.h"
+#include "LogFugacity.h"
 
 /**
  * @brief Construct propagator computation engine.
@@ -235,6 +236,35 @@ std::vector<T> PropagatorComputation<T>::get_stress_gce(std::vector<double> fuga
                 stress[d] += derivative.normalized(make_density_normalization(
                     fugacities[p], 1.0, 1.0, 1.0, T(1.0)));
         }
+    }
+    return stress;
+}
+
+template <typename T>
+T PropagatorComputation<T>::get_total_partition_gce_log(double activity, int polymer)
+{
+    const auto normalization = log_fugacity::normalization<T>(activity);
+    // The ordinary accessor also validates the index and computation state.
+    const T partition = get_total_partition(polymer);
+    return apply_density_normalization(partition, normalization);
+}
+
+template <typename T>
+std::vector<T> PropagatorComputation<T>::get_stress_gce_log(std::vector<double> activities)
+{
+    this->check_box_space_group();
+    this->require_stress();
+    const int count = this->molecules->get_n_polymer_types();
+    if (activities.size() != static_cast<size_t>(count))
+        throw_with_line_number("get_stress_gce_log needs one log fugacity per polymer type.");
+    std::vector<T> stress(6, T(0.0));
+    for (int p = 0; p < count; ++p)
+    {
+        const auto normalization = log_fugacity::normalization<T>(activities[p]);
+        if (normalization.factor.mantissa == 0.0)
+            continue;
+        for (int d = 0; d < 6; ++d)
+            stress[d] += dq_dl[p][d].normalized(normalization);
     }
     return stress;
 }

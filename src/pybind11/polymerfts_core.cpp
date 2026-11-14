@@ -496,6 +496,12 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
                 throw_with_line_number(exc.what());
             }
         })
+        .def("get_total_concentration_gce_log", [](PropagatorComputation<T>& obj, double log_fugacity, int polymer, std::string monomer_type)
+        {
+            py::array_t<T> phi(obj.get_cb()->get_n_basis());
+            obj.get_total_concentration_gce_log(log_fugacity, polymer, monomer_type, phi.mutable_data());
+            return phi;
+        })
         .def("get_block_concentration", [](PropagatorComputation<T>& obj, int polymer)
         {
             try{
@@ -513,6 +519,7 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
             }
         })
         .def("get_total_partition", &PropagatorComputation<T>::get_total_partition)
+        .def("get_total_partition_gce_log", &PropagatorComputation<T>::get_total_partition_gce_log)
         .def("get_solvent_partition", &PropagatorComputation<T>::get_solvent_partition)
         .def("get_solvent_concentration", [](PropagatorComputation<T>& obj, int s)
         {
@@ -550,6 +557,7 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
         .def("get_force_off_diagonal_stress", &PropagatorComputation<T>::get_force_off_diagonal_stress)
         .def("get_stress", &PropagatorComputation<T>::get_stress)
         .def("get_stress_gce", &PropagatorComputation<T>::get_stress_gce)
+        .def("get_stress_gce_log", &PropagatorComputation<T>::get_stress_gce_log)
         .def("compute_partition_errors", &PropagatorComputation<T>::compute_partition_errors,
             "Relative partition function error of each polymer (nothing is printed)")
         .def("check_total_partition", &PropagatorComputation<T>::check_total_partition,

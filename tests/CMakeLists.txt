@@ -29,6 +29,10 @@ SET(BASIC_TESTS
     TestStressRange
     TestJunctionRange
     TestJunctionProduct
+    TestPartitionVolumeRange
+    TestPartitionAccumulator
+    TestPolymerFugacityRange
+    TestLogFugacity
     TestCanonicalIonRange
     TestThinObliqueCell
     TestDensityNormalization
@@ -186,6 +190,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestStressRange TestJunctionRange
+    TestPartitionVolumeRange TestPolymerFugacityRange
     TestCnAdiLongLines TestCrysFFTCellChange
     TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)

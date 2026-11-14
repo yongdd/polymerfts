@@ -29,6 +29,7 @@
 
 #include "CudaCommon.h"
 #include "ComputationBox.h"
+#include "PartitionAccumulator.h"
 
 /**
  * @class CudaComputationBox
@@ -63,6 +64,10 @@ class CudaComputationBox : public ComputationBox<T>
 private:
     CudaDeviceBuffer<CuDeviceData<T>> d_sum;       ///< Device buffer for reduction intermediate
     CudaDeviceBuffer<double> d_dv;                 ///< dV (volume element) in device memory
+    CudaDeviceBuffer<double> d_mask_;              ///< Binary full-grid mask for normalized quadrature
+    CudaDeviceBuffer<partition_accumulation::Sum> d_partition_out_;
+    CudaDeviceBuffer<unsigned char> d_partition_storage_;
+    size_t partition_storage_bytes_ = 0;
 
     /// @name CUB Reduction Storage
     /// @{
@@ -168,6 +173,12 @@ public:
      * @return Mean value
      */
     T mean_device(const CuDeviceData<T> *d_g);
+
+    /// Device counterpart of mean_product(): normalization precedes restoring
+    /// a scaled reduction, so a finite partition need not have a finite integral.
+    T mean_product_device(const CuDeviceData<T>* g, const CuDeviceData<T>* h = nullptr,
+                          const CuDeviceData<T>* divisor = nullptr, double copies = 1.0,
+                          bool absolute = false);
 
     /**
      * @brief Compute inner product of two device arrays.

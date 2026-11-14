@@ -213,6 +213,13 @@ public:
     virtual double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                           BackendArray<T>* divisor = nullptr) = 0;
 
+    /// The partition of a contour cut: mean(a*b/divisor)/copies. Normalize
+    /// within the reduction when the unnormalized integral is out of range.
+    virtual T partition_product(BackendArray<T>* a, BackendArray<T>* b,
+                                BackendArray<T>* divisor, double copies) = 0;
+    virtual double absolute_partition_product(BackendArray<T>* a, BackendArray<T>* b,
+                                               BackendArray<T>* divisor, double copies) = 0;
+
     /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i / divisor.
     /// Discrete chains remove the shared bead in each term, before a product
     /// can underflow or overflow; continuous chains omit divisor.

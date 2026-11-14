@@ -11,6 +11,7 @@
 #include "ComputationCommon.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
+#include "LogFugacity.h"
 
 std::string complex_real_power_message(double power)
 {
@@ -444,20 +445,36 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
 template <typename T>
 void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, std::string monomer_type, T* phi)
 {
+    get_gce_concentration(fugacity, false, p, monomer_type, phi);
+}
+
+template <typename T>
+void ComputationCommon<T>::get_total_concentration_gce_log(double log_fugacity, int p, std::string monomer_type, T* phi)
+{
+    get_gce_concentration(log_fugacity, true, p, monomer_type, phi);
+}
+
+template <typename T>
+void ComputationCommon<T>::get_gce_concentration(
+    double activity, bool logarithmic, int p, const std::string& monomer_type, T* phi)
+{
     this->check_box_space_group();
     this->require_concentrations();
     try
     {
         // A name that is not a monomer type (a typo) is an error, not a zero field
         validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
-        validation::require_non_negative(fugacity, "fugacity");
+        if (logarithmic)
+            log_fugacity::validate(activity);
+        else
+            validation::require_non_negative(activity, "fugacity");
         const int P = this->molecules->get_n_polymer_types();
         if (p < 0 || p > P-1)
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
         // An absent GCE species contributes exactly zero even if an unused
         // propagator integral is nonfinite. Validate its arguments first.
-        if (fugacity == 0.0)
+        if (logarithmic ? activity == -std::numeric_limits<double>::infinity() : activity == 0.0)
         {
             std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
             return;
@@ -475,8 +492,10 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
                 arrays.push_back(phi_b);
                 exponents.push_back(phi_block_exponent.at(key));
                 const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-                weights.push_back(make_density_normalization(fugacity,
-                    contour_step(std::get<2>(key)), block.n_repeated, 1.0, T(1.0)));
+                weights.push_back(logarithmic
+                    ? log_fugacity::normalization<T>(activity, contour_step(std::get<2>(key)), block.n_repeated)
+                    : make_density_normalization(activity,
+                        contour_step(std::get<2>(key)), block.n_repeated, 1.0, T(1.0)));
             }
         }
         backend->sum_to_host(phi, arrays, weights, exponents);

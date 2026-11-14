@@ -100,6 +100,10 @@ public:
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 
     T inner_product(BackendArray<T>* a, BackendArray<T>* b) override;
+    T partition_product(BackendArray<T>* a, BackendArray<T>* b,
+                         BackendArray<T>* divisor, double copies) override;
+    double absolute_partition_product(BackendArray<T>* a, BackendArray<T>* b,
+                                       BackendArray<T>* divisor, double copies) override;
     T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) override;
     double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                   BackendArray<T>* divisor = nullptr) override;

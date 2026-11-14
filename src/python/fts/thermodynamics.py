@@ -102,16 +102,32 @@ class ThermodynamicOperators:
 
     def number_densities(self, total_partitions):
         """Chains (or ions) per reference chain of each species, n_p/n_ref: φ_p/α_p of canonical
-        polymers, e^(βμ_p) Q_p of grand-canonical ones, then the point ions (complex operators)."""
+        polymers, e^(βμ_p) Q_p of grand-canonical ones, then the point ions (complex operators).
+        total_partitions must be those of the current propagators."""
         values = np.asarray(self.chain_densities, dtype=np.complex128).copy()
-        values[self.sim.grand_canonical] = self.sim.fugacities[self.sim.grand_canonical] * np.asarray(total_partitions)[self.sim.grand_canonical]
+        grand = self.sim.grand_canonical
+        values[grand] = self._grand_canonical_numbers(total_partitions)[grand]
         if self.electrostatics is not None and self.electrostatics.ions:
             values = np.append(values, self.electrostatics.ion_number_densities())
         return values
 
+    def _grand_canonical_numbers(self, total_partitions):
+        """e^(βμ_p) Q_p of the current propagators, zero for canonical species.
+
+        A scaled native product avoids materializing an overflowing or underflowing
+        fugacity. It preserves a true Q = 0 and does not take log(Q).
+        """
+        values = np.zeros(len(self.sim.polymers), dtype=np.complex128)
+        for p in self.sim.grand_canonical:
+            if self.sim._log_fugacity_required[p]:
+                values[p] = self.prop_solver.get_partition_function_gce_log(self.sim.log_fugacities[p], p)
+            else:
+                values[p] = self.sim.fugacities[p] * total_partitions[p]
+        return values
+
     def grand_canonical_hamiltonian(self, total_partitions):
-        """-Σ_p e^(βμ_p) Q_p of the grand-canonical chains, per reference chain (complex)."""
-        return -complex(np.sum(self.sim.fugacities * np.asarray(total_partitions, dtype=np.complex128)))
+        """-Σ_p e^(βμ_p) Q_p of the current grand-canonical propagators, per reference chain (complex)."""
+        return -complex(np.sum(self._grand_canonical_numbers(total_partitions)))
 
     def partition_ratios(self, w_aux):
         """|Q_s|/<|e^(-u_s)|> of each canonical single-site species (partition_ratio_species).
@@ -169,7 +185,10 @@ class ThermodynamicOperators:
         stress, lx = np.asarray(self.prop_solver.get_stress()), self.prop_solver.get_lx()
         if self.sim.grand_canonical:
             # h = -Σ_p e^(βμ_p) Q_p of the grand-canonical chains: dh/dθ = -Σ_p e^(βμ_p) dQ_p/dθ
-            stress = stress + np.asarray(self.prop_solver.get_stress_gce(self.sim.fugacities))
+            grand_stress = (self.prop_solver.get_stress_gce_log(self.sim.log_fugacities)
+                           if np.any(self.sim._log_fugacity_required)
+                           else self.prop_solver.get_stress_gce(self.sim.fugacities))
+            stress = stress + np.asarray(grand_stress)
         value -= sum(lx[a] * stress[a] for a in range(dim)) / dim
 
         if self.smearing.enabled:

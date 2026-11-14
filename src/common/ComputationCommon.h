@@ -135,6 +135,10 @@ protected:
     DensityNormalization<T> concentration_norm(
         const std::tuple<int, std::string, std::string>& block_key, double copies = -1.0) const;
 
+    /// Shared GCE density assembly; activity is z or log(z), as indicated.
+    void get_gce_concentration(double activity, bool logarithmic, int polymer,
+                               const std::string& monomer_type, T* phi);
+
     /// Compare canonical Q relatively and zero-weight species on the scale of
     /// their absolute contour integrands (which need not cancel when Q does).
     std::vector<double> partition_errors_from_contours(
@@ -178,6 +182,7 @@ public:
     void get_total_concentration(std::string monomer_type, T* phi) override;
     void get_total_concentration(int polymer, std::string monomer_type, T* phi) override;
     void get_total_concentration_gce(double fugacity, int polymer, std::string monomer_type, T* phi) override;
+    void get_total_concentration_gce_log(double log_fugacity, int polymer, std::string monomer_type, T* phi) override;
     void get_block_concentration(int polymer, T* phi) override;
     void get_solvent_concentration(int s, T* phi) override;
 };

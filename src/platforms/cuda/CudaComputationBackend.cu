@@ -861,6 +861,26 @@ T CudaComputationBackend<T>::inner_product(BackendArray<T>* a, BackendArray<T>* 
 }
 
 template <typename T>
+T CudaComputationBackend<T>::partition_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
+{
+    return cb->mean_product_device(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor), copies);
+}
+
+template <typename T>
+double CudaComputationBackend<T>::absolute_partition_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
+{
+    const double integral_value = absolute_inner_product(a, b, divisor);
+    const double result = integral_value / (copies * cb->get_volume());
+    if (partition_accumulation::ordinary_result(integral_value)
+        && partition_accumulation::ordinary_result(result))
+        return result;
+    return std::real(cb->mean_product_device(raw(a), raw(b),
+        divisor == nullptr ? nullptr : raw(divisor), copies, true));
+}
+
+template <typename T>
 T CudaComputationBackend<T>::inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w)
 {
     return cb->inner_product_inverse_weight_device(raw(a), raw(b), raw(w));
