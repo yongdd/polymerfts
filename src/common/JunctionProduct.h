@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <complex>
+#include <limits>
 #include <type_traits>
 
 #include "ScaledProduct.h"
@@ -67,7 +68,15 @@ POLYMERFTS_JUNCTION_HD inline double value(Number number)
         return number.mantissa;
     const double exponent = number.exponent + number.exponent_correction;
     if (exponent > 1024.0)
+    {
+#ifdef __CUDA_ARCH__
         return copysign(HUGE_VAL, number.mantissa);
+#else
+        // Older Windows SDKs define HUGE_VAL as an overflowing constant product,
+        // which MSVC reports (C4756); device code cannot call numeric_limits.
+        return copysign(std::numeric_limits<double>::infinity(), number.mantissa);
+#endif
+    }
     if (exponent < -1074.0)
         return copysign(0.0, number.mantissa);
     if (!scaled_product::finite(exponent))

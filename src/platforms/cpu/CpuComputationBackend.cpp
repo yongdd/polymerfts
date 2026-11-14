@@ -20,6 +20,15 @@
 #include "CpuSolverPseudoRQM4.h"
 #include "CpuSolverRealSpaceDiscrete.h"
 
+// MSVC accepts `omp simd` only with /openmp:experimental. There these loops stay
+// ordinary loops; their reductions give the same values in either form.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define POLYMERFTS_OMP_SIMD(clauses)
+#else
+#define POLYMERFTS_PRAGMA(text) _Pragma(#text)
+#define POLYMERFTS_OMP_SIMD(clauses) POLYMERFTS_PRAGMA(omp simd clauses)
+#endif
+
 template <typename T>
 CpuComputationBackend<T>::CpuComputationBackend(
     ComputationBox<T>* cb, Molecules* molecules,
@@ -404,7 +413,7 @@ void CpuComputationBackend<T>::add_segment_products(
                     if constexpr (std::is_same_v<T, double>)
                     {
                         double minimum = 1.0, maximum = 1.0, maximum_exponent = 0.0;
-                        #pragma omp simd reduction(min:minimum) reduction(max:maximum,maximum_exponent)
+                        POLYMERFTS_OMP_SIMD(reduction(min:minimum) reduction(max:maximum,maximum_exponent))
                         for (int i = begin; i < end; ++i)
                         {
                             const double a = std::abs(q_1[i]), b = std::abs(q_2[i]);
@@ -412,13 +421,14 @@ void CpuComputationBackend<T>::add_segment_products(
                             maximum = std::max(maximum, std::max(a, b));
                             maximum_exponent = std::max(maximum_exponent, std::abs(_exponent[i]));
                         }
-                        regular &= minimum >= 0x1p-200 && maximum <= 0x1p200 && maximum_exponent == 0.0;
+                        regular &= static_cast<int>(minimum >= 0x1p-200 && maximum <= 0x1p200
+                                                    && maximum_exponent == 0.0);
                         // Zero operands are safe, but must not hide a tiny
                         // nonzero operand elsewhere in the same tile.
                         if (minimum == 0.0 && maximum <= 0x1p200 && maximum_exponent == 0.0)
                         {
                             regular = scaled_product::ordinary(weight);
-                            #pragma omp simd reduction(&:regular)
+                            POLYMERFTS_OMP_SIMD(reduction(&:regular))
                             for (int i = begin; i < end; ++i)
                                 regular &= ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
                         }
@@ -432,21 +442,22 @@ void CpuComputationBackend<T>::add_segment_products(
                     }
                     else
                     {
-                        #pragma omp simd reduction(&:regular)
+                        POLYMERFTS_OMP_SIMD(reduction(&:regular))
                         for (int i = begin; i < end; ++i)
-                            regular &= (_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
+                            regular &= static_cast<int>(_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
                                      & ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
                     }
                 }
                 else
                 {
-                    #pragma omp simd reduction(&:regular)
+                    POLYMERFTS_OMP_SIMD(reduction(&:regular))
                     for (int i = begin; i < end; ++i)
                     {
-                        const int safe = (_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
+                        const int safe = static_cast<int>(_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
                                        & ordinary_value(q_1[i]) & ordinary_value(q_2[i])
-                                       & ordinary_value(_divisor[i]) & (_divisor[i] != T(0.0));
-                        regular &= safe | (mask != nullptr && mask[i] == 0.0);
+                                       & ordinary_value(_divisor[i])
+                                       & static_cast<int>(_divisor[i] != T(0.0));
+                        regular &= safe | static_cast<int>(mask != nullptr && mask[i] == 0.0);
                     }
                 }
                 if (regular)
