@@ -407,64 +407,72 @@ static std::string format_edge(const Block& block)
 }
 
 /**
- * @brief Recursive helper to print tree structure.
+ * @brief Print the blocks reached from the root, depth first with sorted children.
  *
- * @param node Current node
- * @param parent Parent node (-1 for root)
- * @param prefix Current indentation prefix
- * @param is_last Whether this is the last child of parent
+ * The traversal keeps its own stack, so a polymer of many blocks cannot exhaust the
+ * call stack. With @p indent every level is drawn below its parent. Its indentation
+ * grows with the depth, so the diagram grows with the square of the number of blocks;
+ * without @p indent each block is one line "(u)--Type[length]--(v)".
  */
-void print_tree_recursive(
-    int node,
-    int parent,
-    const std::string& prefix,
-    [[maybe_unused]] bool is_last,
+static void print_tree(
+    int root,
+    bool indent,
     const std::map<int, std::vector<int>>& adj_nodes,
     const std::map<std::pair<int, int>, int>& edge_to_idx,
     const std::vector<Block>& all_blocks)
 {
-    // Get children (neighbors except parent)
-    std::vector<int> children;
-    auto it = adj_nodes.find(node);
-    if (it != adj_nodes.end())
+    struct Frame
     {
-        for (int neighbor : it->second)
+        int node;
+        std::string prefix;
+        std::vector<int> children;
+        size_t next;
+    };
+    // Neighbors except the parent, in increasing order
+    auto children_of = [&adj_nodes](int node, int parent)
+    {
+        std::vector<int> children;
+        auto it = adj_nodes.find(node);
+        if (it != adj_nodes.end())
+            for (int neighbor : it->second)
+                if (neighbor != parent)
+                    children.push_back(neighbor);
+        std::sort(children.begin(), children.end());
+        return children;
+    };
+
+    std::vector<Frame> stack;
+    stack.push_back({root, "", children_of(root, -1), 0});
+    while (!stack.empty())
+    {
+        if (stack.back().next == stack.back().children.size())
         {
-            if (neighbor != parent)
-            {
-                children.push_back(neighbor);
-            }
+            stack.pop_back();
+            continue;
         }
-    }
-    std::sort(children.begin(), children.end());
+        const int node = stack.back().node;
+        const int child = stack.back().children[stack.back().next++];
+        const bool child_is_last = stack.back().next == stack.back().children.size();
 
-    // Print each child
-    for (size_t i = 0; i < children.size(); i++)
-    {
-        int child = children[i];
-        bool child_is_last = (i == children.size() - 1);
-
-        // Get block info for this edge
         auto edge_it = edge_to_idx.find(std::make_pair(node, child));
         if (edge_it == edge_to_idx.end())
-        {
             edge_it = edge_to_idx.find(std::make_pair(child, node));
+        const std::string edge_label = format_edge(all_blocks[edge_it->second]);
+
+        std::string prefix;
+        if (indent)
+        {
+            std::cout << stack.back().prefix << (child_is_last ? " \\--" : " +--")
+                      << edge_label << "--(" << child << ")" << std::endl;
+            // The children of the child line up after the edge label
+            prefix = stack.back().prefix + (child_is_last ? "    " : " |  ")
+                   + std::string(edge_label.length(), ' ');
         }
-        const Block& block = all_blocks[edge_it->second];
-        std::string edge_label = format_edge(block);
-
-        // Print edge and child node
-        std::cout << prefix;
-        std::cout << (child_is_last ? " \\--" : " +--");
-        std::cout << edge_label << "--(" << child << ")" << std::endl;
-
-        // Recurse with updated prefix
-        std::string new_prefix = prefix + (child_is_last ? "    " : " |  ");
-        // Add spacing for edge label width
-        new_prefix += std::string(edge_label.length(), ' ');
-
-        print_tree_recursive(child, node, new_prefix, child_is_last,
-                            adj_nodes, edge_to_idx, all_blocks);
+        else
+        {
+            std::cout << "(" << node << ")--" << edge_label << "--(" << child << ")" << std::endl;
+        }
+        stack.push_back({child, std::move(prefix), children_of(child, node), 0});
     }
 }
 
@@ -553,10 +561,10 @@ void Polymer::print_architecture_diagram() const
     }
     else
     {
-        // Print as tree
+        // Print as tree; beyond 100 blocks one line per block keeps the output linear
         std::cout << "(" << root << ")" << std::endl;
-        print_tree_recursive(root, -1, "", true,
-                            adjacent_nodes, edge_to_block_index, blocks);
+        print_tree(root, blocks.size() <= 100,
+                   adjacent_nodes, edge_to_block_index, blocks);
     }
 }
 

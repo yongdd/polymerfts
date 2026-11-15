@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Deep valid chains must not exhaust the native stack while generating keys.
 
-Check construction and contour-length remapping in separate child processes,
-so either native crash becomes a test failure. A small POSIX stack reproduces
-the original failure with modest heap use; other systems still check the keys.
+Check construction, contour-length remapping and the architecture diagram that
+the simulations print in separate child processes, so a native crash becomes a
+test failure. A small POSIX stack reproduces the original failures with modest
+heap use; other systems still check the keys and the diagram.
 """
 
 import subprocess
 import sys
+
+COUNT = 2048
 
 
 def limit_stack():
@@ -73,7 +76,7 @@ def child(mode):
         return 77
     # The optimizer is platform-neutral; this test allocates no solver or grid.
     factory = PlatformSelector.create_factory(platforms[0], False, "real")
-    count = 2048
+    count = COUNT
     ds = 1.0 / (2.5 * count)
     molecules = factory.create_molecules_information("continuous", ds, {"A": 1.0, "B": 1.0})
     blocks = [["A" if i % 2 == 0 else "B", (2 + i % 2) * ds, i, i + 1]
@@ -82,6 +85,10 @@ def child(mode):
         limit_stack()
     molecules.add_polymer(1.0, blocks, {0: "left", count: "right"})
     check_linear_keys(molecules, count, False)
+    if mode == "display":
+        # SCFT, L-FTS and CL-FTS print the architecture when they are constructed.
+        limit_stack()
+        molecules.display_architectures()
     if mode == "remapping":
         limit_stack()
         optimizer = factory.create_propagator_computation_optimizer(molecules, False)
@@ -93,17 +100,29 @@ def child(mode):
     return 0
 
 
+def check_display(output, count):
+    # Above 100 blocks the diagram prints one line per block, so it grows linearly.
+    lines = [line for line in output.splitlines() if line.startswith("(") and "--" in line]
+    assert len(lines) == count, len(lines)
+    for i, line in enumerate(lines):
+        assert line.startswith(f"({i})--") and line.endswith(f"--({i + 1})"), line
+    assert len(output) < 100 * count, len(output)
+
+
 def main():
     if len(sys.argv) > 1:
         return child(sys.argv[1])
-    for mode in ("construction", "remapping"):
+    for mode in ("construction", "remapping", "display"):
         result = subprocess.run([sys.executable, __file__, mode], capture_output=True,
                                 text=True, timeout=90)
         if result.returncode == 77:
             print(result.stdout, end="")
             return 77
         assert result.returncode == 0, (
-            f"{mode} process exit={result.returncode}\n{result.stdout}{result.stderr}")
+            f"{mode} process exit={result.returncode}\n{result.stdout[-2000:]}{result.stderr}")
+        if mode == "display":
+            check_display(result.stdout, COUNT)
+            result.stdout = result.stdout.splitlines()[-1] + "\n"
         print(result.stdout, end="")
     return 0
 

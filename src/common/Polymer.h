@@ -373,6 +373,9 @@ public:
      *  +--C[0.34]--(3)
      * Legend: (n)=vertex, Type[length]=block
      * ```
+     *
+     * Above 100 blocks the tree is printed without indentation, one line
+     * `(u)--Type[length]--(v)` per block in the same depth-first order.
      */
     void display_architecture() const;
 
