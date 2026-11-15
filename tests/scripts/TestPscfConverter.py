@@ -582,12 +582,59 @@ def test_earlier_helpers_can_return_scalars_and_independent_copies(tmp_path, def
     # The simulation constructors deep-copy params, also a copy handed straight to them
     'from polymerfts import lfts\nsimulation = lfts.LFTS(params=params, random_seed=1)',
     'from polymerfts import CLFTS\nsimulation = CLFTS(params=params)',
-    'from polymerfts import SCFT\ncalculation = SCFT(dict(params, ds=.02))',
+    # The value bound to a name is read with its old binding
+    'import numpy as np\ncenter = np.array([.5, .5, .5])\ncenter = center * params["lx"]',
+    'import numpy as np\na = np.zeros(3)\na += a * params["lx"]',
+    'def total():\n    return sum(lengths)\nlengths = [1, 2]\nprint(total())',
+    # A class's own binding leaves the module import as it is
+    'import numpy as np\nclass Plot:\n    if True:\n        np = None\nw = np.zeros(params["nx"])',
 ))
 def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, code):
     source = tmp_path / 'input.py'
     source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
     assert TOOL['read_input'](source) == params()
+
+
+@pytest.mark.parametrize('code, changes', (
+    ('from polymerfts import SCFT\ncalculation = SCFT(dict(params, ds=.02))', {'ds': .02}),
+    ('from polymerfts import scft\nfixed = dict(params, relax_cell=False)\ncalculation = scft.SCFT(params=fixed)',
+     {'relax_cell': False}),
+    ('from polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(params=params)', {}),
+    ('from polymerfts import scft\ndef main():\n    return scft.SCFT(params=params)\nif __name__ == "__main__":\n    main()', {}),
+))
+def test_export_describes_the_params_the_constructor_receives(tmp_path, code, changes):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    assert TOOL['read_input'](source) == {**params(), **changes}
+
+
+def test_a_constructor_in_a_function_can_precede_params(tmp_path):
+    # Until params is bound the function cannot run; afterwards it receives params.
+    source = tmp_path / 'input.py'
+    source.write_text('from polymerfts import scft\ndef main():\n    return scft.SCFT(params=params)\n'
+                      + 'params = ' + repr(params()) + '\nif __name__ == "__main__":\n    main()\n')
+    assert TOOL['read_input'](source) == params()
+
+
+@pytest.mark.parametrize('code', (
+    'from polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(dict(params, ds=.02))',
+    'from polymerfts import SCFT\ndef make():\n    return {}\ncalculation = SCFT(params=make())',
+    'from polymerfts import SCFT\nfor chi in (10., 20.):\n    calculation = SCFT(dict(params, chi_n={"Zed,long_B": chi}))',
+    # A function that runs where its argument cannot be read, and again where it can
+    'from polymerfts import scft\ndef run():\n    return scft.SCFT(params=p)\nfor chi in (12., 14.):\n'
+    '    p = {"ds": .01, "chi_n": {"Zed,long_B": chi}}\n    run()\np = params\nrun()',
+    'from polymerfts import scft\ndef run():\n    return scft.SCFT(params=p)\nfor chi in (12., 14.):\n'
+    '    p = {"ds": .01, "chi_n": {"Zed,long_B": chi}}\n    run()',
+    'import atexit, json\nfrom polymerfts import scft\ndef run():\n    return scft.SCFT(params=p)\n'
+    'atexit.register(run)\np = json.load(open("other.json"))',
+    'import json\nfrom pathlib import Path\nfrom polymerfts import scft\n'
+    'calculation = scft.SCFT(json.loads(Path(__file__).with_name("other.json").read_text()))',
+))
+def test_constructor_params_that_one_input_cannot_describe_are_refused(tmp_path, code):
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    with pytest.raises(ValueError, match='different params|literal values|alias bindings|unsupported calls'):
+        TOOL['read_input'](source)
 
 
 @pytest.mark.parametrize('mutation', (
@@ -693,6 +740,16 @@ def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
     'import copy\nd = copy._deepcopy_dispatch\nd[list] = print',
     'import copy\ng = getattr\ng(copy, "_deepcopy" + "_dispatch")[list] = print',
     'import sys\nm = sys.modules["copy"]',
+    # A class body reads a name it binds later from the module, also inside a function
+    'lengths = params["lx"]\nclass Helper:\n    lengths += [2.]',
+    'def outer():\n    params = {}\n    class Helper:\n        params["ds"] = .2\n        params = {}\nouter()',
+    # After a binding inside a compound statement, := or nonlocal, the class's name is not the import
+    *('from polymerfts.scft import SCFT\nclass Evil:\n    def __init__(self, p):\n        p["ds"] = .5\n'
+      'def run():\n    SCFT = Evil\n    class C:\n        ' + binding + '\n        SCFT(params)\nrun()'
+      for binding in ('(SCFT := Evil)', 'if True:\n            SCFT = Evil',
+                      'for SCFT in [Evil]:\n            pass', 'nonlocal SCFT')),
+    'from polymerfts.scft import SCFT\nclass Evil:\n    def __init__(self, p):\n        p["ds"] = .5\n'
+    'class C:\n    if True:\n        SCFT = Evil\n    SCFT(params)',
 ))
 def test_scope_handling_still_rejects_parameter_mutations(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -709,6 +766,7 @@ def test_scope_handling_still_rejects_parameter_mutations(tmp_path, code):
     '{index: params.update(ds=.2) for index in range(1) for params in [{"ds": .3}]}',
     'list(params.update(ds=.2) for params in [{"ds": .3}])',
     'def helper():\n    [params.update(ds=.2) for params in [{"ds": .3}]]\nhelper()',
+    'class Helper:\n    lengths = [1.]\n    lengths += [2.]',
 ))
 def test_class_and_comprehension_container_scopes(tmp_path, code):
     source = tmp_path / 'input.py'
@@ -891,6 +949,16 @@ def test_mutated_helper_containers_are_rejected(tmp_path, code):
         TOOL['read_input'](source)
 
 
+@pytest.mark.parametrize('code', ('lengths.append(8)', 'lengths[0] = 8', 'del lengths[0]',
+                                  'global lengths\n    lengths = [8]'))
+def test_helpers_defined_before_the_containers_they_change_are_rejected(tmp_path, code):
+    # The function runs after the list is defined, whatever the order of the definitions.
+    source = tmp_path / 'input.py'
+    source.write_text('def refine():\n    ' + code + '\nlengths = [2, 3, 4]\nparams = {"nx": lengths}\nrefine()\n')
+    with pytest.raises(ValueError, match='mutations|method calls|statically'):
+        TOOL['read_input'](source)
+
+
 @pytest.mark.parametrize('code', ('f = load_value()', 'if True:\n    f = .6', 'f += .2', 'f, g = .6, 1.',
                                 'match .6:\n    case f:\n        pass',
                                 'match [.6]:\n    case [*f]:\n        pass',
@@ -908,6 +976,7 @@ def test_runtime_constants_do_not_reuse_stale_values(tmp_path, code):
     'import chi',
     'if True:\n    from math import pi as chi',
     'def helper():\n    global chi\n    from math import pi as chi\nhelper()',
+    'def helper(value):\n    global chi\n    chi = value\nchi = 15.\nhelper(20.)',
 ))
 def test_export_rejects_stale_constants_after_imports(tmp_path, binding):
     p = params()

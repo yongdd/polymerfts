@@ -77,10 +77,15 @@ which must be a setting of that symbol.
 
 A Python parameter file can also be used with `--fields`. The converter reads a
 module-level `params` dictionary and simple numerical expressions such as
-`f = 0.36` and `1-f` statically. It never executes the Python file. Runtime
+`f = 0.36` and `1-f` statically. It never executes the Python file. When the
+script constructs `SCFT`, `LFTS`, `CLFTS` or `GibbsEnsemble`, the export describes
+the `params` the constructor receives, such as `dict(params, ds=.02)`; a script
+whose calculations receive different `params`, or `params` the converter cannot
+read, is rejected. Runtime
 configuration loading, recognized parameter mutations (including through
-container aliases), and constants changed by unsupported assignments or control
-flow are rejected. Literal helper containers and indexing are supported;
+container aliases and in functions defined before the containers they change),
+and constants changed by unsupported assignments, control flow or a function
+(`global`) are rejected. Literal helper containers and indexing are supported;
 container method calls are rejected, and so is a parameter container given to
 code of the script: an unsupported call, an operator of an object the converter
 cannot identify, a simulation constructor whose `params` is not a literal value,
