@@ -344,7 +344,9 @@ getters raise `RuntimeError` before it, after it failed and after a box change
 `compute_concentrations()` and the stress `compute_stress()`. The solver reports
 values only: with real fields a partition function that is not positive and finite
 is rejected by `SCFT` (final fields) and `LFTS` (saddle points), not by the solver,
-because intermediate iterates can pass through such values.
+because intermediate iterates can pass through such values. A polymer of volume
+fraction exactly zero is absent and is not checked: it contributes no $`\log Q`$,
+and a zero graft gives it $`Q = 0`$.
 
 ---
 

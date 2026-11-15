@@ -669,9 +669,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   round-off level of the spectral transforms, and Q came out negative (about -3e-19
   against +4.67e-28) on every platform; SCFT reported no error and L-FTS only a
   non-finite Hamiltonian. Intermediate iterates are not checked, since `rqm4` and
-  `cn-adi2` can pass through Q <= 0 during saddle iterations. The check cannot detect a
-  positive Q made of round-off noise; `check_total_partition()` reports that
-  inconsistency. `TestPartitionGuard` covers the checks.
+  `cn-adi2` can pass through Q <= 0 during saddle iterations. A polymer of volume fraction
+  exactly zero is not checked (2026-11-14): it contributes no log Q, and an absent grafted
+  species with a zero graft has Q = 0, which SCFT rejected (`TestScftAbsentPolymer`). The
+  check cannot detect a positive Q made of round-off noise; `check_total_partition()`
+  reports that inconsistency. `TestPartitionGuard` covers the checks.
 - Native input checks (2026-10-25):
   - A monomer name that ends with an underscore, which the name check allows, no longer
     stops the propagator key parser with "invalid stoi argument".
