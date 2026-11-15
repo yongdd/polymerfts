@@ -4,7 +4,8 @@
 The analytic ground mode tests the original narrow-box failure without relying
 on another solver. Mixed walls, strided passes, half bonds, complex fields and
 operator replacement also exercise the folded kernels on every backend, and a
-signed image sum checks the leading retained modes just inside the folded regime.
+signed image sum checks the leading retained modes, their lattice aliases and the
+Nyquist mode just inside the folded regime.
 """
 
 import numpy as np
@@ -186,10 +187,17 @@ def higher_folded_modes(platform, field_type):
     # them; their eigenvalues fall off as exp(-m^2), so at rtol 1e-11 the comparison
     # resolves the modes above about 1e-11 of the first: five with two absorbing
     # walls, three with one. The stress needs the derivatives of the same modes.
-    n, ds = 16, 0.1
+    # With two absorbing walls on two or three cells the bond is about one cell
+    # wide: the higher modes carry lattice aliases, and the last one is the Nyquist
+    # mode, which has two equal aliases and its own norm. One absorbing wall needs a
+    # bond twice as many cells wide; there the aliases change the propagator by at
+    # most about 1e-10, near the tolerance.
+    ds = 0.1
     rng = np.random.default_rng(29417)
-    for factor, bc in ((1.0, ["absorbing"]*2), (0.5, ["absorbing", "reflecting"]),
-                       (0.5, ["reflecting", "absorbing"])):
+    for n, factor, bc in ((16, 1.0, ["absorbing"]*2), (16, 0.5, ["absorbing", "reflecting"]),
+                          (16, 0.5, ["reflecting", "absorbing"]), (2, 1.0, ["absorbing"]*2),
+                          (3, 1.0, ["absorbing"]*2), (2, 0.5, ["absorbing", "reflecting"]),
+                          (2, 0.5, ["reflecting", "absorbing"])):
         length = factor*np.pi*np.sqrt(ds/6.0)*(1-1e-3)
         field = rng.normal(0.0, 5.0, n)
         graft = rng.uniform(0.4, 1.6, n)
