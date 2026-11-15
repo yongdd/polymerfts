@@ -16,10 +16,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `CudaTridiagonalLines.cuh`, so that `TestCudaTridiagonal` links: since CUDA 13 a kernel template
   instantiated in another file has an internal host stub. `TestCrysFFTObliqueZCuda` includes
   `<algorithm>`, which GCC 12 and later need for `std::max` over an initializer list.
-- Clang builds with `POLYMERFTS_WERROR=ON` (2026-11-15; Clang 19, CPU backend and tests): the
-  range checks of `add_segment_products` request `omp simd` only from GCC, since Clang, clang-cl and
-  icx cannot vectorize them and warn with `-Wpass-failed`; a missing `override`, an unused member of
-  the MKL trigonometric transform and unused variables of six C++ tests are removed.
+- Clang builds with `POLYMERFTS_WERROR=ON` (2026-11-15; Clang 19 as the C++ compiler, with and
+  without CUDA): the range checks of `add_segment_products` request `omp simd` only from GCC, since
+  Clang, clang-cl and icx cannot vectorize them and warn with `-Wpass-failed`. A missing `override`
+  is added and an unused member of the MKL trigonometric transform is removed; the unused variables
+  of eight C++ tests are removed or marked `[[maybe_unused]]`.
 - The GitHub repository is renamed from `langevin-fts` to `polymerfts`, the name of the
   package and its import (2026-10-27); GitHub redirects the old URLs.
 - The Conda environment and CI use conda-forge (Miniforge) instead of Anaconda's

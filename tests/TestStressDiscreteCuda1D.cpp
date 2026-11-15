@@ -35,9 +35,6 @@ int main()
 {
     try
     {
-        // Chrono timer
-        std::chrono::system_clock::time_point chrono_start, chrono_end;
-
         // Input fields
         double *w;
 
