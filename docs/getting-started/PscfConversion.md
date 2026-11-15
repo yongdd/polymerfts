@@ -81,15 +81,20 @@ module-level `params` dictionary and simple numerical expressions such as
 script constructs `SCFT`, `LFTS`, `CLFTS` or `GibbsEnsemble`, the export describes
 the `params` the constructor receives, such as `dict(params, ds=.02)`; a script
 whose calculations receive different `params`, or `params` the converter cannot
-read, is rejected. Runtime
-configuration loading, recognized parameter mutations (including through
+read, is rejected. These classes are followed through module-level import
+statements: a class or its module reached through an import in a function or
+under a condition, or given to another name, a function or a loop, is rejected;
+annotations, `isinstance` and `is` may name them. Runtime
+configuration loading, such as `SCFT.from_file` or a `from_file` of an object
+the converter cannot identify (export the parameter file instead), recognized
+parameter mutations (including through
 container aliases and in functions defined before the containers they change),
 and constants changed by unsupported assignments, control flow or a function
 (`global`) are rejected. Literal helper containers and indexing are supported;
 container method calls are rejected, and so is a parameter container given to
 code of the script: an unsupported call, an operator of an object the converter
 cannot identify, a simulation constructor whose `params` is not a literal value,
-reflection (`getattr`, `exec`, ...) or a change to the `copy` module. The check
+reflection (`getattr`, `exec`, `__main__`, ...) or a change to the `copy` module. The check
 reads the source; code written to hide what it does can still change `params`
 when it runs. Other runtime code, including Python
 initial-field generation and calls to external functions, is not executed or

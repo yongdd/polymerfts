@@ -585,6 +585,20 @@ def test_earlier_helpers_can_return_scalars_and_independent_copies(tmp_path, def
     # The value bound to a name is read with its old binding
     'import numpy as np\ncenter = np.array([.5, .5, .5])\ncenter = center * params["lx"]',
     'import numpy as np\na = np.zeros(3)\na += a * params["lx"]',
+    # NumPy arithmetic of a new array with numbers makes another array
+    'import numpy as np\ncenter = np.array([.5, .5, .5])\ncenter = center * params["lx"]\nshift = center - params["lx"]',
+    'import numpy as np\ncenter = np.array([.5, .5, .5]) * params["lx"] + 1\ncenter = center % params["lx"]',
+    'import numpy as np\na = np.zeros(3)\na += 1\nshift = a - params["lx"]',
+    'def helper():\n    from polymerfts import PropagatorSolver\n    return PropagatorSolver',
+    'def report():\n    import polymerfts\n    print(polymerfts.__version__)',
+    'try:\n    import polymerfts\nexcept ImportError:\n    polymerfts = None',
+    'from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from polymerfts import SCFT\ndef run(calculation: "SCFT"):\n    pass',
+    'from polymerfts import lfts\ndef check(simulation):\n    return isinstance(simulation, (lfts.LFTS,)) or type(simulation) is lfts.LFTS',
+    'import numpy as np\nlengths = np.array([1., 1., 1.])\nlengths *= 2 * np.pi / np.sqrt(3)\nlengths += -0.5 * np.ones(3)\nbox = lengths * params["lx"]',
+    'import numpy as np\ncenter = np.array([.5, .5, .5])\ncenter -= center.mean()\ncenter += np.linspace(0, .1, 3)\nposition = center * params["lx"]',
+    # A local import of a name leaves its module-level import as it is
+    'from polymerfts import SCFT\ncalculation = SCFT(params)\ndef describe(simulation):\n    from polymerfts import SCFT\n    return isinstance(simulation, SCFT)',
+    'import polymerfts\ndef version():\n    import polymerfts.utils\n    return polymerfts.__version__\ncalculation = polymerfts.SCFT(params)',
     'def total():\n    return sum(lengths)\nlengths = [1, 2]\nprint(total())',
     # A class's own binding leaves the module import as it is
     'import numpy as np\nclass Plot:\n    if True:\n        np = None\nw = np.zeros(params["nx"])',
@@ -601,6 +615,9 @@ def test_scalar_iteration_and_local_parameter_bindings_stay_supported(tmp_path, 
      {'relax_cell': False}),
     ('from polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(params=params)', {}),
     ('from polymerfts import scft\ndef main():\n    return scft.SCFT(params=params)\nif __name__ == "__main__":\n    main()', {}),
+    # Annotations name the class without calling it
+    ('from polymerfts import SCFT\ndef run() -> SCFT:\n    return SCFT(params)\nrun()', {}),
+    ('from polymerfts import SCFT\ncalculation: SCFT = SCFT(params)', {}),
 ))
 def test_export_describes_the_params_the_constructor_receives(tmp_path, code, changes):
     source = tmp_path / 'input.py'
@@ -634,6 +651,53 @@ def test_constructor_params_that_one_input_cannot_describe_are_refused(tmp_path,
     source = tmp_path / 'input.py'
     source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
     with pytest.raises(ValueError, match='different params|literal values|alias bindings|unsupported calls'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('code', (
+    'from polymerfts import scft\ncalculation = scft.SCFT.from_file("gyroid.yaml", ds=.02)',
+    'from polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT.from_file("gyroid.yaml", max_iter=500)',
+    'from polymerfts import LFTS\ndef main():\n    return LFTS.from_file("lamella.yaml", random_seed=12)\nmain()',
+    'from polymerfts.fts.clfts import CLFTS\nsimulation = CLFTS.from_file("lamella.yaml")',
+    # An import in a function or under a condition, an instance, a bound method
+    'if __name__ == "__main__":\n    from polymerfts import scft\n    calculation = scft.SCFT.from_file("gyroid.yaml")',
+    'def main():\n    from polymerfts import SCFT\n    return SCFT.from_file("gyroid.yaml")\nmain()',
+    'from polymerfts import SCFT\nfirst = SCFT(params)\nsecond = first.from_file("gyroid.yaml")',
+    'import functools\nfrom polymerfts import SCFT\nload = functools.partial(SCFT.from_file, "gyroid.yaml")\nload()',
+    # Nor can it tell another from_file from these
+    'class Settings:\n    @classmethod\n    def from_file(cls, path):\n        return cls()\nsettings = Settings.from_file("run.json")',
+))
+def test_calculations_that_load_their_params_from_a_file_are_refused(tmp_path, code):
+    # The module params is not what such a calculation receives.
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    with pytest.raises(ValueError, match='from_file'):
+        TOOL['read_input'](source)
+
+
+@pytest.mark.parametrize('code', (
+    # An import in a function or under a condition
+    'def main():\n    from polymerfts import SCFT\n    return SCFT({"ds": .5})\nmain()',
+    'if __name__ == "__main__":\n    from polymerfts import scft\n    calculation = scft.SCFT({"ds": .5})',
+    'try:\n    from polymerfts.scft import SCFT as Solver\nexcept ImportError:\n    Solver = None\ncalculation = Solver({"ds": .5})',
+    'def main():\n    import polymerfts.utils\n    return polymerfts.SCFT({"ds": .5})\nmain()',
+    'if True:\n    import polymerfts as pf\ncalculation = pf.scft.SCFT({"ds": .5})',
+    # The class or its module given to another name, a loop, a function or a subclass
+    'from polymerfts import SCFT\nSolver = SCFT\ncalculation = Solver({"ds": .5})',
+    'from polymerfts import SCFT, LFTS\nfor method in (SCFT, LFTS):\n    method.from_file("gyroid.yaml")',
+    'import functools\nfrom polymerfts import scft\nmake = functools.partial(scft.SCFT, {"ds": .5})\nmake()',
+    'from polymerfts import SCFT\nclass Mine(SCFT):\n    pass\ncalculation = Mine({"ds": .5})',
+    'from polymerfts import scft\ndef build(module):\n    return module.SCFT({"ds": .5})\nbuild(scft)',
+    'import polymerfts\nfor module in (polymerfts,):\n    calculation = module.SCFT({"ds": .5})',
+    # Also with the bindings of the last statement, for code that runs after it
+    'import atexit\nfrom polymerfts import SCFT\ndef check():\n    return isinstance(None, SCFT)\n'
+    'atexit.register(check)\ndef isinstance(a, b):\n    return b({"ds": .5})',
+))
+def test_simulation_classes_the_converter_cannot_follow_are_refused(tmp_path, code):
+    # Such a call can receive params other than the module's.
+    source = tmp_path / 'input.py'
+    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
+    with pytest.raises(ValueError, match='module-level import'):
         TOOL['read_input'](source)
 
 
@@ -712,6 +776,11 @@ def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
     'm = 2\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\n[m * params["nx"] for m in [M()]]',
     'import numpy\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return 0\ndef f(np):\n    return np.array([1]) * params["nx"]\nf(M())',
     'import numpy as np\nclass M:\n    def __or__(self, other):\n        other["Zed,long_B"] = 99\n        return 0\nprint(np.array([M()]) | params["chi_n"])',
+    # Arithmetic of an array with an object of the script can give that object
+    'import numpy as np\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return self\nv = M() * np.ones(1)\nprint(v * params["nx"])',
+    'import numpy as np\nclass M:\n    def __mul__(self, other):\n        other[0] = 99\n        return self\nv = np.array(M()) * 1\nprint(v * params["nx"])',
+    'import numpy as np\nclass M:\n    def __array_ufunc__(self, *args, **kwargs):\n        return self\n'
+    '    def __mul__(self, other):\n        other[0] = 99\n        return self\nv = np.zeros(1)\nv += M()\nprint(v * params["nx"])',
     # Comparisons, augmented assignments and subscript keys call methods of the script too
     'class M:\n    def __eq__(self, other):\n        other[0] = 99\n        return False\nprint(M() == params["nx"])',
     'class M:\n    def __contains__(self, item):\n        item[0] = 99\n        return False\nprint(params["nx"] in M())',
@@ -740,6 +809,14 @@ def test_local_containers_can_shadow_parameter_dependencies(tmp_path, mutation):
     'import copy\nd = copy._deepcopy_dispatch\nd[list] = print',
     'import copy\ng = getattr\ng(copy, "_deepcopy" + "_dispatch")[list] = print',
     'import sys\nm = sys.modules["copy"]',
+    # The script's own module
+    'import __main__\n__main__.params["ds"] = .5',
+    'from __main__ import params as same\nsame["ds"] = .5',
+    'def tweak():\n    import __main__ as m\n    m.params["ds"] = .5\ntweak()',
+    'def tweak():\n    from __main__ import params as same\n    same["ds"] = .5\ntweak()',
+    'def tweak():\n    import sys as s\n    s.modules["__main__"].params["ds"] = .5\ntweak()',
+    'def tweak():\n    from importlib import import_module as load\n    load("__main__").params["ds"] = .5\ntweak()',
+    'def tweak():\n    from builtins import exec as run\n    run("params[\'ds\'] = .5")\ntweak()',
     # A class body reads a name it binds later from the module, also inside a function
     'lengths = params["lx"]\nclass Helper:\n    lengths += [2.]',
     'def outer():\n    params = {}\n    class Helper:\n        params["ds"] = .2\n        params = {}\nouter()',

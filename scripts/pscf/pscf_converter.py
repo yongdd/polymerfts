@@ -303,6 +303,12 @@ def read_python_params(path):
     # reading of the source cannot follow.
     reflection = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval",
                   "compile", "__import__", "importlib.import_module"}
+    untraceable_error = ("SCFT, LFTS, CLFTS and GibbsEnsemble are followed through module-level import statements "
+                         "and calls by those names; reached through an import in a function or under a condition, "
+                         "or given to another name, a function or a loop, they can receive params the converter "
+                         "does not see.")
+    reflection_error = ("Reflection and module internals (getattr, exec, sys.modules, __main__, copy._...) may "
+                        "cause parameter mutations that a reading of the script cannot follow; use a saved SCFT result.")
 
     def callable_name(node):
         if isinstance(node, ast.Name):
@@ -320,6 +326,61 @@ def read_python_params(path):
                    "polymerfts.LFTS", "polymerfts.lfts.LFTS", "polymerfts.fts.lfts.LFTS",
                    "polymerfts.CLFTS", "polymerfts.clfts.CLFTS", "polymerfts.fts.clfts.CLFTS",
                    "polymerfts.GibbsEnsemble", "polymerfts.fts.gibbs_ensemble.GibbsEnsemble"}
+    # Simulation classes and the modules that hold one
+    simulation_modules = {name.rsplit(".", i)[0] for name in simulations for i in range(1, name.count(".") + 1)}
+    traced = simulations | simulation_modules
+    # How each name, attribute or call appears: the function of a call, the owner of an
+    # attribute, in an annotation, or a type in isinstance, issubclass or an `is` test
+    called, owners, annotated, type_tests = set(), set(), set(), {}
+    # What an import in a function, a class or a compound statement binds each name to;
+    # the converter does not resolve these names
+    untraced = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called.add(id(node.func))
+            if isinstance(node.func, ast.Name) and len(node.args) == 2:
+                types = node.args[1].elts if isinstance(node.args[1], ast.Tuple) else [node.args[1]]
+                type_tests.update((id(part), node.func) for part in types)
+        elif isinstance(node, ast.Attribute):
+            owners.add(id(node.value))
+        elif isinstance(node, ast.Compare) and all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops):
+            type_tests.update((id(part), None) for part in (node.left, *node.comparators))
+        annotations = ([node.annotation] if isinstance(node, (ast.arg, ast.AnnAssign)) else
+                       [node.returns] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else [])
+        annotated.update(id(part) for annotation in annotations if annotation is not None
+                         for part in ast.walk(annotation))
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and node not in tree.body \
+                and not (isinstance(node, ast.ImportFrom) and node.level):
+            for alias in node.names:
+                if isinstance(node, ast.ImportFrom):
+                    name, target = alias.asname or alias.name, f"{node.module}.{alias.name}"
+                else:  # import a.b binds a
+                    name = alias.asname or alias.name.split(".")[0]
+                    target = alias.name if alias.asname else name
+                untraced.setdefault(name, set()).add(target)
+    # The names, attributes and calls the rules below can concern, found once
+    imported = {name for statement in tree.body if isinstance(statement, (ast.Import, ast.ImportFrom))
+                for alias in statement.names
+                for name in [alias.asname or (alias.name.split(".")[0] if isinstance(statement, ast.Import)
+                                              else alias.name)]}
+    may_hide, reach_untraced, from_files, main_imports = set(), set(), set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and "__main__" in (
+                [(node.module or "").partition(".")[0]] if isinstance(node, ast.ImportFrom)
+                else [alias.name.partition(".")[0] for alias in node.names]):
+            main_imports.add(id(node))
+        if not (isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load)):
+            continue
+        if isinstance(node, ast.Attribute) and node.attr == "from_file":
+            from_files.add(id(node))
+        root = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if isinstance(root, ast.Name) and root.id in untraced:
+            reach_untraced.add(id(node))
+        if (isinstance(root, ast.Name) and (root.id in imported or root.id in untraced)
+                and id(node) not in owners and id(node) not in annotated):
+            may_hide.add(id(node))
     # Shape-only functions; on an array from array_makers they run ndarray code.
     shape_readers = {"numpy.reshape", "numpy.broadcast_to"}
     # Without `like=` these return a base-class ndarray (or a float), whose arithmetic
@@ -331,6 +392,8 @@ def read_python_params(path):
                *("numpy." + name for name in ("zeros", "ones", "empty", "full", "array", "asarray", "prod", "sum", "mean", "min", "max")),
                *("numpy.random." + name for name in ("normal", "uniform", "random"))}
     numeric_readers = {"sum", "min", "max", *("numpy." + name for name in ("array", "asarray", "prod", "sum", "mean", "min", "max"))}
+    numpy_math = {"numpy." + name for name in ("sqrt", "cbrt", "square", "exp", "log", "sin", "cos", "tan",
+                                               "abs", "absolute", "linspace", "arange")}
 
     def numeric(value):
         return (isinstance(value, (int, float, complex))
@@ -383,6 +446,49 @@ def read_python_params(path):
         # A new array, or a module name whose last binding was one
         return new_array(node, untrusted) or (isinstance(node, ast.Name) and node.id in array_names
                                               and node.id not in untrusted)
+
+    def array_result(node, untrusted):
+        """A new array, or NumPy arithmetic of an array with a list of numbers, which makes another.
+
+        With scalars only, a 0-d array gives an element, which can be any object, and
+        matrix multiplication of two vectors gives a scalar. A list makes the result an
+        array of at least one dimension, and so does such an array as an operand.
+        """
+        if new_array(node, untrusted):
+            return True
+        if not isinstance(node, ast.BinOp) or isinstance(node.op, ast.MatMult):
+            return False
+        parts = (node.left, node.right)
+        made = [array_result(part, untrusted) and isinstance(part, ast.BinOp) for part in parts]
+        if not all(done or builtin_operand(part, untrusted) for done, part in zip(made, parts)):
+            return False
+        if not any(done or is_array(part, untrusted) for done, part in zip(made, parts)):
+            return False
+        return any(made) or any(evaluates_to_list(part, untrusted) for part in parts)
+
+    def numerical(node, untrusted):
+        """Arithmetic of numbers, arrays and NumPy math, which runs no method of the script."""
+        if isinstance(node, ast.BinOp):
+            return numerical(node.left, untrusted) and numerical(node.right, untrusted)
+        if isinstance(node, ast.UnaryOp):
+            return numerical(node.operand, untrusted)
+        if isinstance(node, ast.Attribute) and not uses(node, untrusted):
+            return callable_name(node) in ("numpy.pi", "numpy.e")
+        if (isinstance(node, ast.Call) and not node.keywords and not uses(node.func, untrusted)
+                and callable_name(node.func) in numpy_math):
+            return all(numerical(argument, untrusted) for argument in node.args)
+        if (isinstance(node, ast.Call) and not node.keywords and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("mean", "sum", "min", "max", "std") and is_array(node.func.value, untrusted)):
+            return all(numerical(argument, untrusted) for argument in node.args)  # such as center.mean()
+        return builtin_operand(node, untrusted)
+
+    def evaluates_to_list(node, untrusted):
+        if uses(node, untrusted):
+            return False
+        try:
+            return isinstance(evaluate(node), (list, tuple))
+        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+            return False
 
     def builtin_operand(node, untrusted):
         """Arithmetic with this operand runs builtin or NumPy code, not a method of the script."""
@@ -761,32 +867,78 @@ def read_python_params(path):
     # Names a module has before its first statement
     predefined = set(dir(builtins)) | {"__file__", "__cached__", "__builtins__", "__annotations__"}
 
-    def call_name(node, hidden, unsettled):
-        owner = node.func
+    def resolved_name(node, hidden, unsettled):
+        owner = node
         while isinstance(owner, ast.Attribute):
             owner = owner.value
         if isinstance(owner, ast.Name) and (owner.id in hidden or owner.id in unsettled):
             return ""
-        return callable_name(node.func)
+        return callable_name(node)
 
-    def record_construction(node, hidden, untrusted, bound):
+    def call_name(node, hidden, unsettled):
+        return resolved_name(node.func, hidden, unsettled)
+
+    def loads_params(node, hidden, unsettled):
+        """SCFT.from_file and the like, reached through any name the converter cannot resolve:
+        an import in a function or under a condition, an alias, a subclass, an instance."""
+        if id(node) not in from_files:
+            return False
+        owner = resolved_name(node.value, hidden, unsettled)
+        return not owner or owner == "polymerfts" or owner.startswith("polymerfts.")
+
+    def hides_simulation(node, hidden, unsettled):
+        """A simulation class or its module where the converter cannot follow the calls.
+
+        A name that an import in a function or under a condition binds is not resolved,
+        and the class or module given to another name, a loop or a function can be
+        called there with any params. Annotations, isinstance and `is` only name it.
+        """
+        if id(node) not in may_hide:
+            return False  # a name nothing imports, an owner of an attribute or an annotation
+        if id(node) in type_tests and (type_tests[id(node)] is None or resolved_name(
+                type_tests[id(node)], hidden, unsettled) in ("isinstance", "issubclass")):
+            return False
+        if id(node) not in called and resolved_name(node, hidden, unsettled) in traced:
+            return True
+        return any(path in traced for path in untraced_paths(node, hidden, unsettled))
+
+    def untraced_paths(node, hidden, unsettled):
+        """What a name the converter does not resolve may reach through those imports."""
+        if id(node) not in reach_untraced:
+            return []
+        root, attributes = node, []
+        while isinstance(root, ast.Attribute):
+            attributes.insert(0, root.attr)
+            root = root.value
+        if resolved_name(root, hidden, unsettled):
+            return []
+        return [".".join([target, *attributes]) for target in untraced.get(root.id, ())]
+
+    def reflective(name):
+        return (name in reflection or name.removeprefix("builtins.") in reflection
+                or name in ("__builtins__", "sys.modules") or name.startswith("copy._")
+                or name.partition(".")[0] == "__main__")  # the script's own module
+
+    def record_construction(node, hidden, untrusted, bound, from_file=False):
         """Record the params a simulation constructor receives here.
 
         Nothing is recorded while a global it reads is unbound: the call would stop
-        with a NameError before it constructs anything.
+        with a NameError before it constructs anything. A constructor that loads its
+        params from a file records `loaded` in place of a value.
         """
-        argument = simulation_params(node, untrusted)
-        given = params_argument(node)
+        argument = None if from_file else simulation_params(node, untrusted)
+        given = node if from_file else params_argument(node)
         if argument is not None:
             constructed.setdefault(id(node), []).append(evaluate(argument))
         elif given is None or not (names_in(given) - hidden - predefined - bound):
-            constructed.setdefault(id(node), []).append(None)
+            constructed.setdefault(id(node), []).append(loaded if from_file else None)
 
     deferred_bodies = []
     array_names = set()  # module names bound to a new base-class ndarray
     runtime_globals = set()  # module names that a function body binds whenever it runs
     ever_bound = set()  # module names bound by an earlier statement
     constructed = {}  # each simulation constructor: the params values it is seen to receive
+    loaded = object()  # stands for params that a constructor loads from a file
     for statement in tree.body:
         if isinstance(statement, ast.Import):
             for alias in statement.names:
@@ -891,12 +1043,17 @@ def read_python_params(path):
             if isinstance(node, ast.Attribute) or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
                                                    and node.id not in hidden):
                 # Also a reference, such as g = getattr, or a table reached through a module
-                reached = callable_name(node)
-                if (reached in reflection or reached.removeprefix("builtins.") in reflection
-                        or reached in ("__builtins__", "sys.modules") or reached.startswith("copy._")):
-                    raise ValueError("Reflection and module internals (getattr, exec, sys.modules, copy._...) "
-                                     "may cause parameter mutations that a reading of the script cannot follow; "
-                                     "use a saved SCFT result.")
+                if reflective(callable_name(node)):
+                    raise ValueError(reflection_error)
+            if id(node) in main_imports:
+                raise ValueError(reflection_error)  # also under another name in a function
+            if id(node) in reach_untraced and any(reflective(path) for path in untraced_paths(node, hidden, here)):
+                raise ValueError(reflection_error)  # such as import sys as s in a function
+            if id(node) in from_files and loads_params(node, hidden, here):
+                bound = ever_bound | (assigned if id(node) in current else assigned - settled)
+                record_construction(node, hidden, untrusted, bound | here, from_file=True)
+            if id(node) in may_hide and hides_simulation(node, hidden, here):
+                raise ValueError(untraceable_error)
             parts, given = operands(node)
             if isinstance(node, ast.Match) and references_container(node.subject, containers - hidden, untrusted):
                 # A value pattern compares the subject with its value (__eq__), a class
@@ -1037,11 +1194,17 @@ def read_python_params(path):
                 # A global the body binds (global x) can change whenever the function runs
                 body, local, _ = scope_info(node)
                 runtime_globals.update(*(module_bindings(item, local) for item in body))
-        # ndarray.__iadd__ and the like keep the array; any other binding ends it
-        if not (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)):
+        # A plain assignment of a new array, also center = center * params["lx"], binds one.
+        # ndarray.__iadd__ and the like keep the array with a NumPy or builtin operand; an
+        # object of the script can override them (__array_ufunc__) and become the binding.
+        # Any other binding ends it.
+        made = (isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets)
+                and array_result(statement.value, assigned - settled))
+        kept = (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)
+                and numerical(statement.value, assigned - settled))
+        if not kept:
             array_names.difference_update(assigned)
-        if (isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets)
-                and new_array(statement.value, assigned)):
+        if made:
             array_names.update(target.id for target in statement.targets)
         # Neither a later literal, an import nor a new array settles such a global
         for name in runtime_globals:
@@ -1061,6 +1224,10 @@ def read_python_params(path):
         here = class_unsettled.get(id(node), frozenset())
         if isinstance(node, ast.Call) and call_name(node, hidden, here) in simulations:
             record_construction(node, hidden, hidden | here, ever_bound | here)
+        elif loads_params(node, hidden, here):
+            record_construction(node, hidden, hidden | here, ever_bound | here, from_file=True)
+        if hides_simulation(node, hidden, here):
+            raise ValueError(untraceable_error)  # with the bindings of the last statement
     if not isinstance(params, dict):
         raise ValueError("The Python file needs a module-level params dictionary.")
     if not constructed:
@@ -1068,6 +1235,10 @@ def read_python_params(path):
     # A constructor in a function body may run at any later statement: every value it
     # can receive there must be readable and the same, and so must those of all constructors.
     received = [value for seen in constructed.values() for value in seen]
+    if any(value is loaded for value in received):
+        raise ValueError("SCFT.from_file, LFTS.from_file and CLFTS.from_file, and a from_file of an object the "
+                         "converter cannot identify, load their params when the script runs; export the parameter "
+                         "file, with the overrides applied, or a saved SCFT result.")
     if not all(isinstance(value, dict) for value in received):
         raise ValueError("The params argument of SCFT, LFTS, CLFTS or GibbsEnsemble must be a dictionary "
                          "written with literal values, such as params or dict(params, ds=.02); "
