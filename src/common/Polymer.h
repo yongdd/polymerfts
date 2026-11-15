@@ -357,25 +357,28 @@ public:
      * vertices (junction points and chain ends) connected by blocks
      * with their monomer types and contour lengths.
      *
-     * For linear chains, outputs a single-line format:
+     * For linear chains of at most 10 blocks, outputs a single-line format:
      * ```
      * === Polymer ===
      * (0)--A[0.30]--(1)--B[0.70]--(2)
      * Legend: (n)=vertex, Type[length]=block
      * ```
      *
-     * For branched polymers, uses tree format:
+     * For branched polymers, uses tree format. The root is the chain end with
+     * the smallest index, children follow in increasing order, and the last
+     * child of a vertex is drawn with `\--`:
      * ```
      * === Polymer ===
-     * (0)
-     *  +--A[0.33]--(1)
-     *  +--B[0.33]--(2)
-     *  +--C[0.34]--(3)
+     * (1)
+     *  \--A[0.33]--(0)
+     *             +--B[0.33]--(2)
+     *             \--C[0.34]--(3)
      * Legend: (n)=vertex, Type[length]=block
      * ```
      *
      * Above 100 blocks the tree is printed without indentation, one line
-     * `(u)--Type[length]--(v)` per block in the same depth-first order.
+     * `(parent)--Type[length]--(child)` per block in the same depth-first
+     * order, where the parent is the vertex nearer the root.
      */
     void display_architecture() const;
 

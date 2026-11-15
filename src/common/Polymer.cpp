@@ -412,7 +412,7 @@ static std::string format_edge(const Block& block)
  * The traversal keeps its own stack, so a polymer of many blocks cannot exhaust the
  * call stack. With @p indent every level is drawn below its parent. Its indentation
  * grows with the depth, so the diagram grows with the square of the number of blocks;
- * without @p indent each block is one line "(u)--Type[length]--(v)".
+ * without @p indent each block is one line "(parent)--Type[length]--(child)".
  */
 static void print_tree(
     int root,
