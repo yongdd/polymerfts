@@ -20,13 +20,15 @@
 #include "CpuSolverPseudoRQM4.h"
 #include "CpuSolverRealSpaceDiscrete.h"
 
-// MSVC accepts `omp simd` only with /openmp:experimental. There these loops stay
-// ordinary loops; their reductions give the same values in either form.
-#if defined(_MSC_VER) && !defined(__clang__)
-#define POLYMERFTS_OMP_SIMD(clauses)
-#else
+// Only GCC vectorizes these loops as `omp simd`. MSVC accepts the pragma only with
+// /openmp:experimental, and Clang-based compilers (clang, clang-cl, icx) cannot
+// vectorize them and warn with -Wpass-failed, an error under -Werror. Elsewhere they
+// stay ordinary loops; their reductions give the same values in either form.
+#if defined(__GNUC__) && !defined(__clang__)
 #define POLYMERFTS_PRAGMA(text) _Pragma(#text)
 #define POLYMERFTS_OMP_SIMD(clauses) POLYMERFTS_PRAGMA(omp simd clauses)
+#else
+#define POLYMERFTS_OMP_SIMD(clauses)
 #endif
 
 template <typename T>

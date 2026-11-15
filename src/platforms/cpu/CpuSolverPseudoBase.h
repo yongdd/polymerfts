@@ -418,7 +418,7 @@ public:
      *
      * @param sg Space group pointer (nullptr to disable reduced basis)
      */
-    void set_space_group(SpaceGroup* sg);
+    void set_space_group(SpaceGroup* sg) override;
 
     /// Register contour step size for a ds index.
     void register_ds_value(int ds_index, double ds) { ds_values_[ds_index] = ds; }

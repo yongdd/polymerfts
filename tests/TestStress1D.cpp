@@ -39,7 +39,7 @@ int main()
         // Math constants
         const double PI = std::numbers::pi;
 
-        double energy_total;
+        [[maybe_unused]] double energy_total;
         double error_level, old_error_level;
         double *w, *w_out, *w_diff;
         double *xi, *w_plus, *w_minus;

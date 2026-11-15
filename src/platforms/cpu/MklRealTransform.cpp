@@ -446,7 +446,7 @@ class MklTTHandle
 {
 public:
     MklTTHandle(int N, MklTransformType type)
-        : N_(N), type_(type)
+        : N_(N)
     {
         // Determine MKL TT type and direction
         switch (type)
@@ -517,7 +517,6 @@ public:
 
 private:
     int N_;
-    MklTransformType type_;
     MKL_INT tt_type_;
     bool use_backward_;
     double scale_;

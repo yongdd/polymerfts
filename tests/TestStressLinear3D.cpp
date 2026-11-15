@@ -37,9 +37,9 @@ int main()
         // Math constants
         const double PI = std::numbers::pi;
         // Chrono timer
-        std::chrono::system_clock::time_point chrono_start, chrono_end;
+        std::chrono::system_clock::time_point chrono_start;
 
-        double energy_total;
+        [[maybe_unused]] double energy_total;
         // error_level = variable to check convergence of the iteration
         double error_level, old_error_level;
         // Input and output fields, xi is temporary storage for pressures
