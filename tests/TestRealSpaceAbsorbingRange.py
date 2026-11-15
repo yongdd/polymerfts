@@ -3,7 +3,8 @@
 
 The analytic ground mode tests the original narrow-box failure without relying
 on another solver. Mixed walls, strided passes, half bonds, complex fields and
-operator replacement also exercise the folded kernels on every backend.
+operator replacement also exercise the folded kernels on every backend, and a
+signed image sum checks the leading retained modes just inside the folded regime.
 """
 
 import numpy as np
@@ -152,6 +153,70 @@ def coarse_sampled_bond(platform):
         same_memory_modes(*states)
 
 
+def image_sum_bond(n, length, walls, variance):
+    """One bond on a cell-centered axis as a signed sum of lattice images.
+
+    The sampled Gaussian is calibrated to the bond variance as in
+    coarse_sampled_bond. An absorbing wall mirrors with a minus sign, and one
+    absorbing wall with one reflecting wall makes the extension antiperiodic.
+    """
+    dx = length/n
+    reach = 64*n
+    distances = np.arange(-reach, reach + 1)
+
+    def weights(width):
+        values = np.exp(-0.5*(distances*dx/width)**2)
+        return values/values.sum()
+    width = brentq(lambda value: np.sum(weights(value)*(distances*dx)**2)-variance,
+                   0.01*np.sqrt(variance), np.sqrt(variance)+dx, xtol=1e-15, rtol=1e-14)
+    w = weights(width)
+    i, j = np.arange(n)[:, None], np.arange(n)[None, :]
+    low, high = walls
+    mirror = -1.0 if low == "absorbing" else 1.0
+    bond = np.zeros((n, n))
+    for k in range(-31, 32):
+        period = 1.0 if low == high else (-1.0)**k
+        bond += period*(w[i - j - 2*k*n + reach] + mirror*w[i + j + 1 - 2*k*n + reach])
+    return bond
+
+
+def higher_folded_modes(platform, field_type):
+    # Just inside the folded regime ten modes (two absorbing walls) or five (one)
+    # are retained. A graft and fields that are not eigenfunctions excite all of
+    # them; their eigenvalues fall off as exp(-m^2), so at rtol 1e-11 the comparison
+    # resolves the modes above about 1e-11 of the first: five with two absorbing
+    # walls, three with one. The stress needs the derivatives of the same modes.
+    n, ds = 16, 0.1
+    rng = np.random.default_rng(29417)
+    for factor, bc in ((1.0, ["absorbing"]*2), (0.5, ["absorbing", "reflecting"]),
+                       (0.5, ["reflecting", "absorbing"])):
+        length = factor*np.pi*np.sqrt(ds/6.0)*(1-1e-3)
+        field = rng.normal(0.0, 5.0, n)
+        graft = rng.uniform(0.4, 1.6, n)
+        if field_type == "complex":
+            field = field + 1j*rng.normal(0.0, 1.0, n)
+            graft = graft * (1.0 + 0.2j)
+        boltzmann = np.exp(-ds*field)
+        expected = boltzmann*(image_sum_bond(n, length, bc, ds/3.0) @ (boltzmann*graft))
+        states = []
+        for reduced in (False, True):
+            calc = solver(platform, reduced, [n], [length], bc, field_type)
+            state = evaluate(calc, {"A": field}, graft)
+            np.testing.assert_allclose(calc.get_propagator(0, 0, 1, 2), expected, rtol=1e-11, atol=0)
+            np.testing.assert_allclose(state[0], np.mean(expected), rtol=1e-11, atol=0)
+            h = 1e-6
+            partitions = []
+            for sign in (1, -1):
+                calc.set_lx([length*(1.0+sign*h)])
+                calc.compute_propagators({"A": field}, q_init={"G": graft})
+                partitions.append(calc.get_partition_function(0))
+            alpha = calc.get_polymer(0).get_alpha()
+            derivative = -(np.log(partitions[0])-np.log(partitions[1]))/(2*h*length*alpha)
+            np.testing.assert_allclose(state[2][0], derivative, rtol=2e-7, atol=0)
+            states.append(state)
+        same_memory_modes(*states)
+
+
 def main():
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
@@ -173,8 +238,9 @@ def main():
             for nx, lx, bc in cases:
                 ground_mode(platform, nx, lx, bc, field_type)
             branched_half_bonds(platform, field_type)
+            higher_folded_modes(platform, field_type)
         coarse_sampled_bond(platform)
-        print(f"PASS {platform}: absorbing modes, half bonds, stress and memory modes", flush=True)
+        print(f"PASS {platform}: absorbing modes, retained higher modes, half bonds, stress and memory modes", flush=True)
     return int(cuda_part_missing())
 
 
