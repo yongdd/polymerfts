@@ -139,8 +139,10 @@ int main()
         ordinary_complex.multiply(re_1, im_1, 3);
         ordinary_complex.multiply(re_2, im_2, 2);
         const auto result = ordinary_complex.value();
-        const auto expected = std::pow(std::complex<double>(re_1, im_1), 3)
-                            * std::pow(std::complex<double>(re_2, im_2), 2);
+        // MSVC's complex constructor takes const references, which cannot bind volatile.
+        const double r_1 = re_1, i_1 = im_1, r_2 = re_2, i_2 = im_2;
+        const auto expected = std::pow(std::complex<double>(r_1, i_1), 3)
+                            * std::pow(std::complex<double>(r_2, i_2), 2);
         if (result.real != expected.real() || result.imag != expected.imag())
             throw std::runtime_error("The ordinary complex junction arithmetic changed.");
 
