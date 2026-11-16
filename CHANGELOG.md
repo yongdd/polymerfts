@@ -974,8 +974,12 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 - `TestCudaMakhoulTransform` compares the CUDA transform of boxes that mix periodic axes and walls
   with the O(N^2) definitions on the 154 grids of `TestCpuMakhoulTransform` and 40 larger ones, for
-  real and complex fields (to 1.9e-14), and with `MakhoulTransform` (to 6.5e-16), and checks that the
-  inputs are kept (2026-11-16).
+  real and complex fields (to 1.9e-14), and with `MakhoulTransform` (to 7.3e-16), and checks that the
+  inputs are kept (2026-11-16). On two grids of more than two million points, whose real half
+  spectrum also has more than `MAX_GRID_THREADS` modes, every grid-stride loop of the kernels takes
+  more than one stride: there the definition is summed on the corners and 16 random points of every
+  result (to 2.1e-15) and `MakhoulTransform` checks the whole results; kernels that stop after the
+  first stride fail on these grids alone (2026-11-17).
 - `TestCpuFFTAddressIndependence` also checks the periodic FFTW transforms at every 8-byte offset
   within a 64-byte line, on even and odd grids, real and complex fields, in place, with unchanged
   inputs; `TestCpuMakhoulTransform` compares the mixed-box transform with the O(N^2) definitions on
