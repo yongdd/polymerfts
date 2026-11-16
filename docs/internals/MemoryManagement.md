@@ -244,7 +244,7 @@ The measured savings (~92%) are slightly higher than this estimate because the w
 ### Use Memory-Saving Mode (`reduce_memory=True`) when:
 - **CUDA**: GPU memory is limited but host RAM is available
 - **CPU**: System RAM is constrained
-- Large grids ($`> 96^3`$)
+- Large grids ($`\gt 96^3`$)
 - Long polymer chains (N > 200)
 - Complex architectures with many blocks
 - Running multiple simulations concurrently

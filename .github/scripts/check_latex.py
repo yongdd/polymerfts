@@ -23,10 +23,13 @@ This script reports
      unindented (a numbered list continues with "2." as before);
   3. '|' in inline math in a table row: GitHub ends the cell there even inside
      the code span, so write \\vert (and \\Vert for \\|);
-  4. '<' directly before a letter, '/', '!' or '?' in math: GitHub can take it
-     as the start of an HTML tag and break the formula ('\\sum_{i<j}' gave
-     "Extra open brace or missing close brace"), so write \\lt or put a space
-     after '<';
+  4. '<', '>' or '&' in inline math: GitHub escapes them twice there, also
+     outside tables, so MathJax receives '&lt;' and fails with "Misplaced &"
+     (an '&' of a matrix shows as "amp;");
+     write \\lt and \\gt, and put matrices and alignments in a ```math block.
+     In a ```math block, '<' directly before a letter, '/', '!' or '?' can
+     start an HTML tag and break the formula ('\\sum_{i<j}' gave "Extra open
+     brace or missing close brace"), so write \\lt or put a space after '<';
   5. \\tag and \\operatorname in math: GitHub turns the formula into MathML,
      where \\tag becomes an mlabeledtr element that Chromium does not lay out
      (the equation falls apart into one symbol per line) and \\operatorname
@@ -150,7 +153,13 @@ def scan(text):
     for ln, tex, display in formulas:
         # a ```math block starts on the line after its fence
         line_of = lambda pos: ln + 1 + tex[:pos].count('\n') if display else ln
-        m = re.search(r'<[A-Za-z/!?]', tex)
+        if not display:
+            m = re.search(r'[<>&]', tex)
+            if m:
+                problems.append((ln, f"'{m.group(0)}' in inline math reaches MathJax escaped twice on "
+                                     "GitHub: write \\lt or \\gt, and put '&' (matrices, alignments) "
+                                     "in a ```math block"))
+        m = re.search(r'<[A-Za-z/!?]', tex) if display else None
         if m:
             problems.append((line_of(m.start()), "'<' before a letter, '/', '!' or '?' in math can "
                                                  "start an HTML tag on GitHub: write \\lt or put a "

@@ -83,7 +83,7 @@ The intrachain correlation is contained in $`S_{lj}`$ on the right, without bein
 V \sqrt{\bar{N}} \left\langle \frac{k^2}{E} \tilde\psi(\mathbf{k}) \, \tilde\phi_j(-\mathbf{k}) \right\rangle = \sum_l z_l \, \Gamma_l(\mathbf{k}) \, S_{lj}(\mathbf{k})
 ```
 
-**Field-field form.** At fixed particles, $`\Omega_k`$ fluctuates around its mean $`(\lambda_k/M)\, y_k`$ with the Gaussian variance $`-\lambda_k/M`$ (in the same normalization). This variance is positive for real fields ($`\lambda_k < 0`$) and negative on the rotated contour of imaginary fields. Hence
+**Field-field form.** At fixed particles, $`\Omega_k`$ fluctuates around its mean $`(\lambda_k/M)\, y_k`$ with the Gaussian variance $`-\lambda_k/M`$ (in the same normalization). This variance is positive for real fields ($`\lambda_k \lt 0`$) and negative on the rotated contour of imaginary fields. Hence
 
 ```math
 \mathbf{a}_k^T \Gamma S \Gamma \, \mathbf{a}_k = \left(\frac{M}{\lambda_k}\right)^2 \left[ V \sqrt{\bar{N}} \left\langle \tilde\Omega_k(\mathbf{k}) \, \tilde\Omega_k(-\mathbf{k}) \right\rangle + \frac{\lambda_k}{M} \right], \qquad \mathbf{z}^T \Gamma S \Gamma \, \mathbf{z} = \left(\frac{k^2}{E}\right)^2 \left[ V \sqrt{\bar{N}} \left\langle \tilde\psi(\mathbf{k}) \, \tilde\psi(-\mathbf{k}) \right\rangle + \frac{E}{k^2} \right]
@@ -113,7 +113,7 @@ V \sqrt{\bar{N}} \langle \tilde\mu_i \, \tilde\phi_j(-\mathbf{k}) \rangle = \sum
 Since $`A A^T = M I`$, the projector $`P`$ is the identity when every mode has $`\lambda_k \neq 0`$, and the estimator then gives $`\Gamma_i S_{ij}`$ exactly.
 
 **Implementation details.**
-- **Smearing:** the recorded $`S_{ij}`$ is divided by $`\Gamma_i`$, the smearing function of the first type of the pair; modes with $`\Gamma_i < 10^{-12}`$ are recorded as 0. With walls, $`\Gamma_i`$ is defined in the cosine basis while $`S_{ij}`$ is a Fourier transform, so the estimator is recorded without the division.
+- **Smearing:** the recorded $`S_{ij}`$ is divided by $`\Gamma_i`$, the smearing function of the first type of the pair; modes with $`\Gamma_i \lt 10^{-12}`$ are recorded as 0. With walls, $`\Gamma_i`$ is defined in the cosine basis while $`S_{ij}`$ is a Fourier transform, so the estimator is recorded without the division.
 - **Complex fields:** the fields of CL-FTS are complex, so $`\tilde\phi_j(-\mathbf{k})`$ is computed as the conjugate of the transform of $`\bar\phi_j`$. For real fields it is $`\tilde\phi_j^*(\mathbf{k})`$.
 - **Same state:** the fields and the concentrations of one sample belong to the same accepted step.
 - **AB melts:** on average, the estimator equals $`V\sqrt{\bar{N}}\,\langle \vert\tilde{W}_-(\mathbf{k})\vert^2\rangle/(\chi N)^2 - 1/(2\chi N)`$.

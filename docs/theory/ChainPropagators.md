@@ -35,8 +35,8 @@ The monomer potential field $`w_\alpha(\mathbf{r})`$ determines local Boltzmann 
 \text{local weight} \propto e^{-w_\alpha(\mathbf{r})}
 ```
 
-- $`w < 0`$: **Attractive** — monomers are favored here
-- $`w > 0`$: **Repulsive** — monomers avoid this region
+- $`w \lt 0`$: **Attractive** — monomers are favored here
+- $`w \gt 0`$: **Repulsive** — monomers avoid this region
 
 ---
 
@@ -104,8 +104,8 @@ Q = \frac{1}{V} \int d\mathbf{r} \, q^{0 \rightarrow 1}(\mathbf{r}, s) \cdot q^{
 The partition function can be computed at any point along the chain (result is independent of $`s`$).
 
 **Interpretation:**
-- $`Q > 1`$: Potential field favors certain conformations
-- $`Q < 1`$: Potential field restricts conformations
+- $`Q \gt 1`$: Potential field favors certain conformations
+- $`Q \lt 1`$: Potential field restricts conformations
 - $`Q = 1`$: No external field ($`w = 0`$)
 
 ### 3.3 Concentrations

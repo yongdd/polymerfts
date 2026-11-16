@@ -58,12 +58,12 @@ where each component is wrapped to the range $`[0, 1)`$ using periodic boundary 
 
 The BCC space group has 96 symmetry operations (48 point group operations × 2 for body centering). Some examples:
 
-| Operation | $`\mathbf{R}`$ | $`\mathbf{t}`$ | Description |
+| Operation | $`\mathbf{R} \cdot (x, y, z)`$ | $`\mathbf{t}`$ | Description |
 |-----------|--------------|--------------|-------------|
-| Identity | $`\begin{pmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | No change |
-| Inversion | $`\begin{pmatrix} -1 & 0 & 0 \\ 0 & -1 & 0 \\ 0 & 0 & -1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | Point reflection |
-| Body-center | $`\begin{pmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(\frac{1}{2}, \frac{1}{2}, \frac{1}{2})`$ | Translation to body center |
-| 4-fold rotation | $`\begin{pmatrix} 0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | 90° rotation about z-axis |
+| Identity | $`(x, y, z)`$ | $`(0, 0, 0)`$ | No change |
+| Inversion | $`(-x, -y, -z)`$ | $`(0, 0, 0)`$ | Point reflection |
+| Body-center | $`(x, y, z)`$ | $`(\frac{1}{2}, \frac{1}{2}, \frac{1}{2})`$ | Translation to body center |
+| 4-fold rotation | $`(-y, x, z)`$ | $`(0, 0, 0)`$ | 90° rotation about z-axis |
 
 ### Orbit of a Point
 
@@ -403,7 +403,7 @@ diffusion and stress operators recover exact point-group symmetry. The
 minimal-form search runs only when the cell is actually oblique, detected by
 a *relative* tolerance on each off-diagonal metric element against the lengths
 of its own pair of axes
-($`|G^{*}_{ij}| / \sqrt{G^{*}_{ii} G^{*}_{jj}} > 10^{-12}`$, so a short third axis
+($`|G^{*}_{ij}| / \sqrt{G^{*}_{ii} G^{*}_{jj}} \gt 10^{-12}`$, so a short third axis
 cannot hide an oblique plane); orthogonal cells use the
 principal-zone representative unchanged (both conventions coincide there).
 The same representative is used in the k-space Boltzmann tables, the stress

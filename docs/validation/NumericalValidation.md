@@ -92,7 +92,7 @@ These cover small models and weak to moderate coupling. Agreement with another c
 **Limits of CL-FTS found in these comparisons.**
 - Counterions between charged plates: at $`\Xi = 0.85`$ the contact density is 4 % too high even as $`\delta\tau \to 0`$, and at $`\Xi \ge 1.6`$ the profile is qualitatively wrong. The strong-coupling regime of counterions is out of reach ([CL-FTS theory, Section 6](../theory/ComplexLangevinSimulation.md#6-charged-systems)).
 - The step of $`\psi`$ has an $`O(\delta\tau)`$ bias that grows with the charge response of the ions; beyond weak coupling the point-ion systems needed $`\delta\tau N \le 0.25`$, with `lm` and with `etd` alike (same section).
-- A one-segment species that couples to an auxiliary field, such as the reference solvent of point ions with $`\zeta N > 0`$, drives its partition function towards zero below about 0.01 molecules per grid cell, and the run diverges; such a solvent takes `zeta_n: 0` (same section, "Point ions alone"). Point ions, which couple only to $`\psi`$, run at 0.002–0.006 ions per cell in `clfts/SmearedSaltSelfEnergy.py` and `clfts/CounterionsBetweenPlates.py`.
+- A one-segment species that couples to an auxiliary field, such as the reference solvent of point ions with $`\zeta N \gt 0`$, drives its partition function towards zero below about 0.01 molecules per grid cell, and the run diverges; such a solvent takes `zeta_n: 0` (same section, "Point ions alone"). Point ions, which couple only to $`\psi`$, run at 0.002–0.006 ions per cell in `clfts/SmearedSaltSelfEnergy.py` and `clfts/CounterionsBetweenPlates.py`.
 
 ## Regression tests
 

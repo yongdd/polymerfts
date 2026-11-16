@@ -321,13 +321,15 @@ Guide for detailed transform dispatch, ownership and computation hierarchies.
   configuration out of these two agent guides.
 
 For GitHub math, use protected inline syntax (`` $`...`$ ``) and unindented fenced
-blocks with the `math` language. Put display blocks outside list indentation.
-Within table math use `\vert` instead of a literal vertical bar. Write `\lt` for a
-`<` directly before a letter; GitHub can take it as an HTML tag and break the
-formula. GitHub renders math as MathML, where a `\tag` equation falls apart into
-one symbol per line: number equations with `\qquad\text{(1)}` and write operators
-as `\mathrm{erf}`, not `\operatorname`. Escape literal dollar signs. Check
-documentation edits with:
+blocks with the `math` language. Put display blocks outside list indentation. Within
+table math use `\vert` instead of a literal vertical bar. In inline math write `\lt`
+and `\gt`, never `<` or `>`, and keep `&` (matrices, alignments) to display blocks:
+GitHub escapes these characters twice in inline math and MathJax fails. In display
+blocks write `\lt` for a `<` directly before a letter; GitHub can take it as an HTML
+tag and break the formula. GitHub renders math as MathML, where a `\tag` equation
+falls apart into one symbol per line: number equations with `\qquad\text{(1)}` and
+write operators as `\mathrm{erf}`, not `\operatorname`. Escape literal dollar signs.
+Check documentation edits with:
 
 ```bash
 python .github/scripts/check_latex.py AGENTS.md CLAUDE.md

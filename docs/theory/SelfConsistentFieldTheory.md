@@ -205,7 +205,7 @@ The self-consistency error is defined as:
 
 The constant 1 in the denominator prevents divergence when the field magnitudes are small.
 
-Iteration terminates when $`\epsilon < \text{tolerance}`$ (typically $`10^{-7}`$ to $`10^{-9}`$). With `relax_cell=True`, the Euclidean norm of the stress along the relaxed lattice parameters (the derivatives with respect to the box lengths and, when angles are optimized, the angles) is added to $`\epsilon`$ before this test. The $`n`$ lengths tied by the crystal system (a = b or a = b = c) contribute one component, the sum of their derivatives divided by $`\sqrt{n}`$ (§4.2).
+Iteration terminates when $`\epsilon \lt \text{tolerance}`$ (typically $`10^{-7}`$ to $`10^{-9}`$). With `relax_cell=True`, the Euclidean norm of the stress along the relaxed lattice parameters (the derivatives with respect to the box lengths and, when angles are optimized, the angles) is added to $`\epsilon`$ before this test. The $`n`$ lengths tied by the crystal system (a = b or a = b = c) contribute one component, the sum of their derivatives divided by $`\sqrt{n}`$ (§4.2).
 
 ---
 
