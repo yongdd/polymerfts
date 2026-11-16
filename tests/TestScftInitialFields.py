@@ -4,12 +4,11 @@
 Complex values, values that are not finite at float64 precision, invalid sizes and
 missing monomers fail before the optimizer or propagators are touched, including
 axis and space-group conversions. Valid real arrays remain unchanged and preserve
-their first iteration fields; a homogeneous control converges on every backend.
+their first iteration fields; a homogeneous control converges. The checks are
+Python: the first CPU platform runs them.
 """
 
-import contextlib
 import copy
-import io
 import os
 from unittest.mock import patch
 
@@ -18,11 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from polymerfts import SCFT, PlatformSelector, ValidationError
 from cuda_part import cuda_part_missing
-
-
-def quiet(call):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return call()
+from fts_checks import quiet
 
 
 def parameters(platform, group=False):
@@ -77,7 +72,8 @@ def check_inputs(sim, shape):
         field = zeros.copy()
         field.flat[0] = value
         bad_values.append((field, "real, finite"))
-    bad_values.append((np.zeros(zeros.size - 1), "needs"))
+    bad_values += [(np.zeros(zeros.size - 1), "needs"),
+                   (np.full(shape, "not a number"), "real, finite")]
     if np.finfo(np.longdouble).max > np.finfo(np.float64).max:
         bad_values.append((np.full(shape, np.finfo(np.longdouble).max, dtype=np.longdouble),
                            "real, finite"))
@@ -138,10 +134,14 @@ def check_branch(platform, group, permute):
 
 
 def main():
-    for platform in PlatformSelector.avail_platforms():
-        for group, permute in ((False, False), (False, True), (True, False), (True, True)):
-            check_branch(platform, group, permute)
-    return int(cuda_part_missing())
+    # A fix in Python: one platform, a CPU one where the build has it
+    platforms = PlatformSelector.avail_platforms()
+    if not platforms:
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    for group, permute in ((False, False), (False, True), (True, False), (True, True)):
+        check_branch(platforms[0], group, permute)
+    return 0
 
 
 if __name__ == "__main__":

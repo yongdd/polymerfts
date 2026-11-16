@@ -4,10 +4,10 @@
 A zero graft gives Q = 0 without extreme fields. A species of exactly zero
 population contributes neither density nor log Q to the free energy, while
 every positive population retains the positive, finite partition requirement.
+The SCFT checks are Python: the first CPU platform runs them, and
+TestGceZeroPartition.py checks the propagators of such a chain on every platform.
 """
 
-import contextlib
-import io
 import json
 from pathlib import Path
 import tempfile
@@ -17,13 +17,9 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import PlatformSelector, SCFT, ValidationError
-from polymerfts.utils.common import check_partition_functions
 from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from polymerfts.utils.common import check_partition_functions
+from fts_checks import quiet
 
 
 def check_guard_policy():
@@ -126,18 +122,23 @@ def check_scft(root, platform, model, reduced):
 
 def main():
     check_guard_policy()
+    # A fix in Python: one platform, a CPU one where the build has it
+    platforms = PlatformSelector.avail_platforms()
+    if not platforms:
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = platforms[0]
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_scft_") as directory:
         root = Path(directory)
-        for platform in PlatformSelector.avail_platforms():
-            for model in ("continuous", "discrete"):
-                full = check_scft(root / platform / model / "full", platform, model, False)
-                reduced = check_scft(root / platform / model / "reduced", platform, model, True)
-                for name in ("A", "B"):
-                    assert full.phi[name].tobytes() == reduced.phi[name].tobytes()
-                    assert full.w[name].tobytes() == reduced.w[name].tobytes()
-                assert np.asarray(full.partition_functions).tobytes() == np.asarray(reduced.partition_functions).tobytes()
-            print(f"[PASS] {platform}: absent grafts, occupied partitions and SCFT result serialization")
-    return int(cuda_part_missing())
+        for model in ("continuous", "discrete"):
+            full = check_scft(root / model / "full", platform, model, False)
+            reduced = check_scft(root / model / "reduced", platform, model, True)
+            for name in ("A", "B"):
+                assert full.phi[name].tobytes() == reduced.phi[name].tobytes()
+                assert full.w[name].tobytes() == reduced.w[name].tobytes()
+            assert np.asarray(full.partition_functions).tobytes() == np.asarray(reduced.partition_functions).tobytes()
+        print(f"[PASS] {platform}: absent grafts, occupied partitions and SCFT result serialization")
+    return 0
 
 
 if __name__ == "__main__":

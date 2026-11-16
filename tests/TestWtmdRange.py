@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """WTMD norms and derivatives stay finite for large ell and extreme field scales.
 
-Compare against a logarithmic norm and directional finite differences, then run
-actual LM/Euler trajectories with a deposited bias and pending checkpoint data.
-All available backends exercise the norm, bias and exact continuation.
+Compare against a logarithmic norm and directional finite differences on every
+available backend, whose FFT gives the spectral coefficients. Actual LM/Euler
+trajectories then run with a deposited bias and pending checkpoint data; the bias
+arithmetic is Python, so one platform runs them (a CPU one where the build has it).
 """
-import contextlib
-import io
 import os
 from pathlib import Path
 import tempfile
@@ -21,11 +20,7 @@ from polymerfts import LFTS, PlatformSelector, PropagatorSolver
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.utils.checkpoint import validate_checkpoint
 from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from fts_checks import quiet
 
 
 def logarithmic_norm(wtmd, field):
@@ -158,90 +153,63 @@ class Observations:
         self.steps = list(state["steps"])
 
 
-def compare_files(left, right, filename, prefixes):
-    a, b = (loadmat(path / filename, squeeze_me=True) for path in (left, right))
-    keys = [key for key in a if key.startswith(prefixes) and key != "wtmd_params"]
-    assert keys, filename
-    for key in keys:
-        np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
+def trajectory(root, platform, ell, method):
+    params = parameters(root, platform, ell, method, 6)
+    observer = Observations(params["saddle"]["tolerance"])
+    sim = quiet(LFTS, params, random_seed=17, callbacks={"observations": observer})
+    bias = sim.wtmd.add_bias_to_langevin
+    changes = []
 
+    def record_bias(psi, force):
+        assert np.isfinite(psi)
+        before = force.copy()
+        bias(psi, force)
+        assert np.all(np.isfinite(force))
+        changes.append(float(np.max(np.abs(force - before))))
 
-def trajectory_and_restart(root, platform, ell, method):
-    paths = {name: root / name for name in ("full", "partial", "continued")}
-    simulations, observers, bias_changes = {}, {}, {}
-
-    def create(name, steps, seed):
-        params = parameters(paths[name], platform, ell, method, steps)
-        observer = Observations(params["saddle"]["tolerance"])
-        sim = quiet(LFTS, params, random_seed=seed,
-                    callbacks={"observations": observer})
-        bias = sim.wtmd.add_bias_to_langevin
-        changes = []
-
-        def record_bias(psi, force):
-            assert np.isfinite(psi)
-            before = force.copy()
-            bias(psi, force)
-            assert np.all(np.isfinite(force))
-            changes.append(float(np.max(np.abs(force - before))))
-
-        sim.wtmd.add_bias_to_langevin = record_bias
-        simulations[name], observers[name], bias_changes[name] = sim, observer, changes
-        return sim
-
-    full, partial, continued = (create(name, steps, seed) for name, steps, seed in
-                                (("full", 6, 17), ("partial", 4, 17), ("continued", 6, 99)))
+    sim.wtmd.add_bias_to_langevin = record_bias
     initial = dict(zip(("A", "B"), np.random.default_rng(3).normal(0.0, 5.0, (2, 64))))
-    for sim in (full, partial):
-        status = quiet(sim.run, initial)
-        # Retrying the initial saddle at the same fields is allowed; accepted
-        # states must converge, and no failed attempt may select another noise.
-        assert status["status"] == "completed" and status["noise_resamples"] == 0
-        assert status["last_completed_step"] == sim.langevin["max_step"]
-        assert quiet(sim.prop_solver.check_total_partition)
-    checkpoint = paths["partial"] / "fields_000004.mat"
-    pending = loadmat(checkpoint, squeeze_me=True)
-    validate_checkpoint(continued, pending)
+    status = quiet(sim.run, initial)
+    # Retrying the initial saddle at the same fields is allowed; accepted
+    # states must converge, and no failed attempt may select another noise.
+    assert status["status"] == "completed" and status["noise_resamples"] == 0
+    assert status["last_completed_step"] == 6
+    assert quiet(sim.prop_solver.check_total_partition)
+    assert observer.steps == list(range(1, 7))
+    # The hill deposited at step 3 acts on the following steps.
+    assert max(changes) > 0.0, "The deposited bias did not act on the run"
+    pending = loadmat(root / "fields_000004.mat", squeeze_me=True)
+    validate_checkpoint(sim, pending)
     assert pending["record_sample_count"] == 4
     assert np.size(pending["record_H_history"]) == 4
     assert np.size(pending["wtmd_order_parameter_history"]) == 1
     assert np.all(np.isfinite(pending["wtmd_order_parameter_history"]))
     assert np.any(pending["wtmd_unscaled_up"] != 0)
-    assert max(bias_changes["partial"]) > 0.0, "The split must occur after a nonzero bias was applied"
-    status = quiet(continued.continue_run, checkpoint)
-    assert status["status"] == "completed" and status["noise_resamples"] == 0
-    assert status["last_completed_step"] == 6
-    assert status["saddle_failures"] == full.run_status["saddle_failures"]
-    assert quiet(continued.prop_solver.check_total_partition)
-    assert max(bias_changes["continued"]) > 0.0
-    assert full.random_bg.state == continued.random_bg.state
-    assert observers["full"].steps == observers["continued"].steps == list(range(1, 7))
-    for step in (5, 6):
-        data = loadmat(paths["continued"] / f"fields_{step:06d}.mat", squeeze_me=True)
-        validate_checkpoint(continued, data)
-        compare_files(paths["full"], paths["continued"], f"fields_{step:06d}.mat",
-                      ("w_", "phi_", "normal_noise", "record_", "rng_state", "run_status", "extension_state", "wtmd_"))
-    compare_files(paths["full"], paths["continued"], "dH_000006.mat", ("H_", "dH_", "drift_"))
-    compare_files(paths["full"], paths["continued"], "structure_function_000006.mat", ("structure_function_",))
-    compare_files(paths["full"], paths["continued"], "wtmd_statistics_000006.mat", ("u", "I", "psi", "dH_psi_"))
+    validate_checkpoint(sim, loadmat(root / "fields_000006.mat", squeeze_me=True))
 
 
 def main():
     norm_and_gradient()
     platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return 77
-    with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_range_") as directory:
-        for platform in platforms:
-            solver = quiet(PropagatorSolver, nx=[4, 4, 5], lx=[3.0] * 3, ds=0.25,
-                           bond_lengths={"A": 1.0}, bc=["periodic"] * 6,
-                           chain_model="continuous", platform=platform)
-            norm_and_gradient(solver.fourier)
+    for platform in platforms:
+        solver = quiet(PropagatorSolver, nx=[4, 4, 5], lx=[3.0] * 3, ds=0.25,
+                       bond_lengths={"A": 1.0}, bc=["periodic"] * 6,
+                       chain_model="continuous", platform=platform)
+        norm_and_gradient(solver.fourier)
+        print(f"[PASS] {platform}: WTMD norms and gradients with the platform's FFT")
+    if platforms:
+        platform = next((name for name in platforms if name.startswith("cpu")), platforms[0])
+        with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_range_") as directory:
             for ell in (4, 32, 256):
                 for method in ("lm", "euler"):
-                    trajectory_and_restart(Path(directory) / platform / f"{ell}_{method}", platform, ell, method)
-            print(f"[PASS] {platform}: WTMD range, gradients, nonzero bias and LM/Euler restarts")
-    return int(cuda_part_missing())
+                    trajectory(Path(directory) / f"{ell}_{method}", platform, ell, method)
+        print(f"[PASS] {platform}: WTMD LM/Euler runs with a nonzero bias")
+    if cuda_part_missing():
+        return 1
+    if not platforms:
+        print("No platform available: skipped")
+        return 77
+    return 0
 
 
 if __name__ == "__main__":

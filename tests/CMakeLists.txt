@@ -2,11 +2,13 @@
 # directory as working directory; the Python tests locate tests/data from
 # their own path. Nothing is copied into the build tree.
 
-# Basic tests for verification (label "basic", about one minute in total)
-# Run with: ctest -L basic
+# Basic tests for verification (label "basic"), which the Windows CI job runs:
+# about one and a half minutes in a CPU-only build run one test at a time with one
+# OpenMP thread. Tests that take longer carry only the "numerical" label.
+# Run with: ctest -L basic -j 4
 SET(BASIC_TESTS
     # Parameter handling of the simulation classes and array handling of the
-    # bindings (CPU, a few seconds)
+    # bindings (CPU, a few seconds each)
     TestParams
     TestParameterNames
     TestFtsReliability
@@ -27,7 +29,6 @@ SET(BASIC_TESTS
     TestJunctionProduct
     TestCanonicalIonRange
     TestThinObliqueCell
-    TestLftsIdealLimit
     TestRandomCopolymerFractions
     TestNumpyScalarSerialization
     TestMatFieldNames
@@ -79,7 +80,6 @@ SET(BASIC_TESTS
     TestCpuTridiagonal
     # Fourier multipliers of whole fields on every platform (Python)
     TestFourierTransform
-    TestFourierRange
 
     # CUDA FFT & utilities
     TestCudaFFT
@@ -109,7 +109,6 @@ SET(BASIC_TESTS
     TestPseudoLinearContinuous3D
     TestPseudoLinearDiscrete3D
     TestRealSpaceLinearContinuous3D
-    TestRealSpaceDiscrete
     TestRealSpaceAbsorbingRange
     TestMultipleLocalDs
     TestInitialConditionPropagator
@@ -169,19 +168,21 @@ FOREACH(FILE_NAME ${FILE_LIST})
     GET_FILENAME_COMPONENT(TEST_NAME ${FILE_NAME} NAME_WE)
     ADD_TEST(NAME ${TEST_NAME} COMMAND ${Python3_EXECUTABLE} ${FILE_NAME})
     # Exit code 77: skipped (e.g. the test needs a CPU platform this build lacks)
-    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
-                                                 SKIP_RETURN_CODE 77)
+    # Python writes no tests/__pycache__ into the source tree
+    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1"
+        SKIP_RETURN_CODE 77)
     SET_TEST_LABELS(${TEST_NAME})
 ENDFOREACH()
 
 SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation TestExtensions TestPropagatorAnalytic TestConvergenceOrderLite TestSamplingStatistics
     TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
-    TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
+    TestLftsRun TestLftsDetails TestLftsIdealLimit TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
-    TestJunctionRange
-    TestScftAbsentPolymer TestRealSpaceAbsorbingRange
+    TestJunctionRange TestBlockMultiplicity
+    TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
     TestCnAdiLongLines TestCrysFFTCellChange
-    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
 
 # Generate files named "Test*.cpp"

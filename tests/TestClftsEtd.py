@@ -43,6 +43,7 @@ import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
+from fts_checks import quiet
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -77,11 +78,6 @@ def parameters(directory, steps=6, screening_length=None):
 def initial_fields():
     rng = np.random.default_rng(11)
     return {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in ("A", "B", "C")}
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def transform(shape):

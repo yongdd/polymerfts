@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Absent canonical point ions at Q=0: observables, dynamics and checkpoint continuation."""
+"""Absent canonical point ions at Q=0: observables, dynamics and checkpoint continuation.
 
-import contextlib
-import io
+The ion densities are Python: the first CPU platform runs them.
+"""
+
 import os
 from pathlib import Path
 import tempfile
@@ -15,14 +16,10 @@ from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT, PlatformSelector
 from cuda_part import cuda_part_missing
+from fts_checks import compare_files, exact_restart, quiet
 
 
 PSI_ZERO_Q = 1j * np.array([0.0, 0.0, np.pi, -np.pi])
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
 
 
 def parameters(directory, platform, steps=4, concentration=0.0):
@@ -44,8 +41,8 @@ def parameters(directory, platform, steps=4, concentration=0.0):
     return params
 
 
-def make(params):
-    sim = quiet(CLFTS, params, random_seed=7)
+def make(params, seed=7):
+    sim = quiet(CLFTS, params, random_seed=seed)
     sim.draw_architectures = False
     return sim
 
@@ -77,41 +74,31 @@ def absent_observables(root, platform):
             assert np.isfinite(value) and value == expected, operator
 
 
-def compare_files(left, right, filename, prefixes):
-    a, b = (loadmat(path / filename, squeeze_me=True) for path in (left, right))
-    keys = [key for key in a if key.startswith(prefixes)]
-    assert keys, filename
-    for key in keys:
-        np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
-
-
 def run_and_restart(root, platform):
-    paths = {name: root / name for name in ("full", "plain", "partial", "continued")}
-    full = make(parameters(paths["full"], platform))
-    plain = make(parameters(paths["plain"], platform, concentration=None))
-    partial = make(parameters(paths["partial"], platform, steps=2))
-    continued = make(parameters(paths["continued"], platform))
+    def start(sim):
+        return sim.run({"A": np.zeros(4)}, initial_psi=PSI_ZERO_Q)
+
     with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise"):
         warnings.simplefilter("error", RuntimeWarning)
-        for sim in (full, plain, partial):
-            status = quiet(sim.run, {"A": np.zeros(4)}, initial_psi=PSI_ZERO_Q)
-            assert status["status"] == "completed"
-        status = quiet(continued.continue_run, paths["partial"] / "fields_000002.mat")
-        assert status["status"] == "completed"
-    for other in ("plain", "continued"):
-        compare_files(paths["full"], paths[other], "fields_000004.mat",
-                      ("w_", "phi_", "normal_noise", "psi_", "rng_state"))
-        compare_files(paths["full"], paths[other], "dH_000004.mat", ("H_", "pressure_"))
-        compare_files(paths["full"], paths[other], "structure_function_000004.mat",
-                      ("structure_function_", "charge_structure_function_", "concentration_A_"))
-    compare_files(paths["full"], paths["continued"], "dH_000004.mat",
-                  ("chemical_potential_", "partition_ratio_"))
-    compare_files(paths["full"], paths["continued"], "structure_function_000004.mat", ("concentration_",))
+        plain = make(parameters(root / "plain", platform, concentration=None), seed=17)
+        assert quiet(start, plain)["status"] == "completed"
+        exact_restart(lambda name, steps, seed: make(parameters(root / name, platform, steps=steps), seed),
+                      start, 4, 2, {
+                          "fields_000004.mat": ("w_", "phi_", "normal_noise", "psi_", "rng_state"),
+                          "dH_000004.mat": ("H_", "pressure_", "chemical_potential_", "partition_ratio_"),
+                          "structure_function_000004.mat": ("structure_function_", "charge_structure_function_",
+                                                            "concentration_")})
+    # The absent ion leaves the dynamics of the system without it unchanged
+    compare_files(root / "full", root / "plain", "fields_000004.mat",
+                  ("w_", "phi_", "normal_noise", "psi_", "rng_state"))
+    compare_files(root / "full", root / "plain", "dH_000004.mat", ("H_", "pressure_"))
+    compare_files(root / "full", root / "plain", "structure_function_000004.mat",
+                  ("structure_function_", "charge_structure_function_", "concentration_A_"))
     for name in ("full", "continued"):
-        recorded = loadmat(paths[name] / "dH_000004.mat", squeeze_me=True)
+        recorded = loadmat(root / name / "dH_000004.mat", squeeze_me=True)
         assert np.all(np.isneginf(recorded["chemical_potential_history_real"][:, 1]))
         np.testing.assert_array_equal(recorded["chemical_potential_history_imag"][:, 1], np.zeros(4))
-        concentrations = loadmat(paths[name] / "structure_function_000004.mat", squeeze_me=True)
+        concentrations = loadmat(root / name / "structure_function_000004.mat", squeeze_me=True)
         for part in ("real", "imag"):
             np.testing.assert_array_equal(concentrations[f"concentration_unused_{part}"], np.zeros(4))
 
@@ -143,6 +130,7 @@ def occupied_controls(root, platform):
         densities, log_partitions = es.ion_densities()
         np.testing.assert_array_equal(log_partitions, [complex(-np.inf, 0.0)])
         assert not np.all(np.isfinite(densities[0]))
+        assert es.ion_partition_ratios() == [0.0]
         assert not np.isfinite(es.hamiltonian())
         assert not np.isfinite(es.ion_chemical_potentials()[0])
 
@@ -176,18 +164,19 @@ def mean_field_underflow(root, platform):
 
 
 def main():
+    # A fix in Python: one platform, a CPU one where the build has it
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
-        return 77
+        return int(cuda_part_missing()) or 77
+    platform = next((name for name in platforms if name.startswith("cpu")), platforms[0])
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_ions_") as directory:
-        for platform in platforms:
-            root = Path(directory) / platform
-            absent_observables(root, platform)
-            run_and_restart(root, platform)
-            occupied_controls(root, platform)
-            mean_field_underflow(root, platform)
-            print(f"[PASS] {platform}: absent Q=0 ions, dynamics, restart and occupied controls")
-    return int(cuda_part_missing())
+        root = Path(directory)
+        absent_observables(root, platform)
+        run_and_restart(root, platform)
+        occupied_controls(root, platform)
+        mean_field_underflow(root, platform)
+        print(f"[PASS] {platform}: absent Q=0 ions, dynamics, restart and occupied controls")
+    return 0
 
 
 if __name__ == "__main__":

@@ -5,8 +5,6 @@ Zero bias must add exactly zero. With bias, ell>1 has a zero derivative at each
 zero coefficient; ell=1 selects its zero subgradient. Exponents below one are
 not differentiable there and are rejected by both public construction paths.
 """
-import contextlib
-import io
 import os
 import tempfile
 
@@ -17,11 +15,7 @@ from polymerfts import LFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.utils.validation import validate_lfts_params
 from polymerfts.fts.wtmd import WTMD
 from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from fts_checks import quiet
 
 
 def parameters(directory, ell):

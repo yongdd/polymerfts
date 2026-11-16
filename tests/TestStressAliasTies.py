@@ -30,6 +30,7 @@ import contextlib
 import numpy as np
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from fts_checks import quiet
 
 n_pass = 0
 n_fail = 0
@@ -43,11 +44,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def quiet(fn, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return fn(*args, **kwargs)
 
 
 def cpu_platform():

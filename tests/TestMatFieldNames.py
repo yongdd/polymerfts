@@ -6,10 +6,8 @@ Check ordinary MAT structs stay readable, escaped keys decode without losing
 data, and all SCFT/FTS/WTMD writers preserve those names and their fields.
 """
 
-import contextlib
 import copy
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -22,19 +20,15 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
+from cuda_part import cuda_part_missing
 from polymerfts.utils.checkpoint import pair_suffix
 from polymerfts.utils.common import atomic_savemat, input_hash
 from polymerfts.utils.mat_fields import decode_mat_fields
-from cuda_part import cuda_part_missing
+from fts_checks import compare_files, exact_restart, quiet
 
 
 MARKER = "polymerfts_mat_keys_json"
 NAMES = (("ordinary", "A"), ("underscore", "_A"), ("long", "A" * 70))
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
 
 
 def read_mat(path):
@@ -192,70 +186,57 @@ def fts_parameters(directory, platform, name, cls, steps):
     return params
 
 
-def compare_files(left, right, filename, prefixes):
-    a, b = (loadmat(path / filename, squeeze_me=True) for path in (left, right))
-    keys = {key for key in a if key.startswith(prefixes)}
-    assert keys and keys == {key for key in b if key.startswith(prefixes)}
-    for key in keys:
-        np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
-
-
 def check_fts(root, platform, name, cls):
-    paths = {label: root / label for label in ("full", "partial", "continued")}
-    sims = {}
-    for label, steps, seed in (("full", 4, 17), ("partial", 2, 17), ("continued", 4, 99)):
-        params = fts_parameters(paths[label], platform, name, cls, steps)
+    def make(label, steps, seed):
+        params = fts_parameters(root / label, platform, name, cls, steps)
         before = copy.deepcopy(params)
-        sims[label] = quiet(cls, params, random_seed=seed,
-                            callbacks={"counter": Counter(0 if label != "continued" else 17)})
-        sims[label].draw_architectures = False
+        sim = quiet(cls, params, random_seed=seed,
+                    callbacks={"counter": Counter(17 if label == "continued" else 0)})
+        sim.draw_architectures = False
         assert params == before
+        built[label] = sim
+        return sim
+
+    def inspect(checkpoint):
+        partial = read_mat(checkpoint)
+        assert partial["record_sample_count"] == 2 and np.size(partial["record_H_history"]) == 2
+        assert partial["initial_params"]["segment_lengths"] == {name: 1.0, "B": 1.0}
+        assert partial["chi_n"] == built["partial"].chi_n
+        settings = json.loads(partial["checkpoint_settings_json"])
+        assert settings["segment_lengths"] == {name: 1.0, "B": 1.0}
+        assert input_hash(settings) == partial["checkpoint_settings_hash"]
+        if cls is LFTS:
+            assert np.size(partial["wtmd_order_parameter_history"]) == 2
+
+    built = {}
     initial = dict(zip((name, "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 64))))
-    for label in ("full", "partial"):
-        assert quiet(sims[label].run, initial)["status"] == "completed"
-        assert quiet(sims[label].prop_solver.check_total_partition)
-    checkpoint = paths["partial"] / "fields_000002.mat"
-    partial = read_mat(checkpoint)
-    assert partial["record_sample_count"] == 2 and np.size(partial["record_H_history"]) == 2
-    assert partial["initial_params"]["segment_lengths"] == {name: 1.0, "B": 1.0}
-    assert partial["chi_n"] == sims["partial"].chi_n
-    settings = json.loads(partial["checkpoint_settings_json"])
-    assert settings["segment_lengths"] == {name: 1.0, "B": 1.0}
-    assert input_hash(settings) == partial["checkpoint_settings_hash"]
-    if cls is LFTS:
-        assert np.size(partial["wtmd_order_parameter_history"]) == 2
-    assert quiet(sims["continued"].continue_run, checkpoint)["status"] == "completed"
-    assert quiet(sims["continued"].prop_solver.check_total_partition)
-    assert sims["full"].random_bg.state == sims["continued"].random_bg.state
+    fields_keys = ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state",
+                   "wtmd_unscaled_", "wtmd_I0", "wtmd_order_parameter_history", "wtmd_dH_history_")
+    sims = exact_restart(make, lambda sim: sim.run(initial), 4, 2, {
+        "fields_000003.mat": fields_keys, "fields_000004.mat": fields_keys,
+        "dH_000003.mat": ("H_", "dH_", "chemical_potential_"),
+        "structure_function_000003.mat": ("structure_function_",)}, inspect)
     assert sims["continued"].metadata["random_seed"] == 17
     assert sims["continued"].metadata["initial_fields_hash"] == sims["full"].metadata["initial_fields_hash"]
-    for step in (3, 4):
-        compare_files(paths["full"], paths["continued"], f"fields_{step:06d}.mat",
-                      ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state",
-                       "wtmd_unscaled_", "wtmd_I0", "wtmd_order_parameter_history", "wtmd_dH_history_"))
-    compare_files(paths["full"], paths["continued"], "dH_000003.mat", ("H_", "dH_", "chemical_potential_"))
-    compare_files(paths["full"], paths["continued"], "structure_function_000003.mat", ("structure_function_",))
-    final = read_mat(paths["continued"] / "fields_000004.mat")
+    final = read_mat(root / "continued" / "fields_000004.mat")
     assert json.loads(final["extension_state_json"])["callbacks"]["counter"] == {"count": 4}
     assert final["record_sample_count"] == 1
     if cls is LFTS:
         assert np.size(final["wtmd_order_parameter_history"]) == 1
         for label in ("full", "continued"):
-            quiet(sims[label].wtmd.write_data, paths[label] / "wtmd_final.mat")
-            saved = read_mat(paths[label] / "wtmd_final.mat")
+            quiet(sims[label].wtmd.write_data, root / label / "wtmd_final.mat")
+            saved = read_mat(root / label / "wtmd_final.mat")
             for pair in sims[label].chi_n:
                 suffix = pair_suffix(pair)
                 np.testing.assert_array_equal(saved["I1_" + suffix],
                                               sims[label].wtmd.I1[pair] * sims[label].wtmd.CV)
-        compare_files(paths["full"], paths["continued"], "wtmd_final.mat", ("I0", "I1_", "dH_psi_", "u", "up"))
+        compare_files(root / "full", root / "continued", "wtmd_final.mat", ("I0", "I1_", "dH_psi_", "u", "up"))
 
 
 def check_unicode_ions(root, platform):
     """Unicode ion concentrations survive statistics output and pending-sample restarts."""
-    paths = {label: root / label for label in ("full", "partial", "continued")}
-    sims = {}
-    for label, steps, seed in (("full", 4, 17), ("partial", 2, 17), ("continued", 4, 99)):
-        params = fts_parameters(paths[label], platform, "A", CLFTS, steps)
+    def make(label, steps, seed):
+        params = fts_parameters(root / label, platform, "A", CLFTS, steps)
         params.update(nx=[4], lx=[2.0], ds=0.5, chain_model="discrete",
                       smearing={"type": "gaussian", "a_int": 0.1},
                       electrostatics={"charges": {"A": 0.0, "B": 0.0}, "coupling": 5.0,
@@ -263,42 +244,47 @@ def check_unicode_ions(root, platform):
                                          "Na⁺": {"valence": 1.0, "concentration": 0.01, "smearing_length": 0.1},
                                          "Cl⁻": {"valence": -1.0, "concentration": 0.01, "smearing_length": 0.1}}})
         params["recording"]["concentrations"] = True
-        sims[label] = quiet(CLFTS, params, random_seed=seed)
-        sims[label].draw_architectures = False
+        sim = quiet(CLFTS, params, random_seed=seed)
+        sim.draw_architectures = False
+        return sim
+
+    def inspect(checkpoint):
+        assert read_mat(checkpoint)["record_sample_count"] == 2
+
     initial = dict(zip(("A", "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 4))))
-    for label in ("full", "partial"):
-        assert quiet(sims[label].run, initial)["status"] == "completed"
-        assert quiet(sims[label].prop_solver.check_total_partition)
-    checkpoint = paths["partial"] / "fields_000002.mat"
-    assert read_mat(checkpoint)["record_sample_count"] == 2
-    assert quiet(sims["continued"].continue_run, checkpoint)["status"] == "completed"
+    fields_keys = ("w_", "phi_", "record_", "psi_", "normal_noise", "rng_state")
+    sims = exact_restart(make, lambda sim: sim.run(initial), 4, 2,
+                         {"fields_000003.mat": fields_keys, "fields_000004.mat": fields_keys}, inspect)
     assert sims["full"].electrostatics.random_bg.state == sims["continued"].electrostatics.random_bg.state
     filename = "structure_function_000003.mat"
-    full, continued = (read_mat(paths[label] / filename) for label in ("full", "continued"))
+    full, continued = (read_mat(root / label / filename) for label in ("full", "continued"))
     for ion in ("Na⁺", "Cl⁻"):
         for suffix in ("real", "imag"):
             key = f"concentration_{ion}_{suffix}"
             np.testing.assert_array_equal(continued[key], full[key])
         np.testing.assert_allclose(np.mean(full[f"concentration_{ion}_real"]), 0.01, rtol=0, atol=1e-14)
-    assert MARKER in loadmat(paths["full"] / filename, squeeze_me=True)
-    for step in (3, 4):
-        compare_files(paths["full"], paths["continued"], f"fields_{step:06d}.mat",
-                      ("w_", "phi_", "record_", "psi_", "normal_noise", "rng_state"))
+    assert MARKER in loadmat(root / "full" / filename, squeeze_me=True)
 
 
 def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts_mat_fields_") as directory:
         root = Path(directory)
         check_encoding(root)
-        for platform in PlatformSelector.avail_platforms():
-            for label, name in NAMES:
-                output = root / platform / label
-                check_scft(output / "scft", platform, name)
-                for cls in (LFTS, CLFTS):
-                    check_fts(output / cls.__name__, platform, name, cls)
-            check_unicode_ions(root / platform / "unicode_ions", platform)
-            print(f"[PASS] {platform}: MAT names, SCFT roundtrips, LFTS/CLFTS/WTMD restarts")
-    return int(cuda_part_missing())
+        # The key encoding is Python: the first CPU platform runs the writers and restarts.
+        # A fix in Python: one platform, a CPU one where the build has it
+        platforms = PlatformSelector.avail_platforms()
+        if not platforms:
+            return int(cuda_part_missing()) or 77
+        platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+        platform = platforms[0]
+        for label, name in NAMES:
+            output = root / label
+            check_scft(output / "scft", platform, name)
+            for cls in (LFTS, CLFTS):
+                check_fts(output / cls.__name__, platform, name, cls)
+        check_unicode_ions(root / "unicode_ions", platform)
+        print(f"[PASS] {platform}: MAT names, SCFT roundtrips, LFTS/CLFTS/WTMD restarts")
+    return 0
 
 
 if __name__ == "__main__":

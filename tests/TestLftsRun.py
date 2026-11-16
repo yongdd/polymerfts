@@ -8,9 +8,6 @@ the uninterrupted run exactly, and that invalid options are rejected.
 
 import os
 import sys
-import copy
-import io
-import contextlib
 import atexit
 import shutil
 import tempfile
@@ -20,6 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, ValidationError, PlatformSelector
+from fts_checks import quiet
 
 
 def cpu_platform():
@@ -52,11 +50,6 @@ def params_for(work_dir, max_step, compressor="am", verbose_level=1):
 def initial_fields(seed=3):
     rng = np.random.default_rng(seed)
     return {"A": rng.normal(0.0, 0.5, 256), "B": rng.normal(0.0, 0.5, 256)}
-
-
-def quiet(fn, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return fn(*args, **kwargs)
 
 
 def main():

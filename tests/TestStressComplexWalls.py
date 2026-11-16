@@ -167,15 +167,15 @@ def main():
     platforms = _core.PlatformSelector.avail_platforms()
     cpus = [p for p in platforms if p.startswith("cpu")]
     print(f"Available platforms: {platforms}")
-    if not platforms:
-        print("No platform available: skipped")
-        return 77
     periodic_image(platforms, np.random.default_rng(5))
     absorbing(platforms, np.random.default_rng(6))
     if "cuda" in platforms and cpus:
         cuda_against_cpu(cpus, np.random.default_rng(7))
     if cuda_part_missing():
         return 1
+    if not platforms:
+        print("No platform available: skipped")
+        return 77
     if FAILURES:
         print(f"FAILED: {len(FAILURES)} check(s)")
         return 1

@@ -28,8 +28,10 @@ CHAINS = {"nx": NX, "lx": LX, "ds": 0.1, "chain_model": "discrete", "segment_len
 FIELDS = {"A": 0.1 * np.cos(2 * np.pi * (np.arange(8) + 0.5) / 8), "B": -0.1 * np.cos(2 * np.pi * (np.arange(8) + 0.5) / 8)}
 
 
-def recording():
-    return {"dir": tempfile.mkdtemp(), "checkpoint_interval": 1, "sample_interval": 1, "statistics_save_interval": 1}
+def recording(root):
+    """A new recording directory in root, which main() removes."""
+    return {"dir": tempfile.mkdtemp(dir=root), "checkpoint_interval": 1, "sample_interval": 1,
+            "statistics_save_interval": 1}
 
 
 def scft(platform, relax_cell=True):
@@ -37,15 +39,15 @@ def scft(platform, relax_cell=True):
                  "optimizer": {"name": "am", "max_hist": 5, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1}})
 
 
-def lfts(platform, compressor):
-    return LFTS({**CHAINS, "platform": platform, "langevin": {"nbar": 1e4, "dt": 0.5, "max_step": 1}, "recording": recording(),
+def lfts(root, platform, compressor):
+    return LFTS({**CHAINS, "platform": platform, "langevin": {"nbar": 1e4, "dt": 0.5, "max_step": 1}, "recording": recording(root),
                  "compressor": {"name": compressor, "max_hist": 5, "start_error": 0.5, "mix_min": 0.01, "mix_init": 0.01},
                  "saddle": {"max_iter": 100, "tolerance": 1e-3}, "verbose_level": 0}, random_seed=1)
 
 
-def clfts(platform, integrator="lm", charges=False):
+def clfts(root, platform, integrator="lm", charges=False):
     params = {**CHAINS, "platform": platform, "langevin": {"nbar": 1e4, "dt": 0.5, "max_step": 1, "integrator": integrator},
-              "recording": recording(), "verbose_level": 0}
+              "recording": recording(root), "verbose_level": 0}
     if charges:
         params["electrostatics"] = {"charges": {"A": 0.2, "B": -0.2}, "coupling": 100.0, "psi_dt_scaling": 0.8}
         params["smearing"] = {"type": "gaussian", "a_int": 0.2}
@@ -57,27 +59,29 @@ def main():
     if not platforms:
         return 77
     platform = platforms[0]
-    cases = {"SCFT": lambda: scft(platform), "SCFT, fixed cell": lambda: scft(platform, False),
-             "LFTS, am": lambda: lfts(platform, "am"), "LFTS, lr": lambda: lfts(platform, "lr"),
-             "LFTS, lram": lambda: lfts(platform, "lram"), "CLFTS": lambda: clfts(platform),
-             "CLFTS, etd": lambda: clfts(platform, "etd"), "CLFTS, charges": lambda: clfts(platform, charges=True)}
-    # The first drawing of the chains imports matplotlib, and its frames stay until a collection
-    with contextlib.redirect_stdout(io.StringIO()):
-        lfts(platform, "am").run(FIELDS)
-    gc.collect()
-    gc.disable()
-    try:
-        for name, make in cases.items():
-            for run in (False, True):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    sim = make()
-                    if run:
-                        sim.run(FIELDS)
-                solver = weakref.ref(sim.prop_solver)
-                del sim
-                assert solver() is None, f"{name}: the solver outlives its simulation (run: {run})"
-    finally:
-        gc.enable()
+    with tempfile.TemporaryDirectory(prefix="polymerfts_release_") as root:
+        cases = {"SCFT": lambda: scft(platform), "SCFT, fixed cell": lambda: scft(platform, False),
+                 "LFTS, am": lambda: lfts(root, platform, "am"), "LFTS, lr": lambda: lfts(root, platform, "lr"),
+                 "LFTS, lram": lambda: lfts(root, platform, "lram"), "CLFTS": lambda: clfts(root, platform),
+                 "CLFTS, etd": lambda: clfts(root, platform, "etd"),
+                 "CLFTS, charges": lambda: clfts(root, platform, charges=True)}
+        # The first drawing of the chains imports matplotlib, and its frames stay until a collection
+        with contextlib.redirect_stdout(io.StringIO()):
+            lfts(root, platform, "am").run(FIELDS)
+        gc.collect()
+        gc.disable()
+        try:
+            for name, make in cases.items():
+                for run in (False, True):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        sim = make()
+                        if run:
+                            sim.run(FIELDS)
+                    solver = weakref.ref(sim.prop_solver)
+                    del sim
+                    assert solver() is None, f"{name}: the solver outlives its simulation (run: {run})"
+        finally:
+            gc.enable()
     print(f"Solvers are freed with their simulations: {len(cases)} kinds of simulation")
     return 0
 

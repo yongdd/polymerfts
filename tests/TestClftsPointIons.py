@@ -38,6 +38,7 @@ from polymerfts import CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import _measurement_key
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
+from fts_checks import quiet
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -68,11 +69,6 @@ def parameters(directory, steps=2, screening_length=None, ions=None, **electrost
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def expect_validation_error(make, message):

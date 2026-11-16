@@ -919,6 +919,25 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `TestJunctionProduct` computes the reference of the ordinary junction arithmetic at run time
   (2026-11-15). GCC 13 and later at `-O3` folded the constant complex reference with another
   rounding, one ulp off the run-time product, and the test failed although the junction was right.
+- The `basic` label is quicker (2026-11-16): `TestRealSpaceDiscrete` and `TestLftsIdealLimit` carry
+  only the `numerical` label, `TestBlockMultiplicity` and `TestFourierTransform` carry it too, and the
+  Windows job runs the basic tests four at a time. Tests of fixes made in Python run on the first CPU
+  platform only, and the WTMD runs of `TestWtmdRange` too, whose norms keep the FFT of every
+  platform. Run one at a time with one OpenMP thread in a CPU-only build, the label takes 94 s
+  instead of 134 s.
+- `tests/fts_checks.py` holds `quiet`, `compare_files` (which compares the key sets both ways) and
+  `exact_restart`, the check of a run continued from the checkpoint of a shorter one against the
+  uninterrupted run (2026-11-16); 28 tests use them instead of their own copies. The restart check stays
+  where the fix under test changed saved or run state; `TestSmallFieldCoefficients`,
+  `TestCanonicalIonRange`, `TestGceIonRange` and `TestWtmdRange`, which repeated the restart check of
+  `TestFtsReliability` with other physics, keep their runs and physics checks without it.
+  `TestFourierRange` is merged into `TestFourierTransform`, and one parametrized case of
+  `TestGceZeroPartition` checks the zero partition of a polymer with real and complex fields on
+  every platform and in both memory modes.
+- Python tests that skip without a platform call `cuda_part_missing()` first (2026-11-16), so a
+  CUDA build without a visible device fails, as `tests/cuda_part.py` states, instead of reporting a
+  skip. CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1` and writes no
+  `tests/__pycache__`, and `TestSimulationRelease` removes its recording directories.
 - `TestCpuFFTMixedBC` is removed (2026-11-16): `TestCpuMakhoulTransform` covers its round trips and
   DCT/DST checks at 1e-13; its MKL part checked 1D DCT round trips to 1e-7 and printed a stale
   "SKIPPED (known issue)" for the rest.

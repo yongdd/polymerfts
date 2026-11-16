@@ -5,8 +5,6 @@ A fixed one-period search missed the metric minimum on a 4x32 hexagonal grid,
 made Gamma(k) differ from Gamma(-k), and broke the CLFTS Hamiltonian gradient.
 The reference searches a wider window using Cartesian reciprocal vectors.
 """
-import contextlib
-import io
 import os
 import tempfile
 
@@ -17,11 +15,7 @@ from polymerfts import CLFTS, PlatformSelector, PropagatorSolver
 from polymerfts.theory.smearing import Smearing
 from polymerfts.fts.wtmd import WTMD
 from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from fts_checks import quiet
 
 
 def reference_k_squared(nx, lx, angles):

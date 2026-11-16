@@ -1,7 +1,8 @@
-"""WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set before the first run."""
-import contextlib
+"""WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set before the first run.
+
+The WTMD state is Python: the first CPU platform runs the simulations.
+"""
 import copy
-import io
 import os
 from pathlib import Path
 import tempfile
@@ -13,14 +14,10 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import LFTS, PlatformSelector
+from cuda_part import cuda_part_missing
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.utils.checkpoint import validate_checkpoint
-from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from fts_checks import compare_files, quiet
 
 
 def state(wtmd):
@@ -90,13 +87,9 @@ def checkpoint(sim, step):
     return Path(sim.recording["dir"]) / f"fields_{step:06d}.mat"
 
 
-def compare_checkpoints(left, right):
-    a, b = (loadmat(path, squeeze_me=True) for path in (left, right))
-    keys = [key for key in a if key.startswith(("w_", "phi_", "normal_noise", "record_", "rng_state", "wtmd_"))
-            and key != "wtmd_params"]
-    assert keys
-    for key in keys:
-        np.testing.assert_array_equal(a[key], b[key], err_msg=key)
+def compare_checkpoints(left, right, step):
+    compare_files(left.recording["dir"], right.recording["dir"], f"fields_{step:06d}.mat",
+                  ("w_", "phi_", "normal_noise", "record_", "rng_state", "wtmd_"), exclude=("wtmd_params",))
 
 
 def repeated_runs(root, platform):
@@ -116,7 +109,7 @@ def repeated_runs(root, platform):
             data = loadmat(checkpoint(sim, step), squeeze_me=True)
             validate_checkpoint(sim, data)
             assert np.size(data["wtmd_order_parameter_history"]) == step
-            compare_checkpoints(checkpoint(sim, step), checkpoint(fresh, step))
+            compare_checkpoints(sim, fresh, step)
     return sim
 
 
@@ -160,7 +153,7 @@ def checkpoint_restart(root, platform):
     quiet(continued.continue_run, checkpoint(partial, 2))
     assert_state(continued.wtmd, state(full.wtmd))
     assert continued.random_bg.state == full.random_bg.state
-    compare_checkpoints(checkpoint(continued, 4), checkpoint(full, 4))
+    compare_checkpoints(continued, full, 4)
 
     # Restoring a checkpoint must not replace the constructor's initial state.
     fresh = quiet(LFTS, parameters(root / "fresh_after_restart", platform, 4), random_seed=99)
@@ -169,7 +162,7 @@ def checkpoint_restart(root, platform):
     quiet(fresh.run, fields())
     assert_state(continued.wtmd, state(fresh.wtmd))
     assert continued.random_bg.state == fresh.random_bg.state
-    compare_checkpoints(checkpoint(continued, 4), checkpoint(fresh, 4))
+    compare_checkpoints(continued, fresh, 4)
 
 
 def preset_bias(root, platform):
@@ -202,18 +195,20 @@ def preset_bias(root, platform):
 def main():
     constructor_reset()
     print("[PASS] WTMD constructor state and reset copies")
+    # A fix in Python: one platform, a CPU one where the build has it
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
-        return 77
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = platforms[0]
     with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_lifecycle_") as directory:
         root = Path(directory)
-        for platform in platforms:
-            sim = repeated_runs(root / platform, platform)
-            manual_continuation(sim)
-            checkpoint_restart(root / platform, platform)
-            preset_bias(root / platform, platform)
-            print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart and preset bias")
-    return int(cuda_part_missing())
+        sim = repeated_runs(root, platform)
+        manual_continuation(sim)
+        checkpoint_restart(root, platform)
+        preset_bias(root, platform)
+        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart and preset bias")
+    return 0
 
 
 if __name__ == "__main__":

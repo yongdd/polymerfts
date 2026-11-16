@@ -4,12 +4,11 @@
 Lowercase and mixed-case CLFTS runs record identical pressure and fields with
 LM and ETD, and each restarts bit for bit with pending samples. Gibbs boxes also
 agree, while reflecting/absorbing boxes remain invalid for pressure and ETD.
-Boundary spelling in input and checkpoint settings must not be rewritten.
+Boundary spelling in input and checkpoint settings must not be rewritten. The
+checks of the names are Python: the first CPU platform runs them.
 """
 
-import contextlib
 import copy
-import io
 import json
 import os
 from pathlib import Path
@@ -21,15 +20,11 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector, ValidationError
 from cuda_part import cuda_part_missing
+from fts_checks import compare_files, exact_restart, quiet
 
 
 LOWER = ["periodic"] * 4
 MIXED = ["Periodic", "periodic", "PERIODIC", "PeRiOdIc"]
-
-
-def quiet(call):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return call()
 
 
 def parameters(platform, directory, bc, steps=3, method="lm"):
@@ -46,53 +41,44 @@ def parameters(platform, directory, bc, steps=3, method="lm"):
     }
 
 
-def clfts_run(platform, directory, bc, steps, method, restart=False):
-    params = parameters(platform, directory, bc, steps, method)
-    before = copy.deepcopy(params)
-    sim = quiet(lambda: CLFTS(params, random_seed=11))
-    sim.draw_architectures = False
-    assert params == before and sim.prop_solver.bc == bc
-    if restart:
-        status = quiet(lambda: sim.continue_run(directory / "fields_000001.mat"))
-    else:
-        x, y = np.meshgrid(np.arange(4) / 4, np.arange(4) / 4, indexing="ij")
-        field = (0.5 * np.cos(2 * np.pi * x) + 0.3 * np.sin(2 * np.pi * y)).ravel()
-        status = quiet(lambda: sim.run({"A": field, "B": -field}))
-    assert status["status"] == "completed"
-    assert quiet(sim.prop_solver.check_total_partition)
-    assert params == before and sim.prop_solver.bc == bc
-    checkpoint = loadmat(directory / f"fields_{steps:06d}.mat", squeeze_me=True)
+def check_settings(directory, step, bc):
+    checkpoint = loadmat(directory / f"fields_{step:06d}.mat", squeeze_me=True)
     settings = json.loads(str(checkpoint["checkpoint_settings_json"]))
     assert settings["bc"] == bc, "boundary spelling changed in checkpoint settings"
-    return checkpoint
-
-
-def equal_records(a, b, keys):
-    for key in keys:
-        assert key in a and key in b, key
-        np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
 def compare_clfts(platform, root, method):
-    outputs = []
+    x, y = np.meshgrid(np.arange(4) / 4, np.arange(4) / 4, indexing="ij")
+    field = (0.5 * np.cos(2 * np.pi * x) + 0.3 * np.sin(2 * np.pi * y)).ravel()
     for label, bc in (("lower", LOWER), ("mixed", MIXED)):
-        full, part = root / f"{label}_full", root / f"{label}_part"
-        final = clfts_run(platform, full, bc, 3, method)
-        first = clfts_run(platform, part, bc, 1, method)
-        assert np.size(first["record_pressure_history"]) == 1
-        restarted = clfts_run(platform, part, bc, 3, method, restart=True)
-        equal_records(final, restarted, ("w_A_real", "w_A_imag", "w_B_real", "w_B_imag", "w_aux",
-                                         "normal_noise_prev", "random_state_state", "random_state_inc"))
-        full_data = loadmat(full / "dH_000003.mat")
-        part_data = loadmat(part / "dH_000003.mat")
-        keys = ("H_history_real", "H_history_imag", "pressure_history_real",
-                "pressure_history_imag", "chemical_potential_history_real", "chemical_potential_history_imag")
-        equal_records(full_data, part_data, keys)
+        def make(name, steps, seed):
+            params = parameters(platform, root / label / name, bc, steps, method)
+            before = copy.deepcopy(params)
+            sim = quiet(CLFTS, params, random_seed=seed)
+            sim.draw_architectures = False
+            assert params == before and sim.prop_solver.bc == bc
+            return sim
+
+        def start(sim):
+            status = sim.run({"A": field, "B": -field})
+            assert sim.prop_solver.bc == bc
+            return status
+
+        def inspect(checkpoint):
+            assert np.size(loadmat(checkpoint, squeeze_me=True)["record_pressure_history"]) == 1
+
+        sims = exact_restart(make, start, 3, 1, {
+            "fields_000003.mat": ("w_", "normal_noise", "random_state"),
+            "dH_000003.mat": ("H_history", "pressure_history", "chemical_potential_history")}, inspect)
+        assert sims["continued"].prop_solver.bc == bc
+        for name, step in (("full", 3), ("partial", 1), ("continued", 3)):
+            check_settings(root / label / name, step, bc)
+        full_data = loadmat(root / label / "full" / "dH_000003.mat")
         for name in ("pressure_history_real", "pressure_history_imag"):
             assert np.size(full_data[name]) == 3 and np.all(np.isfinite(full_data[name]))
-        outputs.append((final, full_data))
-    equal_records(outputs[0][0], outputs[1][0], ("w_A_real", "w_A_imag", "w_B_real", "w_B_imag", "normal_noise_prev"))
-    equal_records(outputs[0][1], outputs[1][1], ("pressure_history_real", "pressure_history_imag"))
+    compare_files(root / "lower" / "full", root / "mixed" / "full", "fields_000003.mat",
+                  ("w_A_", "w_B_", "normal_noise_prev"))
+    compare_files(root / "lower" / "full", root / "mixed" / "full", "dH_000003.mat", ("pressure_history_",))
 
 
 def gibbs_params(platform, directory, bc):
@@ -110,7 +96,7 @@ def compare_gibbs(platform, root):
     for label, bc in (("lower", LOWER), ("mixed", MIXED)):
         params = gibbs_params(platform, root / f"gibbs_{label}", bc)
         before = copy.deepcopy(params)
-        sim = quiet(lambda: GibbsEnsemble(params, random_seed=12))
+        sim = quiet(GibbsEnsemble, params, random_seed=12)
         quiet(sim.run)
         assert params == before
         assert len(sim.history["cycles"]) == 1
@@ -137,9 +123,13 @@ def reject_walls(platform, root):
 
 
 def main():
-    with tempfile.TemporaryDirectory() as temporary:
-        for platform in PlatformSelector.avail_platforms():
-            root = Path(temporary) / platform
+    platforms = PlatformSelector.avail_platforms()
+    if not platforms:
+        return int(cuda_part_missing()) or 77
+    # The only CL-FTS restart (LM and ETD) that also runs on CUDA
+    for platform in platforms:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
             for method in ("lm", "etd"):
                 compare_clfts(platform, root / method, method)
             compare_gibbs(platform, root)

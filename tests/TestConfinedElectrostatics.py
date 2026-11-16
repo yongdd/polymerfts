@@ -38,17 +38,13 @@ from scipy.fft import dct, idct
 from scipy.io import loadmat
 from scipy.optimize import root as solve_root
 from polymerfts import CLFTS, SCFT, PlatformSelector, ValidationError
+from fts_checks import quiet
 
 N, E = 20, 200.0
 
 
 def cpu_platform():
     return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def expect_validation_error(make, message):

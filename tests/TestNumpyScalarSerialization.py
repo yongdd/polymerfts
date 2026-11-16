@@ -4,6 +4,7 @@
 Ordinary scalar encodings stay identical. Long-double inputs terminate, retain
 finite values at Python float precision and reject unrepresentable magnitudes.
 Actual runs verify checkpoint compatibility and exact same-backend continuation.
+The encodings are Python: the first CPU platform runs them.
 """
 
 import copy
@@ -17,9 +18,10 @@ from scipy.io import loadmat
 import yaml
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
-from polymerfts.utils.common import input_hash, json_ready, mat_ready, settings_json
-from TestSmallFieldCoefficients import parameters, quiet, compare_files
 from cuda_part import cuda_part_missing
+from polymerfts.utils.common import input_hash, json_ready, mat_ready, settings_json
+from TestSmallFieldCoefficients import parameters
+from fts_checks import exact_restart, quiet
 
 
 def scalar_encodings():
@@ -91,10 +93,8 @@ def fts_restart(root, platform):
     initial = {name: values for name, values in zip(
         ("A", "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 4)))}
     for cls in (LFTS, CLFTS):
-        paths = {name: root / cls.__name__ / name for name in ("full", "partial", "continued")}
-        sims = {}
-        for name, steps, seed in (("full", 4, 17), ("partial", 2, 17), ("continued", 4, 99)):
-            params = parameters(paths[name], platform, zeta=100.0, steps=steps)
+        def make(name, steps, seed):
+            params = parameters(root / cls.__name__ / name, platform, zeta=100.0, steps=steps)
             params["langevin"]["nbar"] = np.longdouble(10000.0)
             before = copy.deepcopy(params)
             sim = quiet(cls, params, random_seed=seed)
@@ -103,42 +103,41 @@ def fts_restart(root, platform):
             control["langevin"]["nbar"] = 10000.0
             assert sim.metadata["input_hash"] == input_hash(control)
             assert params == before and isinstance(params["langevin"]["nbar"], np.longdouble)
-            sims[name] = sim
-        for name in ("full", "partial"):
-            assert quiet(sims[name].run, initial)["status"] == "completed"
-            assert quiet(sims[name].prop_solver.check_total_partition)
-        checkpoint = paths["partial"] / "fields_000002.mat"
-        data = loadmat(checkpoint, squeeze_me=True)
-        assert data["nbar"] == 10000.0 and data["record_sample_count"] == 2
-        stored = json.loads(str(data["checkpoint_settings_json"]))
-        assert stored["nbar"] == 10000.0
-        assert quiet(sims["continued"].continue_run, checkpoint)["status"] == "completed"
-        assert quiet(sims["continued"].prop_solver.check_total_partition)
-        assert sims["full"].random_bg.state == sims["continued"].random_bg.state
+            return sim
+
+        def inspect(checkpoint):
+            data = loadmat(checkpoint, squeeze_me=True)
+            assert data["nbar"] == 10000.0 and data["record_sample_count"] == 2
+            stored = json.loads(str(data["checkpoint_settings_json"]))
+            assert stored["nbar"] == 10000.0
+
+        fields_keys = ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state")
+        exact_restart(make, lambda sim: sim.run(initial), 4, 2, {
+            "fields_000003.mat": fields_keys, "fields_000004.mat": fields_keys,
+            "dH_000004.mat": ("H_", "dH_", "drift_", "chemical_potential_"),
+            "structure_function_000004.mat": ("structure_function_",)}, inspect)
         for step in (3, 4):
-            filename = f"fields_{step:06d}.mat"
-            compare_files(paths["full"], paths["continued"], filename,
-                          ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state"))
-            saved = loadmat(paths["full"] / filename, squeeze_me=True)
+            saved = loadmat(root / cls.__name__ / "full" / f"fields_{step:06d}.mat", squeeze_me=True)
             phi = (saved["phi_A"] + saved["phi_B"] if cls is LFTS else
                    saved["phi_A_real"] + saved["phi_B_real"]
                    + 1j * (saved["phi_A_imag"] + saved["phi_B_imag"]))
             np.testing.assert_allclose(np.mean(phi),
                                        1.0, rtol=0, atol=5e-8)
-        compare_files(paths["full"], paths["continued"], "dH_000004.mat",
-                      ("H_", "dH_", "drift_", "chemical_potential_"))
-        compare_files(paths["full"], paths["continued"], "structure_function_000004.mat", ("structure_function_",))
 
 
 def main():
     scalar_encodings()
+    # A fix in Python: one platform, a CPU one where the build has it
+    platforms = PlatformSelector.avail_platforms()
+    if not platforms:
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
     with tempfile.TemporaryDirectory(prefix="polymerfts_numpy_scalars_") as directory:
-        for platform in PlatformSelector.avail_platforms():
-            root = Path(directory) / platform
-            scft_outputs(root / "scft", platform)
-            fts_restart(root / "fts", platform)
-            print(f"[PASS] {platform}: NumPy scalar metadata, SCFT outputs and FTS restarts")
-    return int(cuda_part_missing())
+        root = Path(directory)
+        scft_outputs(root / "scft", platforms[0])
+        fts_restart(root / "fts", platforms[0])
+        print(f"[PASS] {platforms[0]}: NumPy scalar metadata, SCFT outputs and FTS restarts")
+    return 0
 
 
 if __name__ == "__main__":

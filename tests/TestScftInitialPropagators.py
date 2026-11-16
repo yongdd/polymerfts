@@ -8,9 +8,7 @@ Full and reduced profiles that break the group symmetry are rejected instead
 of changing the graft distribution. No conversion may modify the caller's arrays.
 """
 
-import contextlib
 import copy
-import io
 import os
 from unittest.mock import patch
 
@@ -19,11 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from polymerfts import SCFT, PlatformSelector, ValidationError
 from cuda_part import cuda_part_missing
-
-
-def quiet(call):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return call()
+from fts_checks import quiet
 
 
 def parameters(platform, symbol, nx, angles):

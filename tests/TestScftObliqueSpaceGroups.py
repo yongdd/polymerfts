@@ -15,8 +15,6 @@
    angle 120 degrees.
 """
 
-import contextlib
-import io
 import os
 
 os.environ["OMP_NUM_THREADS"] = "2"
@@ -25,15 +23,11 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import SCFT, PlatformSelector, SpaceGroup, ValidationError
 from cuda_part import cuda_part_missing
+from fts_checks import quiet
 
 
 def cpu_platform():
     return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def parameters(nx, lx, angles, platform, f=0.4, chi_n=15.0, chain_model="continuous", relax_cell=False, **extra):

@@ -227,8 +227,6 @@ def higher_folded_modes(platform, field_type):
 
 def main():
     platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return 77
     cases = [
         ([16], [0.05], ["absorbing"]*2),
         ([16], [0.2], ["absorbing"]*2),
@@ -249,7 +247,12 @@ def main():
             higher_folded_modes(platform, field_type)
         coarse_sampled_bond(platform)
         print(f"PASS {platform}: absorbing modes, retained higher modes, half bonds, stress and memory modes", flush=True)
-    return int(cuda_part_missing())
+    if cuda_part_missing():
+        return 1
+    if not platforms:
+        print("No platform available: skipped")
+        return 77
+    return 0
 
 
 if __name__ == "__main__":

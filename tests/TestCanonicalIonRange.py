@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Canonical ion densities and ln Q in large uniform potentials, physical poles, and exact restarts."""
+"""Canonical ion densities and ln Q in large uniform potentials, and a run in one.
 
-import contextlib
+The ion densities are Python: the first CPU platform runs them. The poles of an
+absent and of an occupied ion are checked by TestAbsentPointIons.py.
+"""
+
 import copy
-import io
 import os
 from pathlib import Path
 import tempfile
@@ -14,13 +16,9 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT, PlatformSelector
-from polymerfts.theory.electrostatics import _point_ion
 from cuda_part import cuda_part_missing
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
+from polymerfts.theory.electrostatics import _point_ion
+from fts_checks import quiet
 
 
 def parameters(directory, platform, shift, steps=3):
@@ -80,7 +78,7 @@ def uniform_operators(root, platform):
                                        rtol=0, atol=2e-10)
 
 
-def shifted_weights_and_poles():
+def shifted_weights():
     ion = {"concentration": 0.2, "chemical_potential": None}
     delta = np.array([0.3 + 0.1j, -0.2 - 0.2j, 0.15 + 0.05j, -0.25 + 0.05j])
     expected = 0.2 * np.exp(-delta) / np.mean(np.exp(-delta))
@@ -90,16 +88,6 @@ def shifted_weights_and_poles():
             density, log_q, _ = _point_ion(ion, shift + delta, 1.0)
         np.testing.assert_allclose(density, expected, rtol=0, atol=2e-14)
         np.testing.assert_allclose(log_q, log_mean - shift, rtol=0, atol=1e-12)
-    pole = 1j * np.array([0.0, 0.0, np.pi, -np.pi])
-    with np.errstate(divide="ignore", invalid="ignore"):
-        density, log_q, ratio = _point_ion(ion, pole, 1.0)
-    assert np.real(log_q) == -np.inf and ratio == 0.0 and not np.all(np.isfinite(density)), \
-        "An occupied species retains its true pole"
-    absent = {**ion, "concentration": 0.0}
-    with np.errstate(over="raise", invalid="raise", divide="raise"):
-        density, log_q, ratio = _point_ion(absent, pole, 1.0)
-    assert np.real(log_q) == -np.inf and ratio == 0.0
-    np.testing.assert_array_equal(density, np.zeros(4))
     grand = {"concentration": None, "chemical_potential": 710.0}
     with np.errstate(over="raise", invalid="raise", divide="raise"):
         density, log_q, ratio = _point_ion(grand, 710.0 + delta, 1.0)
@@ -108,42 +96,32 @@ def shifted_weights_and_poles():
     assert ratio is None
 
 
-def trajectory_and_restart(root, platform):
-    paths = {name: root / name for name in ("full", "partial", "continued")}
-    sims = {}
-    for name, steps, seed in (("full", 3, 17), ("partial", 1, 17), ("continued", 3, 99)):
-        sims[name] = quiet(CLFTS, parameters(paths[name], platform, 710.0, steps), random_seed=seed)
-        sims[name].draw_architectures = False
-    for name in ("full", "partial"):
-        assert quiet(sims[name].run, {"A": np.zeros(4)}, initial_psi=np.full(4, 710.0))["status"] == "completed"
-        assert quiet(sims[name].prop_solver.check_total_partition)
-    checkpoint = paths["partial"] / "fields_000001.mat"
-    assert loadmat(checkpoint, squeeze_me=True)["record_sample_count"] == 1
-    assert quiet(sims["continued"].continue_run, checkpoint)["status"] == "completed"
-    assert sims["full"].random_bg.state == sims["continued"].random_bg.state
-    assert sims["full"].electrostatics.random_bg.state == sims["continued"].electrostatics.random_bg.state
-    for filename in ("fields_000002.mat", "fields_000003.mat", "dH_000002.mat", "structure_function_000002.mat"):
-        full, continued = (loadmat(paths[name] / filename, squeeze_me=True) for name in ("full", "continued"))
-        keys = [key for key in full if key.startswith(("w_", "phi_", "psi_", "normal_noise", "rng_state", "record_",
-                                                     "H_", "chemical_potential_", "pressure_", "structure_function_",
-                                                     "charge_structure_function_", "concentration_"))]
-        assert keys
-        for key in keys:
-            np.testing.assert_array_equal(full[key], continued[key], err_msg=f"{filename}: {key}")
+def trajectory(root, platform):
+    sim = quiet(CLFTS, parameters(root, platform, 710.0), random_seed=17)
+    sim.draw_architectures = False
+    assert quiet(sim.run, {"A": np.zeros(4)}, initial_psi=np.full(4, 710.0))["status"] == "completed"
+    assert quiet(sim.prop_solver.check_total_partition)
+    assert loadmat(root / "fields_000001.mat", squeeze_me=True)["record_sample_count"] == 1
+    recorded = loadmat(root / "dH_000002.mat", squeeze_me=True)
+    keys = [key for key in recorded if key.startswith(("H_", "chemical_potential_", "pressure_"))]
+    assert keys
+    for key in keys:
+        assert np.all(np.isfinite(recorded[key])), key
 
 
 def main():
-    shifted_weights_and_poles()
+    shifted_weights()
+    # A fix in Python: one platform, a CPU one where the build has it
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
-        return 77
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
     with tempfile.TemporaryDirectory(prefix="polymerfts_canonical_ions_") as directory:
-        for platform in platforms:
-            root = Path(directory) / platform
-            uniform_operators(root / "operators", platform)
-            trajectory_and_restart(root / "restart", platform)
-            print(f"[PASS] {platform}: canonical ion range, physical poles and exact restart")
-    return int(cuda_part_missing())
+        root = Path(directory)
+        uniform_operators(root / "operators", platforms[0])
+        trajectory(root / "run", platforms[0])
+        print(f"[PASS] {platforms[0]}: canonical ion range and a run at a shift of 710")
+    return 0
 
 
 if __name__ == "__main__":

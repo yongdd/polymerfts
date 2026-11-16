@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Deep valid chains must not exhaust the native stack while generating keys.
 
-Check construction, contour-length remapping and the architecture diagram that
-the simulations print in separate child processes, so a native crash becomes a
-test failure. A small POSIX stack reproduces the original failures with modest
-heap use; other systems still check the keys and the diagram.
+Construction and contour-length remapping of a chain of 2048 blocks run in child
+processes under a 256 KiB stack, so a native crash becomes a test failure. A small
+POSIX stack reproduces the original failures with modest heap use; other systems
+still check the keys. A third child prints the architecture diagram that the
+simulations print; it checks the format and size of that output, not the stack:
+one line per block in order, growing linearly with the chain. The recursive print
+of earlier versions also fits in the stack at this depth, but writes about 23 MB.
 """
 
 import subprocess
@@ -86,7 +89,8 @@ def child(mode):
     molecules.add_polymer(1.0, blocks, {0: "left", count: "right"})
     check_linear_keys(molecules, count, False)
     if mode == "display":
-        # SCFT, L-FTS and CL-FTS print the architecture when they are constructed.
+        # SCFT, L-FTS and CL-FTS print the architecture when they are constructed;
+        # check_display() checks what it prints.
         limit_stack()
         molecules.display_architectures()
     if mode == "remapping":
@@ -101,7 +105,8 @@ def child(mode):
 
 
 def check_display(output, count):
-    # Above 100 blocks the diagram prints one line per block, so it grows linearly.
+    # Above 100 blocks the diagram prints one line per block, in order, so its size grows
+    # linearly with the chain: under 100 characters per block.
     lines = [line for line in output.splitlines() if line.startswith("(") and "--" in line]
     assert len(lines) == count, len(lines)
     for i, line in enumerate(lines):

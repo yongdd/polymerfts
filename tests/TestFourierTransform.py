@@ -33,6 +33,10 @@ deviation 5:
    non-finite values, complex values on real cosine coefficients, complex fields and
    coefficients for real transforms, a missing box, wall axes in an oblique box; a cosine
    transform keeps its box orthogonal while it exists.
+9. Range (1D odd and even, 2D): very large (1e308) and subnormal coefficients and
+   multipliers give finite fields and products to a relative 5e-13, also the Nyquist mode
+   and a non-self-conjugate pair of large components acting on fields of 1e-308; the
+   inputs stay unchanged.
 """
 
 import contextlib
@@ -451,6 +455,55 @@ def input_checks(platform):
     check(f"{platform} a cosine transform keeps its box orthogonal while it exists", held and released)
 
 
+def finite_range(platform):
+    """Finite Hermitian projections retain very large and subnormal components."""
+    def relative(name, actual, expected):
+        actual = np.asarray(actual)
+        ok = np.isfinite(actual).all() and np.allclose(actual / expected, 1.0, rtol=5e-13, atol=0.0)
+        check(f"{platform} {name}", ok)
+
+    tiny = np.nextafter(0.0, 1.0)
+    for n in (15, 16):
+        ft = solver(platform, [n], [2.0]).fourier
+        for dc in (1e100, 1e308, 16 * tiny):
+            coefficients = np.zeros((2, n // 2 + 1), complex)
+            coefficients[:, 0] = (dc, -dc)
+            before = coefficients.copy()
+            actual = ft.backward(coefficients)
+            relative(f"N={n}: uniform coefficient {dc:.1e}", actual[0], dc / n)
+            relative(f"N={n}: uniform coefficient {-dc:.1e}", actual[1], -dc / n)
+            check(f"{platform} N={n}: backward keeps the coefficients", np.array_equal(coefficients, before))
+        if n % 2 == 0:
+            coefficients = np.zeros(n // 2 + 1, complex)
+            coefficients[-1] = 1e308 + 1e308j
+            relative(f"N={n}: Nyquist coefficient 1e308", ft.backward(coefficients),
+                     (1e308 / n) * (-1.0) ** np.arange(n))
+        for multiplier, field in ((1e100, 1e-100), (1e308, 1e-308), (tiny, 1e308 / n)):
+            coefficients = np.full(n // 2 + 1, multiplier)
+            before = coefficients.copy()
+            handle = ft.set_multiplier(coefficients)
+            relative(f"N={n}: multiplier {multiplier:.1e} on {field:.1e}",
+                     ft.apply([(handle, np.full(n, field))]), multiplier * field)
+            check(f"{platform} N={n}: set_multiplier keeps the multiplier", np.array_equal(coefficients, before))
+
+    # A non-self-conjugate pair averages both large components before acting
+    # on small fields. Scale the reference operands before any FFT/products.
+    ft = solver(platform, [4, 4], [2.0, 2.0]).fourier
+    multiplier = np.zeros((4, 3), complex)
+    multiplier[1, 0] = complex(1.2e308, 1.0e308)
+    multiplier[3, 0] = complex(0.8e308, -1.4e308)
+    original = multiplier.copy()
+    unit_fields = np.random.default_rng(12).normal(0.0, 5.0, size=(4, 4))
+    normalized = np.zeros((4, 3), complex)
+    normalized[1, 0] = 1.0 + 1.2j
+    normalized[3, 0] = 1.0 - 1.2j
+    expected = np.fft.irfftn(normalized * np.fft.rfftn(unit_fields), s=(4, 4), axes=(0, 1)).ravel()
+    actual = ft.apply([(ft.set_multiplier(multiplier), (unit_fields * 1e-308).ravel())])
+    check(f"{platform} large non-self-conjugate pair on fields of 1e-308",
+          np.isfinite(actual).all() and np.allclose(actual, expected, rtol=5e-13, atol=5e-14)
+          and np.array_equal(multiplier, original))
+
+
 def main():
     platforms = PlatformSelector.avail_platforms()
     results = {}
@@ -460,6 +513,7 @@ def main():
         hermitian(platform)
         odd_and_1d(platform)
         input_checks(platform)
+        finite_range(platform)
 
     cpu = [p for p in platforms if p.startswith("cpu")]
     if "cuda" in platforms and cpu:

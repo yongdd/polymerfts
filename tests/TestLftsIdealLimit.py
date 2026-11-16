@@ -4,12 +4,11 @@
 Check analytic mixture densities and H with each compressor, actual LM/Euler
 runs, checkpointed RNG/noise/pending observations, and an intermediate-force
 extension. Finite compressibility and incompressibility keep their pressure
-saddle and serve as controls. Run on every available backend.
+saddle and serve as controls. The ideal limit is decided in Python: the first
+CPU platform runs it.
 """
 
-import contextlib
 import copy
-import io
 import os
 from pathlib import Path
 import tempfile
@@ -21,14 +20,10 @@ from scipy.io import loadmat
 
 from polymerfts import LFTS, PlatformSelector
 from cuda_part import cuda_part_missing
+from fts_checks import exact_restart, quiet
 
 
 FRACTIONS = {"A": 0.3, "B": 0.7}
-
-
-def quiet(function, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return function(*args, **kwargs)
 
 
 def parameters(directory, platform, compressor="am", method="lm", steps=4, zeta=0.0):
@@ -74,56 +69,49 @@ class Observations:
         self.masses = list(state["masses"])
 
 
-def compare_files(left, right, filename, prefixes):
-    a, b = (loadmat(path / filename, squeeze_me=True) for path in (left, right))
-    keys = [key for key in a if key.startswith(prefixes)]
-    assert keys, filename
-    for key in keys:
-        np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
-
-
 def ideal_runs(root, platform, compressor, method):
-    paths = {name: root / name for name in ("full", "partial", "continued")}
-    observers, simulations = {}, {}
-    for name, steps, seed in (("full", 4, 17), ("partial", 2, 17), ("continued", 4, 99)):
+    observers, simulations, initial_rng = {}, {}, {}
+
+    def make(name, steps, seed):
         observers[name] = Observations()
-        simulations[name] = quiet(LFTS, parameters(paths[name], platform, compressor, method, steps),
-                                  random_seed=seed, callbacks={"observations": observers[name]})
-        sim = simulations[name]
+        sim = quiet(LFTS, parameters(root / name, platform, compressor, method, steps),
+                    random_seed=seed, callbacks={"observations": observers[name]})
         assert sim.mpt.R == sim.mpt.I == 0
         assert len(sim.mpt.aux_fields_dropped_idx) == 2
+        if name == "full":
+            initial_rng.update(copy.deepcopy(sim.random_bg.state))
+        simulations[name] = sim
+        return sim
+
     # All supplied potentials belong to dropped modes and must be pinned to the ideal reference.
     rng = np.random.default_rng(19)
     initial = {name: rng.normal(0.0, 5.0, 4) for name in FRACTIONS}
-    initial_rng = copy.deepcopy(simulations["full"].random_bg.state)
-    for name in ("full", "partial"):
-        sim = simulations[name]
-        status = quiet(sim.run, initial)
+
+    def start(sim):
+        status = sim.run(initial)
         assert status["status"] == "completed" and status["saddle_failures"] == 0
         assert sim.saddle.iterations == 0, "An empty saddle must need no compression iterations"
         assert sim.random_bg.state == initial_rng, "There are no active fields to draw noise for"
-        assert quiet(sim.prop_solver.check_total_partition)
         for p in range(2):
             np.testing.assert_allclose(sim.prop_solver.get_partition_function(p), 1.0, rtol=0, atol=2e-12)
+        return status
 
-    pending = loadmat(paths["partial"] / "fields_000002.mat", squeeze_me=True)
-    assert pending["record_sample_count"] == 2
-    assert np.size(pending["record_H_history"]) == 2
-    assert np.size(pending["normal_noise_prev"]) == 0
-    np.testing.assert_array_equal(pending["w_aux"], np.zeros((2, 4)))
-    continued = simulations["continued"]
-    status = quiet(continued.continue_run, paths["partial"] / "fields_000002.mat")
-    assert status["status"] == "completed" and status["last_completed_step"] == 4
-    assert quiet(continued.prop_solver.check_total_partition)
-    assert continued.random_bg.state == initial_rng
+    def inspect(checkpoint):
+        pending = loadmat(checkpoint, squeeze_me=True)
+        assert pending["record_sample_count"] == 2
+        assert np.size(pending["record_H_history"]) == 2
+        assert np.size(pending["normal_noise_prev"]) == 0
+        np.testing.assert_array_equal(pending["w_aux"], np.zeros((2, 4)))
+
+    fields_keys = ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state")
+    exact_restart(make, start, 4, 2, {
+        "fields_000003.mat": fields_keys, "fields_000004.mat": fields_keys,
+        "dH_000004.mat": ("H_", "dH_", "drift_"),
+        "structure_function_000004.mat": ("structure_function_",)}, inspect)
+    assert simulations["continued"].random_bg.state == initial_rng
     assert observers["full"].state_dict() == observers["continued"].state_dict()
     assert observers["continued"].steps == [1, 2, 3, 4]
-    for step in (3, 4):
-        compare_files(paths["full"], paths["continued"], f"fields_{step:06d}.mat",
-                      ("w_", "phi_", "normal_noise", "record_", "rng_state", "extension_state"))
-    compare_files(paths["full"], paths["continued"], "dH_000004.mat", ("H_", "dH_", "drift_"))
-    compare_files(paths["full"], paths["continued"], "structure_function_000004.mat", ("structure_function_",))
-    recorded = loadmat(paths["full"] / "dH_000004.mat", squeeze_me=True)
+    recorded = loadmat(root / "full" / "dH_000004.mat", squeeze_me=True)
     assert recorded["sample_count"] == 4
     np.testing.assert_allclose(recorded["H_history"], np.zeros(4), rtol=0, atol=2e-12)
     np.testing.assert_array_equal(recorded["drift_max_history"], np.zeros(4))
@@ -207,10 +195,11 @@ def intermediate_force(root, platform):
 def main():
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
-        return 77
-    with tempfile.TemporaryDirectory(prefix="polymerfts_lfts_ideal_") as directory:
-        for platform in platforms:
-            root = Path(directory) / platform
+        return int(cuda_part_missing()) or 77
+    # Also the L-FTS runs with the LR and LRAM compressors on CUDA
+    for platform in platforms:
+        with tempfile.TemporaryDirectory(prefix="polymerfts_lfts_ideal_") as directory:
+            root = Path(directory)
             for compressor in ("am", "lr", "lram"):
                 for method in ("lm", "euler"):
                     ideal_runs(root / f"{compressor}_{method}", platform, compressor, method)

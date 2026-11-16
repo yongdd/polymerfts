@@ -26,13 +26,11 @@ L-FTS details that change recorded results.
 """
 
 import os
-import io
 import sys
 import glob
 import shutil
 import stat
 import tempfile
-import contextlib
 
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -43,6 +41,7 @@ from polymerfts import _core, LFTS, ValidationError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.theory.smearing import Smearing
+from fts_checks import quiet
 
 n_pass = 0
 n_fail = 0
@@ -56,11 +55,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def quiet(fn, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return fn(*args, **kwargs)
 
 
 def cpu_platform():

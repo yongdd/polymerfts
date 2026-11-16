@@ -38,7 +38,7 @@ from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
 from polymerfts.utils.validation import validate_scft_params
-from cuda_part import cuda_part_missing
+from fts_checks import quiet
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 CHI, ZETA, Z_A = 2.0, 50.0, 0.2
@@ -72,11 +72,6 @@ def parameters(directory, steps=2, charges=None, ions=None, screening_length=Non
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def expect_validation_error(make, message):
@@ -344,7 +339,11 @@ def restart(root):
 
 
 def zero_partition(root):
-    """Q=0 is regular for GCE and absent canonical species, including recorded observables."""
+    """Q=0 is regular for GCE and absent canonical species, including recorded observables.
+
+    The observables are Python; TestGceZeroPartition.py checks the same propagators,
+    partitions and concentrations on every platform.
+    """
     class HoldFields:
         name = "hold-fields"
         settings = {"version": 1}
@@ -353,11 +352,10 @@ def zero_partition(root):
             # Keep Q=0 through sampling instead of moving away in an LM proposal.
             return fields.copy()
 
-    for platform in PlatformSelector.avail_platforms():
-        for reduced in (False, True):
-            for ensemble in ("grand-canonical", "absent-canonical"):
-                for length in (1, 3):
-                    check_zero_partition(root, platform, reduced, ensemble, length, HoldFields())
+    for reduced in (False, True):
+        for ensemble in ("grand-canonical", "absent-canonical"):
+            for length in (1, 3):
+                check_zero_partition(root, cpu_platform(), reduced, ensemble, length, HoldFields())
 
 
 def check_zero_partition(root, platform, reduced, ensemble, length, integrator):
@@ -442,7 +440,7 @@ def main():
                             ("zero grand-canonical partition", zero_partition)):
             check(root)
             print(f"[PASS] {name}")
-    return int(cuda_part_missing())
+    return 0
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat, savemat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
+from fts_checks import quiet
 
 NX, LX = [8, 6, 7], [1.6, 1.3, 1.45]
 Z_A = 0.2
@@ -77,11 +78,6 @@ def parameters(directory, lx=LX, charged=True, screening_length=None, smearing="
     if charged and screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def smooth(x, nx, std):
