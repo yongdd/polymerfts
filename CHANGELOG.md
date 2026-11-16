@@ -390,6 +390,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- A propagator computation for complex fields refuses a junction power that is not an integer of at
+  most 10⁶ when it is created, instead of at its first `compute_propagators` (2026-11-16). Such a
+  power comes from a non-integer block multiplicity, or from identical copied branches whose powers
+  sum beyond 10⁶ (tests/TestBlockMultiplicity.py).
 - A grand-canonical polymer's `chemical_potential` must lie in [-700, 700] (2026-11-16); a larger
   value raises `ValidationError`. Within this bound the fugacity e^(βμ) is a normal double (it
   overflows above 709.78 and is subnormal below -708.40) (tests/TestClftsGrandCanonical.py).

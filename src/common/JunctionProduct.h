@@ -61,7 +61,7 @@ POLYMERFTS_JUNCTION_HD inline double scale(double mantissa, double exponent)
 /// True if a junction power is an integer in [0, MAX_BLOCK_MULTIPLICITY]: an integer block
 /// multiplicity takes the same operation as explicit arms. Other powers (a non-integer
 /// multiplicity, or identical copied branches whose powers sum beyond the limit) need real
-/// propagators: complex fields refuse them (complex_real_power_message).
+/// propagators: a computation with complex fields refuses them when it is built (ComputationCommon).
 POLYMERFTS_JUNCTION_HD inline bool integer_power(double power)
 {
     return power >= 0.0 && power <= MAX_BLOCK_MULTIPLICITY && power == floor(power);

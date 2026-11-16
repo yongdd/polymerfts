@@ -7,12 +7,19 @@
 #include <algorithm>
 #include <memory>
 #include <complex>
+#include <type_traits>
 
 #include "ComputationCommon.h"
 #include "JunctionProduct.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
 
+namespace
+{
+/// Error text for a junction that would raise complex propagators to a power that is not an
+/// integer of at most 10^6 (junction_product::integer_power). The power is that of one branch:
+/// the multiplicity of its block, or one less for the propagator that enters a copy, summed
+/// over identical branches.
 std::string complex_real_power_message(double power)
 {
     return "A junction raises complex propagators to the power " + validation::shortest_text(power)
@@ -20,6 +27,7 @@ std::string complex_real_power_message(double power)
         "a non-integer block multiplicity, has no unique value for complex numbers. With complex fields "
         "use integer multiplicities and at most 10^6 identical branches at one junction.";
 }
+}  // namespace
 
 template <typename T>
 ComputationCommon<T>::ComputationCommon(
@@ -38,6 +46,20 @@ ComputationCommon<T>::ComputationCommon(
             throw_with_line_number("There is no propagator code. Add polymers first.");
         if (propagator_computation_optimizer->get_computation_blocks().size() == 0)
             throw_with_line_number("There is no block. Add polymers first.");
+
+        // Complex fields take only integer powers at the junctions of branches (keys "(..."),
+        // checked once here: the backends multiply complex junction products without a check
+        if constexpr (!std::is_same_v<T, double>)
+        {
+            for (const auto& [key, edge] : propagator_computation_optimizer->get_computation_propagators())
+            {
+                if (key[0] != '(')
+                    continue;
+                for (const auto& dep : edge.deps)
+                    if (!junction_product::integer_power(std::get<2>(dep)))
+                        throw_with_line_number(complex_real_power_message(std::get<2>(dep)));
+            }
+        }
 
         // The factory's SpaceGroupGuard attached the group for this construction.
         this->space_group_ = space_group;

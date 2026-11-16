@@ -412,11 +412,6 @@ template <typename Source>
 void CudaComputationBackend<T>::multiply_sources(
     int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources)
 {
-    // Complex fields take integer powers only; check them all before a launch changes q
-    if constexpr (!std::is_same_v<T, double>)
-        for (const auto& source : sources)
-            if (!junction_product::integer_power(source.second))
-                throw_with_line_number(complex_real_power_message(source.second));
     // Device-resident sources: up to MAX_SOURCES_PER_LAUNCH per launch. Checkpoints: two per
     // launch, staged in the first stress pair buffer, which is free while propagators are computed
     constexpr bool staged = std::is_same_v<Source, CheckpointArray<T>>;

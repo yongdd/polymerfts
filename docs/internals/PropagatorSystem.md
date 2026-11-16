@@ -182,7 +182,7 @@ ordinary arithmetic: `pow(q, n)` on the CPU; on CUDA n successive multiplication
 power of at most 4 and `pow` for every other power. For complex fields the ordinary arithmetic
 needs both parts of the product and of the factor between $`2^{-64}`$ and $`2^{64}`$ and an integer
 power of at most 4 (`std::pow` on the CPU, successive multiplications on CUDA). A non-integer power
-(block multiplicity) needs real propagators, so the backends refuse it for complex fields. Outside that range the product
+(block multiplicity) needs real propagators, so a computation with complex fields refuses it when it is built. Outside that range the product
 continues as a mantissa and one binary exponent (one for both parts of a complex number,
 `JunctionProduct.h`): in a star with $`n`$ arms in a strong field $`q_A^{n-1}`$ can overflow
 while the whole product is finite. Block

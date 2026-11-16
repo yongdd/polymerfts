@@ -91,6 +91,9 @@ protected:
     std::set<std::string> w_input_types;           ///< Monomer types given to the last compute_propagators()
 
     /**
+     * With complex fields every junction power must be an integer of at most 10^6
+     * (junction_product::integer_power): the constructor refuses other powers.
+     *
      * @param numerical_method The numerical method of the solver
      * @param create_backend   Called after the space group is set on the box,
      *                         because the solvers size their buffers from it.

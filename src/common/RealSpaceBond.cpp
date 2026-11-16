@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <numbers>
 #include <utility>
 
 #include "Exception.h"
+#include "Molecules.h"
 #include "RealSpaceBond.h"
 
 namespace
@@ -288,3 +290,34 @@ RealSpaceBond::Ghosts RealSpaceBond::ghosts(const std::vector<int>& nx, const st
     }
     return ghosts;
 }
+
+template <typename T>
+RealSpaceBond::Bonds RealSpaceBond::bonds(const Molecules& molecules, const ComputationBox<T>& box)
+{
+    const std::vector<double> dx = box.get_dx();
+    const std::vector<double> lx = box.get_lx();
+    const std::vector<int> nx = box.get_nx();
+    const std::vector<BoundaryCondition> bc = box.get_boundary_conditions();
+    const ContourLengthMapping& mapping = molecules.get_contour_length_mapping();
+    const double ds = mapping.get_ds_from_index(0);
+
+    Bonds bonds;
+    std::vector<const Kernels*> all;
+    for (const auto& [monomer_type, b] : molecules.get_bond_lengths())
+    {
+        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        {
+            bonds.full[ds_idx][monomer_type] = gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx, nx, bc);
+            all.push_back(&bonds.full[ds_idx][monomer_type]);
+        }
+        bonds.half[monomer_type] = gaussian(b * b * ds / 6.0, dx, nx, bc);
+        all.push_back(&bonds.half[monomer_type]);
+        bonds.full_dlength[monomer_type] = length_derivatives(b * b * ds / 3.0, dx, lx, nx, bc);
+        bonds.half_dlength[monomer_type] = length_derivatives(b * b * ds / 6.0, dx, lx, nx, bc);
+    }
+    bonds.ghosts = ghosts(nx, bc, all);
+    return bonds;
+}
+
+template RealSpaceBond::Bonds RealSpaceBond::bonds(const Molecules&, const ComputationBox<double>&);
+template RealSpaceBond::Bonds RealSpaceBond::bonds(const Molecules&, const ComputationBox<std::complex<double>>&);

@@ -204,12 +204,7 @@ void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<con
 template <typename T>
 void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
-    if constexpr (!std::is_same_v<T, double>)
-    {
-        for (const auto& source : sources)
-            if (!junction_product::integer_power(source.second))
-                throw_with_line_number(complex_real_power_message(source.second));
-    }
+    // Complex powers are integers (ComputationCommon checks them when it is built)
     for (int i = 0; i < n_basis; i++)
     {
         junction_product::Accumulator<T> product;

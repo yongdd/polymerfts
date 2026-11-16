@@ -55,7 +55,7 @@ __device__ inline void multiply(Real& product, double source, double power)
 
 __device__ inline void multiply(Complex& product, cuDoubleComplex source, double power)
 {
-    // Complex powers are integers (integer_power, checked on the host)
+    // Complex powers are integers (integer_power, checked when the computation is built)
     product.multiply(source.x, source.y, static_cast<int>(power));
 }
 

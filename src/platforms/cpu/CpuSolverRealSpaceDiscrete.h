@@ -50,15 +50,8 @@ private:
     Molecules* molecules;
     SpaceGroup* space_group_ = nullptr;   ///< propagators in its reduced basis when set
 
-    /// Kernels of the full bonds, per ds index and monomer type
-    std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
-    /// Kernels of the half bonds at chain ends and junctions (global ds)
-    std::map<std::string, RealSpaceBond::Kernels> bond_half;
-    /// For the stress: the kernels of the full and half bonds (global ds) differentiated with respect
-    /// to the box length, per monomer type and axis
-    std::map<std::string, std::vector<RealSpaceBond::Derivative>> bond_dlength, bond_half_dlength;
-    /// Source and sign of the points beyond each end of each axis
-    RealSpaceBond::Ghosts ghosts;
+    /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
+    RealSpaceBond::Bonds bonds;
 
     /// q_out = g * q_in, one axis after another, on the full grid; a derivative replaces the kernel
     /// of its axis
