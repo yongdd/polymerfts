@@ -194,7 +194,7 @@ class SaddlePointSearch:
             # reflecting walls (the box is half of a periodic box of twice its size, with the
             # mirror image of the kick). Next to an absorbing wall the concentrations at w = 0
             # are depleted, and no Fourier basis makes J diagonal
-            if any(b.lower() == "absorbing" for b in self.prop_solver.bc):
+            if "absorbing" in self.prop_solver.bc_lower:
                 raise ValidationError("compressor 'lr' and 'lram' need periodic axes or reflecting walls; "
                                       "use 'am' in a box with absorbing walls")
 

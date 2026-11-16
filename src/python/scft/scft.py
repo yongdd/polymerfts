@@ -7,6 +7,7 @@ from typing import Dict, Optional, Callable, Union
 from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..theory.propagator_solver import PropagatorSolver
+from ..theory.chains import chain_solver
 from ..utils.validation import (normalize_params, validate_scft_params, ValidationError,
                          point_ion_concentrations, open_charges, reference_segments)
 from ..utils.common import (
@@ -139,10 +140,7 @@ class SCFT:
             draw_polymer_architectures(self.polymers, params["ds"], self.segment_lengths,
                                        directory=params["polymer_figure_dir"])
 
-        # Boundary conditions (default: periodic) and lattice angles [alpha, beta, gamma] in degrees
-        bc = params.get("bc", None)
-        if bc is None:
-            bc = ["periodic"] * (2 * len(params["nx"]))
+        # Lattice angles [alpha, beta, gamma] in degrees
         angles = params.get("angles", None)
         if angles is not None and np.ndim(angles) != 1:
             raise ValidationError("angles must be a list of angles in degrees.")
@@ -181,24 +179,11 @@ class SCFT:
         # Create space group object early (before PropagatorSolver) if specified
         self.sg = self._create_space_group(params, angles) if params.get("space_group", None) is not None else None
 
-        # Propagator solver: the C++ computation box, molecules and solver live inside it
-        self.prop_solver = PropagatorSolver(
-            nx=params["nx"], lx=params["lx"], ds=params["ds"],
-            bond_lengths=self.segment_lengths, bc=bc,
-            chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
-            platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
-            reduce_memory=params.get("reduce_memory", False),
-            space_group=self.sg,
-            angles=angles,
-            aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
-        )
+        # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg, angles=angles)
         # Box relaxation needs the stress, which cn-adi2 does not compute
         if params["relax_cell"] and not PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
             raise ValidationError(f"'relax_cell' needs the stress; '{self.prop_solver.numerical_method}' computes none")
-        for polymer in self.polymers:
-            self.prop_solver.add_polymer(polymer["volume_fraction"], polymer["blocks_input"],
-                                         polymer.get("initial_conditions", None))
 
         # Computation box as a public attribute (this creates the C++ objects)
         self.cb = self.prop_solver.computation_box

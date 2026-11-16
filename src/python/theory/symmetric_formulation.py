@@ -366,6 +366,20 @@ class SymmetricPolymerTheory:
         for i in self.aux_fields_dropped_idx:
             w_aux[i] = self._vector_large_s[i] / len(self.monomer_types)
 
+    def dt_scaling(self):
+        """Mobility of each auxiliary field in Langevin dynamics, the factor of its time step.
+
+        The first M-1 fields move with |eigenvalue| / max |eigenvalue| among them, the last field
+        with 1, and a field dropped at a zero eigenvalue does not move (0). Returns a new array.
+        """
+        M = len(self.monomer_types)
+        dt_scaling = np.ones(M)
+        for i in range(M - 1):
+            if i not in self.aux_fields_dropped_idx:
+                dt_scaling[i] = np.abs(self.eigenvalues[i]) / np.max(np.abs(self.eigenvalues[:M-1]))
+        dt_scaling[self.aux_fields_dropped_idx] = 0.0
+        return dt_scaling
+
     def compute_hamiltonian(self, molecules, w_aux, total_partitions, cb, include_const_term=False, phi=None):
         """Compute the field-theoretic Hamiltonian.
 

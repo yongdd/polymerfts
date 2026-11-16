@@ -162,7 +162,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 
 **Notes:**
 
-- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
+- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` create the solver with `chain_solver` (`src/python/theory/chains.py`), which just passes `platform="auto"` through to `PropagatorSolver`. It is not in C++.
 - The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
@@ -631,10 +631,12 @@ When adding new computational features, you must implement them for both platfor
 | Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
 | Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
 | Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
+| WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
+| Langevin steps; the linear response of CL-FTS that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/linear_response.py` |
 | Cell relaxation and stress of SCFT | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes | `src/python/scft/scft_results.py` |
-| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`) |
-| Reading, drawing and solving the polymer chains | `src/python/theory/chains.py` |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`); `run_status.json`: `recording_run_status` in `src/python/utils/common.py` |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver` | `src/python/theory/chains.py` (`chain_solver`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
 
 A change to how propagators, concentrations or stress are assembled belongs in

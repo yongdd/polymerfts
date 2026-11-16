@@ -56,6 +56,7 @@ import json
 import numpy as np
 
 from ..utils.validation import ValidationError
+from ..utils.checkpoint import _measurement_key
 
 
 def point_ions(params, ion_concentrations):
@@ -453,6 +454,43 @@ class Electrostatics:
                 "psi_k_real": np.real(self._psi_k), "psi_k_imag": np.imag(self._psi_k),
                 "psi_rng_state_json": json.dumps(self.random_bg.state), "psi_noise_prev": self.previous_noise,
                 "ion_names_json": json.dumps([ion["name"] for ion in self.ions])}
+
+    def validate_checkpoint(self, data, sample_count):
+        """Checks the electrostatic state of a checkpoint before a continuation changes any state: ψ,
+        ψ(k), the previous noise and the stream of ψ (checkpoint_data), the pending drifts of ψ of the
+        sample_count pending samples and, with Coulomb coupling, the pending charge structure sums.
+        checkpoint.validate_checkpoint reports a missing key or an unreadable value as an invalid checkpoint."""
+        n_grid = int(np.prod(self.nx))
+        missing = [key for key in self.CHECKPOINT_KEYS + ("record_psi_drift_history",) if key not in data]
+        if missing:
+            raise ValidationError(f"The checkpoint lacks electrostatic data: {', '.join(missing)}")
+        for key in ("psi_real", "psi_imag", "psi_k_real", "psi_k_imag", "psi_noise_prev"):
+            if (np.size(data[key]) != n_grid or not np.all(np.isfinite(data[key]))
+                    or np.iscomplexobj(data[key])):
+                raise ValidationError(f"Invalid checkpoint electrostatic array '{key}'")
+        try:
+            np.random.PCG64(0).state = json.loads(str(data["psi_rng_state_json"]))
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValidationError("Invalid checkpoint random-number state of psi") from exc
+        psi_drift = data["record_psi_drift_history"]
+        if (np.size(psi_drift) != sample_count or np.iscomplexobj(psi_drift) or not np.all(np.isfinite(psi_drift))
+                or np.any(psi_drift < 0)):
+            raise ValidationError("Invalid checkpoint measurement 'record_psi_drift_history'")
+        # The settings keep the point ions by name; the columns of the pending chemical
+        # potentials and numbers follow their order (ion_names_json, absent in checkpoints
+        # of earlier versions)
+        if "ion_names_json" in data:
+            stored_ions = json.loads(str(data["ion_names_json"]))
+            if stored_ions != [ion["name"] for ion in self.ions]:
+                raise ValidationError(f"'electrostatics.ions' lists the point ions in another order than "
+                                      f"the checkpoint ({', '.join(stored_ions)}); the recorded columns "
+                                      "follow that order")
+        # The charge structure function (with Coulomb coupling in a periodic box)
+        if self.coupling > 0 and self.periodic:
+            for key in self.CHARGE_SUMS:
+                name = _measurement_key("sf", key)
+                if name not in data or np.size(data[name]) != n_grid or not np.all(np.isfinite(data[name])):
+                    raise ValidationError(f"Invalid checkpoint charge structure sum '{key}'")
 
     def restore(self, data):
         """ψ, ψ(k), the previous noise and the noise stream from a checkpoint.

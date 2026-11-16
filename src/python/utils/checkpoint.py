@@ -42,10 +42,7 @@ def checkpoint_settings(sim):
         result["saddle"] = {**sim.saddle.settings, "failure_policy": sim.saddle.settings.get("failure_policy", "retry"),
                             "max_retries": sim.saddle.settings.get("max_retries", 5)}
         result["compressor"] = sim.params["compressor"]
-        wtmd = sim.wtmd
-        result["wtmd"] = None if wtmd is None else {
-            key: getattr(wtmd, key) for key in
-            ("l", "kc", "dT", "sigma_psi", "psi_min", "psi_max", "dpsi", "bins", "update_freq")}
+        result["wtmd"] = None if sim.wtmd is None else sim.wtmd.settings()
     else:
         result["dynamic_stabilization"] = sim.alpha_ds
     return json_ready(result)
@@ -295,74 +292,12 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
             name = _measurement_key("sf", ",".join(pair))
             if np.size(data[name]) != sf_size or not np.all(np.isfinite(data[name])):
                 raise ValidationError(f"Invalid checkpoint structure function '{name}'")
-        electrostatics = getattr(sim, "electrostatics", None)
-        if electrostatics is not None:
-            # ψ, ψ(k), the previous noise and the stream of ψ (Electrostatics.checkpoint_data), the
-            # pending drifts of ψ and, with Coulomb coupling, the pending charge structure sums
-            missing = [key for key in electrostatics.CHECKPOINT_KEYS + ("record_psi_drift_history",) if key not in data]
-            if missing:
-                raise ValidationError(f"The checkpoint lacks electrostatic data: {', '.join(missing)}")
-            for key in ("psi_real", "psi_imag", "psi_k_real", "psi_k_imag", "psi_noise_prev"):
-                if (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))
-                        or np.iscomplexobj(data[key])):
-                    raise ValidationError(f"Invalid checkpoint electrostatic array '{key}'")
-            try:
-                np.random.PCG64(0).state = json.loads(str(data["psi_rng_state_json"]))
-            except (ValueError, TypeError, KeyError) as exc:
-                raise ValidationError("Invalid checkpoint random-number state of psi") from exc
-            psi_drift = data["record_psi_drift_history"]
-            if (np.size(psi_drift) != count or np.iscomplexobj(psi_drift) or not np.all(np.isfinite(psi_drift))
-                    or np.any(psi_drift < 0)):
-                raise ValidationError("Invalid checkpoint measurement 'record_psi_drift_history'")
-            # The settings keep the point ions by name; the columns of the pending chemical
-            # potentials and numbers follow their order (ion_names_json, absent in checkpoints
-            # of earlier versions)
-            if "ion_names_json" in data:
-                stored_ions = json.loads(str(data["ion_names_json"]))
-                if stored_ions != [ion["name"] for ion in electrostatics.ions]:
-                    raise ValidationError(f"'electrostatics.ions' lists the point ions in another order than "
-                                          f"the checkpoint ({', '.join(stored_ions)}); the recorded columns "
-                                          "follow that order")
-            # The charge structure function (with Coulomb coupling in a periodic box)
-            if electrostatics.coupling > 0 and electrostatics.periodic:
-                for key in electrostatics.CHARGE_SUMS:
-                    name = _measurement_key("sf", key)
-                    if (name not in data or np.size(data[name]) != int(np.prod(sim.prop_solver.nx))
-                            or not np.all(np.isfinite(data[name]))):
-                        raise ValidationError(f"Invalid checkpoint charge structure sum '{key}'")
-        wtmd = getattr(sim, "wtmd", None)
-        if wtmd is not None:
-            def check_wtmd_array(key):
-                if np.size(data[key]) != wtmd.bins or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key]):
-                    raise ValidationError(f"Invalid checkpoint WTMD array '{key}'")
-            def check_wtmd_copies(name):
-                # Both copies are written from one array; the restore uses the unscaled
-                # one, so a checkpoint whose scaled copy was edited is refused
-                check_wtmd_array("wtmd_unscaled_" + name)
-                if not np.allclose(np.ravel(data["wtmd_unscaled_" + name]) * wtmd.CV,
-                                   np.ravel(data["wtmd_" + name]), rtol=1e-12, atol=0):
-                    raise ValidationError(f"Checkpoint WTMD arrays 'wtmd_{name}' and 'wtmd_unscaled_{name}' disagree")
-            # Newer checkpoints also hold the bias arrays without the factor CV ("wtmd_unscaled_*")
-            unscaled = "wtmd_unscaled_u" in data
-            for key in ("wtmd_u", "wtmd_up", "wtmd_I0"):
-                check_wtmd_array(key)
-            if unscaled:
-                check_wtmd_copies("u")
-                check_wtmd_copies("up")
-            pending = np.size(data["wtmd_order_parameter_history"])
-            if (pending >= wtmd.update_freq or not np.all(np.isfinite(data["wtmd_order_parameter_history"])) or
-                    np.iscomplexobj(data["wtmd_order_parameter_history"])):
-                raise ValidationError("Invalid checkpoint pending WTMD samples")
-            for pair in sim.chi_n:
-                suffix = pair_suffix(pair)
-                key = "wtmd_I1_" + suffix
-                if np.any(data["wtmd_I0"]) or key in data:
-                    check_wtmd_array(key)
-                    if unscaled:
-                        check_wtmd_copies("I1_" + suffix)
-                key = "wtmd_dH_history_" + suffix
-                if pending and (np.size(data[key]) != pending or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key])):
-                    raise ValidationError(f"Invalid checkpoint WTMD history '{key}'")
+        # ψ, its noise stream, the pending drifts of ψ and the charge structure sums (Electrostatics.checkpoint_data)
+        if getattr(sim, "electrostatics", None) is not None:
+            sim.electrostatics.validate_checkpoint(data, count)
+        # The bias, statistics and pending samples of WTMD (WTMD.checkpoint_data)
+        if getattr(sim, "wtmd", None) is not None:
+            sim.wtmd.validate_checkpoint(data, sim.chi_n)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValidationError(f"Invalid checkpoint: {exc}") from exc
 

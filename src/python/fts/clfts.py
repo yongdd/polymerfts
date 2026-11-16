@@ -17,16 +17,17 @@ import warnings
 import copy
 import json
 import numpy as np
-from .integrators import checked_fields, force_jacobian, symmetric_jacobian
+from .integrators import checked_fields
+from .linear_response import force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import read_chains, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..theory.chains import (read_chains, chain_solver, draw_polymer_architectures, chain_fields, solve_chains,
+                             check_partition_once)
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from ..theory.electrostatics import Electrostatics
-from ..theory.propagator_solver import PropagatorSolver
 from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, point_ion_concentrations,
                          open_charges, reference_segments)
 from ..utils.common import (
@@ -34,7 +35,7 @@ from ..utils.common import (
     calculate_sigma,
     atomic_savemat,
     simulation_metadata,
-    write_run_status,
+    recording_run_status,
     notify_callbacks,
     DriftTailSummary,
     PartitionRatioSummary,
@@ -111,34 +112,13 @@ class CLFTS:
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
 
-        # Boundary conditions (default: periodic)
-        bc = params.get("bc", None)
-        if bc is None:
-            bc = ["periodic"] * (2 * len(params["nx"]))
-
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, self.zeta_n)
 
-        # The number of monomer types
-        M = len(self.monomer_types)
-
-        # Complex-valued propagator solver (complex Langevin fields)
-        self.prop_solver = PropagatorSolver(
-            nx=params["nx"], lx=params["lx"], ds=params["ds"],
-            bond_lengths=self.segment_lengths, bc=bc,
-            chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
-            platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
-            reduce_memory=params.get("reduce_memory", False),
-            angles=params.get("angles", None),
-            aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
-            field_type="complex",
-        )
-        # Grand-canonical polymers (chemical_potential βμ_p) get the volume fraction 0: their chains,
-        # e^(βμ_p) Q_p per reference chain, come from get_concentration_gce (compute_concentrations)
-        for polymer in self.polymers:
-            self.prop_solver.add_polymer(polymer.get("volume_fraction", 0.0), polymer["blocks_input"],
-                                         polymer.get("initial_conditions", None))
+        # Complex-valued propagator solver (complex Langevin fields) with the polymers. Grand-canonical
+        # polymers (chemical_potential βμ_p) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
+        # reference chain, come from get_concentration_gce (compute_concentrations)
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, field_type="complex")
         self.polymer_chemical_potentials = np.array(
             [polymer.get("chemical_potential", np.nan) for polymer in self.polymers], dtype=np.float64)
         # Fugacities e^(βμ_p), zero for canonical chains (validation.py bounds |βμ_p| so that they
@@ -169,11 +149,7 @@ class CLFTS:
         self.alpha_ds = params.get("dynamic_stabilization", 0.0)
 
         # dH/dw_aux[i] is scaled by dt_scaling[i]
-        self.dt_scaling = np.ones(M)
-        for i in range(M - 1):
-            if i not in self.mpt.aux_fields_dropped_idx:
-                self.dt_scaling[i] = np.abs(self.mpt.eigenvalues[i]) / np.max(np.abs(self.mpt.eigenvalues[:M-1]))
-        self.dt_scaling[self.mpt.aux_fields_dropped_idx] = 0.0
+        self.dt_scaling = self.mpt.dt_scaling()
 
         # Random bit generator of the noise (random_seed None: non-reproducible)
         self.random_bg = np.random.PCG64(random_seed)
@@ -201,7 +177,7 @@ class CLFTS:
 
         # Initialize smearing (must be after self.cb is set)
         self.smearing = smearing_of(params, self.prop_solver)
-        self._periodic_box = all(b.lower() == "periodic" for b in self.prop_solver.bc)   # S(k) transforms with fftn
+        self._periodic_box = all(b == "periodic" for b in self.prop_solver.bc_lower)   # S(k) transforms with fftn
 
         # Smeared Coulomb interactions (optional): the electrostatic potential ψ, felt by
         # charged types as z_i ψ, fluctuates next to the auxiliary fields (electrostatics.py)
@@ -309,7 +285,7 @@ class CLFTS:
         # simulation, so each simulation keeps its own copy of the integrator
         self._joint_psi = False
         if getattr(self.integrator, "linear_response", False):
-            if any(b.lower() != "periodic" for b in self.prop_solver.bc):
+            if any(b != "periodic" for b in self.prop_solver.bc_lower):
                 raise ValidationError(f"The integrator '{self.integrator.name}' (linear_response) needs a periodic box")
             self.integrator = copy.deepcopy(self.integrator)
             self._joint_psi = self.electrostatics is not None and self.electrostatics.coupling > 0
@@ -439,21 +415,11 @@ class CLFTS:
         start_run_status(self, start_langevin_step, initial_fields, _restart_data)
         if self.electrostatics is not None:
             self.metadata["initial_psi_rng_state"] = self.electrostatics.random_bg.state
-        write_run_status(self)
-        try:
+        with recording_run_status(self, saddle_search=False):   # no saddle points: any error fails
             if _restart_data is None:
                 restore_extensions(self)
             self._run(initial_fields, normal_noise_prev, start_langevin_step, initial_psi=initial_psi,
                       psi_noise_prev=psi_noise_prev, _restart_data=_restart_data)
-            self.run_status["status"] = "completed"
-        except (KeyboardInterrupt, SystemExit):
-            self.run_status.update(status="interrupted", reason="Run interrupted")
-            raise
-        except Exception as exc:
-            self.run_status.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
-            raise
-        finally:
-            write_run_status(self)
         return dict(self.run_status)
 
     def _run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, initial_psi=None,

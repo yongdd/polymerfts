@@ -1,8 +1,9 @@
 """The polymer chains of a simulation: reading them from the input, their concentrations, their drawings.
 
-read_chains() reads the input. chain_fields() and solve_chains() give the concentrations of the monomer
-types in given fields, with what SCFT, LFTS and CLFTS have in common; each of them adds to this what
-is its own, such as the electrostatic potential or the grand-canonical chains.
+read_chains() reads the input and chain_solver() creates the PropagatorSolver of the chains.
+chain_fields() and solve_chains() give the concentrations of the monomer types in given fields, with
+what SCFT, LFTS and CLFTS have in common; each of them adds to this what is its own, such as the
+electrostatic potential or the grand-canonical chains.
 """
 
 import copy
@@ -16,6 +17,7 @@ import numpy as np
 
 from ..utils.common import report_partition_consistency
 from ..utils.validation import ValidationError, parse_chi_n
+from .propagator_solver import PropagatorSolver
 
 DEFAULT_MONOMER_COLORS: List[str] = [
     "red", "blue", "green", "cyan", "magenta", "yellow"
@@ -127,6 +129,35 @@ def read_chains(params):
             segment_lengths[random_type] = effective_segment_length
             random_fraction[random_type] = fraction
     return monomer_types, segment_lengths, polymers, chi_n, random_fraction
+
+
+def chain_solver(params, segment_lengths, polymers, **options):
+    """The PropagatorSolver of the chains, with the polymers of read_chains() added.
+
+    The grid, the box, the boundary conditions (default: periodic), the chain model, the numerical
+    method and the other solver options come from the input; `options` (space_group, angles,
+    field_type) are passed to PropagatorSolver in their place. Grand-canonical polymers
+    (chemical_potential βμ_p, CL-FTS) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
+    reference chain, come from get_concentration_gce.
+    """
+    bc = params.get("bc", None)
+    if bc is None:
+        bc = ["periodic"] * (2 * len(params["nx"]))
+    arguments = dict(
+        nx=params["nx"], lx=params["lx"], ds=params["ds"],
+        bond_lengths=segment_lengths, bc=bc,
+        chain_model=params["chain_model"],
+        numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
+        platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
+        reduce_memory=params.get("reduce_memory", False),
+        angles=params.get("angles", None),
+        aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
+    )
+    solver = PropagatorSolver(**(arguments | options))
+    for polymer in polymers:
+        solver.add_polymer(polymer.get("volume_fraction", 0.0), polymer["blocks_input"],
+                           polymer.get("initial_conditions", None))
+    return solver
 
 
 def chain_fields(sim, w):

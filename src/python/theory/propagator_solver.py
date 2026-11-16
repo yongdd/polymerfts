@@ -124,6 +124,10 @@ class PropagatorSolver:
         if self.field_type not in ("real", "complex"):
             raise ValueError(f"field_type must be 'real' or 'complex', got '{field_type}'")
 
+        # Boundary conditions in lowercase, for the comparisons; bc keeps the spelling of the
+        # input, which the checkpoint settings record
+        self._bc_lower = tuple(b.lower() for b in self.bc)
+
         self.platform = self._auto_platform() if platform == "auto" else platform
 
         self._check_boundary_conditions()
@@ -221,7 +225,7 @@ class PropagatorSolver:
         if self.dim == 1 and cpu_platforms:
             return cpu_platforms[0]
         if "cuda" in avail:
-            bc = [b.lower() for b in self.bc]
+            bc = self.bc_lower
             cpu_only = self.numerical_methods()[self.numerical_method]["solver_type"] == "pseudospectral" and (
                 any("absorbing" in bc[2*d:2*d+2] and (self.nx[d] % 2 or self.nx[d] > 6142) for d in range(self.dim))
                 or (self.field_type == "complex" and self.chain_model == "continuous"
@@ -242,9 +246,8 @@ class PropagatorSolver:
         periodic with non-periodic directions is not supported by the spectral
         transform, so it fails loudly instead of silently switching solvers.
         """
-        bc_lower = [b.lower() for b in self.bc]
-        self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in bc_lower)
-        has_periodic = any(b == "periodic" for b in bc_lower)
+        self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in self.bc_lower)
+        has_periodic = any(b == "periodic" for b in self.bc_lower)
         if not self.numerical_methods()[self.numerical_method]["supports_mixed_boundaries"] and has_periodic and self._has_non_periodic_bc:
             real_space = "rs" if self.chain_model == "discrete" else "cn-adi2"
             raise ValueError(
@@ -281,6 +284,11 @@ class PropagatorSolver:
         return self._propagator_computation
 
     @property
+    def bc_lower(self) -> Tuple[str, ...]:
+        """The boundary conditions in lowercase ("periodic", "reflecting", "absorbing"); bc keeps the input spelling."""
+        return self._bc_lower
+
+    @property
     def space_group(self) -> Optional[Any]:
         """The space group in use, or None."""
         return self._space_group
@@ -315,7 +323,7 @@ class PropagatorSolver:
         added). See ``examples/tools/FourierTransform.py``.
         """
         if self._fourier is None:
-            periodic = [self.bc[2 * d].lower() == "periodic" and self.bc[2 * d + 1].lower() == "periodic"
+            periodic = [self.bc_lower[2 * d] == "periodic" and self.bc_lower[2 * d + 1] == "periodic"
                         for d in range(self.dim)]
             axes = ["periodic" if p else "reflecting" for p in periodic]
             self._fourier = self._factory.create_fourier_transform(self._computation_box, axes)

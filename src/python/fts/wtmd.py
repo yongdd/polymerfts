@@ -145,6 +145,17 @@ class WTMD:
         self.u_kernel = np.exp(-0.5 * X**2)
         self.up_kernel = -X / self.sigma_psi * np.exp(-0.5 * X**2)
 
+    def check_bin_width(self, restart_data=None):
+        """Called before a run: the histogram, the Gaussian kernels and the integrals all use the bin
+        width dpsi, which must divide psi_max - psi_min into a whole number of bins. Not checked when the
+        checkpoint of a continued run (restart_data) restores the statistics, so that a run started
+        with another dpsi still continues."""
+        if restart_data is not None and "wtmd_u" in restart_data:
+            return
+        bins = (self.psi_max - self.psi_min) / self.dpsi
+        if abs(bins - round(bins)) > 1e-9 * bins:
+            raise ValidationError("wtmd.dpsi must divide psi_max - psi_min into a whole number of bins")
+
     def start_fresh_run(self):
         """Called before a fresh run of the simulation (from step 1): the samples that an earlier run left
         pending are dropped. The bias and statistics stay as the object holds them: those of the
@@ -287,3 +298,104 @@ class WTMD:
             mdic["dH_psi_" + suffix] = dH_psi
 
         atomic_savemat(file_name, mdic, long_field_names=True, do_compression=True)
+
+    # ---------------- Checkpoints: settings, state, checks and restore ----------------
+
+    def settings(self):
+        """Settings that define a continuation (checkpoint hash)."""
+        return {key: getattr(self, key) for key in
+                ("l", "kc", "dT", "sigma_psi", "psi_min", "psi_max", "dpsi", "bins", "update_freq")}
+
+    def checkpoint_data(self):
+        """The bias, the statistics and the pending samples, as a fields file stores them.
+
+        The bias arrays are stored with the factor CV, as in deep-langevin-fts, and without it
+        ("wtmd_unscaled_*"), which a continued run restores exactly: (x*CV)/CV can differ from x in
+        the last bit. I1 and the samples stored since the last update make a continued run carry the
+        same statistics as an uninterrupted one.
+        """
+        data = {"wtmd_u": self.u * self.CV, "wtmd_up": self.up * self.CV, "wtmd_I0": self.I0,
+                "wtmd_unscaled_u": self.u, "wtmd_unscaled_up": self.up}
+        for key, value in self.I1.items():
+            suffix = pair_suffix(key)
+            data["wtmd_I1_" + suffix] = value * self.CV
+            data["wtmd_unscaled_I1_" + suffix] = value
+        data["wtmd_order_parameter_history"] = np.array(self.order_parameter_history, dtype=np.float64)
+        for key, values in self.dH_history.items():
+            data["wtmd_dH_history_" + pair_suffix(key)] = np.array(values, dtype=np.float64)
+        data["wtmd_params"] = {
+            "l": self.l,
+            "sigma_psi": self.sigma_psi,
+            "dT": self.dT,
+            "kc": self.kc,
+            "psi_min": self.psi_min,
+            "psi_max": self.psi_max,
+            "dpsi": self.dpsi,
+            "bins": self.bins,
+            "update_freq": self.update_freq,
+            "recording_period": self.recording_period,
+        }
+        return data
+
+    def validate_checkpoint(self, data, pairs):
+        """Checks the WTMD state of a checkpoint (checkpoint_data) for the monomer pairs `pairs`
+        ("A,B" keys) before a continuation changes any state. A missing key raises KeyError, which
+        checkpoint.validate_checkpoint reports as an invalid checkpoint."""
+        def check_array(key):
+            if np.size(data[key]) != self.bins or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key]):
+                raise ValidationError(f"Invalid checkpoint WTMD array '{key}'")
+        def check_copies(name):
+            # Both copies are written from one array; the restore uses the unscaled
+            # one, so a checkpoint whose scaled copy was edited is refused
+            check_array("wtmd_unscaled_" + name)
+            if not np.allclose(np.ravel(data["wtmd_unscaled_" + name]) * self.CV,
+                               np.ravel(data["wtmd_" + name]), rtol=1e-12, atol=0):
+                raise ValidationError(f"Checkpoint WTMD arrays 'wtmd_{name}' and 'wtmd_unscaled_{name}' disagree")
+        # Newer checkpoints also hold the bias arrays without the factor CV ("wtmd_unscaled_*")
+        unscaled = "wtmd_unscaled_u" in data
+        for key in ("wtmd_u", "wtmd_up", "wtmd_I0"):
+            check_array(key)
+        if unscaled:
+            check_copies("u")
+            check_copies("up")
+        pending = np.size(data["wtmd_order_parameter_history"])
+        if (pending >= self.update_freq or not np.all(np.isfinite(data["wtmd_order_parameter_history"])) or
+                np.iscomplexobj(data["wtmd_order_parameter_history"])):
+            raise ValidationError("Invalid checkpoint pending WTMD samples")
+        for pair in pairs:
+            suffix = pair_suffix(pair)
+            key = "wtmd_I1_" + suffix
+            if np.any(data["wtmd_I0"]) or key in data:
+                check_array(key)
+                if unscaled:
+                    check_copies("I1_" + suffix)
+            key = "wtmd_dH_history_" + suffix
+            if pending and (np.size(data[key]) != pending or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key])):
+                raise ValidationError(f"Invalid checkpoint WTMD history '{key}'")
+
+    def restore(self, data, pairs):
+        """The bias, the statistics and the pending samples of a checkpoint that validate_checkpoint()
+        accepted, for the monomer pairs `pairs` ("A,B" keys). A checkpoint without WTMD state leaves the
+        state as it is. The arrays are restored without the factor CV, or for an older checkpoint from
+        the scaled ones divided by CV (as in deep-langevin-fts)."""
+        if "wtmd_u" not in data:
+            return
+        def bias(name):
+            if "wtmd_unscaled_u" in data:
+                return np.array(data["wtmd_unscaled_" + name])
+            return np.array(data["wtmd_" + name]) / self.CV
+        self.u = bias("u")
+        self.up = bias("up")
+        if "wtmd_I0" in data:
+            self.I0 = np.array(data["wtmd_I0"])
+        n_pending = np.atleast_1d(data.get("wtmd_order_parameter_history", np.zeros(0))).size
+        self.order_parameter_history = list(np.atleast_1d(data["wtmd_order_parameter_history"])) if n_pending > 0 else []
+        self.I1 = {}
+        self.dH_history = {}
+        for key in pairs:
+            name = pair_suffix(key)
+            if "wtmd_I1_" + name in data:
+                self.I1[key] = bias("I1_" + name)
+            if n_pending > 0 and "wtmd_dH_history_" + name in data:
+                self.dH_history[key] = list(np.atleast_1d(data["wtmd_dH_history_" + name]))
+        print("Restored WTMD state")

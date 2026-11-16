@@ -4,7 +4,6 @@ import pathlib
 import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.propagator_solver import PropagatorSolver
 from .integrators import checked_fields
 from ..utils.validation import normalize_params, validate_lfts_params, ValidationError, SaddlePointError
 from ..utils.common import (
@@ -12,7 +11,7 @@ from ..utils.common import (
     calculate_sigma,
     atomic_savemat,
     simulation_metadata,
-    write_run_status,
+    recording_run_status,
     notify_callbacks,
 )
 from ..utils.checkpoint import (
@@ -22,9 +21,9 @@ from ..utils.checkpoint import (
     RunRecord,
     initialize_extensions,
     restore_extensions,
-    pair_suffix,
 )
-from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..theory.chains import (read_chains, chain_solver, mean_concentrations, draw_polymer_architectures, chain_fields,
+                             solve_chains, check_partition_once)
 from ..utils.file_formats import load_config
 from .saddle import SaddlePointSearch
 from ..theory.smearing import smearing_of
@@ -105,31 +104,11 @@ class LFTS:
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
 
-        # Boundary conditions (default: periodic)
-        bc = params.get("bc", None)
-        if bc is None:
-            bc = ["periodic"] * (2 * len(params["nx"]))
-
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, zeta_n=self.zeta_n)
 
-        # The number of monomer types
-        M = len(self.monomer_types)
-
-        # Propagator solver: the C++ computation box, molecules and solver live inside it
-        self.prop_solver = PropagatorSolver(
-            nx=params["nx"], lx=params["lx"], ds=params["ds"],
-            bond_lengths=self.segment_lengths, bc=bc,
-            chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
-            platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
-            reduce_memory=params.get("reduce_memory", False),
-            angles=params.get("angles", None),
-            aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
-        )
-        for polymer in self.polymers:
-            self.prop_solver.add_polymer(polymer["volume_fraction"], polymer["blocks_input"],
-                                         polymer.get("initial_conditions", None))
+        # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers)
 
         # Computation box as a public attribute (this creates the C++ objects)
         self.cb = self.prop_solver.computation_box
@@ -139,7 +118,7 @@ class LFTS:
 
         # Initialize smearing (must be after self.cb is set)
         self.smearing = smearing_of(params, self.prop_solver)
-        self._periodic_box = all(b.lower() == "periodic" for b in self.prop_solver.bc)   # WTMD and S(k) transform with rfftn
+        self._periodic_box = all(b == "periodic" for b in self.prop_solver.bc_lower)   # WTMD and S(k) transform with rfftn
 
         # Well-Tempered Metadynamics (WTMD), if the input asks for it
         self.wtmd = self._create_wtmd(params)
@@ -154,11 +133,7 @@ class LFTS:
         langevin_sigma = calculate_sigma(params["langevin"]["nbar"], params["langevin"]["dt"], np.prod(params["nx"]), self.prop_solver.get_volume())
 
         # dH/dw_aux[i] is scaled by dt_scaling[i]
-        self.dt_scaling = np.ones(M)
-        for i in range(M-1):
-            if i not in self.mpt.aux_fields_dropped_idx:
-                self.dt_scaling[i] = np.abs(self.mpt.eigenvalues[i])/np.max(np.abs(self.mpt.eigenvalues[:M-1]))
-        self.dt_scaling[self.mpt.aux_fields_dropped_idx] = 0.0
+        self.dt_scaling = self.mpt.dt_scaling()
 
         # Random bit generator of the noise (random_seed None: non-reproducible)
         self.random_bg = np.random.PCG64(random_seed)
@@ -288,36 +263,9 @@ class LFTS:
         for name in self.monomer_types:
             mdic["phi_" + name] = phi[name]
 
-        # Add WTMD state if enabled (same format as deep-langevin-fts)
+        # WTMD bias, statistics and pending samples (same format as deep-langevin-fts)
         if self.wtmd is not None:
-            mdic["wtmd_u"] = self.wtmd.u * self.wtmd.CV
-            mdic["wtmd_up"] = self.wtmd.up * self.wtmd.CV
-            mdic["wtmd_I0"] = self.wtmd.I0
-            # The same arrays without the factor CV, which a continued run restores exactly:
-            # (x*CV)/CV can differ from x in the last bit
-            mdic["wtmd_unscaled_u"] = self.wtmd.u
-            mdic["wtmd_unscaled_up"] = self.wtmd.up
-            # I1 and the samples stored since the last update, so that a continued run
-            # carries the same statistics as an uninterrupted one
-            for key, value in self.wtmd.I1.items():
-                suffix = pair_suffix(key)
-                mdic["wtmd_I1_" + suffix] = value * self.wtmd.CV
-                mdic["wtmd_unscaled_I1_" + suffix] = value
-            mdic["wtmd_order_parameter_history"] = np.array(self.wtmd.order_parameter_history, dtype=np.float64)
-            for key, values in self.wtmd.dH_history.items():
-                mdic["wtmd_dH_history_" + pair_suffix(key)] = np.array(values, dtype=np.float64)
-            mdic["wtmd_params"] = {
-                "l": self.wtmd.l,
-                "sigma_psi": self.wtmd.sigma_psi,
-                "dT": self.wtmd.dT,
-                "kc": self.wtmd.kc,
-                "psi_min": self.wtmd.psi_min,
-                "psi_max": self.wtmd.psi_max,
-                "dpsi": self.wtmd.dpsi,
-                "bins": self.wtmd.bins,
-                "update_freq": self.wtmd.update_freq,
-                "recording_period": self.wtmd.recording_period,
-            }
+            mdic.update(self.wtmd.checkpoint_data())
 
         # Save data with matlab format
         atomic_savemat(path, mdic, long_field_names=True, do_compression=True)
@@ -335,31 +283,10 @@ class LFTS:
             Path to checkpoint file (MATLAB .mat format created by save_simulation_data).
         """
 
-        # Load_data
+        # Load data
         load_data = load_checkpoint(self, file_name, allow_legacy)
-
-        # Restore WTMD state if available: the arrays without the factor CV, or for an older
-        # checkpoint the scaled ones divided by CV (as in deep-langevin-fts)
-        if self.wtmd is not None and "wtmd_u" in load_data:
-            def bias(name):
-                if "wtmd_unscaled_u" in load_data:
-                    return np.array(load_data["wtmd_unscaled_" + name])
-                return np.array(load_data["wtmd_" + name]) / self.wtmd.CV
-            self.wtmd.u = bias("u")
-            self.wtmd.up = bias("up")
-            if "wtmd_I0" in load_data:
-                self.wtmd.I0 = np.array(load_data["wtmd_I0"])
-            n_pending = np.atleast_1d(load_data.get("wtmd_order_parameter_history", np.zeros(0))).size
-            self.wtmd.order_parameter_history = list(np.atleast_1d(load_data["wtmd_order_parameter_history"])) if n_pending > 0 else []
-            self.wtmd.I1 = {}
-            self.wtmd.dH_history = {}
-            for key in self.chi_n:
-                name = pair_suffix(key)
-                if "wtmd_I1_" + name in load_data:
-                    self.wtmd.I1[key] = bias("I1_" + name)
-                if n_pending > 0 and "wtmd_dH_history_" + name in load_data:
-                    self.wtmd.dH_history[key] = list(np.atleast_1d(load_data["wtmd_dH_history_" + name]))
-            print("Restored WTMD state")
+        if self.wtmd is not None:
+            self.wtmd.restore(load_data, self.chi_n)
 
         # Make initial_fields
         initial_fields = {}
@@ -379,16 +306,11 @@ class LFTS:
         ``'resample'`` explicitly opts into the former noise-selection policy.
         ``saddle.max_retries`` defaults to five. Failed steps are never recorded.
         """
-        # The histogram, the Gaussian kernels and the integrals all use the bin width dpsi.
-        # Checked unless WTMD statistics are restored, so that a run started with another
-        # dpsi still continues
-        if self.wtmd is not None and (_restart_data is None or "wtmd_u" not in _restart_data):
-            bins = (self.wtmd.psi_max - self.wtmd.psi_min) / self.wtmd.dpsi
-            if abs(bins - round(bins)) > 1e-9 * bins:
-                raise ValidationError("wtmd.dpsi must divide psi_max - psi_min into a whole number of bins")
+        # The WTMD bins (unless a checkpoint restores the statistics) are checked before the run starts
+        if self.wtmd is not None:
+            self.wtmd.check_bin_width(_restart_data)
         start_run_status(self, start_langevin_step, initial_fields, _restart_data, saddle_failures=0, noise_resamples=0)
-        write_run_status(self)
-        try:
+        with recording_run_status(self, saddle_search=True):
             if _restart_data is None:
                 restore_extensions(self)
                 # A fresh run keeps the WTMD bias the object holds and drops the samples an earlier run
@@ -396,18 +318,6 @@ class LFTS:
                 if self.wtmd is not None and start_langevin_step in (None, 1):
                     self.wtmd.start_fresh_run()
             self._run(initial_fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
-            self.run_status["status"] = "completed"
-        except SaddlePointError as exc:
-            self.run_status.update(status="aborted_saddle_failure", reason=str(exc))
-            raise
-        except (KeyboardInterrupt, SystemExit):
-            self.run_status.update(status="interrupted", reason="Run interrupted")
-            raise
-        except Exception as exc:
-            self.run_status.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
-            raise
-        finally:
-            write_run_status(self)
         return dict(self.run_status)
 
     def _run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, _restart_data=None):

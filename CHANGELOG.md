@@ -185,7 +185,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `stress_scale`, `CRYSTAL_SYSTEMS`, `lx_reduced_indices`, `lx_full_indices`,
   `angles_reduced_indices` and `angles_full_indices` moved there too. Both Langevin
   classes have `structure_functions` (`structure_functions.py`), `SCFTResult` and `IterationInfo` live
-  in `scft_results.py`, and `force_jacobian` and `symmetric_jacobian` in `integrators.py`.
+  in `scft_results.py`, and `force_jacobian` and `symmetric_jacobian` in `linear_response.py`.
   `checkpoint.RunRecord` replaces `restore_recording_state` and the lists of the loops: a new recorded
   quantity needs one entry in its series and one `add()`, and a checkpoint without it gives NaN for
   its pending samples. Results do not change. The console header is shared too: SCFT prints
@@ -392,6 +392,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- The simulation classes share more of their setup (2026-11-16). `WTMD` and `Electrostatics` save,
+  check and restore their own checkpoint state (`checkpoint_data`, `validate_checkpoint`, `restore`;
+  `WTMD` also `settings` and `check_bin_width`); the checkpoint format and its checks are unchanged.
+  `chains.chain_solver` creates the `PropagatorSolver` of SCFT, LFTS and CLFTS with the polymers
+  added, `SymmetricPolymerTheory.dt_scaling()` gives the mobilities of the auxiliary fields,
+  `PropagatorSolver.bc_lower` gives the boundary conditions in lowercase (`bc` keeps the spelling of
+  the input), and `utils.common.recording_run_status` writes `run_status.json` around the runs of
+  LFTS and CLFTS. Results do not change.
 - A propagator computation for complex fields refuses a junction power that is not an integer of at
   most 10⁶ when it is created, instead of at its first `compute_propagators` (2026-11-16). Such a
   power comes from a non-integer block multiplicity, or from identical copied branches whose powers
