@@ -228,10 +228,28 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
                                                           polymer_block_copies(polymer)))
 
 
+def _check_angles(angles, dim: int) -> None:
+    """Lattice angles [alpha, beta, gamma] in degrees; a 2D box may give gamma alone, and the angles
+    of the axes that a 1D or 2D box lacks are 90 degrees (the native box checks the cell itself)."""
+    if angles is None:
+        return
+    if np.ndim(angles) != 1:
+        raise ValidationError("angles must be a list of angles in degrees.")
+    if dim == 3 and len(angles) != 3:
+        raise ValidationError("angles must be [alpha, beta, gamma] (three entries) for a 3D box.")
+    if dim < 3:
+        if len(angles) not in (0, 1, 3):
+            raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
+        fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
+        if not np.all(np.isclose(fixed, 90.0, rtol=0.0, atol=1e-10)):
+            raise ValidationError("A 1D box requires all angles to be 90 degrees; "
+                                  "a 2D box requires alpha and beta to be 90 degrees.")
+
+
 def validate_system_params(params: Dict[str, Any]) -> None:
     """Check the parameters shared by SCFT, L-FTS and CL-FTS, with the names of normalize_params.
 
-    Required: nx, lx, ds, chain_model, segment_lengths, chi_n, polymers.
+    Required: nx, lx, ds, chain_model, segment_lengths, chi_n, polymers; optional: angles, platform, zeta_n.
     The first problem found raises ValidationError with a message naming the key.
     """
     for key in ("nx", "lx", "ds", "chain_model", "segment_lengths", "chi_n", "polymers"):
@@ -249,6 +267,8 @@ def validate_system_params(params: Dict[str, Any]) -> None:
         raise ValidationError(f"'lx' must have {len(nx)} elements, got {len(lx)}")
     for length in lx:
         _finite_number(length, "lx", positive=True)
+
+    _check_angles(params.get("angles"), len(nx))
 
     ds = params["ds"]
     _finite_number(ds, "ds", positive=True)
@@ -823,6 +843,7 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
     nx, lx = params["nx"], params["lx"]
     if not isinstance(nx, (list, tuple, np.ndarray)) or not isinstance(lx, (list, tuple, np.ndarray)) or len(lx) != len(nx):
         raise ValidationError("'lx', the cell of both boxes, needs one length per dimension of 'nx'")
+    _check_angles(params.get("angles"), len(nx))   # before the volumes of the boxes are computed
     for length in lx:
         _finite_number(length, "lx", positive=True)
     boxes = gibbs.get("boxes")

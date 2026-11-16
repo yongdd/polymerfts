@@ -1,4 +1,5 @@
-"""What SCFT returns and writes: its result classes, the result files and the final report."""
+"""What SCFT keeps, returns and writes: its result classes, the final state of a run, the result files and
+the final report."""
 
 import json
 import os
@@ -263,21 +264,61 @@ def save_results(sim, path):
         raise ValueError("Invalid output file extension. Use .mat, .json, or .yaml.")
 
 
-def scft_result(sim, phi, w, energy_total, error_level, iter, total_partitions, stress_array):
+def store_results(sim, phi, w, energy_total, energy_absolute, error_level, iter, total_partitions, q_init):
+    """Keep the final state of SCFT.run on sim (phi, w, free energies, error, iterations, Q), and the
+    chemical potentials of the chains and point ions and the grand potential, which it prints."""
+    es = sim.electrostatics
+    # Store phi and w
+    sim.phi = phi
+    sim.w = w
+    sim.ion_chemical_potentials = None
+    if es is not None:
+        print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
+              % es.poisson_error(sim.smearing.apply_to_dict(phi), sim.psi))
+        if es.ions:
+            sim.ion_chemical_potentials = es.ion_chemical_potentials(sim.psi)
+            print("Point ions: chemical potentials βμ", sim.ion_chemical_potentials,
+                  "ions per reference chain", es.ion_number_densities(sim.psi))
+
+    # Store free energy
+    sim.free_energy = energy_total
+    sim.free_energy_absolute = energy_absolute
+    sim.error_level = error_level
+    sim.iter = iter
+    sim.partition_functions = list(total_partitions)
+    sim.chemical_potentials = None
+    sim.grand_potential = None
+    # Grafted chains (initial propagators) have no chemical potential
+    if q_init is None and not any(p.get("initial_conditions") for p in sim.polymers):
+        sim.chemical_potentials = sim.compute_chemical_potentials()
+        present = sim.chain_densities > 0.0
+        sim.grand_potential = float(energy_absolute - np.dot(sim.chain_densities[present],
+                                                            np.array(sim.chemical_potentials)[present]))
+        # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
+        if es is not None:
+            for ion, mu in zip(es.ions, sim.ion_chemical_potentials or []):
+                if ion["concentration"] is not None and ion["concentration"] > 0:
+                    sim.grand_potential -= es.n_segments * ion["concentration"] * mu
+        print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", sim.chemical_potentials)
+        print("Grand potential in the same pressure convention: %.9f" % sim.grand_potential)
+
+
+def scft_result(sim):
+    """The SCFTResult of the last SCFT.run, on the full grid."""
     es = sim.electrostatics
     return SCFTResult(
-        converged=error_level < sim.tolerance,
-        free_energy=energy_total,
-        error_level=error_level,
-        iterations=iter,
-        phi={name: sim._to_full_grid(phi[name]) for name in sim.monomer_types},
-        w={name: sim._to_full_grid(w[i]) for i, name in enumerate(sim.monomer_types)},
-        partition_functions=total_partitions,
+        converged=sim.error_level < sim.tolerance,
+        free_energy=sim.free_energy,
+        error_level=sim.error_level,
+        iterations=sim.iter,
+        phi={name: sim._to_full_grid(sim.phi[name]) for name in sim.monomer_types},
+        w={name: sim._to_full_grid(sim.w[i]) for i, name in enumerate(sim.monomer_types)},
+        partition_functions=list(sim.partition_functions),
         lx=list(sim.prop_solver.get_lx()),
         nx=list(sim.prop_solver.nx),
         monomer_types=sim.monomer_types,
         params=sim.params,
-        stress=stress_array if sim.relax_cell else None,
+        stress=sim.cell.stress_array if sim.relax_cell else None,
         angles=list(sim.prop_solver.get_angles_degrees()) if sim.prop_solver.dim > 1 else None,
         free_energy_homogeneous=sim.free_energy_homogeneous,
         free_energy_absolute=sim.free_energy_absolute,

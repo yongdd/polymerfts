@@ -392,6 +392,17 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- L-FTS and CL-FTS check `angles` like SCFT (2026-11-16): the angle checks moved from `SCFT` to
+  `validate_system_params`, so all three classes, and the Gibbs ensemble before it computes the
+  volumes of its boxes, raise `ValidationError` with the same message when a 3D box does not give
+  three angles (an empty list included, which the native box took as an orthogonal cell), when a 1D
+  or 2D box gives angles of its missing axes other than 90 degrees, or when `angles` is not a flat
+  list; L-FTS and CL-FTS raised `RuntimeError` from the native box before, or `TypeError` for a list
+  that is not flat (tests/TestParams.py).
+- The stress schedule of SCFT (`stress_interval`, the reuse of a stress and its recomputation before
+  convergence or a stop) moved from the run loop to `SCFT.cell.error_at()`, and `SCFT.stress_interval`
+  is now `SCFT.cell.stress_interval`; `scft_results.store_results` stores the final state of
+  `SCFT.run` (2026-11-16). Results do not change.
 - The simulation classes share more of their setup (2026-11-16). `WTMD` and `Electrostatics` save,
   check and restore their own checkpoint state (`checkpoint_data`, `validate_checkpoint`, `restore`;
   `WTMD` also `settings` and `check_bin_width`); the checkpoint format and its checks are unchanged.

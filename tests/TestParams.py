@@ -93,6 +93,19 @@ def main():
     for nx, angles in (([16], [90, 90, 60]), ([8, 8], [120, 90, 90])):
         p = base_params(); p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
         ok &= expect_error(SCFT, p, "angles involving absent dimensions")
+    # L-FTS and CL-FTS refuse bad angles with the message of SCFT (validate_system_params)
+    for nx, angles in (([8, 8], [120, 90, 90]), ([8, 8, 8], [90, 90])):
+        messages = []
+        for cls, p in ((SCFT, base_params()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
+            p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
+            try:
+                build(cls, p)
+                messages.append(None)
+            except ValidationError as error:
+                messages.append(str(error))
+        if None in messages or len(set(messages)) != 1:
+            print(f"FAILED: angles {angles} for nx {nx}: {messages}")
+            ok = False
     for angles in (None, []):
         p = base_params(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
         assert build(SCFT, p).cell.crystal_system == "Orthorhombic"
@@ -147,7 +160,7 @@ def main():
     checks = {
         "max_iter": calc.max_iter == 2000,
         "tolerance": calc.tolerance == 1e-8,
-        "stress_interval": calc.stress_interval == 1,
+        "stress_interval": calc.cell.stress_interval == 1,
         "stress_scale": calc.cell.stress_scale == 1,
         "zeta_n": calc.zeta_n is None,
         "space_group": calc.sg is None,
@@ -169,7 +182,7 @@ def main():
                    "zeta_n": 100.0, "numerical_method": "rk2",
                    "crystal_system": "Cubic", "relax_cell": True})
     calc = build(SCFT, params)
-    if not (calc.max_iter == 10 and calc.tolerance == 1e-5 and calc.stress_interval == "adaptive"
+    if not (calc.max_iter == 10 and calc.tolerance == 1e-5 and calc.cell.stress_interval == "adaptive"
             and calc.cell.stress_scale == 2.0 and calc.zeta_n == 100.0
             and calc.prop_solver.numerical_method == "rk2"
             and calc.cell.lx_reduced_indices == [0] and calc.cell.lx_full_indices == [0, 0, 0]):

@@ -632,12 +632,14 @@ When adding new computational features, you must implement them for both platfor
 | Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
 | Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
 | WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
+| Electrostatics of the FTS methods: ψ, the ions and their checkpoint state | `src/python/theory/electrostatics.py` (`sim.electrostatics`) |
 | Langevin steps; the linear response of CL-FTS that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/linear_response.py` |
-| Cell relaxation and stress of SCFT | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
-| What SCFT returns and writes | `src/python/scft/scft_results.py` |
+| Cell relaxation of SCFT: the stress, how often it is computed (`stress_interval`) and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
+| What SCFT keeps after a run, returns and writes | `src/python/scft/scft_results.py` |
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`); `run_status.json`: `recording_run_status` in `src/python/utils/common.py` |
 | Reading, drawing and solving the polymer chains, and their `PropagatorSolver` | `src/python/theory/chains.py` (`chain_solver`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains) | `src/python/utils/validation.py` (`validate_system_params`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid

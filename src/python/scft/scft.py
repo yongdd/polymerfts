@@ -16,7 +16,7 @@ from ..utils.common import (
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
-from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results
+from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results, store_results
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
@@ -142,18 +142,6 @@ class SCFT:
 
         # Lattice angles [alpha, beta, gamma] in degrees
         angles = params.get("angles", None)
-        if angles is not None and np.ndim(angles) != 1:
-            raise ValidationError("angles must be a list of angles in degrees.")
-        if angles is not None and len(params["nx"]) == 3 and len(angles) != 3:
-            raise ValidationError("angles must be [alpha, beta, gamma] (three entries) for a 3D box.")
-        if angles is not None and len(params["nx"]) < 3:
-            dim = len(params["nx"])
-            if len(angles) not in (0, 1, 3):
-                raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
-            fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
-            if not np.all(np.isclose(fixed, 90.0, rtol=0.0, atol=1e-10)):
-                raise ValidationError("A 1D box requires all angles to be 90 degrees; "
-                                      "a 2D box requires alpha and beta to be 90 degrees.")
 
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, zeta_n=self.zeta_n)
@@ -229,10 +217,6 @@ class SCFT:
         self.chain_model = params["chain_model"]
         self.ds = params["ds"]
         self.relax_cell = params["relax_cell"]
-
-        # Stress computation interval: an integer (every N iterations) or
-        # "adaptive" (more often while the error is high, see run()).
-        self.stress_interval = params.get("stress_interval", 1)
 
         self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
         if self.max_iter < 1:
@@ -592,8 +576,6 @@ class SCFT:
             Number of iterations performed.
         """
 
-        M = len(self.monomer_types)
-
         # ψ of SCFT is real (the mean field of the Coulomb interaction)
         if initial_psi is not None:
             if self.electrostatics is None:
@@ -626,7 +608,6 @@ class SCFT:
         self._partition_checked = False
 
         # ---- 2. Iteration ----
-        stress_array = None
         self._homogeneous_state(energy_electrostatic_homogeneous)
 
         time_iter_start = time.time()
@@ -656,28 +637,12 @@ class SCFT:
             if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
                 raise ValidationError(f"Non-finite SCFT residual at iteration {iter}")
             old_error_level = error_level
-            error_level = self._error_level(w, w_diff, psi_diff)
-            field_error_level = error_level
+            field_error_level = self._error_level(w, w_diff, psi_diff)
             mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
 
-            if self.relax_cell:
-                # The stress costs ~30 % of an iteration: compute it every stress_interval
-                # iterations ("adaptive": every 1, 2 or 4 as the error drops) and reuse it in between
-                if self.stress_interval == "adaptive":
-                    stress_interval = 1 if error_level > 1e-2 else (2 if error_level > 1e-4 else 4)
-                else:
-                    stress_interval = self.stress_interval
-                stress_is_current = (iter == 1) or (iter % stress_interval == 0) or iter == self.max_iter
-                if stress_is_current:
-                    stress_array = self.cell.stress(w, phi)
-                # The stress along the optimized lattice parameters counts towards the error
-                error_level += self.cell.error(stress_array)
-                # A cached stress can guide updates, but cannot certify convergence.
-                if not stress_is_current and error_level < self.tolerance:
-                    stress_array = self.cell.stress(w, phi)
-                    stress_is_current = True
-                    error_level = field_error_level + self.cell.error(stress_array)
-
+            # With relax_cell, the stress along the lattice parameters that relax counts towards the
+            # error (computed every stress_interval iterations: CellRelaxation.error_at)
+            error_level = field_error_level + self.cell.error_at(iter, w, phi, field_error_level)
             if not np.isfinite(error_level):
                 raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
 
@@ -688,9 +653,8 @@ class SCFT:
             if on_iteration is not None:
                 keep_going = on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions))
                 if keep_going is not None and not keep_going:
-                    if self.relax_cell and not stress_is_current:
-                        stress_array = self.cell.stress(w, phi)
-                        error_level = field_error_level + self.cell.error(stress_array)
+                    # The final error with the stress of these fields, not a reused one
+                    error_level = field_error_level + self.cell.current_error(w, phi)
                     print(f"Iteration stopped by callback at iteration {iter}")
                     break
 
@@ -699,9 +663,9 @@ class SCFT:
                 break
 
             # New fields, ψ and cell
-            w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level)
+            w = self._next_fields(w, w_diff, psi_diff, old_error_level, error_level)
 
-        self.cell.check_tied_lengths(stress_array, error_level)
+        self.cell.check_tied_lengths(error_level)
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
@@ -717,43 +681,11 @@ class SCFT:
         if not report_partition_consistency(self.prop_solver):
             print("Warning: Final partition consistency check failed.")
 
-        # Store phi and w
-        self.phi = phi
-        self.w = w
-        self.ion_chemical_potentials = None
-        if es is not None:
-            print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
-                  % es.poisson_error(self.smearing.apply_to_dict(phi), self.psi))
-            if es.ions:
-                self.ion_chemical_potentials = es.ion_chemical_potentials(self.psi)
-                print("Point ions: chemical potentials βμ", self.ion_chemical_potentials,
-                      "ions per reference chain", es.ion_number_densities(self.psi))
-
-        # Store free energy
-        self.free_energy = energy_total
-        self.free_energy_absolute = energy_absolute
-        self.error_level = error_level
-        self.iter = iter
-        self.partition_functions = list(total_partitions)
-        self.chemical_potentials = None
-        self.grand_potential = None
-        if q_init is None and not any(p.get("initial_conditions") for p in self.polymers):
-            self.chemical_potentials = self.compute_chemical_potentials()
-            present = self.chain_densities > 0.0
-            self.grand_potential = float(energy_absolute - np.dot(self.chain_densities[present],
-                                                                 np.array(self.chemical_potentials)[present]))
-            # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
-            if es is not None:
-                for ion, mu in zip(es.ions, self.ion_chemical_potentials or []):
-                    if ion["concentration"] is not None and ion["concentration"] > 0:
-                        self.grand_potential -= es.n_segments * ion["concentration"] * mu
-            print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", self.chemical_potentials)
-            print("Grand potential in the same pressure convention: %.9f" % self.grand_potential)
+        # Keep the final state, and the chemical potentials of the chains and point ions (scft_results.py)
+        store_results(self, phi, w, energy_total, energy_absolute, error_level, iter, total_partitions, q_init)
 
         # Return SCFTResult if requested
-        if return_result:
-            return scft_result(self, phi, w, energy_total, error_level, iter, total_partitions, stress_array)
-        return None
+        return scft_result(self) if return_result else None
 
     def _initial_fields(self, initial_fields, q_init):
         """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
@@ -939,7 +871,7 @@ class SCFT:
         else:
             print("] %15.9f %15.7E " % (energy_total, error_level))
 
-    def _next_fields(self, w, w_diff, psi_diff, stress_array, old_error_level, error_level):
+    def _next_fields(self, w, w_diff, psi_diff, old_error_level, error_level):
         """Simple and Anderson mixing of the fields (irreducible basis with a space group), ψ and the cell."""
         M, es = len(self.monomer_types), self.electrostatics
         # Calculate new fields using simple and Anderson mixing, ψ after the fields
@@ -948,7 +880,7 @@ class SCFT:
         if es is not None:
             fields, fields_diff = np.concatenate((fields, self.psi)), np.concatenate((fields_diff, psi_diff))
         if self.relax_cell:
-            fields = self.cell.update(fields, fields_diff, stress_array, old_error_level, error_level)
+            fields = self.cell.update(fields, fields_diff, old_error_level, error_level)
         else:
             fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
         w = np.reshape(fields[:w.size], (M, -1))
