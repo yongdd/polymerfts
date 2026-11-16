@@ -38,7 +38,7 @@ from polymerfts import CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import _measurement_key
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -211,27 +211,18 @@ def records(root):
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        sim = quiet(lambda: CLFTS(parameters(directory, steps=steps), random_seed=7))
-        rng = np.random.default_rng(3)
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 4)
-    run(root / "part", 2)
-    run(root / "part", 4, continue_from=root / "part" / "fields_000002.mat")
-    for name in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        a, b = loadmat(root / "full" / name, squeeze_me=True), loadmat(root / "part" / name, squeeze_me=True)
-        keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"
-                and a[k].size]
-        assert keys and max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run with point ions, {name}"
+    rng = np.random.default_rng(3)
+    initial = {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+    exact_restart(
+        lambda name, steps, seed: quiet(CLFTS, parameters(root / name, steps=steps), random_seed=seed),
+        lambda sim: sim.run(initial_fields=initial), 4, 2,
+        dict.fromkeys(("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"), ""),
+        exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
     # The record columns follow the order of the ions, which a continuation must keep
-    params = parameters(root / "part", steps=4)
+    params = parameters(root / "partial", steps=4)
     params["electrostatics"]["ions"] = dict(reversed(list(params["electrostatics"]["ions"].items())))
     sim = quiet(lambda: CLFTS(params, random_seed=7))
-    expect_validation_error(lambda: sim.continue_run(root / "part" / "fields_000002.mat"), "another order")
+    expect_validation_error(lambda: sim.continue_run(root / "partial" / "fields_000002.mat"), "another order")
 
 
 def pressure(root):
@@ -368,12 +359,10 @@ def concentrations(root):
                 assert abs(np.mean(data[f"concentration_{ion['name']}_real"]) - ion["concentration"]) < 1e-12, ion["name"]
 
     # A continued run reproduces the pending sums bit for bit
-    run(root / "c_full", 4)
-    run(root / "c_part", 2)
-    run(root / "c_part", 4, continue_from=root / "c_part" / "fields_000002.mat")
-    a, b = stored(root / "c_full", 4), stored(root / "c_part", 4)
-    keys = [k for k in a if k.startswith("concentration_")]
-    assert len(keys) == 9 and all(np.all(a[k] == b[k]) for k in keys), "continued run, concentrations"
+    exact_restart(lambda name, steps, seed: quiet(CLFTS, options(root / ("c_" + name), steps), random_seed=seed),
+                  lambda sim: sim.run(initial_fields=fields()), 4, 2,
+                  {"structure_function_000004.mat": ("concentration_",)}, same_directory=True)
+    assert len([k for k in stored(root / "c_full", 4) if k.startswith("concentration_")]) == 9
 
     # A checkpoint without the sums averages from the restart on
     run(root / "c_old", 2, concentrations=False)
@@ -383,7 +372,7 @@ def concentrations(root):
     assert np.all(np.isfinite(stored(root / "c_old", 4)["concentration_A_real"])), "interval after the restart"
 
     # A checkpoint with corrupt sums is refused
-    checkpoint = {k: v for k, v in loadmat(root / "c_part" / "fields_000002.mat", squeeze_me=True).items()
+    checkpoint = {k: v for k, v in loadmat(root / "c_partial" / "fields_000002.mat", squeeze_me=True).items()
                   if not k.startswith("__")}
     key, steps = (_measurement_key("sf", name) for name in ("concentration_A", "concentration steps"))
     for name, change in (("nan", {key: np.full(int(np.prod(NX)), np.nan)}), ("size", {key: np.zeros(3)}), ("steps", {steps: -1.0})):

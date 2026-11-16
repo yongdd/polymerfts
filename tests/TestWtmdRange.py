@@ -20,7 +20,7 @@ from polymerfts import LFTS, PlatformSelector, PropagatorSolver
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.utils.checkpoint import validate_checkpoint
 from cuda_part import cuda_part_missing
-from fts_checks import quiet
+from fts_checks import python_platform, quiet
 
 
 def logarithmic_norm(wtmd, field):
@@ -197,19 +197,13 @@ def main():
                        chain_model="continuous", platform=platform)
         norm_and_gradient(solver.fourier)
         print(f"[PASS] {platform}: WTMD norms and gradients with the platform's FFT")
-    if platforms:
-        platform = next((name for name in platforms if name.startswith("cpu")), platforms[0])
-        with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_range_") as directory:
-            for ell in (4, 32, 256):
-                for method in ("lm", "euler"):
-                    trajectory(Path(directory) / f"{ell}_{method}", platform, ell, method)
-        print(f"[PASS] {platform}: WTMD LM/Euler runs with a nonzero bias")
-    if cuda_part_missing():
-        return 1
-    if not platforms:
-        print("No platform available: skipped")
-        return 77
-    return 0
+    platform = python_platform()
+    with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_range_") as directory:
+        for ell in (4, 32, 256):
+            for method in ("lm", "euler"):
+                trajectory(Path(directory) / f"{ell}_{method}", platform, ell, method)
+    print(f"[PASS] {platform}: WTMD LM/Euler runs with a nonzero bias")
+    return int(cuda_part_missing())
 
 
 if __name__ == "__main__":

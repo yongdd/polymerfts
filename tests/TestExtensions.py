@@ -20,6 +20,7 @@ from polymerfts.utils.common import atomic_savemat, settings_json, input_hash
 from polymerfts.fts.integrators import checked_fields
 from TestFtsReliability import parameters, fields, expect_error, FailingLFTS
 from cuda_part import cuda_part_missing
+from fts_checks import compare_files, exact_restart, recording_dir
 
 example_path = Path(__file__).resolve().parents[1] / "examples/tools/CustomExtensions.py"
 spec = importlib.util.spec_from_file_location("custom_fts_extensions", example_path)
@@ -68,10 +69,7 @@ def check_stochastic_moments():
         np.testing.assert_allclose(np.mean(x * x), expected, rtol=1e-13)
 
 
-def compare_fields(a, b):
-    for key in a:
-        if key.startswith(("w_", "phi_", "normal_noise", "record_", "rng_state")):
-            assert np.array_equal(a[key], b[key]), key
+FIELD_KEYS = ("w_", "phi_", "normal_noise", "record_", "rng_state")
 
 
 def check_observers_and_restart(root):
@@ -102,34 +100,26 @@ def check_observers_and_restart(root):
         assert seen == [1, 2, 3, 4]
         assert sparse_steps == [3]
         assert baseline.random_bg.state == monitored.random_bg.state
-        compare_fields(loadmat(root / (prefix + "baseline") / "fields_000004.mat"),
-                       loadmat(root / (prefix + "monitored") / "fields_000004.mat"))
+        compare_files(root / (prefix + "baseline"), root / (prefix + "monitored"), "fields_000004.mat", FIELD_KEYS)
 
         for method in ("euler", "heun"):
-            def create(directory, steps, seed):
-                integral = example.PredictorCorrector() if method == "heun" else "euler"
-                observable = example.CompositionVariance(every=2)
-                sim = cls(parameters(directory, steps), random_seed=seed, integrator=integral,
-                           callbacks={"variance": observable})
-                return sim, observable
+            observables = {}
 
-            full_dir = root / (prefix + method + "full")
-            first_dir = root / (prefix + method + "first")
-            next_dir = root / (prefix + method + "next")
-            full, full_obs = create(full_dir, 4, 11)
-            full.run(fields())
-            first, _ = create(first_dir, 1, 11)
-            first.run(fields())
-            continued, continued_obs = create(next_dir, 4, 99)
-            checkpoint = first_dir / "fields_000001.mat"
-            continued.continue_run(checkpoint)
-            assert full_obs.state_dict() == continued_obs.state_dict()
-            assert continued_obs.count == 2
-            assert full.random_bg.state == continued.random_bg.state
-            compare_fields(loadmat(full_dir / "fields_000004.mat"), loadmat(next_dir / "fields_000004.mat"))
+            def create(name, steps, seed):
+                integral = example.PredictorCorrector() if method == "heun" else "euler"
+                observables[name] = example.CompositionVariance(every=2)
+                return cls(parameters(root / (prefix + method + name), steps), random_seed=seed,
+                           integrator=integral, callbacks={"variance": observables[name]})
+
+            sims = exact_restart(create, lambda sim: sim.run(fields()), 4, 1, {"fields_000004.mat": FIELD_KEYS})
+            full, continued = sims["full"], sims["continued"]
+            checkpoint = recording_dir(sims["partial"]) / "fields_000001.mat"
+            assert observables["full"].state_dict() == observables["continued"].state_dict()
+            assert observables["continued"].count == 2
             if method == "heun":
                 assert continued.integrator.force_evaluations == full.integrator.force_evaluations == 4
-                bad, obs = create(root / "bad-state", 4, 99)
+                bad = create("bad-state", 4, 99)
+                obs = observables["bad-state"]
                 data = loadmat(checkpoint, squeeze_me=True)
                 state = json.loads(str(data["extension_state_json"]))
                 state["integrator"]["force_evaluations"] = "invalid"
@@ -154,8 +144,7 @@ def check_observers_and_restart(root):
         atomic_savemat(root / "version1.mat", {k: v for k, v in old.items() if not k.startswith("__")})
         legacy = cls(parameters(root / (prefix + "version1")), random_seed=99)
         legacy.continue_run(root / "version1.mat")
-        compare_fields(loadmat(root / (prefix + "baseline") / "fields_000004.mat"),
-                       loadmat(root / (prefix + "version1") / "fields_000004.mat"))
+        compare_files(root / (prefix + "baseline"), root / (prefix + "version1"), "fields_000004.mat", FIELD_KEYS)
 
     # Failed proposals never reach observers; resampling rolls method state back.
     seen = []
@@ -239,17 +228,11 @@ def check_prepared_method_state(root):
         assert sim.integrator.response_scale is not None
         return sim
 
-    full = create("prepared-full", 4, 11)
-    assert full.run(fields())["status"] == "completed"
-    first = create("prepared-first", 2, 11)
-    first.run(fields())
-    continued = create("prepared-next", 4, 99)
-    continued.continue_run(root / "prepared-first" / "fields_000002.mat")
+    sims = exact_restart(lambda name, steps, seed: create("prepared-" + name, steps, seed),
+                         lambda sim: sim.run(fields()), 4, 2, {"fields_000004.mat": FIELD_KEYS})
+    full, continued = sims["full"], sims["continued"]
     assert full.integrator.state_dict() == continued.integrator.state_dict()
     assert full.integrator.steps == 4
-    assert full.random_bg.state == continued.random_bg.state
-    compare_fields(loadmat(root / "prepared-full" / "fields_000004.mat"),
-                   loadmat(root / "prepared-next" / "fields_000004.mat"))
     # A new run resets evolving state but retains the prepared response.
     full.run(fields())
     assert full.integrator.steps == 4

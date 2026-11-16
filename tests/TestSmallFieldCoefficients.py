@@ -15,9 +15,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import numpy as np
 
-from polymerfts import CLFTS, LFTS, PlatformSelector
-from cuda_part import cuda_part_missing
-from fts_checks import quiet
+from polymerfts import CLFTS, LFTS
+from fts_checks import python_platform, quiet
 
 
 def parameters(directory, platform, zeta=1e8, method="lm", steps=4):
@@ -137,18 +136,14 @@ def dynamics(root, platform):
 
 
 def main():
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_small_coefficients_") as directory:
         root = Path(directory)
-        quadratic_and_gradient(root, platforms[0])
-        small_linear_term(root, platforms[0])
-        uniform_saddle(root, platforms[0])
-        dynamics(root, platforms[0])
-        print(f"[PASS] {platforms[0]}: small finite field coefficients, saddles and LM/Euler runs")
+        quadratic_and_gradient(root, platform)
+        small_linear_term(root, platform)
+        uniform_saddle(root, platform)
+        dynamics(root, platform)
+        print(f"[PASS] {platform}: small finite field coefficients, saddles and LM/Euler runs")
     return 0
 
 

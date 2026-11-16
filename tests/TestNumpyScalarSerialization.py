@@ -4,7 +4,9 @@
 Ordinary scalar encodings stay identical. Long-double inputs terminate, retain
 finite values at Python float precision and reject unrepresentable magnitudes.
 Actual runs verify checkpoint compatibility and exact same-backend continuation.
-The encodings are Python: the first CPU platform runs them.
+The encodings and SCFT outputs are Python: one platform checks them. The L-FTS
+and CL-FTS restarts run on every platform, which checks the exact continuation of
+runs with real dynamics on CUDA too.
 """
 
 import copy
@@ -21,7 +23,7 @@ from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
 from polymerfts.utils.common import input_hash, json_ready, mat_ready, settings_json
 from TestSmallFieldCoefficients import parameters
-from fts_checks import exact_restart, quiet
+from fts_checks import exact_restart, python_platform, quiet
 
 
 def scalar_encodings():
@@ -127,17 +129,15 @@ def fts_restart(root, platform):
 
 def main():
     scalar_encodings()
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_numpy_scalars_") as directory:
         root = Path(directory)
-        scft_outputs(root / "scft", platforms[0])
-        fts_restart(root / "fts", platforms[0])
-        print(f"[PASS] {platforms[0]}: NumPy scalar metadata, SCFT outputs and FTS restarts")
-    return 0
+        scft_outputs(root / "scft", platform)
+        print(f"[PASS] {platform}: NumPy scalar metadata and SCFT outputs")
+        for platform in PlatformSelector.avail_platforms():
+            fts_restart(root / "fts" / platform, platform)
+            print(f"[PASS] {platform}: exact L-FTS and CL-FTS restarts")
+    return int(cuda_part_missing())
 
 
 if __name__ == "__main__":

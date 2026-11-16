@@ -14,9 +14,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import CLFTS, SCFT, PlatformSelector
-from cuda_part import cuda_part_missing
-from fts_checks import compare_files, exact_restart, quiet
+from polymerfts import CLFTS, SCFT
+from fts_checks import compare_files, exact_restart, python_platform, quiet
 
 
 PSI_ZERO_Q = 1j * np.array([0.0, 0.0, np.pi, -np.pi])
@@ -164,11 +163,7 @@ def mean_field_underflow(root, platform):
 
 
 def main():
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platform = next((name for name in platforms if name.startswith("cpu")), platforms[0])
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_ions_") as directory:
         root = Path(directory)
         absent_observables(root, platform)

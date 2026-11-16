@@ -17,11 +17,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 
-from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
-from cuda_part import cuda_part_missing
+from polymerfts import SCFT, LFTS, CLFTS, ValidationError
 from polymerfts.theory.chains import process_random_copolymer
 from polymerfts.utils.validation import validate_system_params
-from fts_checks import quiet
+from fts_checks import python_platform, quiet
 
 
 def parameters(platform, fractions, directory, model="continuous"):
@@ -136,14 +135,10 @@ def check_fts_constructors(platform, directory):
 def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts-random-fractions-") as scratch:
         directory = Path(scratch)
-        # A fix in Python: one platform, a CPU one where the build has it
-        platforms = PlatformSelector.avail_platforms()
-        if not platforms:
-            return int(cuda_part_missing()) or 77
-        platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
-        check_rejected(platforms[0], directory)
-        check_scft(platforms[0], directory)
-        check_fts_constructors(platforms[0], directory)
+        platform = python_platform()
+        check_rejected(platform, directory)
+        check_scft(platform, directory)
+        check_fts_constructors(platform, directory)
     return 0
 
 

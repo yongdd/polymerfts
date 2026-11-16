@@ -15,9 +15,8 @@ from unittest.mock import patch
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import SCFT, PlatformSelector, ValidationError
-from cuda_part import cuda_part_missing
-from fts_checks import quiet
+from polymerfts import SCFT, ValidationError
+from fts_checks import python_platform, quiet
 
 
 def parameters(platform, group=False):
@@ -134,13 +133,9 @@ def check_branch(platform, group, permute):
 
 
 def main():
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = python_platform()
     for group, permute in ((False, False), (False, True), (True, False), (True, True)):
-        check_branch(platforms[0], group, permute)
+        check_branch(platform, group, permute)
     return 0
 
 

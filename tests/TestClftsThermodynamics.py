@@ -27,8 +27,6 @@ pressure and pressure_virial).
    step b sqrt(ds) exceeds their smearing length, and only then (a random block with its
    effective segment length).
 """
-import contextlib
-import io
 import os
 import tempfile
 import warnings
@@ -39,7 +37,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat, savemat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet, recording_dir
 
 NX, LX = [8, 6, 7], [1.6, 1.3, 1.45]
 Z_A = 0.2
@@ -252,30 +250,21 @@ def virial(root):
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        params = parameters(directory, steps=steps)
+    def make(name, steps, seed):
+        params = parameters(root / name, steps=steps)
         params["recording"].update(checkpoint_interval=3, statistics_save_interval=4)
-        sim = quiet(lambda: CLFTS(params, random_seed=3))
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 8)
-    run(root / "part", 3)
-    run(root / "part", 8, root / "part" / "fields_000003.mat")
-    a, b = loadmat(root / "full" / "dH_000004.mat"), loadmat(root / "part" / "dH_000004.mat")
-    for key in ("chemical_potential_history_real", "chemical_potential_history_imag", "pressure_history_real",
-                "pressure_history_imag"):
-        assert np.array_equal(a[key], b[key]), f"continued record {key}"
+        return quiet(CLFTS, params, random_seed=seed)
+    sims = exact_restart(make, lambda sim: sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"}),
+                         8, 3, {"dH_000004.mat": ("chemical_potential_history_", "pressure_history_")},
+                         same_directory=True)
 
     # A checkpoint without the pending records: NaN for the three pending samples of steps 1-3
-    data = loadmat(root / "part" / "fields_000003.mat", squeeze_me=True)
+    data = loadmat(recording_dir(sims["partial"]) / "fields_000003.mat", squeeze_me=True)
     for key in ("record_chemical_potential_history", "record_pressure_history"):
         data.pop(key)
     savemat(root / "old.mat", {k: v for k, v in data.items() if not k.startswith("__")},
             long_field_names=True, do_compression=True)
-    run(root / "old", 4, root / "old.mat")
+    quiet(make("old", 4, 3).continue_run, root / "old.mat")
     records = loadmat(root / "old" / "dH_000004.mat")
     for key, shape in (("chemical_potential_history_real", (4, 2)), ("pressure_history_real", (1, 4))):
         values = np.atleast_2d(records[key])

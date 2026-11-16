@@ -45,6 +45,7 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import validate_checkpoint, _measurement_key
+from fts_checks import exact_restart, quiet
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -312,28 +313,27 @@ def psi_step(root):
 
 
 def restart(root):
-    sim = run(parameters(root / "full"))
-    # psi draws from the jumped stream of the auxiliary fields, recorded in the run metadata
-    metadata = json.loads(str(mat(root / "full", "dH_000006.mat")["simulation_metadata_json"]))
-    assert metadata["initial_psi_rng_state"] == np.random.PCG64(5).jumped().state
-    # A checkpoint without psi is rejected
-    expect_validation_error(lambda: sim.electrostatics.restore({"psi_real": np.zeros(int(np.prod(NX)))}),
-                            "no electrostatic potential")
-    run(parameters(root / "part", steps=3))
-    run(parameters(root / "part"), continue_from=root / "part" / "fields_000003.mat")
-    a, b = mat(root / "full", "fields_000006.mat"), mat(root / "part", "fields_000006.mat")
-    assert max_difference(a, b, ("w_", "phi_", "psi_real", "psi_imag", "normal_noise_prev", "psi_noise_prev")) == 0.0
-    assert str(a["psi_rng_state_json"]) == str(b["psi_rng_state_json"])
-    for name in ("dH_000006.mat", "structure_function_000006.mat"):
-        assert max_difference(mat(root / "full", name), mat(root / "part", name),
-                              ("H_history", "dH_history", "structure_function_", "charge_structure_function")) == 0.0
-    # The drift of psi is recorded apart, and its pending samples continue after a restart
-    a, b = mat(root / "full", "dH_000006.mat"), mat(root / "part", "dH_000006.mat")
+    # The continued run reproduces psi, its noise and stream, and the pending samples of the
+    # drift of psi, which is recorded apart
+    sims = exact_restart(
+        lambda name, steps, seed: quiet(CLFTS, parameters(root / name, steps=steps), random_seed=seed),
+        lambda sim: sim.run(initial_fields=initial_fields()), 6, 3, {
+            "fields_000006.mat": ("w_", "phi_", "psi_real", "psi_imag", "normal_noise_prev", "psi_noise_prev",
+                                  "psi_rng_state_json"),
+            "dH_000006.mat": ("H_history", "dH_history", "psi_drift_max_history"),
+            "structure_function_000006.mat": ("structure_function_", "charge_structure_function")},
+        same_directory=True)
+    a = mat(root / "full", "dH_000006.mat")
     assert np.size(a["psi_drift_max_history"]) == 6 and np.all(a["psi_drift_max_history"] > 0)
-    assert max_difference(a, b, ("psi_drift_max_history",)) == 0.0
+    # psi draws from the jumped stream of the auxiliary fields, recorded in the run metadata
+    metadata = json.loads(str(a["simulation_metadata_json"]))
+    assert metadata["initial_psi_rng_state"] == np.random.PCG64(17).jumped().state
+    # A checkpoint without psi is rejected
+    expect_validation_error(lambda: sims["full"].electrostatics.restore({"psi_real": np.zeros(int(np.prod(NX)))}),
+                            "no electrostatic potential")
 
     # A run continued by hand takes psi through initial_psi; without it psi restarts at zero
-    fields = mat(root / "part", "fields_000003.mat")
+    fields = mat(root / "partial", "fields_000003.mat")
     psi = fields["psi_real"] + 1j * fields["psi_imag"]
     initial = {m: fields["w_" + m + "_real"] + 1j * fields["w_" + m + "_imag"] for m in ("A", "B", "C")}
     for given in (psi, None):
@@ -361,9 +361,9 @@ def restart(root):
 
     # A checkpoint must hold psi, psi(k), the previous noise, the stream of psi, the pending
     # drifts of psi and the pending charge structure sums
-    data = loadmat(root / "part" / "fields_000003.mat", squeeze_me=True)
+    data = loadmat(root / "partial" / "fields_000003.mat", squeeze_me=True)
     with contextlib.redirect_stdout(io.StringIO()):
-        sim = CLFTS(parameters(root / "part"), random_seed=5)
+        sim = CLFTS(parameters(root / "partial"), random_seed=5)
     validate_checkpoint(sim, data)
     pending = np.size(data["record_psi_drift_history"])
     assert pending == 3, pending

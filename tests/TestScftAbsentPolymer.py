@@ -16,10 +16,9 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import PlatformSelector, SCFT, ValidationError
-from cuda_part import cuda_part_missing
+from polymerfts import SCFT, ValidationError
 from polymerfts.utils.common import check_partition_functions
-from fts_checks import quiet
+from fts_checks import python_platform, quiet
 
 
 def check_guard_policy():
@@ -122,12 +121,7 @@ def check_scft(root, platform, model, reduced):
 
 def main():
     check_guard_policy()
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
-    platform = platforms[0]
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_scft_") as directory:
         root = Path(directory)
         for model in ("continuous", "discrete"):

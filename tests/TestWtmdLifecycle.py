@@ -13,11 +13,10 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import LFTS, PlatformSelector
-from cuda_part import cuda_part_missing
+from polymerfts import LFTS
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.utils.checkpoint import validate_checkpoint
-from fts_checks import compare_files, quiet
+from fts_checks import compare_files, python_platform, quiet
 
 
 def state(wtmd):
@@ -195,12 +194,7 @@ def preset_bias(root, platform):
 def main():
     constructor_reset()
     print("[PASS] WTMD constructor state and reset copies")
-    # A fix in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
-    platform = platforms[0]
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_lifecycle_") as directory:
         root = Path(directory)
         sim = repeated_runs(root, platform)

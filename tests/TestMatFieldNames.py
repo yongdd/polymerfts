@@ -19,12 +19,11 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
-from cuda_part import cuda_part_missing
+from polymerfts import SCFT, LFTS, CLFTS
 from polymerfts.utils.checkpoint import pair_suffix
 from polymerfts.utils.common import atomic_savemat, input_hash
 from polymerfts.utils.mat_fields import decode_mat_fields
-from fts_checks import compare_files, exact_restart, quiet
+from fts_checks import compare_files, exact_restart, python_platform, quiet
 
 
 MARKER = "polymerfts_mat_keys_json"
@@ -270,13 +269,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts_mat_fields_") as directory:
         root = Path(directory)
         check_encoding(root)
-        # The key encoding is Python: the first CPU platform runs the writers and restarts.
-        # A fix in Python: one platform, a CPU one where the build has it
-        platforms = PlatformSelector.avail_platforms()
-        if not platforms:
-            return int(cuda_part_missing()) or 77
-        platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
-        platform = platforms[0]
+        # The key encoding is Python: one platform runs the writers and restarts
+        platform = python_platform()
         for label, name in NAMES:
             output = root / label
             check_scft(output / "scft", platform, name)

@@ -17,7 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, ValidationError, PlatformSelector
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet
 
 
 def cpu_platform():
@@ -76,23 +76,11 @@ def main():
                 print(f"FAILED: {compressor} verbose {verbose_level}: Hamiltonian not finite")
                 ok = False
 
-    # ---- continuing from a checkpoint reproduces the uninterrupted run
-    dir_full = os.path.join(root, "full")
-    sim = quiet(LFTS, params_for(dir_full, 4), random_seed=11)
-    quiet(sim.run, initial_fields=initial_fields())
-    dir_split = os.path.join(root, "split")
-    sim = quiet(LFTS, params_for(dir_split, 2), random_seed=11)
-    quiet(sim.run, initial_fields=initial_fields())
-    sim = quiet(LFTS, params_for(dir_split, 4), random_seed=99)   # the seed is restored from the file
-    quiet(sim.continue_run, os.path.join(dir_split, "fields_000002.mat"))
-    w_full = loadmat(os.path.join(dir_full, "fields_000004.mat"), squeeze_me=True)["w_A"]
-    w_split = loadmat(os.path.join(dir_split, "fields_000004.mat"), squeeze_me=True)["w_A"]
-    # Equal to round-off: the continued run recomputes the concentrations of the loaded
-    # (pressure-gauge-shifted) fields, which differs from the uninterrupted run at ~1e-11
-    # (the saddle-point tolerance itself is 1e-4). A wrong noise or RNG state gives O(1).
-    if not np.allclose(w_full, w_split, rtol=0.0, atol=1e-8):
-        print(f"FAILED: continued run differs from the full run, max |dw| = {np.max(np.abs(w_full - w_split)):.3e}")
-        ok = False
+    # ---- continuing from a checkpoint reproduces the uninterrupted run, in the directory
+    # where the shorter run stopped
+    exact_restart(lambda name, steps, seed: quiet(LFTS, params_for(os.path.join(root, name), steps), random_seed=seed),
+                  lambda sim: sim.run(initial_fields=initial_fields()), 4, 2, {"fields_000004.mat": ("w_",)},
+                  same_directory=True)
 
     # ---- CL-FTS run (complex fields, compressible)
     work_dir = os.path.join(root, "clfts")

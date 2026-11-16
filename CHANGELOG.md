@@ -925,18 +925,24 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   platform only, and the WTMD runs of `TestWtmdRange` too, whose norms keep the FFT of every
   platform. Run one at a time with one OpenMP thread in a CPU-only build, the label takes 94 s
   instead of 134 s.
-- `tests/fts_checks.py` holds `quiet`, `compare_files` (which compares the key sets both ways) and
-  `exact_restart`, the check of a run continued from the checkpoint of a shorter one against the
-  uninterrupted run (2026-11-16); 28 tests use them instead of their own copies. The restart check stays
-  where the fix under test changed saved or run state; `TestSmallFieldCoefficients`,
-  `TestCanonicalIonRange`, `TestGceIonRange` and `TestWtmdRange`, which repeated the restart check of
-  `TestFtsReliability` with other physics, keep their runs and physics checks without it.
-  `TestFourierRange` is merged into `TestFourierTransform`, and one parametrized case of
-  `TestGceZeroPartition` checks the zero partition of a polymer with real and complex fields on
-  every platform and in both memory modes.
-- Python tests that skip without a platform call `cuda_part_missing()` first (2026-11-16), so a
-  CUDA build without a visible device fails, as `tests/cuda_part.py` states, instead of reporting a
-  skip. CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1` and writes no
+- `tests/fts_checks.py` holds the helpers of the Python tests of simulation runs (2026-11-16): `quiet`;
+  `python_platform`, the one platform of a test of a fix made in Python (the first CPU platform, else
+  CUDA); `compare_files`, which compares the key sets of two MAT files both ways and their values bit
+  for bit; and `exact_restart`, the check of a run continued from the checkpoint of a shorter one, in
+  a directory of its own or where that run stopped, against the uninterrupted run (random state,
+  partition check and recorded files). 34 tests use them instead of their own copies: 29 `quiet`,
+  15 `exact_restart`, 14 `python_platform` and 5 `compare_files` directly. The restarts of
+  `TestClftsGrandCanonical`, `TestClftsPointIons`, `TestConfinedElectrostatics`,
+  `TestClftsThermodynamics`, `TestClftsElectrostatics`, `TestClftsEtd`, `TestExtensions`,
+  `TestPairRecords`, `TestFtsReliability` and `TestLftsRun` go through `exact_restart`. `TestLftsRun`
+  requires the continuation bit for bit instead of within 1e-8, and `TestClftsEtd` also compares the
+  files of step 4, which hold the samples pending at the restart. `TestNumpyScalarSerialization` runs
+  its L-FTS and CL-FTS restarts on every platform, which checks an exact continuation with real
+  dynamics on CUDA too. One parametrized case of `TestGceZeroPartition` checks the zero partition of a
+  polymer with real and complex fields on every platform and in both memory modes.
+- A Python test without any platform fails in a CUDA build without a visible device, as
+  `tests/cuda_part.py` states, instead of reporting a skip, `TestPropagatorCodeStack` included
+  (2026-11-16). CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1` and writes no
   `tests/__pycache__`, and `TestSimulationRelease` removes its recording directories.
 - `TestJunctionRange` runs the stars of distinct arms also with four streams (CUDA streams or CPU
   threads) and compares them bit for bit with one stream (2026-11-16): concurrent CUDA junctions keep

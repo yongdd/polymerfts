@@ -16,6 +16,7 @@ from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError, SaddlePointError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
+from fts_checks import exact_restart
 
 
 def parameters(directory, steps=4):
@@ -70,25 +71,17 @@ def main():
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 for cls in (LFTS, CLFTS):
-                    full = cls(parameters(root / (cls.__name__ + "full")), random_seed=11)
-                    assert full.run(fields())["status"] == "completed"
+                    exact_restart(
+                        lambda name, steps, seed: cls(parameters(root / (cls.__name__ + name), steps), random_seed=seed),
+                        lambda sim: sim.run(fields()), 4, 1, {
+                            "fields_000004.mat": ("w_", "phi_"),
+                            "dH_000002.mat": ("H_history", "dH_history", "drift_max_history"),
+                            "structure_function_000002.mat": ("structure_function",)})
                     # The run draws the chain architectures into its recording directory, and
                     # neither the constructor nor the run writes into the current directory
                     assert (root / (cls.__name__ + "full") / "polymer_0.png").is_file(), cls.__name__
                     assert not (root / "polymer_0.png").exists(), cls.__name__
-                    first = cls(parameters(root / (cls.__name__ + "first"), 1), random_seed=11)
-                    first.run(fields())
-                    continued = cls(parameters(root / (cls.__name__ + "continued")), random_seed=99)
-                    result = continued.continue_run(root / (cls.__name__ + "first") / "fields_000001.mat")
-                    assert result["last_completed_step"] == 4
-                    assert continued.random_bg.state == full.random_bg.state
-                    for name in ("fields_000004.mat", "dH_000002.mat", "structure_function_000002.mat"):
-                        a = loadmat(root / (cls.__name__ + "full") / name)
-                        b = loadmat(root / (cls.__name__ + "continued") / name)
-                        for key in a:
-                            if key.startswith(("w_", "phi_", "H_history", "dH_history", "structure_function", "drift_max_history")):
-                                assert np.array_equal(a[key], b[key]), (cls.__name__, name, key)
-                    checkpoint = root / (cls.__name__ + "first") / "fields_000001.mat"
+                    checkpoint = root / (cls.__name__ + "partial") / "fields_000001.mat"
                     equivalent_params = parameters(root / (cls.__name__ + "equivalent"))
                     equivalent_params["langevin"]["nbar"] = 10000.0
                     equivalent_params["chi_n"] = {"A,B": 15.0}
@@ -137,7 +130,7 @@ def main():
                 assert not (root / "failure" / "fields_000002.mat").exists()
 
                 # Explicit legacy opt-in and corrupt pending state are checked before RNG mutation.
-                checkpoint = root / "LFTSfirst" / "fields_000001.mat"
+                checkpoint = root / "LFTSpartial" / "fields_000001.mat"
                 data = loadmat(checkpoint, squeeze_me=True)
                 data["record_sample_count"] = 2
                 atomic_savemat(root / "corrupt.mat", {k: v for k, v in data.items() if not k.startswith("__")})

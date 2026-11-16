@@ -38,7 +38,7 @@ from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
 from polymerfts.utils.validation import validate_scft_params
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet, recording_dir
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 CHI, ZETA, Z_A = 2.0, 50.0, 0.2
@@ -318,23 +318,15 @@ def pressure(root):
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        sim = quiet(lambda: CLFTS(parameters(directory, steps=steps, charges={"A": Z_A, "B": -0.05}), random_seed=7))
-        rng = np.random.default_rng(3)
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 4)
-    run(root / "part", 3)
-    run(root / "part", 4, continue_from=root / "part" / "fields_000003.mat")
-    for name in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        a, b = loadmat(root / "full" / name, squeeze_me=True), loadmat(root / "part" / name, squeeze_me=True)
-        keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"
-                and a[k].size]
-        assert keys and max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run, {name}"
-    data = loadmat(root / "part" / "dH_000004.mat", squeeze_me=True)
+    rng = np.random.default_rng(3)
+    initial = {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+    sims = exact_restart(
+        lambda name, steps, seed: quiet(CLFTS, parameters(root / name, steps=steps, charges={"A": Z_A, "B": -0.05}),
+                                        random_seed=seed),
+        lambda sim: sim.run(initial_fields=initial), 4, 3,
+        dict.fromkeys(("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"), ""),
+        exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
+    data = loadmat(recording_dir(sims["continued"]) / "dH_000004.mat", squeeze_me=True)
     assert np.shape(data["number_density_history_real"]) == (2, 4), "pending numbers of chains and ions"
 
 

@@ -35,10 +35,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.fft import dct, idct
-from scipy.io import loadmat
 from scipy.optimize import root as solve_root
 from polymerfts import CLFTS, SCFT, PlatformSelector, ValidationError
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet
 
 N, E = 20, 200.0
 
@@ -206,26 +205,18 @@ def forces(root, lateral="reflecting"):
 
 def restart(root):
     nx, lx = [10, 8], [2.0, 1.6]
+    rng = np.random.default_rng(3)
+    initial = {m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "AB"}
 
-    def run(directory, steps, continue_from=None):
-        params = parameters(nx, lx, charge_a=0.1, **clfts_options(directory, steps, nbar=1e4))
+    def make(name, steps, seed):
+        params = parameters(nx, lx, charge_a=0.1, **clfts_options(root / name, steps, nbar=1e4))
         params["recording"].update(checkpoint_interval=1, statistics_save_interval=2)
-        sim = quiet(lambda: CLFTS(params, random_seed=7))
+        sim = quiet(CLFTS, params, random_seed=seed)
         sim.draw_architectures = False
-        rng = np.random.default_rng(3)
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "AB"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 4)
-    run(root / "part", 3)
-    run(root / "part", 4, continue_from=root / "part" / "fields_000003.mat")
-    for name in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        a, b = loadmat(root / "full" / name, squeeze_me=True), loadmat(root / "part" / name, squeeze_me=True)
-        keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"
-                and a[k].size]
-        assert keys and max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run, {name}"
+        return sim
+    exact_restart(make, lambda sim: sim.run(initial_fields=initial), 4, 3,
+                  dict.fromkeys(("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"), ""),
+                  exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
 
 
 def periodic(root):

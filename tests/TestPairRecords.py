@@ -21,10 +21,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
-from cuda_part import cuda_part_missing
+from polymerfts import CLFTS, LFTS, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
+from fts_checks import exact_restart, python_platform
 
 
 def read_mat(path):
@@ -124,10 +124,12 @@ def assert_wtmd_state(actual, expected):
 
 def check_wtmd(root, platform):
     names = ("A_B", "C")
-    full_dir = root / "wtmd_full"
-    full = LFTS(parameters(full_dir, platform, names, wtmd=True), random_seed=21)
-    assert full.run(fields(names))["status"] == "completed"
-    saved = read_mat(full_dir / "fields_000004.mat")
+    sims = exact_restart(
+        lambda name, steps, seed: LFTS(parameters(root / ("wtmd_" + name), platform, names, steps, wtmd=True),
+                                       random_seed=seed),
+        lambda sim: sim.run(fields(names)), 4, 1, {"fields_000004.mat": ("w_aux",)})
+    full, continued = sims["full"], sims["continued"]
+    saved = read_mat(root / "wtmd_full" / "fields_000004.mat")
     expected = wtmd_state(full)
     assert list(expected["I1"]) == ["A_B,C"] and pair_suffix("A_B,C") == "A_B_C"
     np.testing.assert_array_equal(saved["wtmd_unscaled_I1_A_B_C"], expected["I1"]["A_B,C"])
@@ -140,43 +142,34 @@ def check_wtmd(root, platform):
     conditional[nonzero] /= full.wtmd.I0[nonzero]
     np.testing.assert_array_equal(statistics["dH_psi_A_B_C"], conditional)
 
-    continued = LFTS(parameters(root / "wtmd_continued", platform, names, wtmd=True), random_seed=99)
-    assert continued.continue_run(full_dir / "fields_000001.mat")["status"] == "completed"
     assert_wtmd_state(wtmd_state(continued), expected)
-    assert continued.random_bg.state == full.random_bg.state
     assert extension_state(continued) == extension_state(full)
-    np.testing.assert_array_equal(read_mat(root / "wtmd_continued" / "fields_000004.mat")["w_aux"], saved["w_aux"])
 
 
 def check_clfts_aux(root, platform):
     names = ("aux", "B")
-    full = CLFTS(parameters(root / "aux_full", platform, names, nx=[8]), random_seed=5)
-    assert full.run(fields(names, 8))["status"] == "completed"
-    continued = CLFTS(parameters(root / "aux_continued", platform, names, nx=[8]), random_seed=99)
-    assert continued.continue_run(root / "aux_full" / "fields_000002.mat")["status"] == "completed"
-    a, b = (read_mat(root / name / "fields_000004.mat") for name in ("aux_full", "aux_continued"))
-    assert a["w_aux"].shape == (2, 8) and "w_aux_real" in a and "w_aux_imag" in a
-    for key in ("w_aux", "w_aux_real", "w_aux_imag", "w_B_real", "w_B_imag", "phi_aux_real", "normal_noise_prev"):
-        np.testing.assert_array_equal(a[key], b[key], err_msg=key)
+    exact_restart(
+        lambda name, steps, seed: CLFTS(parameters(root / ("aux_" + name), platform, names, steps, nx=[8]),
+                                        random_seed=seed),
+        lambda sim: sim.run(fields(names, 8)), 4, 2,
+        {"fields_000004.mat": ("w_aux", "w_B_", "phi_aux_", "normal_noise_prev")})
+    saved = read_mat(root / "aux_full" / "fields_000004.mat")
+    assert saved["w_aux"].shape == (2, 8) and "w_aux_real" in saved and "w_aux_imag" in saved
 
 
 def main():
-    # Fixes in Python: one platform, a CPU one where the build has it
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        return int(cuda_part_missing()) or 77
-    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
+    platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_pair_records_") as directory:
         root = Path(directory)
         previous = Path.cwd()
         os.chdir(root)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                refused(root, platforms[0])
+                refused(root, platform)
                 for cls in (LFTS, CLFTS):
-                    check_statistics(root, platforms[0], cls)
-                check_wtmd(root, platforms[0])
-                check_clfts_aux(root, platforms[0])
+                    check_statistics(root, platform, cls)
+                check_wtmd(root, platform)
+                check_clfts_aux(root, platform)
         finally:
             os.chdir(previous)
     print("Pair records: colliding names refused, distinct keys through statistics, WTMD files and restarts")

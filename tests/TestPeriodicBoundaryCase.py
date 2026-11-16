@@ -5,7 +5,8 @@ Lowercase and mixed-case CLFTS runs record identical pressure and fields with
 LM and ETD, and each restarts bit for bit with pending samples. Gibbs boxes also
 agree, while reflecting/absorbing boxes remain invalid for pressure and ETD.
 Boundary spelling in input and checkpoint settings must not be rewritten. The
-checks of the names are Python: the first CPU platform runs them.
+checks of the names are Python, but every platform runs them: the CL-FTS restart
+with ETD steps runs on CUDA only here.
 """
 
 import copy
@@ -126,7 +127,7 @@ def main():
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
         return int(cuda_part_missing()) or 77
-    # The only CL-FTS restart (LM and ETD) that also runs on CUDA
+    # The only CL-FTS restart with ETD steps that also runs on CUDA
     for platform in platforms:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

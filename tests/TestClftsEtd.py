@@ -43,7 +43,7 @@ import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
-from fts_checks import quiet
+from fts_checks import exact_restart, quiet
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -268,26 +268,16 @@ def jacobian(root):
 
 
 def runs(root):
-    def run(params, continue_from=None):
-        sim = quiet(lambda: CLFTS(params, random_seed=5))
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields=initial_fields())
-            else:
-                sim.continue_run(continue_from)
-        return sim
-
     for screening_length in (None, 0.4):
-        full, part = root / f"full_{screening_length}", root / f"part_{screening_length}"
-        sim = run(parameters(full, steps=8, screening_length=screening_length))
-        uniform = sim.electrostatics.psi_k[(0,) * len(NX)]
+        sims = exact_restart(
+            lambda name, steps, seed: quiet(CLFTS, parameters(root / f"{name}_{screening_length}", steps=steps,
+                                                              screening_length=screening_length), random_seed=seed),
+            lambda sim: sim.run(initial_fields=initial_fields()), 8, 3,
+            dict.fromkeys(("fields_000006.mat", "dH_000004.mat", "dH_000008.mat", "structure_function_000004.mat",
+                           "structure_function_000008.mat"), ""),
+            exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
+        uniform = sims["full"].electrostatics.psi_k[(0,) * len(NX)]
         assert (uniform == 0.0) == (screening_length is None), "uniform mode of psi"
-        run(parameters(part, steps=3, screening_length=screening_length))
-        run(parameters(part, steps=8, screening_length=screening_length), continue_from=part / "fields_000003.mat")
-        for name in ("fields_000006.mat", "dH_000008.mat", "structure_function_000008.mat"):
-            a, b = loadmat(full / name, squeeze_me=True), loadmat(part / name, squeeze_me=True)
-            keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"]
-            assert max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run, {name}"
 
     # Zero valences: psi is decoupled and Gaussian. At dt = 20 the fastest psi mode has
     # s (k^2 + kappa^2)/E dt = 5.3, beyond the LM limit of 2; chi N = 2 keeps the auxiliary fields

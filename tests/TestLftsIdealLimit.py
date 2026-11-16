@@ -4,8 +4,8 @@
 Check analytic mixture densities and H with each compressor, actual LM/Euler
 runs, checkpointed RNG/noise/pending observations, and an intermediate-force
 extension. Finite compressibility and incompressibility keep their pressure
-saddle and serve as controls. The ideal limit is decided in Python: the first
-CPU platform runs it.
+saddle and serve as controls. The ideal limit is decided in Python, but every
+platform runs it: the L-FTS runs with the LR and LRAM compressors run on CUDA too.
 """
 
 import copy
