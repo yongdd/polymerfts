@@ -104,9 +104,6 @@ class WTMD:
         if I1 is not None:
             self.I1 = {key: np.array(value, dtype=np.float64) / self.CV for key, value in I1.items()}
 
-        # The bias and statistics that the first run of this object starts from (start_run)
-        self._start_state = None
-
         # The hills are Gaussians cut at 8σ, where they fall below 1e-13 of their peak. The
         # histogram of the samples extends by this margin (pad bins) on both sides of the
         # range, so that samples just outside the range deposit their tails inside it.
@@ -148,22 +145,12 @@ class WTMD:
         self.u_kernel = np.exp(-0.5 * X**2)
         self.up_kernel = -X / self.sigma_psi * np.exp(-0.5 * X**2)
 
-    def start_run(self, fresh):
-        """Called before every run of the simulation. The first run of this object keeps the bias and
-        statistics it finds, those of the constructor or set on the object before that run (an imported
-        bias), and remembers them; a later fresh run (from step 1) starts from them again instead of
-        from what an earlier run left. A fresh run has no pending samples."""
-        if self._start_state is None:
-            self._start_state = {"u": self.u.copy(), "up": self.up.copy(), "I0": self.I0.copy(),
-                                 "I1": {key: value.copy() for key, value in self.I1.items()}}
-        elif fresh:
-            self.u = self._start_state["u"].copy()
-            self.up = self._start_state["up"].copy()
-            self.I0 = self._start_state["I0"].copy()
-            self.I1 = {key: value.copy() for key, value in self._start_state["I1"].items()}
-        if fresh:
-            self.order_parameter_history = []
-            self.dH_history = {}
+    def start_fresh_run(self):
+        """Called before a fresh run of the simulation (from step 1): the samples that an earlier run left
+        pending are dropped. The bias and statistics stay as the object holds them: those of the
+        constructor, of earlier runs or of a checkpoint, or a bias set on the object (an imported bias)."""
+        self.order_parameter_history = []
+        self.dH_history = {}
 
     # Compute order parameter Ψ
     def compute_order_parameter(self, langevin_step, w_aux):

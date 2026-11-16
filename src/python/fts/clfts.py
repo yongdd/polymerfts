@@ -150,8 +150,7 @@ class CLFTS:
         self.prop_solver.display_platform_info()
 
         # (C++ class) Computation box; molecules, optimizer and propagator computation
-        # are used through prop_solver (aliases at the end of __init__ for scripts
-        # that reach the C++ objects directly)
+        # are used through prop_solver
         self.cb = self.prop_solver.computation_box
 
         # Standard deviation of normal noise of Langevin dynamics

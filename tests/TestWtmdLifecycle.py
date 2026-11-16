@@ -1,6 +1,8 @@
-"""WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set before the first run.
+"""WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set on sim.wtmd.
 
-The WTMD state is Python: the first CPU platform runs the simulations.
+A fresh run (from step 1) keeps the bias and statistics the object holds, also a bias set on sim.wtmd
+before the first run or between two runs, and drops the samples an earlier run left pending. The WTMD
+state is Python: the first CPU platform runs the simulations.
 """
 import copy
 import os
@@ -36,32 +38,32 @@ def assert_state(wtmd, expected):
     assert wtmd.dH_history == expected["dH"]
 
 
-def constructor_reset():
+def constructor_state():
     inputs = {"u": np.linspace(0.01, 0.07, 20), "up": np.linspace(-0.05, 0.02, 20),
               "I0": np.linspace(1.0, 2.0, 20), "I1": {"A,B": np.linspace(0.1, 0.9, 20)}}
     originals = copy.deepcopy(inputs)
     wtmd = quiet(WTMD, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0],
                  psi_max=2.0, dpsi=0.1, **inputs)
     expected = state(wtmd)
-    wtmd.start_run(fresh=True)   # the first run keeps the constructor's state
-    assert_state(wtmd, expected)
     for name in ("u", "up", "I0"):
         np.testing.assert_array_equal(inputs[name], originals[name])
         np.testing.assert_array_equal(expected[name], inputs[name] / (1 if name == "I0" else wtmd.CV))
-        inputs[name][:] = -99.0   # caller-owned arrays must not change the initial snapshot
+        inputs[name][:] = -99.0   # caller-owned arrays must not change the object's state
     np.testing.assert_array_equal(inputs["I1"]["A,B"], originals["I1"]["A,B"])
     np.testing.assert_array_equal(expected["I1"]["A,B"], inputs["I1"]["A,B"] / wtmd.CV)
     inputs["I1"]["A,B"][:] = -99.0
-    for _ in range(2):
-        wtmd.u[:] = 7.0
-        wtmd.up[:] = 8.0
-        wtmd.I0[:] = 9.0
-        wtmd.I1["A,B"][:] = 10.0
-        wtmd.I1["another pair"] = np.ones(wtmd.bins)
-        wtmd.order_parameter_history.append(0.4)
-        wtmd.dH_history["A,B"] = [0.5]
-        wtmd.start_run(fresh=True)
-        assert_state(wtmd, expected)
+    assert_state(wtmd, expected)
+    # A fresh run drops pending samples and keeps whatever bias and statistics the object holds
+    wtmd.u[:] = 7.0
+    wtmd.up[:] = 8.0
+    wtmd.I0[:] = 9.0
+    wtmd.I1["A,B"][:] = 10.0
+    wtmd.I1["another pair"] = np.ones(wtmd.bins)
+    wtmd.order_parameter_history.append(0.4)
+    wtmd.dH_history["A,B"] = [0.5]
+    expected = dict(state(wtmd), samples=[], dH={})
+    wtmd.start_fresh_run()
+    assert_state(wtmd, expected)
 
 
 def parameters(directory, platform, steps=2):
@@ -91,14 +93,21 @@ def compare_checkpoints(left, right, step):
                   ("w_", "phi_", "normal_noise", "record_", "rng_state", "wtmd_"), exclude=("wtmd_params",))
 
 
+def same_start(sim, directory, platform, steps):
+    """A new simulation with the WTMD bias and statistics and the noise stream of sim."""
+    other = quiet(LFTS, parameters(directory, platform, steps), random_seed=99)
+    for name in ("u", "up", "I0"):
+        setattr(other.wtmd, name, getattr(sim.wtmd, name).copy())
+    other.wtmd.I1 = {key: value.copy() for key, value in sim.wtmd.I1.items()}
+    other.random_bg.state = copy.deepcopy(sim.random_bg.state)
+    return other
+
+
 def repeated_runs(root, platform):
-    sim = quiet(LFTS, parameters(root / "reused", platform), random_seed=1)
-    quiet(sim.run, fields())
-    assert len(sim.wtmd.order_parameter_history) == 2
+    """Fresh runs from step 1 (start_langevin_step None or 1), each by a new object."""
     for first_step in (None, 1):
-        fresh = quiet(LFTS, parameters(root / f"fresh_{first_step}", platform), random_seed=99)
-        # Fresh runs keep the current noise stream. Align the stream, not just the seed.
-        fresh.random_bg.state = copy.deepcopy(sim.random_bg.state)
+        sim = quiet(LFTS, parameters(root / f"run_{first_step}", platform), random_seed=1)
+        fresh = same_start(sim, root / f"fresh_{first_step}", platform, 2)   # the noise stream, not just the seed
         quiet(sim.run, fields(), start_langevin_step=first_step)
         quiet(fresh.run, fields())
         assert len(sim.wtmd.order_parameter_history) == 2
@@ -154,9 +163,9 @@ def checkpoint_restart(root, platform):
     assert continued.random_bg.state == full.random_bg.state
     compare_checkpoints(continued, full, 4)
 
-    # Restoring a checkpoint must not replace the constructor's initial state.
-    fresh = quiet(LFTS, parameters(root / "fresh_after_restart", platform, 4), random_seed=99)
-    fresh.random_bg.state = copy.deepcopy(continued.random_bg.state)
+    # A fresh run after the restart keeps the restored bias and statistics, without the pending sample
+    assert len(continued.wtmd.order_parameter_history) == 1 and np.any(continued.wtmd.I0 != 0.0)
+    fresh = same_start(continued, root / "fresh_after_restart", platform, 4)
     quiet(continued.run, fields())
     quiet(fresh.run, fields())
     assert_state(continued.wtmd, state(fresh.wtmd))
@@ -165,7 +174,7 @@ def checkpoint_restart(root, platform):
 
 
 def preset_bias(root, platform):
-    """A bias set on sim.wtmd before the first run is used by that run and by later fresh runs."""
+    """A bias set on sim.wtmd before the first run is used by that run and kept by a later fresh run."""
     sim = quiet(LFTS, parameters(root / "preset", platform, 2), random_seed=5)
     unbiased = quiet(LFTS, parameters(root / "unbiased", platform, 2), random_seed=5)
     bins = sim.wtmd.bins
@@ -182,8 +191,7 @@ def preset_bias(root, platform):
     np.testing.assert_array_equal(first["wtmd_unscaled_up"], preset["up"])
     assert np.any(first["w_A"] != loadmat(checkpoint(unbiased, 2), squeeze_me=True)["w_A"]), \
         "The run did not feel the preset bias"
-    # A later fresh run starts from the preset bias again, not from zero, and repeats the first run
-    sim.wtmd.u[:] = 99.0
+    # A later fresh run keeps the preset bias, not its two pending samples, and repeats the first run
     sim.random_bg.state = rng
     quiet(sim.run, fields())
     second = loadmat(checkpoint(sim, 2), squeeze_me=True)
@@ -191,9 +199,26 @@ def preset_bias(root, platform):
         np.testing.assert_array_equal(second[key], first[key], err_msg=key)
 
 
+def bias_between_runs(root, platform):
+    """A bias set between two fresh runs is the one the second run uses, together with the statistics
+    of the first run, and the sample the first run left pending does not enter the hill of the second
+    (started with start_langevin_step=1; preset_bias starts its second run with None)."""
+    sim = quiet(LFTS, parameters(root / "between", platform, 4), random_seed=7)
+    quiet(sim.run, fields())   # a hill at step 3, one pending sample from step 4
+    assert len(sim.wtmd.order_parameter_history) == 1 and np.any(sim.wtmd.I0 != 0.0)
+    sim.wtmd.up = np.full(sim.wtmd.bins, 40.0) / sim.wtmd.CV   # e.g. a bias read from a file
+    new = same_start(sim, root / "between_new", platform, 4)
+    quiet(sim.run, fields(), start_langevin_step=1)
+    quiet(new.run, fields())
+    assert_state(sim.wtmd, state(new.wtmd))
+    assert sim.random_bg.state == new.random_bg.state
+    for step in (1, 2, 3, 4):
+        compare_checkpoints(sim, new, step)
+
+
 def main():
-    constructor_reset()
-    print("[PASS] WTMD constructor state and reset copies")
+    constructor_state()
+    print("[PASS] WTMD constructor copies and fresh start")
     platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_lifecycle_") as directory:
         root = Path(directory)
@@ -201,7 +226,9 @@ def main():
         manual_continuation(sim)
         checkpoint_restart(root, platform)
         preset_bias(root, platform)
-        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart and preset bias")
+        bias_between_runs(root, platform)
+        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart, preset bias "
+              "and a bias set between runs")
     return 0
 
 

@@ -238,10 +238,19 @@ def check_invalid_discrete_length():
     assert params == original
 
 
-def check_native_length_agreement():
-    """Standalone validation and the native solver must accept exactly the same lengths."""
-    from polymerfts import _core
+def native_length(factory, length, ds):
+    """The length that the native solver stores for a discrete block, or None if it refuses the block."""
+    try:
+        molecules = factory.create_molecules_information("discrete", ds, {"A": 1.0})
+        molecules.add_polymer(1.0, [["A", length, 0, 1]])
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    return molecules.get_polymer(0).get_block(0, 1).contour_length
 
+
+def check_native_length_agreement(platform):
+    """Standalone validation and the native solver must accept exactly the same lengths."""
+    factory = PlatformSelector.create_factory(platform, False, "real")
     cases = [(0.0, 0.1), (-1.0, 0.1), (np.nan, 0.1), (np.inf, 0.1),
              (0.1, 0.0), (0.1, -1.0), (0.1, np.nan), (0.1, np.inf),
              (1e308, 1e-308), (1.5e308, 1e308),
@@ -258,9 +267,8 @@ def check_native_length_agreement():
     for length, ds in cases:
         polymer = {"blocks": [{"type": "A", "length": length}]}
         params = {"chain_model": "discrete", "ds": ds, "polymers": [polymer]}
-        try:
-            expected = _core._discrete_contour_length(length, ds)
-        except (RuntimeError, TypeError, ValueError):
+        expected = native_length(factory, length, ds)
+        if expected is None:
             try:
                 polymer_block_lengths(params, polymer)
             except ValidationError as error:
@@ -273,9 +281,11 @@ def check_native_length_agreement():
 
 
 if __name__ == "__main__":
-    check_native_length_agreement()
+    platforms = PlatformSelector.avail_platforms()
+    if platforms:
+        check_native_length_agreement(next((name for name in platforms if name.startswith("cpu")), platforms[0]))
     check_invalid_discrete_length()
-    for platform in PlatformSelector.avail_platforms():
+    for platform in platforms:
         for name, ds, segments, chi_n, polymers, mean, mu, shifted in cases():
             params = {"nx": [4], "lx": [2.0], "chain_model": "discrete", "ds": ds,
                       "segment_lengths": segments, "chi_n": chi_n, "zeta_n": 100.0,

@@ -65,7 +65,7 @@ class ThermodynamicOperators:
         self._single_site_polymers = [
             p for p, polymer in enumerate(self.sim.polymers)
             if self.sim.chain_model.lower() == "discrete" and p not in self.sim.grand_canonical
-            and not polymer.get("initial_conditions") and len(polymer["blocks"]) == 1
+            and len(polymer["blocks"]) == 1
             and polymer["blocks"][0]["type"] in self.monomer_types
             and polymer["blocks"][0].get("multiplicity", 1) == 1
             and np.isclose(polymer["blocks"][0]["length"], self.sim.ds)]

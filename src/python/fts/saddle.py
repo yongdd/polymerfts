@@ -19,23 +19,18 @@ from ..utils.validation import ValidationError, SaddlePointError
 class LR:
     """Linear Response (LR) field compressor for L-FTS.
 
-    Uses the local Hessian (second derivative matrix) of the Hamiltonian
-    to find the saddle point of imaginary auxiliary fields via linear response
-    theory. This is faster than iterative methods but requires computing and
-    inverting the Hessian matrix.
-
-    The update is: w_new = w_old - J^(-1) · δH/δw, where J is the Jacobian
-    (Hessian) in Fourier space.
+    The response of -δH/δw to the imaginary field near w = 0 is diagonal in the Fourier
+    basis of the box, -δH/δw ≈ J(k) (w* - w)(k), with J(k) measured once from a small
+    kick (SaddlePointSearch). One LR step divides the residual by J(k):
+    w_new = w + F⁻¹[F(-δH/δw) / J(k)], which lands on the saddle point w* where the
+    response is linear. No matrix is inverted: 1/J(k) is a stored Fourier multiplier.
 
     Parameters
     ----------
     nx : list of int
         Grid dimensions [nx, ny, nz].
-    lx : list of float
-        Box dimensions in units of a_Ref * N_Ref^(1/2).
     jk : ndarray
-        Jacobian (Hessian) matrix in Fourier space. Precomputed from
-        finite difference of δH/δw. Shape: the coefficients of fourier.
+        J(k) in the coefficient shape of fourier, measured by finite difference of δH/δw.
     fourier : FourierTransform
         PropagatorSolver.fourier of real fields (FFT along periodic axes, cosine series
         along reflecting walls), which applies 1/J(k) (on the GPU with CUDA).
@@ -44,14 +39,11 @@ class LR:
     ----------
     nx : list of int
         Grid dimensions.
-    lx : list of float
-        Box dimensions.
     jk : ndarray
-        Jacobian in Fourier space.
+        J(k), a copy of the given values.
     """
-    def __init__(self, nx, lx, jk, fourier):
+    def __init__(self, nx, jk, fourier):
         self.nx = nx
-        self.lx = lx
         self.jk = jk.copy()
         self._fourier = fourier
         self._inverse = fourier.set_multiplier(1.0 / self.jk)
@@ -227,7 +219,7 @@ class SaddlePointSearch:
             # keeps 1/J finite, and the gauge fix of the saddle search removes the uniform mode
             if self.zeta_n is None:
                 jk_numeric.flat[0] = 1.0
-            lr = LR(self.prop_solver.nx, self.prop_solver.get_lx(), jk_numeric, fourier=fourier)
+            lr = LR(self.prop_solver.nx, jk_numeric, fourier=fourier)
 
         if params["compressor"]["name"] == "am":
             return am

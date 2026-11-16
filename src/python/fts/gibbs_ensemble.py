@@ -60,7 +60,7 @@ from scipy.io import loadmat
 from .clfts import CLFTS
 from ..theory.electrostatics import coulomb_coupling, homogeneous_potential, point_ions
 from ..utils.common import json_ready, input_hash
-from ..utils.validation import (ValidationError, _chain_charge, normalize_params, open_charges, parse_chi_n, point_ion_concentrations,
+from ..utils.validation import (ValidationError, _chain_charge, open_charges, parse_chi_n, point_ion_concentrations,
                          polymer_block_copy_lengths, polymer_block_lengths, reference_segments, validate_gibbs_params,
                          validate_lfts_params)
 
@@ -102,8 +102,7 @@ class GibbsEnsemble:
     MOBILITY_RIDGE = 0.03   # λ of the mobility: small enough for the tie line, large enough for equal boxes
 
     def __init__(self, params, random_seed=None):
-        params = normalize_params(params)
-        validate_gibbs_params(params)
+        params = validate_gibbs_params(params)   # a copy with the current names
         if random_seed is not None and (isinstance(random_seed, (bool, np.bool_))
                                         or not isinstance(random_seed, (int, np.integer)) or random_seed < 0):
             raise ValidationError(f"random_seed must be a non-negative integer, got {random_seed!r}")

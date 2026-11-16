@@ -3,9 +3,11 @@
 The files name the measurements of a monomer pair by the two names joined with '_' (dH_history_A_B,
 structure_function_A_B, I1_A_B, wtmd_I1_A_B). Names whose pairs would share such a key, as A,B_C and
 A_B,C do, are refused when a simulation is constructed, and so is a monomer type named 'aux' in L-FTS,
-whose field would take the key w_aux of the auxiliary fields. Underscores alone are no problem: the
-statistics of four names keep their six and ten pairs apart, a WTMD run keeps its keys through its files
-and an exact continuation, and CL-FTS (fields w_<type>_real/_imag) runs and continues with a type 'aux'.
+whose field would take the key w_aux of the auxiliary fields. Every method refuses a name with ',', the
+separator of the two names of a chi_n pair (such a name stopped L-FTS with a ValueError). Underscores
+alone are no problem: the statistics of four names keep their six and ten pairs apart, a WTMD run keeps
+its keys through its files and an exact continuation, and CL-FTS (fields w_<type>_real/_imag) runs and
+continues with a type 'aux'.
 """
 
 import contextlib
@@ -21,7 +23,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import CLFTS, LFTS, ValidationError
+from polymerfts import CLFTS, LFTS, SCFT, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
 from fts_checks import exact_restart, python_platform
@@ -71,6 +73,15 @@ def refused(root, platform):
         assert "w_aux" in str(error), str(error)
     else:
         raise AssertionError("L-FTS accepted a monomer type 'aux', whose field would be w_aux")
+    params = parameters(root / "refused", platform, ("A,B", "C"))
+    params["chi_n"] = {}
+    for cls in (SCFT, LFTS, CLFTS):
+        try:
+            cls(params)
+        except ValidationError as error:
+            assert "'A,B'" in str(error) and "','" in str(error), str(error)
+        else:
+            raise AssertionError(f"{cls.__name__} accepted a monomer type 'A,B'")
 
 
 def check_statistics(root, platform, cls):

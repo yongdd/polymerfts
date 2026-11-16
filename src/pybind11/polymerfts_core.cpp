@@ -75,7 +75,6 @@
 
 #include "GridLimits.h"
 #include "MinimalFormAlias.h"
-#include "ContourLengthMapping.h"
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "ComputationBox.h"
@@ -956,9 +955,6 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
 
 PYBIND11_MODULE(_core, m)
 {
-    m.def("_discrete_contour_length", &ContourLengthMapping::discrete_contour_length,
-          py::arg("contour_length"), py::arg("ds"),
-          "Validate a discrete block length and return the native canonical N*ds length.");
     m.def("_periodic_metric", &periodic_metric, py::arg("nx"), py::arg("reciprocal_metric"),
           py::arg("with_moments") = false,
           "Exact full-grid periodic k squared and optional tied-alias metric moments.");

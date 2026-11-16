@@ -47,14 +47,14 @@ def main():
                               chain_model="continuous", platform=cpu_platform())
 
     # LR with the exact J(k) is exact in one step, for both shapes
-    lr = LR(nx, lx, jk, fourier=solver.fourier)
+    lr = LR(nx, jk, fourier=solver.fourier)
     for w0 in (np.zeros(m), np.zeros((1, m))):
         w1 = lr.calculate_new_fields(w0, residual(w0), 1.0, 1.0)
         if np.shape(w1) != np.shape(w0) or not np.allclose(np.ravel(w1), w_star, atol=1e-12):
             failed.append(f"LR step for input shape {np.shape(w0)}")
 
     # LRAM = Anderson mixing of the LR step
-    lr_approx = LR(nx, lx, 0.8*jk, fourier=solver.fourier)
+    lr_approx = LR(nx, 0.8*jk, fourier=solver.fourier)
     w0 = rng.normal(size=(1, m))
     lram = LRAM(lr_approx, anderson())
     w_lram = lram.calculate_new_fields(w0, residual(w0), 1.0, 1.0)

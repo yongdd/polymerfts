@@ -41,6 +41,7 @@ from polymerfts import _core, LFTS, ValidationError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.theory.smearing import Smearing
+from cuda_part import cuda_part_missing
 from fts_checks import quiet
 
 n_pass = 0
@@ -243,22 +244,35 @@ def test_compressible_mean(root):
 def test_lr_walls(root):
     """LR and LRAM measure and apply the Jacobian in the cosine series along reflecting walls:
     from random fields (std 2) they reach the saddle point in about as few iterations as in a
-    periodic box (5 for LR there), with periodic axes too (cn-adi2). Absorbing walls are refused."""
+    periodic box (5 for LR there), with periodic axes too (cn-adi2). Absorbing walls are refused.
+    The box with periodic axes also runs on CUDA, whose PropagatorSolver.fourier measures and applies
+    J(k) there: J(k) agrees with the CPU one (to 4e-10 relative, the rounding of the finite difference)."""
     R, P = "reflecting", "periodic"
     nx, lx = [16, 12, 10], [3.0, 2.4, 2.0]
     n = int(np.prod(nx))
     w = np.zeros([2, n])
     w[0] = np.random.default_rng(5).normal(0.0, 2.0, n)
-    for bc, extra in (([R] * 6, {}), ([R] * 6, {"smearing": {"type": "gaussian", "a_int": 0.1}}),
-                      ([P, P, R, R, P, P], {"numerical_method": "cn-adi2"})):
+    cuda = ["cuda"] if "cuda" in _core.PlatformSelector.avail_platforms() and cpu_platform() != "cuda" else []
+    for bc, extra, platforms in (([R] * 6, {}, [cpu_platform()]),
+                                 ([R] * 6, {"smearing": {"type": "gaussian", "a_int": 0.1}}, [cpu_platform()]),
+                                 ([P, P, R, R, P, P], {"numerical_method": "cn-adi2"}, [cpu_platform()] + cuda)):
         for name in ("lr", "lram"):
-            p = params(os.path.join(root, "lr_walls"), nx, lx, 2, bc=bc, **extra)
-            p["saddle"] = {"max_iter": 100, "tolerance": 1e-6}
-            p["compressor"] = {"name": name, "max_hist": 20, "start_error": 5e-1, "mix_min": 0.01, "mix_init": 0.01}
-            sim = quiet(LFTS, p, random_seed=1)
-            _, _, iterations, error = quiet(sim.saddle.solve, w.copy())
-            check(iterations <= 10 and error < 1e-6,
-                  f"{name} with walls {bc[::2]} {list(extra)}: saddle point in {iterations} iterations ({error:.1e})")
+            jk = {}
+            for platform in platforms:
+                p = params(os.path.join(root, "lr_walls"), nx, lx, 2, bc=bc, platform=platform, **extra)
+                p["saddle"] = {"max_iter": 100, "tolerance": 1e-6}
+                p["compressor"] = {"name": name, "max_hist": 20, "start_error": 5e-1, "mix_min": 0.01, "mix_init": 0.01}
+                sim = quiet(LFTS, p, random_seed=1)
+                _, _, iterations, error = quiet(sim.saddle.solve, w.copy())
+                lr = sim.saddle.compressor.lr if name == "lram" else sim.saddle.compressor
+                jk[platform] = np.array(lr.jk)
+                check(iterations <= 10 and error < 1e-6, f"{platform} {name} with walls {bc[::2]} {list(extra)}: "
+                      f"saddle point in {iterations} iterations ({error:.1e})")
+            if len(jk) == 2:
+                cpu, gpu = jk[platforms[0]], jk["cuda"]
+                difference = np.max(np.abs(gpu - cpu)) / np.max(np.abs(cpu))
+                check(difference < 1e-8, f"{name} with walls {bc[::2]}: J(k) of cuda = J(k) of {platforms[0]} "
+                      f"({difference:.1e} relative)")
     p = params(os.path.join(root, "lr_walls"), nx, lx, 2, bc=[R, R, "absorbing", "absorbing", R, R])
     p["compressor"] = {"name": "lr"}
     try:
@@ -330,7 +344,8 @@ def main():
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    # test_lr_walls also runs on CUDA
+    sys.exit(0 if n_fail == 0 and not cuda_part_missing() else 1)
 
 
 if __name__ == "__main__":

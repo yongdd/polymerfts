@@ -25,6 +25,23 @@ from ..theory.electrostatics import MeanFieldElectrostatics
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
 os.environ.setdefault("OMP_STACKSIZE", "1G")
 
+
+def real_values(values, label):
+    """values as a new flat float64 array (the caller's array stays as it is); ValidationError unless they
+    are booleans, integers or real numbers that are finite at float64 precision."""
+    try:
+        array = np.asarray(values)   # a ragged list raises ValueError
+        # Not complex numbers, strings or objects (such as Python integers beyond 64 bits)
+        if array.dtype.kind in "biuf":
+            with np.errstate(over="ignore"):
+                array = array.astype(np.float64).reshape(-1)   # a long double beyond float64 becomes inf
+            if np.all(np.isfinite(array)):
+                return array
+    except (TypeError, ValueError, OverflowError):
+        pass
+    raise ValidationError(f"{label} must contain real, finite values at float64 precision")
+
+
 class SCFT:
     """Self-consistent field theory (SCFT) of polymer melts and solutions.
 
@@ -763,18 +780,10 @@ class SCFT:
         for name in self.monomer_types:
             if name not in initial_fields:
                 raise ValidationError(f"initial_fields is missing monomer {name!r}")
-            field = np.asarray(initial_fields[name])
-            if np.iscomplexobj(field):
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values")
+            field = real_values(initial_fields[name], f"initial_fields[{name!r}]")
             if field.size != self.prop_solver.total_grid:
                 raise ValidationError(f"initial_fields[{name!r}] needs {self.prop_solver.total_grid} values, "
                                       f"got {field.size}")
-            try:
-                field = field.astype(np.float64).reshape(-1)   # a copy: the caller's array stays as it is
-            except (TypeError, ValueError):
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values") from None
-            if not np.all(np.isfinite(field)):
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values")
             prepared[name] = field
         initial_fields = prepared
 
@@ -816,13 +825,7 @@ class SCFT:
         prepared = {}
         full_size, reduced_size = self.prop_solver.total_grid, self.prop_solver.n_grid
         for label, values in q_init.items():
-            profile = np.asarray(values)
-            if np.iscomplexobj(profile) or not np.all(np.isfinite(profile)):
-                raise ValidationError(f"q_init[{label!r}] must contain real, finite values")
-            with np.errstate(over="ignore", invalid="ignore"):
-                profile = np.array(profile, dtype=np.float64).reshape(-1)
-            if not np.all(np.isfinite(profile)):
-                raise ValidationError(f"q_init[{label!r}] must contain real, finite values at float64 precision")
+            profile = real_values(values, f"q_init[{label!r}]")
             is_full = profile.size == full_size
             if is_full:
                 if self._axis_perm is not None:

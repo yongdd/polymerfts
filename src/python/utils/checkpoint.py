@@ -173,12 +173,13 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         if input_hash(stored) != str(data["checkpoint_settings_hash"]):
             raise ValidationError("Checkpoint settings hash does not match its contents")
         # Verify the original settings hash before translating names. Earlier checkpoints have legacy
-        # block keys and flat recording-period keys. Both sides are compared in their JSON form, in
-        # which the graft nodes of initial_conditions are strings
+        # block keys and flat recording-period keys
         stored = normalize_params(stored)
         _rename_parameter(stored, "sf_computing_period", "sample_interval")
         _rename_parameter(stored, "sf_recording_period", "statistics_save_interval")
-        stored = json_ready(stored)
+        # The pseudo-spectral method of discrete chains was recorded as "discrete" before it was named "ps"
+        if stored.get("numerical_method") == "discrete":
+            stored["numerical_method"] = "ps"
         current = checkpoint_settings(sim)
         # Version 1 predates extensions and always used LM without callbacks.
         if version == 1:

@@ -402,8 +402,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   densities and ln Q of each ion (2026-11-16). One weight e^(-(u - u_min)) per ion gives the
   density, ln Q = ln<w> - u_min and the partition ratio, so the partition function of an ion in a
   potential beyond ±709 kT stays meaningful and each evaluation takes one exponential per ion
-  instead of two. Canonical densities are unchanged bit for bit; grand-canonical densities, H and
-  βμ change at round-off.
+  instead of two. Densities, H and βμ change at round-off.
 - `CLFTS` no longer has the attributes `solver`, `molecules` and `propagator_computation_optimizer`
   (2026-11-16), which nothing used; `prop_solver` gives the same objects.
 - `Polymer.get_n_segment_total()` counts every copy of a block (2026-11-08): it returns the
@@ -421,12 +420,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `numerical_method` names the method of either chain model (2026-11-05): the FFT solver of discrete
   chains, formerly `"discrete"` and chosen whatever `numerical_method` said, is `"ps"`, the default, and
   `"rs"` is the new real-space one. A discrete chain with `"rqm4"`, `"rk2"` or `"cn-adi2"` raises an
-  error instead of a note. Checkpoints of discrete chains written before record `"discrete"` and do not
-  continue.
-- `LR` takes `fourier`, a `PropagatorSolver.fourier` (2026-11-02): the update with NumPy is gone,
-  and so is `axis_bc`, the `scipy.fft` update of boxes that mix periodic axes and walls
-  (2026-11-16), which `PropagatorSolver.fourier` transforms since 2026-11-09; the updates agree to
-  1e-14. `LFTS` measures J(k) of every box with `PropagatorSolver.fourier`.
+  error instead of a note. A checkpoint of discrete chains written before records `"discrete"` and
+  continues with `"ps"`, the same solver (2026-11-16).
+- `LR(nx, jk, fourier)` takes `fourier`, a `PropagatorSolver.fourier` (2026-11-02): the update with
+  NumPy is gone, and so are `axis_bc`, the `scipy.fft` update of boxes that mix periodic axes and
+  walls, which `PropagatorSolver.fourier` transforms since 2026-11-09 (the updates agree to 1e-14),
+  and `lx`, which `LR` did not read (2026-11-16). `LFTS` measures J(k) of every box with
+  `PropagatorSolver.fourier`.
 - `GibbsEnsemble` runs both boxes in the fixed cell `lx` (2026-11-01;
   docs/theory/ComplexLangevinSimulation.md, Section 8). The amounts and volumes count the material
   for the lever rule; `boxes[].lx` is gone, the top-level `lx` is required as for `CLFTS`, and the
@@ -506,8 +506,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `SymmetricPolymerTheory` exposes its χN matrix as `matrix_chi`; `SCFT.matrix_chi` is the
   same array, so the matrix is built in one place, and `compute_eigen_system(matrix_chi,
   zeta_n)` takes the matrix instead of the pair dictionary (2026-10-24).
-- `parse_chi_n` moved from `polymerfts.utils` to `polymerfts.validation`, next to the other
-  input checks; `polymerfts.utils` still imports it for existing scripts (2026-10-24).
+- `parse_chi_n` moved from `polymerfts.utils` to `polymerfts.utils.validation`, next to the other
+  input checks (2026-10-24); `polymerfts.utils` no longer re-exports it (2026-11-16).
 - With a space group, the internal `advance_propagator_single_segment()` binding takes and
   returns fields in the reduced basis, like `compute_propagators()`. Before, it expected
   full-grid arrays but read and wrote only their first `n_basis` entries. The C++ method
@@ -621,9 +621,18 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - The FFTW Pmmm and ObliqueZ CrysFFT engines keep no stale size after a failed allocation of their
   thread-local buffers (2026-11-02). A later engine of the old size on that thread crashed on null
   buffers; the recursive 3m engine already had the guard.
-- WTMD keeps a bias set on `sim.wtmd` before the first run (2026-11-16); the reset at the start of
-  a fresh run dropped it. A later fresh `run()` starts again from the state the first run of the
-  object started from (tests/TestWtmdLifecycle.py).
+- A fresh L-FTS `run()` with WTMD (from step 1) drops the samples an earlier run of the same object
+  left pending (2026-11-16); they entered the first hill of the new run. The bias and statistics
+  that `sim.wtmd` holds stay, also a bias set on it between runs (tests/TestWtmdLifecycle.py).
+- `SCFT.run` checks `initial_fields` and `q_init` before it resets the optimizer (2026-11-16): each
+  must hold booleans, integers or real numbers that are finite at float64 precision, or
+  `ValidationError` names the entry. Strings (also strings of numbers, which were converted), ragged
+  lists (which raised `ValueError`) and Python integers outside the 64-bit range (which were converted
+  to floats, or raised `OverflowError` beyond the float range) are refused
+  (tests/TestScftInitialFields.py).
+- Every method refuses a monomer name containing `,`, the separator of the two names of a `chi_n`
+  pair, with `ValidationError` (2026-11-16); such a name stopped L-FTS and CL-FTS with a
+  `ValueError` (tests/TestPairRecords.py).
 - Simulation metadata also hash the source file of the simulation class when it lies outside the
   package (`simulation_source`, `simulation_source_sha256`; 2026-11-16), such as a modified copy of
   `scft.py` as QuickStart describes or a subclass in a script; `python_source_sha256` covers the
@@ -923,15 +932,15 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   only the `numerical` label, `TestBlockMultiplicity` and `TestFourierTransform` carry it too, and the
   Windows job runs the basic tests four at a time. Tests of fixes made in Python run on the first CPU
   platform only, and the WTMD runs of `TestWtmdRange` too, whose norms keep the FFT of every
-  platform. Run one at a time with one OpenMP thread in a CPU-only build, the label takes 94 s
+  platform. Run one at a time with one OpenMP thread in a CPU-only build, the label takes 98 s
   instead of 134 s.
 - `tests/fts_checks.py` holds the helpers of the Python tests of simulation runs (2026-11-16): `quiet`;
   `python_platform`, the one platform of a test of a fix made in Python (the first CPU platform, else
   CUDA); `compare_files`, which compares the key sets of two MAT files both ways and their values bit
   for bit; and `exact_restart`, the check of a run continued from the checkpoint of a shorter one, in
   a directory of its own or where that run stopped, against the uninterrupted run (random state,
-  partition check and recorded files). 34 tests use them instead of their own copies: 29 `quiet`,
-  15 `exact_restart`, 14 `python_platform` and 5 `compare_files` directly. The restarts of
+  partition check and recorded files). 35 tests use them instead of their own copies: 30 `quiet`,
+  15 `exact_restart`, 15 `python_platform` and 5 `compare_files` directly. The restarts of
   `TestClftsGrandCanonical`, `TestClftsPointIons`, `TestConfinedElectrostatics`,
   `TestClftsThermodynamics`, `TestClftsElectrostatics`, `TestClftsEtd`, `TestExtensions`,
   `TestPairRecords`, `TestFtsReliability` and `TestLftsRun` go through `exact_restart`. `TestLftsRun`
@@ -949,6 +958,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   partial products in per-stream buffers. `TestCrysFFTCellChange`
   adds monoclinic P2/m with unique axis c (Hall 58, ObliqueZ): its fixed angles alpha and beta
   moved by 1e-8 degrees are refused, while gamma stays free.
+- `TestCheckpointCompatibility` continues an L-FTS and a CL-FTS checkpoint and one of discrete chains
+  written by main (895d7e75) to the end of an uninterrupted run of this version (2026-11-16;
+  tests/data/old_checkpoints, 20 KB). The writer reproduces the run bit for bit; on other processors
+  and compilers the test allows round-off (1e-10 relative for CL-FTS, 100 times the saddle tolerance
+  for L-FTS).
 - `TestCpuFFTMixedBC` is removed (2026-11-16): `TestCpuMakhoulTransform` covers its round trips and
   DCT/DST checks at 1e-13; its MKL part checked 1D DCT round trips to 1e-7 and printed a stale
   "SKIPPED (known issue)" for the rest.

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """SCFT validates the initial fields before resetting the solver.
 
-Complex values, values that are not finite at float64 precision, invalid sizes and
-missing monomers fail before the optimizer or propagators are touched, including
+Complex values, values that are not finite at float64 precision, strings (also of
+numbers), ragged lists, integers beyond float64, invalid sizes and missing monomers
+fail with ValidationError before the optimizer or propagators are touched, including
 axis and space-group conversions. Valid real arrays remain unchanged and preserve
 their first iteration fields; a homogeneous control converges. The checks are
 Python: the first CPU platform runs them.
@@ -38,7 +39,7 @@ def parameters(platform, group=False):
 
 def snapshot(fields):
     return {name: (value.shape, value.dtype, value.flags.writeable, value.tobytes())
-            for name, value in fields.items()}
+            if isinstance(value, np.ndarray) else copy.deepcopy(value) for name, value in fields.items()}
 
 
 def invalid(sim, fields, *messages):
@@ -72,14 +73,18 @@ def check_inputs(sim, shape):
         field.flat[0] = value
         bad_values.append((field, "real, finite"))
     bad_values += [(np.zeros(zeros.size - 1), "needs"),
-                   (np.full(shape, "not a number"), "real, finite")]
+                   (np.full(shape, "not a number"), "real, finite"),
+                   (np.full(shape, "0.5"), "real, finite"),
+                   ([[0.0] * (zeros.size - 1), [0.0]], "real, finite"),       # ragged
+                   ([10**400] + [0] * (zeros.size - 1), "real, finite")]      # beyond float64
     if np.finfo(np.longdouble).max > np.finfo(np.float64).max:
         bad_values.append((np.full(shape, np.finfo(np.longdouble).max, dtype=np.longdouble),
                            "real, finite"))
     for bad, message in bad_values:
         fields = {"A": bad, "B": zeros.copy()}
         for value in fields.values():
-            value.setflags(write=False)
+            if isinstance(value, np.ndarray):
+                value.setflags(write=False)
         invalid(sim, fields, "initial_fields['A']", message)
     invalid(sim, {"B": zeros.copy()}, "missing monomer 'A'")
 

@@ -335,10 +335,8 @@ class LFTS:
             Path to checkpoint file (MATLAB .mat format created by save_simulation_data).
         """
 
-        # Load_data; a first run of this object remembers its WTMD state before the checkpoint replaces it
+        # Load_data
         load_data = load_checkpoint(self, file_name, allow_legacy)
-        if self.wtmd is not None:
-            self.wtmd.start_run(fresh=False)
 
         # Restore WTMD state if available: the arrays without the factor CV, or for an older
         # checkpoint the scaled ones divided by CV (as in deep-langevin-fts)
@@ -393,10 +391,10 @@ class LFTS:
         try:
             if _restart_data is None:
                 restore_extensions(self)
-                # A fresh run starts from the WTMD bias of the first run of this object, a manual
-                # continuation (start_langevin_step > 1) from the current one
-                if self.wtmd is not None:
-                    self.wtmd.start_run(fresh=start_langevin_step in (None, 1))
+                # A fresh run keeps the WTMD bias the object holds and drops the samples an earlier run
+                # left pending; a manual continuation (start_langevin_step > 1) keeps both
+                if self.wtmd is not None and start_langevin_step in (None, 1):
+                    self.wtmd.start_fresh_run()
             self._run(initial_fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
             self.run_status["status"] = "completed"
         except SaddlePointError as exc:

@@ -69,7 +69,7 @@ Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `segment_lengths` | dict | Relative statistical segment lengths $`b/b_{ref}`$ (linear ratio; the code squares this internally) | `{"A": 1.0, "B": 1.0}` |
+| `segment_lengths` | dict | Relative statistical segment lengths $`b/b_{ref}`$ (linear ratio; the code squares this internally). The keys are the monomer names: non-empty strings without `,`, which separates the two names of a `chi_n` pair | `{"A": 1.0, "B": 1.0}` |
 | `chi_n` | dict | Flory-Huggins parameters × $`N_{ref}`$; pairs that are omitted do not interact (χN = 0). A singular χN matrix (e.g. a zero pair in a three-monomer system, or chemically identical monomers) is accepted. Incompressible SCFT rejects a single monomer type | `{"A,B": 20.0}` |
 | `zeta_n` | float | (Optional) Compressibility parameter $`\zeta N \geq 0`$ of the compressible model. Omitted: incompressible ($`\sum_i \phi_i = 1`$) in SCFT and L-FTS; CL-FTS needs a finite value and defaults to `100.0` | `100.0` |
 
@@ -359,7 +359,7 @@ This applies to SCFT result files as well as FTS output. Ordinary nested names a
 
 See [Numerical Validation](../validation/NumericalValidation.md) for regression coverage, provenance and statistical validation jobs. Both `LFTS` and `CLFTS` accept keyword arguments `integrator=` and `callbacks=`; see [Extensions](../internals/Extensions.md) for their contracts and a runnable example.
 
-With WTMD, the first run of a simulation object starts from the bias and statistics it finds: those of WTMD construction, or a bias set on `sim.wtmd` before that run. A later fresh `run()` starting at step 1 starts from these again, not from what an earlier run left, and clears pending samples. `continue_run()` restores them from the checkpoint; a manual run starting after step 1 keeps the existing WTMD state. A fresh run does not reset the random-number stream.
+With WTMD, a run starts from the bias and statistics that `sim.wtmd` holds: those of WTMD construction, those an earlier run of the object left, or a bias set on `sim.wtmd` before the run. A fresh `run()` starting at step 1 drops the samples that an earlier run left pending (they are not yet in a hill) and keeps the bias and statistics. `continue_run()` restores the bias, statistics and pending samples from the checkpoint; a manual run starting after step 1 keeps them all. A fresh run does not reset the random-number stream; for an independent run, construct a new simulation.
 
 ### Compressor
 

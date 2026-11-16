@@ -263,6 +263,9 @@ def validate_system_params(params: Dict[str, Any]) -> None:
     for monomer, length in segment_lengths.items():
         if not isinstance(monomer, str) or not monomer:
             raise ValidationError("Monomer names must be non-empty strings")
+        if "," in monomer:
+            raise ValidationError(f"Monomer name {monomer!r} must not contain ',', which separates the two names "
+                                  "of a pair in 'chi_n'")
         _finite_number(length, f"segment_lengths.{monomer}", positive=True)
 
     if not isinstance(params["chi_n"], dict):
@@ -776,8 +779,10 @@ def point_ion_concentrations(params: Dict[str, Any]) -> Dict[str, float]:
     return concentrations
 
 
-def validate_gibbs_params(params: Dict[str, Any]) -> None:
-    """The `gibbs_ensemble` section of a Gibbs-ensemble CL-FTS input (gibbs_ensemble.py)."""
+def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The `gibbs_ensemble` section of a Gibbs-ensemble CL-FTS input (gibbs_ensemble.py); returns the
+    copy with the names of normalize_params."""
+    params = normalize_params(params)
     gibbs = params.get("gibbs_ensemble")
     if not isinstance(gibbs, dict):
         raise ValidationError("Missing required dict: 'gibbs_ensemble'")
@@ -845,3 +850,4 @@ def validate_gibbs_params(params: Dict[str, Any]) -> None:
                                       f"ion {canonical_ions}")
             for ion, value in concentrations.items():
                 _finite_number(value, f"{name}.ion_concentrations.{ion}", nonnegative=True)
+    return params
