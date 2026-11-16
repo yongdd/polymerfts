@@ -58,7 +58,6 @@ namespace RealSpaceBond
     /// the kernels of the bond along the other axes.
     struct Derivative
     {
-        int axis = 0;
         Kernel stencil;
         Folded folded;
     };

@@ -8,7 +8,7 @@
  *
  * **Boundary Conditions:**
  *
- * Supports all boundary conditions via the FFT<T> interface (FftwFFT or MklFFT):
+ * Supports all boundary conditions via the FFT<T> interface (createFFT()):
  * - PERIODIC: Standard FFT (complex coefficients)
  * - REFLECTING: DCT-II/III (Neumann BC, zero flux)
  * - ABSORBING: DST-II/III (Dirichlet BC, zero value)

@@ -27,7 +27,8 @@
  *
  * The forward and backward transforms keep their inputs, and with a CPU backend
  * they agree with MakhoulTransform over its real FFT (the largest relative
- * difference is printed). The error maxima keep a NaN (TestNanSafe.h).
+ * difference is printed). The definitions and the mixed grids are those of
+ * TestMakhoulDefinitions.h; the error maxima keep a NaN (TestNanSafe.h).
  *
  * On two grids of more than two million points, whose real half spectrum also
  * has more than MAX_GRID_THREADS modes, every grid-stride loop of the kernels takes
@@ -51,99 +52,11 @@
 #include "CudaCommon.h"
 #include "CudaMakhoulTransform.h"
 #include "Exception.h"
-#include "TestNanSafe.h"
+#include "TestMakhoulDefinitions.h"
 #if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
 #include "FFTFactory.h"
 #include "MakhoulTransform.h"
 #endif
-
-using Complex = std::complex<double>;
-
-/// One wall axis of the definition: apply to every line of `data` along `axis`.
-void apply_axis(std::vector<double>& data, const std::vector<int>& nx, int axis, bool sine, bool forward)
-{
-    const double pi = std::numbers::pi;
-    const int n = nx[axis];
-    int stride = 1;
-    for (size_t d = axis + 1; d < nx.size(); ++d)
-        stride *= nx[d];
-    std::vector<double> line(n);
-    for (int i = 0; i < static_cast<int>(data.size()); ++i)
-    {
-        if ((i / stride) % n != 0)
-            continue;
-        for (int j = 0; j < n; ++j)
-            line[j] = data[i + j * stride];
-        for (int k = 0; k < n; ++k)
-        {
-            double sum = 0.0;
-            for (int j = 0; j < n; ++j)
-            {
-                if (forward && !sine)
-                    sum += line[j] * std::cos(pi * (j + 0.5) * k / n);
-                else if (forward)
-                    sum += line[j] * std::sin(pi * (j + 0.5) * (k + 1) / n);
-                else if (!sine && j > 0)
-                    sum += line[j] * 2.0 * std::cos(pi * j * (k + 0.5) / n);
-                else if (!sine)
-                    sum += line[j];
-                else if (j < n - 1)
-                    sum += line[j] * 2.0 * std::sin(pi * (j + 1) * (k + 0.5) / n);
-                else
-                    sum += line[j] * (k % 2 == 0 ? 1.0 : -1.0);
-            }
-            // The factor 2 of REDFT10 and RODFT10 cancels against the / 2 of forward
-            data[i + k * stride] = forward ? sum : sum / n;
-        }
-    }
-}
-
-/// The definition axis by axis: the DFT along periodic axes, apply_axis() on the parts along walls
-std::vector<Complex> mixed_definition(std::vector<Complex> data, const std::vector<int>& nx,
-                                      const std::vector<BoundaryCondition>& bc, bool forward)
-{
-    const double pi = std::numbers::pi;
-    const int size = static_cast<int>(data.size());
-    for (int axis = 0; axis < static_cast<int>(nx.size()); ++axis)
-    {
-        if (bc[axis] != BoundaryCondition::PERIODIC)
-        {
-            // The series are real: the real and imaginary parts in turn
-            std::vector<double> re(size), im(size);
-            for (int i = 0; i < size; ++i)
-            {
-                re[i] = data[i].real();
-                im[i] = data[i].imag();
-            }
-            const bool sine = bc[axis] == BoundaryCondition::ABSORBING;
-            apply_axis(re, nx, axis, sine, forward);
-            apply_axis(im, nx, axis, sine, forward);
-            for (int i = 0; i < size; ++i)
-                data[i] = Complex(re[i], im[i]);
-            continue;
-        }
-        const int n = nx[axis];
-        int stride = 1;
-        for (size_t d = axis + 1; d < nx.size(); ++d)
-            stride *= nx[d];
-        std::vector<Complex> line(n);
-        for (int i = 0; i < size; ++i)
-        {
-            if ((i / stride) % n != 0)
-                continue;
-            for (int j = 0; j < n; ++j)
-                line[j] = data[i + j * stride];
-            for (int k = 0; k < n; ++k)
-            {
-                Complex sum = 0.0;
-                for (int j = 0; j < n; ++j)
-                    sum += line[j] * std::polar(1.0, (forward ? -2.0 : 2.0) * pi * static_cast<double>(j * k % n) / n);
-                data[i + k * stride] = forward ? sum : sum / static_cast<double>(n);
-            }
-        }
-    }
-    return data;
-}
 
 /// The factor of input point j in output point k along one axis, as in mixed_definition(), with
 /// the angle reduced exactly to one period: on long axes pi (j + 1/2) k / n reaches thousands of
@@ -215,22 +128,6 @@ Complex definition_at(const std::vector<Complex>& data, const std::vector<int>& 
         sum += sum1 * factor[0][j0];
     }
     return sum;
-}
-
-double max_difference(const std::vector<Complex>& a, const std::vector<Complex>& b)
-{
-    double worst = 0.0;
-    for (size_t i = 0; i < a.size(); ++i)
-        worst = max_or_nan(worst, std::abs(a[i] - b[i]));
-    return worst;
-}
-
-double max_abs(const std::vector<Complex>& a)
-{
-    double worst = 0.0;
-    for (const Complex& x : a)
-        worst = max_or_nan(worst, std::abs(x));
-    return worst;
 }
 
 /// Largest difference of `result` from the definition applied to `input`, relative to the largest
@@ -432,8 +329,6 @@ int main()
     try
     {
         const double tolerance = 1e-13;
-        const BoundaryCondition kinds[3] = {BoundaryCondition::PERIODIC, BoundaryCondition::REFLECTING,
-                                            BoundaryCondition::ABSORBING};
         std::mt19937 rng(17);
         GridErrors worst_real, worst_complex;
         int grids = 0;
@@ -443,24 +338,12 @@ int main()
             worst.inputs_kept = worst.inputs_kept && e.inputs_kept;
         };
         // The grids of TestCpuMakhoulTransform and a few larger ones, whose kernels loop over several blocks
-        for (const std::vector<int>& nx : std::vector<std::vector<int>>{
-                 {2, 3}, {4, 6}, {5, 7}, {8, 1}, {1, 8}, {6, 6}, {7, 2},
-                 {4, 6, 8}, {5, 7, 9}, {3, 4, 5}, {2, 3, 1}, {1, 5, 6}, {9, 8, 7}, {6, 5, 4},
-                 {96, 75}, {24, 20, 33}, {32, 31, 16}})
+        std::vector<std::vector<int>> grid_list = mixed_grids();
+        grid_list.insert(grid_list.end(), {{96, 75}, {24, 20, 33}, {32, 31, 16}});
+        for (const std::vector<int>& nx : grid_list)
         {
-            const int dim = static_cast<int>(nx.size());
-            const int mixes = dim == 2 ? 9 : 27;
-            for (int mix = 0; mix < mixes; ++mix)
+            for (const std::vector<BoundaryCondition>& bc : mixed_conditions(static_cast<int>(nx.size())))
             {
-                std::vector<BoundaryCondition> bc(dim);
-                int periodic = 0;
-                for (int d = 0, m = mix; d < dim; ++d, m /= 3)
-                {
-                    bc[d] = kinds[m % 3];
-                    periodic += bc[d] == BoundaryCondition::PERIODIC;
-                }
-                if (periodic == 0 || periodic == dim)
-                    continue;
                 const auto cpu = cpu_reference(nx, bc);
                 add(worst_real, check_grid<double>(nx, bc, rng, cpu.get()));
                 add(worst_complex, check_grid<Complex>(nx, bc, rng, cpu.get()));

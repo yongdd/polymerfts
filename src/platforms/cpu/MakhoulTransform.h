@@ -2,7 +2,7 @@
  * @file MakhoulTransform.h
  * @brief DCT-II/III and DST-II/III of a whole grid through one periodic real FFT.
  *
- * Used by FftwFFT and MklFFT (reflecting and absorbing boundaries), by
+ * Used by MakhoulFFT (reflecting and absorbing boundaries, FFTFactory.h), by
  * CrysFFTPmmm, and by CpuFourierTransform for boxes that mix periodic axes
  * with walls.
  *
@@ -138,9 +138,6 @@ public:
      * @param fft Periodic real FFT of the grid nx
      */
     MakhoulTransform(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc, std::unique_ptr<RealFFT> fft);
-
-    /// Coefficients are complex: some axis is periodic.
-    bool has_complex_coefficients() const { return complex_coefficients_; }
 
     // ---- Walls only: real coefficients ----
 

@@ -230,7 +230,6 @@ std::vector<RealSpaceBond::Derivative> RealSpaceBond::length_derivatives(
     {
         // The grid spacing is L/n, so d/dL = (dx/L) d/ddx
         Axis axis = gaussian_axis(variance, dx[d]);
-        derivatives[d].axis = static_cast<int>(d);
         derivatives[d].stencil = axis.dg_ddx;
         derivatives[d].folded = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1], true);
         for (double& v : derivatives[d].stencil)

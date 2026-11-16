@@ -1,19 +1,8 @@
 /**
  * @file FftwFFT.cpp
- * @brief FFTW3 implementation of spectral transforms with mixed BC support.
+ * @brief FFTW3 periodic FFT (r2c/c2r, c2c) and the real FFT under MakhoulTransform.
  *
- * Provides Fast Fourier Transform functionality using FFTW3 for both
- * periodic and non-periodic (reflecting/absorbing) boundary conditions.
- *
- * **Transform Types by Boundary Condition:**
- *
- * - PERIODIC: FFTW r2c/c2r transforms
- * - REFLECTING: DCT-II (forward), DCT-III (backward) through one real FFT of the grid
- * - ABSORBING: DST-II (forward), DST-III (backward) through one real FFT of the grid
- *
- * **Normalization:**
- *
- * Backward transforms include 1/N scaling so forward(backward(x)) = x.
+ * Backward transforms of FftwFFT include 1/N scaling so backward(forward(x)) = x.
  *
  * @see FftwFFT.h for class documentation
  */
@@ -116,109 +105,25 @@ void FftwRealFFT::backward(std::complex<double>* modes, double* samples) const
 }
 
 //------------------------------------------------------------------------------
-// Compute complex grid size based on periodicity and input type
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::computeComplexGridSize()
-{
-    if (is_all_periodic_)
-    {
-        if constexpr (std::is_same<T, double>::value)
-        {
-            // r2c FFT: exploit Hermitian symmetry
-            if constexpr (DIM == 3)
-                total_complex_grid_ = nx_[0] * nx_[1] * (nx_[2] / 2 + 1);
-            else if constexpr (DIM == 2)
-                total_complex_grid_ = nx_[0] * (nx_[1] / 2 + 1);
-            else
-                total_complex_grid_ = nx_[0] / 2 + 1;
-        }
-        else
-        {
-            // c2c FFT: full complex grid
-            total_complex_grid_ = total_grid_;
-        }
-    }
-    else
-    {
-        // DCT/DST: real-to-real, same size
-        total_complex_grid_ = total_grid_;
-    }
-}
-
-//------------------------------------------------------------------------------
-// Constructor (periodic BC, backward compatible)
+// Constructor
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx)
-    : nx_(nx), is_all_periodic_(true)
+    : nx_(nx)
 {
-    // Initialize all BCs to periodic
-    for (int d = 0; d < DIM; ++d)
-        bc_[d] = BoundaryCondition::PERIODIC;
-
-    // Compute grid sizes
     total_grid_ = 1;
     for (int d = 0; d < DIM; ++d)
         total_grid_ *= nx_[d];
 
+    // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
+    if constexpr (std::is_same<T, double>::value)
+        total_complex_grid_ = total_grid_ / nx_[DIM - 1] * (nx_[DIM - 1] / 2 + 1);
+    else
+        total_complex_grid_ = total_grid_;
+
     try
     {
-        computeComplexGridSize();
         initPeriodicFFT();
-    }
-    catch (...)
-    {
-        // The destructor does not run for a partly constructed object
-        release();
-        throw;
-    }
-}
-
-//------------------------------------------------------------------------------
-// Constructor (with BC specification)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc)
-    : nx_(nx), bc_(bc)
-{
-    // Compute total grid size
-    total_grid_ = 1;
-    for (int d = 0; d < DIM; ++d)
-        total_grid_ *= nx_[d];
-
-    // Check if all periodic
-    is_all_periodic_ = true;
-    for (int d = 0; d < DIM; ++d)
-    {
-        if (bc_[d] != BoundaryCondition::PERIODIC)
-        {
-            is_all_periodic_ = false;
-            break;
-        }
-    }
-
-    // Require either all periodic or all non-periodic (no mixed)
-    if (!is_all_periodic_)
-    {
-        for (int d = 0; d < DIM; ++d)
-        {
-            if (bc_[d] == BoundaryCondition::PERIODIC)
-            {
-                throw_with_line_number("Mixed periodic and non-periodic BCs not yet supported. "
-                                      "Use all periodic or all non-periodic (reflecting/absorbing).");
-            }
-        }
-    }
-
-    computeComplexGridSize();
-
-    try
-    {
-        if (is_all_periodic_)
-            initPeriodicFFT();
-        else
-            initNonPeriodicFFT();
     }
     catch (...)
     {
@@ -306,17 +211,6 @@ void FftwFFT<T, DIM>::initPeriodicFFT()
 }
 
 //------------------------------------------------------------------------------
-// Initialize non-periodic FFT (DCT/DST through one real FFT of the grid)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::initNonPeriodicFFT()
-{
-    const std::vector<int> nx(nx_.begin(), nx_.end());
-    const std::vector<BoundaryCondition> bc(bc_.begin(), bc_.end());
-    makhoul_ = std::make_unique<MakhoulTransform>(nx, bc, std::make_unique<FftwRealFFT>(nx));
-}
-
-//------------------------------------------------------------------------------
 // Periodic transforms on the caller's arrays or on thread-local scratch
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
@@ -389,67 +283,30 @@ void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* fi
 }
 
 //------------------------------------------------------------------------------
-// Forward (complex output interface - FFT<T> compatibility)
+// FFT<T> interface: complex coefficients, or the same as interleaved doubles
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::forward(T *rdata, std::complex<double> *cdata)
 {
-    if (!is_all_periodic_)
-    {
-        throw_with_line_number("Complex output interface requires all periodic BC. "
-                              "Use forward(T*, double*) for non-periodic BC.");
-    }
     periodic_forward(rdata, cdata);
 }
 
-//------------------------------------------------------------------------------
-// Backward (complex input interface - FFT<T> compatibility)
-//------------------------------------------------------------------------------
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::backward(std::complex<double> *cdata, T *rdata)
 {
-    if (!is_all_periodic_)
-    {
-        throw_with_line_number("Complex input interface requires all periodic BC. "
-                              "Use backward(double*, T*) for non-periodic BC.");
-    }
     periodic_backward(cdata, rdata);
 }
 
-//------------------------------------------------------------------------------
-// Forward (real coefficient interface - all BCs)
-//------------------------------------------------------------------------------
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
 {
-    if (is_all_periodic_)
-    {
-        periodic_forward(rdata, reinterpret_cast<std::complex<double>*>(cdata));
-    }
-    else
-    {
-        // FFTW's DCT-II/DST-II are 2x the standard definition per dimension. A complex
-        // field (CL-FTS) gets the coefficients of its real and imaginary parts as
-        // (re, im) pairs, the periodic complex layout used by the solvers.
-        makhoul_->forward(rdata, cdata, 1.0 / (1 << DIM));
-    }
+    periodic_forward(rdata, reinterpret_cast<std::complex<double>*>(cdata));
 }
 
-//------------------------------------------------------------------------------
-// Backward (real coefficient interface - all BCs)
-//------------------------------------------------------------------------------
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
 {
-    if (is_all_periodic_)
-    {
-        periodic_backward(reinterpret_cast<const std::complex<double>*>(cdata), rdata);
-    }
-    else
-    {
-        // A complex field takes its coefficients as (re, im) pairs (see forward)
-        makhoul_->backward(cdata, rdata, 1.0 / static_cast<double>(total_grid_));
-    }
+    periodic_backward(reinterpret_cast<const std::complex<double>*>(cdata), rdata);
 }
 
 // Explicit template instantiations

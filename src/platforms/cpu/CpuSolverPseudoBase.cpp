@@ -9,7 +9,7 @@
  * - Laplacian operator updates
  * - Stress computation with chain-model-specific factors
  *
- * Transform dispatch goes through the FFT<T> interface (FftwFFT or MklFFT).
+ * Transform dispatch goes through the FFT<T> interface (FftwFFT, MklFFT or MakhoulFFT).
  *
  * @see CpuSolverPseudoBase.h for interface documentation
  */

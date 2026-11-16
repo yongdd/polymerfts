@@ -17,7 +17,7 @@
  *
  * All simulations are conducted in fixed dimensions (1D, 2D, or 3D).
  * The FFT object is stored as `std::unique_ptr<FFT<T>> fft_` which points to FftwFFT<T, DIM>
- * or MklFFT<T, DIM> based on the backend and the dimensionality. This avoids
+ * or MklFFT<T, DIM> (periodic, by backend and dimensionality) or MakhoulFFT<T> (walls). This avoids
  * maintaining separate fft_1d, fft_2d, fft_3d pointers when only one is ever
  * used per solver.
  *
@@ -125,8 +125,9 @@ protected:
     /**
      * @brief Spectral transform object for FFT/DCT/DST (handles all BCs).
      *
-     * Points to FftwFFT<T, DIM> or MklFFT<T, DIM> based on the selected
-     * backend, where DIM is 1, 2, or 3 based on the simulation dimension.
+     * Points to FftwFFT<T, DIM> or MklFFT<T, DIM> (periodic) based on the selected
+     * backend, where DIM is 1, 2, or 3 based on the simulation dimension, or to
+     * MakhoulFFT<T> over the real FFT of that backend (walls).
      * All simulations are conducted in fixed dimensions, so only one
      * transform object is needed per solver instance.
      *

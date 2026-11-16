@@ -28,6 +28,9 @@ FourierTransform<T>::FourierTransform(ComputationBox<T>* cb, std::vector<Boundar
     const int n_periodic = static_cast<int>(std::count(bc_.begin(), bc_.end(), BoundaryCondition::PERIODIC));
     periodic_ = n_periodic == dim_;
     mixed_ = n_periodic > 0 && !periodic_;
+    for (BoundaryCondition b : bc_)
+        if (b != BoundaryCondition::PERIODIC)
+            mixed_forward_scale_ *= 0.5;
     if (!periodic_ && !cb->is_orthogonal())
         throw_with_line_number("The cosine and sine series need an orthogonal box.");
 

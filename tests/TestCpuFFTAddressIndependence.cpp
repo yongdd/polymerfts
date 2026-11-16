@@ -12,8 +12,8 @@
  * when they do not (an array 8 bytes off, as a packed field after an odd number
  * of grid points) or when FFTW cannot run on them (the input of the
  * complex-to-real transform, which FFTW overwrites). The DCT/DST of the walls
- * (MakhoulTransform) runs on per-thread scratch that starts on a 64-byte
- * boundary, with either library.
+ * (MakhoulFFT over MakhoulTransform) runs on per-thread scratch that starts on a
+ * 64-byte boundary, with either library.
  *
  * Each periodic transform runs from and into arrays placed 0, 16, 32 and 48
  * bytes after a 64-byte boundary (the placements of heap arrays), and for FFTW
@@ -193,8 +193,6 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
     const bool fftw = library == "fftw";
     const std::vector<int> offsets = fftw ? std::vector<int>{0, 8, 16, 24, 32, 40, 48, 56}
                                           : std::vector<int>{0, 16, 32, 48};
-    std::array<BoundaryCondition, DIM> bc;
-    bc.fill(BoundaryCondition::PERIODIC);
 
     int n_grid = 1;
     std::string grid_name;
@@ -214,7 +212,7 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
     for (double& v : field)
         v = normal(rng);
 
-    Library<T, DIM> fft(nx, bc);
+    Library<T, DIM> fft(nx);
     const std::string label = library + (IS_COMPLEX ? " complex " : " real ") + "periodic " + grid_name;
 
     std::vector<double> coeff(n_coeff), back(n_field);

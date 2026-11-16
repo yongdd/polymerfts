@@ -141,7 +141,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
@@ -404,7 +404,7 @@ algorithmic difference or a real-only feature and is commented as such.
 
 ### 3.4 FFT Hierarchy
 
-**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cuda/CudaFFT.h`
+**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`, `src/platforms/cuda/CudaFFT.h`
 
 ```
 FFT<T>                                        [Abstract Base]
@@ -413,11 +413,14 @@ FFT<T>                                        [Abstract Base]
 ├── forward(T* real, complex* spectral)       [pure virtual, periodic only]
 └── backward(complex* spectral, T* real)      [pure virtual, periodic only]
         │
-        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend]
+        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
         │
-        ├── MklFFT<T, DIM>                     [CPU - MKL backend]
+        ├── MklFFT<T, DIM>                     [CPU - MKL backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
+        │
+        ├── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
+        │   └── MakhoulTransform over FftwRealFFT or MklRealFFT
         │
         └── CudaFFTBase<T>                    [GPU abstract base]
             ├── forward_stream(..., cudaStream_t)   [pure virtual; double* and complex* overloads]
@@ -427,6 +430,9 @@ FFT<T>                                        [Abstract Base]
                 ├── forward()/backward() call the stream versions on stream 0
                 └── Uses CudaRealTransform for non-periodic BC (DCT/DST)
 ```
+
+On the CPU, `createFFT()` (`FFTFactory.h`) returns `FftwFFT` or `MklFFT` for a periodic
+box and `MakhoulFFT` for a box of reflecting and absorbing axes.
 
 **Transform Types:**
 

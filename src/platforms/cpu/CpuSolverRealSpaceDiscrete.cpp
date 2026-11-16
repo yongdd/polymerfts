@@ -216,7 +216,7 @@ void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
-                                             const RealSpaceBond::Derivative* derivative) const
+                                             int derivative_axis, const RealSpaceBond::Derivative* derivative) const
 {
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
@@ -247,7 +247,7 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
             dst = q_out;
         const int* index = bonds.ghosts.index[axis].data() + bonds.ghosts.halo[axis];
         const double* sign = bonds.ghosts.sign[axis].data() + bonds.ghosts.halo[axis];
-        const bool differentiated = derivative != nullptr && derivative->axis == axis;
+        const bool differentiated = derivative != nullptr && axis == derivative_axis;
         const RealSpaceBond::Kernel& stencil = differentiated ? derivative->stencil : kernels[axis];
         const RealSpaceBond::Folded& folded = differentiated ? derivative->folded : kernels.folded[axis];
         if (!folded.empty())
@@ -341,7 +341,7 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
-            convolve(full_q_2, dq.data(), kernels, &derivatives[a]);
+            convolve(full_q_2, dq.data(), kernels, a, &derivatives[a]);
             T sum = 0.0;
             for (int i = 0; i < M; ++i)
                 sum += full_q_1[i] * dq[i];

@@ -54,9 +54,9 @@ private:
     RealSpaceBond::Bonds bonds;
 
     /// q_out = g * q_in, one axis after another, on the full grid; a derivative replaces the kernel
-    /// of its axis
+    /// of axis derivative_axis
     void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
-                  const RealSpaceBond::Derivative* derivative = nullptr) const;
+                  int derivative_axis = -1, const RealSpaceBond::Derivative* derivative = nullptr) const;
     /// q on the full grid: q itself, or with a space group its expansion into buffer
     const T* expanded(const T* q, std::vector<T>& buffer) const;
     /// The full-grid q_full in the basis of the propagators (a copy of the reduced points with a space group)

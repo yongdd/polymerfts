@@ -1067,7 +1067,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             // into the fourier_basis tables by Pseudo::update_weighted_fourier_basis_mixed.
             // CudaFFT's real-coefficient forward is 2x the textbook DCT-II/DST-II
             // convention per transformed dimension (CudaRealTransform matches FFTW's
-            // unnormalized REDFT10/RODFT10, while the CPU FftwFFT/MklFFT scale by 0.5);
+            // unnormalized REDFT10/RODFT10, while the CPU MakhoulFFT scales by 0.5);
             // the coefficient product therefore carries 4^DIM, compensated here.
             // (All dimensions are r2r here: mixed periodic/non-periodic is rejected.)
             // [type-specific algorithm] DCT/DST coefficients are real for real fields and interleaved complex pairs for complex fields.

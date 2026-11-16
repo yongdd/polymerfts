@@ -28,10 +28,6 @@
 #include "FFTFactory.h"
 #include "MakhoulTransform.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 /**
  * @class CrysFFTPmmm
  * @brief Pmmm crystallographic FFT: diffusion through the DCT-II/III of the physical grid.
@@ -70,7 +66,7 @@ private:
         int Ny2 = nx_physical_[1];
         int Nz2 = nx_physical_[2];
 
-        const double PI = M_PI;
+        const double PI = std::numbers::pi;
 
         int idx = 0;
         for (int ix = 0; ix < Nx2; ++ix)

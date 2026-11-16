@@ -49,9 +49,6 @@ CpuFourierTransform<T>::CpuFourierTransform(
         // The DFT along the periodic axes and the series along the walls, through one real
         // FFT of the grid (a mixed box has at least two axes)
         mixed_fft_ = std::make_unique<MakhoulTransform>(nx, bc, createRealFFT(nx, backend));
-        for (BoundaryCondition b : bc)
-            if (b != BoundaryCondition::PERIODIC)
-                mixed_forward_scale_ *= 0.5;
     }
     else if (this->dim_ == 3)
         fft_ = createFFT<T, 3>({nx[0], nx[1], nx[2]}, {bc[0], bc[1], bc[2]}, backend);
@@ -94,7 +91,7 @@ void CpuFourierTransform<T>::forward_impl(const T* fields, int n_fields, double*
         errors.run([&] {
             if (this->mixed_)
                 mixed_fft_->forward(fields + f * n_grid, reinterpret_cast<std::complex<double>*>(coefficients + f * stride),
-                                    mixed_forward_scale_);
+                                    this->mixed_forward_scale_);
             else
                 fft_->forward(const_cast<T*>(fields + f * n_grid), coefficients + f * stride);
         });
@@ -107,8 +104,10 @@ void CpuFourierTransform<T>::backward_impl(const double* coefficients, int n_fie
     const long long n_grid = this->n_grid_;
     const long long stride = this->coefficient_stride();
     ParallelErrors errors;
-    // The inverse transforms work on thread-local copies of their input; a real field of a
-    // mixed box is the real part of the inverse
+    // The inverse transforms keep the coefficients: MakhoulTransform (mixed boxes and walls) and
+    // FFTW's complex-to-real transform, which overwrites its input, read them into thread-local
+    // scratch, and MKL and FFTW's complex-to-complex transform run out of place on them. A real
+    // field of a mixed box is the real part of the inverse
     #pragma omp parallel for
     for (int f = 0; f < n_fields; ++f)
         errors.run([&] {

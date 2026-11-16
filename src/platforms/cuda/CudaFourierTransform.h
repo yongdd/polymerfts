@@ -64,7 +64,6 @@ private:
 
     std::unique_ptr<CudaFFTBase<T>> fft_;                 ///< periodic or wall boxes
     std::unique_ptr<CudaMakhoulTransform<T>> mixed_fft_;  ///< boxes that mix periodic and wall axes
-    double mixed_forward_scale_ = 1.0;                    ///< 1/2 per wall axis: REDFT10/RODFT10 are twice the series
     cudaStream_t stream_ = nullptr;
 
     CudaDeviceBuffer<DeviceT> d_fields_;           ///< fields of a call (inputs, then outputs)

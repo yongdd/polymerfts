@@ -57,7 +57,6 @@ protected:
 private:
     std::unique_ptr<FFT<T>> fft_;                     ///< periodic or wall boxes
     std::unique_ptr<MakhoulTransform> mixed_fft_;     ///< boxes that mix periodic and wall axes
-    double mixed_forward_scale_ = 1.0;                ///< 1/2 per wall axis: FFTW's REDFT10/RODFT10 are twice the series
     std::vector<double> coefficients_in_;    ///< coefficients of the inputs of a term
     std::vector<double> coefficients_out_;   ///< accumulated output coefficients
 };

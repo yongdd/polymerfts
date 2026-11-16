@@ -65,9 +65,6 @@ CudaFourierTransform<T>::CudaFourierTransform(ComputationBox<T>* cb, std::vector
         // The DFT along the periodic axes and the series along the walls, through one cuFFT
         // of the grid (a mixed box has at least two axes)
         mixed_fft_ = std::make_unique<CudaMakhoulTransform<T>>(nx, bc);
-        for (BoundaryCondition b : bc)
-            if (b != BoundaryCondition::PERIODIC)
-                mixed_forward_scale_ *= 0.5;
     }
     else if (this->dim_ == 3)
         fft_ = std::make_unique<CudaFFT<T, 3>>(std::array<int, 3>{nx[0], nx[1], nx[2]},
@@ -168,7 +165,7 @@ void CudaFourierTransform<T>::transform_forward(int n_fields, double* d_coeffici
             // The coefficients of a field start an even number of doubles apart: 16-byte aligned
             mixed_fft_->forward(reinterpret_cast<const DeviceT*>(d_fields + f * field_pitch_),
                                 reinterpret_cast<cuDoubleComplex*>(d_coefficients + f * coefficient_pitch_),
-                                mixed_forward_scale_, stream_);
+                                this->mixed_forward_scale_, stream_);
         }
         else if (this->periodic_)
             fft_->forward_stream(d_fields + f * field_pitch_,

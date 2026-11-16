@@ -1,24 +1,14 @@
 /**
  * @file FftwFFT.h
- * @brief FFTW3 implementation of spectral transforms with mixed BC support.
+ * @brief FFTW3 implementation of the periodic FFT and of the real FFT under MakhoulTransform.
  *
- * This header provides FftwFFT, which implements spectral transforms using
- * FFTW3 and supports all boundary conditions (FFT/DCT/DST).
- *
- * **Supported Boundary Conditions:**
- *
- * - PERIODIC: Standard FFT (real-to-complex) using FFTW r2c/c2r
- * - REFLECTING: DCT-II forward, DCT-III backward (Neumann BC)
- * - ABSORBING: DST-II forward, DST-III backward (Dirichlet BC)
- *
- * **Memory Layout:**
- *
- * - Periodic BC: Complex array has size Nx × Ny × (Nz/2+1) for Hermitian symmetry
- * - Non-periodic BC: "Complex" array has same size as real array (all real coefficients)
+ * FftwFFT is the periodic FFT of the FFT<T> interface (r2c/c2r for real
+ * fields, c2c for complex fields); the complex array of a real field has
+ * size Nx × Ny × (Nz/2+1) for Hermitian symmetry. Boxes of reflecting and
+ * absorbing axes run MakhoulFFT over FftwRealFFT instead (createFFT()).
  *
  * @see FFT for the abstract interface
  * @see MakhoulTransform for the DCT and DST
- * @see FftwFFT for FFTW implementation
  * @see CudaFFT for GPU implementation
  */
 
@@ -31,7 +21,6 @@
 #include <complex>
 #include <fftw3.h>
 #include "FFT.h"
-#include "ComputationBox.h"
 #include "MakhoulTransform.h"
 
 /**
@@ -62,11 +51,9 @@ public:
 
 /**
  * @class FftwFFT
- * @brief FFTW3-based FFT with support for all boundary conditions.
+ * @brief FFTW3-based periodic FFT.
  *
- * Uses FFTW3 for periodic FFT and MakhoulTransform over FftwRealFFT for non-periodic BC.
- *
- * @tparam T   Input type for forward transform (typically double)
+ * @tparam T   Input type for forward transform (double or std::complex<double>)
  * @tparam DIM Dimensionality of the transform (1, 2, or 3)
  *
  * **Thread Safety:**
@@ -74,7 +61,7 @@ public:
  * FFTW plan execution is thread-safe, but plan creation/destruction is not.
  * All plans are created in the constructor and destroyed in the destructor.
  *
- * **Arrays of the periodic transforms:**
+ * **Arrays of the transforms:**
  *
  * The plans run on the caller's arrays through FFTW's new-array execute
  * functions when FFTW allows it: the array has the alignment of the planning
@@ -88,77 +75,46 @@ public:
  *
  * **Normalization:**
  *
- * Backward transforms include 1/N scaling so forward(backward(x)) = x.
+ * Backward transforms include 1/N scaling so backward(forward(x)) = x.
  */
 template <typename T, int DIM>
 class FftwFFT : public FFT<T>
 {
 private:
     std::array<int, DIM> nx_;                      ///< Grid dimensions
-    std::array<BoundaryCondition, DIM> bc_;        ///< Boundary conditions per dimension
     int total_grid_;                               ///< Total real grid size
-    int total_complex_grid_;                       ///< Total "complex" grid size
-    bool is_all_periodic_;                         ///< True if all BCs are periodic
+    int total_complex_grid_;                       ///< Total complex grid size
 
-    // FFTW plans for periodic FFT, made on fftw_malloc arrays that are freed after planning
+    // FFTW plans, made on fftw_malloc arrays that are freed after planning
     fftw_plan plan_forward_ = nullptr;             ///< Forward (r2c or c2c); keeps its input
     fftw_plan plan_backward_ = nullptr;            ///< Backward (c2r, which overwrites its input, or c2c)
-
-    /// DCT/DST of the grid through one real FFT (non-periodic BC only)
-    std::unique_ptr<MakhoulTransform> makhoul_;
 
     /// Destroy the plans (also after a failed construction); idempotent.
     void release();
 
-    /// Periodic forward transform: modes = FFT of field (half spectrum for a real field)
+    /// Forward transform: modes = FFT of field (half spectrum for a real field)
     void periodic_forward(const T* field, std::complex<double>* modes) const;
 
-    /// Periodic backward transform with the 1/N normalization: field = IFFT of modes
+    /// Backward transform with the 1/N normalization: field = IFFT of modes
     void periodic_backward(const std::complex<double>* modes, T* field) const;
 
-    /// Initialize FFTW plans for periodic FFT.
+    /// Initialize the FFTW plans.
     void initPeriodicFFT();
-
-    /// Set up the DCT/DST of the grid for non-periodic BC.
-    void initNonPeriodicFFT();
-
-    /// Compute complex grid size based on dimensions and input type.
-    void computeComplexGridSize();
 
 public:
     /**
-     * @brief Construct FFTW FFT object for given grid dimensions (periodic BC).
-     *
-     * For backward compatibility, creates an FFT with all periodic boundaries.
+     * @brief Construct the FFTW FFT of a periodic grid.
      *
      * @param nx Grid dimensions [Nx] for 1D, [Nx, Ny] for 2D, [Nx, Ny, Nz] for 3D
      */
     FftwFFT(std::array<int, DIM> nx);
 
-    /**
-     * @brief Construct FFTW FFT object with specified boundary conditions.
-     *
-     * @param nx Grid dimensions
-     * @param bc Boundary conditions per dimension
-     */
-    FftwFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc);
-
     /// Destructor. Frees the FFTW plans.
     ~FftwFFT();
 
     /**
-     * @brief Check if all boundary conditions are periodic.
-     * @return true if all periodic, false otherwise
-     */
-    bool is_all_periodic() const { return is_all_periodic_; }
-
-    /**
-     * @brief Get total "complex" grid size.
-     *
-     * For periodic: Nx × Ny × (Nz/2+1)
-     * For non-periodic: same as real grid size
-     *
-     * @return Total complex grid size
+     * @brief Get total complex grid size: Nx × Ny × (Nz/2+1) for a real field,
+     *        Nx × Ny × Nz for a complex field.
      */
     int get_total_complex_grid() const { return total_complex_grid_; }
 
@@ -169,58 +125,33 @@ public:
     int get_total_grid() const { return total_grid_; }
 
     /**
-     * @brief Get boundary condition for a dimension.
-     * @param dim Dimension index
-     * @return Boundary condition
-     */
-    BoundaryCondition get_bc(int dim) const { return bc_[dim]; }
-
-    /**
      * @brief Perform forward FFT (complex output interface).
-     *
-     * Implements FFT<T> interface for backward compatibility.
      *
      * @param rdata Input: real array
      * @param cdata Output: complex array
-     *
-     * @throws Exception if any dimension is non-periodic
      */
     void forward(T *rdata, std::complex<double> *cdata) override;
 
     /**
      * @brief Perform backward FFT (complex input interface).
      *
-     * Implements FFT<T> interface for backward compatibility.
-     *
      * @param cdata Input: complex array
      * @param rdata Output: real array
-     *
-     * @throws Exception if any dimension is non-periodic
      */
     void backward(std::complex<double> *cdata, T *rdata) override;
 
     /**
-     * @brief Perform forward transform (real coefficient interface).
-     *
-     * Works for all boundary conditions:
-     * - PERIODIC: real-to-complex FFT (output is interleaved real/imag)
-     * - REFLECTING: DCT-II
-     * - ABSORBING: DST-II
+     * @brief Perform forward FFT (real coefficient interface).
      *
      * @param rdata Input: real array of size total_grid
-     * @param cdata Output: coefficients (size total_complex_grid)
+     * @param cdata Output: interleaved real/imaginary coefficients (2 × total_complex_grid doubles)
      */
     void forward(T *rdata, double *cdata) override;
 
     /**
-     * @brief Perform backward transform (real coefficient interface).
+     * @brief Perform backward FFT with the 1/N normalization (real coefficient interface).
      *
-     * Works for all boundary conditions:
-     * - PERIODIC: complex-to-real IFFT with 1/N normalization
-     * - REFLECTING: DCT-III with normalization
-     * - ABSORBING: DST-III with normalization
-     *
-     * @param cdata Input: Fourier coefficients
+     * @param cdata Input: interleaved real/imaginary coefficients
      * @param rdata Output: real array
      */
     void backward(double *cdata, T *rdata) override;
