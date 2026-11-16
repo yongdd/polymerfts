@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import math
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -461,7 +462,7 @@ def test_literal_params(tmp_path, code, expected):
     'import other as np\nparams = {"f": np.sqrt(4.)}',
     # Constants changed by control flow, a function (global), an import or a match capture
     'f = .4\nif True:\n    f = .6\nparams = {"f": f}',
-    'f = .4\ndef change():\n    global f\n    f = .6\nchange()\nparams = {"f": f}',
+    'def change():\n    global f\n    f = .6\nf = .4\nchange()\nparams = {"f": f}',
     'f = .4\nfrom math import pi as f\nparams = {"f": f}',
     'f = .4\nmatch .6:\n    case f:\n        pass\nparams = {"f": f}',
 ))
@@ -478,9 +479,18 @@ def test_params_that_are_not_literal_are_refused(tmp_path, code):
     'model = params["chain_model"].upper()\nlast = params["nx"][index]\nkind = params["polymers"][0]["blocks"][index]["type"]',
     'import numpy as np\nw = np.zeros(params["nx"])\nn = np.prod(params["nx"]) + len(params["lx"])\n'
     'noise = np.random.normal(0, 1, params["nx"])',
-    'import numpy as np\nw = np.asarray(initial).reshape(params["nx"])',
+    'import numpy as np\ninitial = np.zeros(24)\nw = np.asarray(initial).reshape(params["nx"])\nv = np.array(initial, dtype=float).reshape(params["nx"])',
+    'import numpy as np\ndef fields(initial):\n    return np.asarray(initial["w_Zed"]).reshape(params["nx"])',
     'import numpy as np\nfrom scipy.ndimage import zoom\nw = zoom(np.zeros((2, 2, 2)), params["nx"] / np.array([2, 2, 2]))',
     'import numpy as np\nnx = params["nx"]\nw = np.zeros(nx)\ncenter = np.array([.5, .5, .5]) * params["lx"]',
+    # Other arguments of such calls: literals, library functions (also by an alias), builtins, and
+    # library calls and arithmetic of such values
+    'import numpy as np\nw = np.broadcast_to(np.cos(2 * np.pi * np.arange(params["nx"][2]) / params["nx"][2]), params["nx"])\n'
+    'std = np.sqrt(2.) * 3\nnoise = np.random.normal(0., std, params["nx"])\nv = np.zeros(params["nx"], dtype=np.float64)\n'
+    'longest = max(params["nx"], params["lx"], key=sum)',
+    'import numpy as np\nw = np.zeros(params["nx"], dtype=complex)\nmask = np.ones(params["nx"], dtype=bool)',
+    'import numpy as np\nzeros = np.zeros\nnorm = np.linalg.norm\nw = zeros(params["nx"])\n'
+    'longest = max(params["nx"], params["lx"], key=norm)',
     # Method calls on helper lists that do not hold params
     'positions = [[0., 0.]]\npositions.append([.5, .5])\nfor y, z in positions:\n    print(y + z)',
 ))
@@ -505,11 +515,17 @@ def test_reading_params_where_it_cannot_change_is_accepted(tmp_path, code):
     P + '\nfrom polymerfts import scft\nbox = [4., 4., 4.]\nbox[2] = 6.\ncalculation = scft.SCFT(params=dict(params, lx=box))',
     P + '\nfrom polymerfts import scft\nbox = [4., 4., 4.]\nrun_params = dict(params, lx=box)\nbox.append(5.)\n'
     'box.pop(0)\ncalculation = scft.SCFT(run_params)',
+    P + '\nfrom polymerfts import SCFT\nbox = [4., 4., 4.]\nbox[2] = 6.\nSCFT(dict(params, lx=[box[0], box[1], box[2]]))',
     P + '\nfrom polymerfts import SCFT\nblocks = [{"type": "Zed", "length": .4}, {"type": "long_B", "length": .6}]\n'
     'polymers = [{"volume_fraction": 1., "blocks": blocks}]\nblocks[0]["length"] = .3\nblocks[1]["length"] = .7\n'
     'calculation = SCFT(dict(params, polymers=polymers))',
-    # params handed on to code that could change it
+    # params handed on to code that could change it, also by an index the reader cannot know
     P + '\nfor block in params["polymers"][0]["blocks"]:\n    block["length"] *= 2',
+    P + '\nimport sys\nkey = sys.argv[0] and "polymers"\nfor item in params[key]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\nkeys[0] = "polymers"\nfor item in params[keys[0]]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\nkeys[0] = "polymers"\nkey = keys[0]\nfor item in params[key]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\ndef pick():\n    keys[0] = "polymers"\npick()\nkey = keys[0]\nfor item in params[key]:\n'
+    '    item["volume_fraction"] = .5',
     P + '\nfor other in [params]:\n    other["ds"] = .02',
     P + '\n(other := params["nx"]).append(8)',
     P + '\nmatch params:\n    case {"polymers": polymers}:\n        polymers[0]["volume_fraction"] = .5',
@@ -519,6 +535,37 @@ def test_reading_params_where_it_cannot_change_is_accepted(tmp_path, code):
     P + '\ntweak = lambda shape: shape.append(8)\ntweak(params["nx"])',
     P + '\npositions = []\npositions.append(params["lx"])\npositions[0][0] = 9.',
     P + '\ndef grow(shape):\n    shape.append(8)\nprint(max(params["nx"], params["lx"], key=grow))',
+    # Callbacks of the script that a builtin or library could hand a list to
+    P + '\ngrow = lambda shape: shape.append(8)\nprint(max(params["nx"], params["lx"], key=grow))',
+    P + '\nclass Tools:\n    @staticmethod\n    def grow(shape):\n        shape.append(8)\nprint(max(params["nx"], params["lx"], key=Tools.grow))',
+    P + '\nclass Grower:\n    def grow(self, shape):\n        shape.append(8)\nprint(min(params["nx"], params["lx"], key=Grower().grow))',
+    P + '\nimport functools\ndef grow(shape, n):\n    shape.append(n)\nmeasure = functools.partial(grow, n=8)\n'
+    'print(max(params["nx"], params["lx"], key=measure))',
+    P + '\nfrom helpers import grow\nprint(max(params["nx"], params["lx"], key=grow))',
+    P + '\ndef grow(shape):\n    shape.append(8)\nmeasure = len\nmeasure = grow\nprint(max(params["nx"], params["lx"], key=measure))',
+    P + '\nimport numpy as np\ndef grow(shape):\n    shape.append(8)\nmeasure = np.sum\nmeasure = grow\n'
+    'print(max(params["nx"], params["lx"], key=measure))',
+    P + '\ndef grow(shape):\n    shape.append(8)\ncallbacks = {"grow": 0}\ncallbacks["grow"] = grow\n'
+    'print(max(params["nx"], params["lx"], key=callbacks["grow"]))',
+    P + '\nfrom scipy.optimize import minimize\nclass Model:\n    @staticmethod\n    def cost(x, box):\n        box[0] = 9.\n'
+    '        return x @ x\nfit = minimize(Model.cost, [1.], args=params["lx"])',
+    # Containers the script fills with such a callback, also unpacked into the call
+    P + '\ndef grow(shape):\n    shape.append(8)\noptions = {}\noptions["key"] = grow\n'
+    'print(max(params["nx"], params["lx"], **options))',
+    P + '\nfrom scipy.optimize import minimize\ndef cost(x, box):\n    box[0] = 9.\n    return x @ x\nsetup = [0, [1.]]\n'
+    'setup[0] = cost\nfit = minimize(*setup, args=params["lx"])',
+    P + '\ndef grow(shape):\n    shape.append(8)\ncallbacks = [0]\ncallbacks[0] = grow\n'
+    'print(max(params["nx"], params["lx"], key=max(callbacks)))',
+    P + '\nimport numpy as np\ndef grow(x, shape):\n    shape.append(8)\n    return 0.\nfuncs = [0., 0.]\nfuncs[1] = grow\n'
+    'np.piecewise(np.zeros(2), [[True, False]], funcs, params["nx"])',
+    P + '\ndef grow(shape):\n    shape.append(8)\nfactors = [1.]\nfactors[0] = grow\nscale = factors[0]\n'
+    'print(max(params["nx"], params["lx"], key=scale))',
+    # A reshape of the script, also reached through a builtin or library that returns its argument
+    P + '\nclass Grid:\n    def reshape(self, shape):\n        shape.append(8)\nGrid().reshape(params["nx"])',
+    P + '\nfrom helpers import Grid\nGrid().reshape(params["nx"])',
+    P + '\nclass Grid:\n    def reshape(self, shape):\n        shape.append(8)\nmax([Grid()]).reshape(params["nx"])',
+    P + '\nimport numpy as np\nclass Grid(np.ndarray):\n    def reshape(self, shape):\n        shape.append(8)\n'
+    'np.array(np.zeros(2).view(Grid), subok=True).reshape(params["nx"])',
     P + '\nimport json\njson.dump(params, open("copy.json", "w"))',
     P + '\nimport numpy as np\nnp.random.shuffle(params["lx"])',
     P + '\nsettings = dict(shape=params["nx"])\nsettings["shape"].append(8)',
@@ -543,6 +590,10 @@ def test_changes_and_escapes_of_params_are_refused(tmp_path, code):
     (P + '\nfrom importlib import import_module\nimport_module("__main__").params["ds"] = .02', 'Imports of'),
     (P + '\nimport numpy as np\ndef grow(shape):\n    shape.append(8)\nnp.zeros = grow\nw = np.zeros(params["nx"])',
      'replaces numpy.zeros'),
+    (P + '\nimport numpy as np\ndef grow(*args):\n    args[-1].append(8)\nrandom = np.random\nrandom.normal = grow\n'
+     'noise = np.random.normal(0., 1., params["nx"])', 'replaces numpy.random.normal'),
+    (P + '\nfrom scipy.optimize import OptimizeResult\ndef grow(shape):\n    shape.append(8)\nholder = OptimizeResult()\n'
+     'holder.reshape = grow\nholder.reshape(params["nx"])', 'replaces reshape'),
 ))
 def test_rebinding_and_reflection_are_refused(tmp_path, code, message):
     with pytest.raises(ValueError, match=message):
@@ -555,14 +606,10 @@ def test_rebinding_and_reflection_are_refused(tmp_path, code, message):
      {'relax_cell': False}),
     (P + '\nfrom polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(params=params)', {}),
     (P + '\nimport polymerfts as pf\nsimulation = pf.LFTS(params, random_seed=1)', {}),
-    ('from polymerfts import SCFT as MeanField\nfrom polymerfts.fts.clfts import CLFTS\n' + P
-     + '\nMeanField(params)\nCLFTS(params=params)', {}),
+    ('from polymerfts.fts.clfts import CLFTS\n' + P + '\nCLFTS(params=params)', {}),
     # A simulation in a function can be defined before params.
     ('from polymerfts import scft\ndef main():\n    return scft.SCFT(params=params)\n' + P
      + '\nif __name__ == "__main__":\n    main()', {}),
-    # Annotations, isinstance and `is` name a simulation class without calling it.
-    (P + '\nfrom polymerfts import SCFT, lfts\ndef run() -> SCFT:\n    return SCFT(params)\ncalculation: SCFT = run()\n'
-     'checked = isinstance(calculation, (SCFT, lfts.LFTS)) or type(calculation) is lfts.LFTS', {}),
 ))
 def test_export_describes_the_params_the_simulation_receives(tmp_path, code, changes):
     assert TOOL['read_input'](script(tmp_path, code)) == {**params(), **changes}
@@ -572,10 +619,16 @@ def test_export_describes_the_params_the_simulation_receives(tmp_path, code, cha
     (P + '\nfrom polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(dict(params, ds=.02))', 'different params'),
     (P + '\nfrom polymerfts import SCFT\nfor chi in (10., 20.):\n    SCFT(dict(params, chi_n={"Zed,long_B": chi}))',
      'cannot read'),
+    ('chi = 10.\n' + P + '\nfrom polymerfts import SCFT\nSCFT(dict(params, chi_n={"Zed,long_B": chi}))\nchi = 20.',
+     'cannot read'),
     (P + '\nfrom polymerfts import SCFT\ndef run(polymers):\n    return SCFT(dict(params, polymers=polymers))',
      'cannot read'),
     (P + '\nfrom polymerfts import SCFT\nSCFT(**{"params": params})', 'cannot read'),
     (P + '\nfrom polymerfts import SCFT\nSolver = SCFT\nSolver(params)', 'other than by calling'),
+    (P + '\nfrom polymerfts import SCFT\ndef run() -> SCFT:\n    return SCFT(params)', 'other than by calling'),
+    (P + '\nfrom polymerfts import SCFT\ncalculation = SCFT(params)\nchecked = isinstance(calculation, SCFT)',
+     'other than by calling'),
+    ('from polymerfts import SCFT as MeanField\n' + P + '\nMeanField(dict(params, ds=.02))', 'another name'),
     (P + '\nfrom polymerfts import SCFT\nclass Mine(SCFT):\n    pass', 'other than by calling'),
     (P + '\nimport functools\nfrom polymerfts import scft\nmake = functools.partial(scft.SCFT, {"ds": .5})',
      'other than by calling'),
@@ -639,6 +692,69 @@ def test_shipped_examples_are_read():
         except ValueError as exc:
             failed.append(f'{example}: {exc}')
     assert not failed, '\n'.join(failed)
+
+
+# A stand-in polymerfts that records the params each simulation receives and runs nothing
+STAND_IN = '''
+import copy, sys
+from unittest import mock
+
+received = []
+
+
+class Simulation:
+    def __init__(self, params=None, *args, **kwargs):
+        received.append(copy.deepcopy(params))
+
+    def __getattr__(self, name):
+        return mock.MagicMock()
+
+
+SCFT, LFTS, CLFTS, GibbsEnsemble = (type(name, (Simulation,), {}) for name in ('SCFT', 'LFTS', 'CLFTS', 'GibbsEnsemble'))
+
+
+def __getattr__(name):
+    if name.startswith('__'):
+        raise AttributeError(name)
+    return sys.modules[__name__] if name in ('scft', 'lfts', 'clfts') else mock.MagicMock()
+'''
+# Runs each example in a directory of its own with the stand-in and writes what its simulations received
+RUN_EXAMPLES = '''
+import json, os, runpy, shutil, sys
+from pathlib import Path
+work = Path(sys.argv[1])
+sys.path.insert(0, str(work))
+import polymerfts
+received = {}
+for i, example in enumerate(map(Path, sys.argv[2:])):
+    (work / str(i)).mkdir()
+    os.chdir(work / str(i))
+    for data in example.parent.glob('*.mat'):  # input fields that the example loads
+        if data.name in example.read_text(encoding='utf-8'):
+            shutil.copy(data, '.')
+    polymerfts.received.clear()
+    try:
+        runpy.run_path(str(example), run_name='__main__')
+    except (Exception, SystemExit):
+        pass  # the stand-in's results end some examples after their simulations are constructed
+    received[example.as_posix()] = polymerfts.received[:]
+(work / 'received.json').write_text(json.dumps(received))
+'''
+
+
+def test_examples_give_their_simulations_the_exported_params(tmp_path):
+    # The export equals what every simulation of the example receives when it runs (with the stand-in).
+    (tmp_path / 'polymerfts.py').write_text(STAND_IN)
+    paths = [ROOT / 'examples' / example for example in EXAMPLES_EXPORTED + EXAMPLES_READ]
+    run = subprocess.run([sys.executable, '-I', '-c', RUN_EXAMPLES, str(tmp_path), *map(str, paths)],
+                         capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                         env=dict(os.environ, MPLBACKEND='Agg'))
+    assert run.returncode == 0, run.stderr[-2000:]
+    received = json.loads((tmp_path / 'received.json').read_text())
+    for path in paths:
+        export = json.loads(json.dumps(TOOL['read_input'](path)))
+        runs = received[path.as_posix()]
+        assert runs and all(params == export for params in runs), path.relative_to(ROOT)
 
 
 @pytest.mark.parametrize('example, message', (

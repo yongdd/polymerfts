@@ -302,9 +302,9 @@ SIMULATIONS = {"SCFT", "LFTS", "CLFTS", "GibbsEnsemble"}
 REFLECTION = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "compile",
               "__import__", "import_module", "__builtins__", "__dict__", "modules", "__main__"}
 RUNTIME_MODULES = {"__main__", "importlib", "builtins", "copy", "copyreg"}
-# Functions that read a list of scalars without keeping it
+# Builtins that read a list of scalars without keeping it, or fail on one (complex, also as a dtype)
 READING_BUILTINS = {"print", "len", "list", "tuple", "sorted", "sum", "min", "max", "range", "zip", "enumerate",
-                    "str", "repr", "int", "float", "abs", "round", "any", "all"}
+                    "str", "repr", "int", "float", "complex", "bool", "abs", "round", "any", "all"}
 LIBRARIES = {"numpy", "scipy", "math", "polymerfts"}
 # Their functions that change a list in place: numpy.random.shuffle (also as a method of a
 # Generator or RandomState class). NumPy's other in-place functions (put, place, putmask, copyto,
@@ -367,10 +367,16 @@ def read_python_params(path):
     module_level = {id(statement) for statement in tree.body}
     redeclared = {name for node in nodes if isinstance(node, (ast.Global, ast.Nonlocal)) for name in node.names}
 
-    def origin(name):
-        """The dotted path a name is imported as, if module-level imports alone bind it, else None."""
+    def origin(name, seen=()):
+        """The dotted path a name is imported as, if module-level imports alone bind it, or that it
+        was assigned from once at module level (an alias such as random = np.random), else None."""
+        nodes = binders.get(name, [None])
+        statement = parents.get(id(nodes[0]))
+        if len(nodes) == 1 and isinstance(statement, ast.Assign) and id(statement) in module_level \
+                and name not in seen:
+            return dotted(statement.value, (*seen, name))
         paths = set()
-        for node in binders.get(name, [None]):
+        for node in nodes:
             if not (isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) in module_level):
                 return None
             for alias in node.names:
@@ -382,11 +388,11 @@ def read_python_params(path):
                     paths.add(alias.name if alias.asname else name)
         return paths.pop() if len(paths) == 1 else None
 
-    def dotted(node):
+    def dotted(node, seen=()):
         """The dotted path of an imported name or of an attribute of one, else None."""
         if isinstance(node, ast.Name):
-            return origin(node.id)
-        owner = dotted(node.value) if isinstance(node, ast.Attribute) else None
+            return origin(node.id, seen)
+        owner = dotted(node.value, seen) if isinstance(node, ast.Attribute) else None
         return owner and owner + "." + node.attr
 
     def builtin(node, *names):
@@ -463,33 +469,11 @@ def read_python_params(path):
     if not isinstance(params, dict):
         raise unsupported("The Python file needs a module-level params dictionary.")
 
-    def bound_once(names):
-        for name in names:
-            if len(binders[name]) > 1:
-                source = "" if name == "params" else ", which the exported params is read from,"
-                raise unsupported(f"{name}{source} is bound more than once.")
-
-    bound_once(name for name, value in history if container_ids(value) & container_ids(params))
     # From here on, only a name bound once has a known value everywhere.
     for name in [name for name in symbols if len(binders[name]) > 1]:
         del symbols[name]
 
-    # Simulation classes: called with readable params, or named in annotations, isinstance and `is`.
-    annotations = {id(part) for node in nodes for annotation in (getattr(node, "annotation", None),
-                                                                 getattr(node, "returns", None))
-                   if annotation is not None for part in ast.walk(annotation)}
-    simulation_names = SIMULATIONS | {alias.asname for node in nodes if isinstance(node, ast.ImportFrom)
-                                      for alias in node.names if alias.name in SIMULATIONS and alias.asname}
-
-    def names_a_class(node):
-        parent = parents.get(id(node))
-        if isinstance(parent, ast.Tuple):
-            node, parent = parent, parents.get(id(parent))
-        return (id(node) in annotations
-                or isinstance(parent, ast.Call) and builtin(parent.func, "isinstance", "issubclass")
-                and parent.args[1:2] == [node]
-                or isinstance(parent, ast.Compare) and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops))
-
+    # Simulation classes, imported under their own names and only called with readable params
     received, received_from = [], set()
     for node in nodes:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -498,22 +482,22 @@ def read_python_params(path):
                 raise unsupported("Imports of __main__, importlib, builtins or copy can change params at run time.")
             if any(alias.name == "*" for alias in node.names):
                 raise unsupported("A star import can bind any name, params or a simulation class too.")
+            if any(alias.name in SIMULATIONS and alias.asname not in (None, alias.name) for alias in node.names):
+                raise unsupported("A simulation class is imported under another name.")
         name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
         if name in REFLECTION:
             raise unsupported(f"Reflection ({name}) can change params at run time.")
         if name == "from_file":
             raise ValueError("from_file loads params when the script runs; export that parameter file instead.")
         if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load) \
-                and (dotted(node) or "").split(".")[0] in LIBRARIES:
-            raise unsupported(f"The script replaces {dotted(node)}.")  # a simulation class or a library function
-        if name not in (simulation_names if isinstance(node, ast.Name) else SIMULATIONS) \
-                or not isinstance(node.ctx, ast.Load):
+                and ((dotted(node) or "").split(".")[0] in LIBRARIES or node.attr == "reshape"):
+            # a simulation class, a library function, or the reshape that a list may be given to
+            raise unsupported(f"The script replaces {dotted(node) or node.attr}.")
+        if name not in SIMULATIONS or not isinstance(node.ctx, ast.Load):
             continue
         call = parents.get(id(node))
         if not (isinstance(call, ast.Call) and call.func is node):
-            if names_a_class(node):
-                continue
-            raise unsupported(f"{name} is used other than by calling it, in an annotation or in isinstance.")
+            raise unsupported(f"{name} is used other than by calling it.")
         path = dotted(node) or ""
         if path.split(".")[0] != "polymerfts" or path.split(".")[-1] not in SIMULATIONS:
             raise unsupported(f"{name} is not imported from polymerfts by a module-level import.")
@@ -529,28 +513,62 @@ def read_python_params(path):
         if not isinstance(received[-1], dict):
             raise unsupported(f"{name} needs a params dictionary.")
         read.update(id(part) for part in ast.walk(given))
+    if any(value != received[0] for value in received):
+        raise unsupported("The script runs calculations with different params, which one PSCF input cannot describe.")
+
+    def closure(names):
+        """The names and every module-level name their values were computed from."""
+        found, pending = set(), list(names)
+        while pending:
+            name = pending.pop()
+            if name not in found:
+                found.add(name)
+                pending.extend(computed_from.get(name, ()))
+        return found
 
     # The containers the export is read from: those of params, of the params the simulations
     # receive and of every module-level value these were computed from. The names that share
     # one of them must keep it unchanged.
-    sources, pending = set(), ["params", *received_from]
-    while pending:
-        name = pending.pop()
-        if name not in sources:
-            sources.add(name)
-            pending.extend(computed_from.get(name, ()))
+    sources = closure(["params", *received_from])
     exported = container_ids(params).union(*map(container_ids, received),
                                            *(container_ids(value) for name, value in history if name in sources))
     tracked = {name for name, value in history if container_ids(value) & exported}
-    bound_once(tracked)
+    for name in sorted(tracked):
+        if len(binders[name]) > 1:
+            source = "" if name == "params" else ", which the exported params is read from,"
+            raise unsupported(f"{name}{source} is bound more than once.")
 
     # Uses of params and of the names that share its containers
-    script_functions = {node.name for node in nodes
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
-    for node in nodes:
-        if isinstance(node, ast.Assign) and (isinstance(node.value, ast.Lambda) or
-                                             isinstance(node.value, ast.Name) and node.value.id in script_functions):
-            script_functions.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    def known(node):
+        """The value of a literal expression that the script cannot have changed: its names, and the
+        names their values were computed from, hold scalars or containers of the export, which the
+        script must keep unchanged."""
+        looked_up.clear()
+        value = evaluate(node)
+        if any(kind_of(symbols[name]) and name not in tracked for name in closure(looked_up)):
+            raise ValueError("a container the script can change")
+        return value
+
+    def library(node):
+        """Whether node is a builtin that reads lists or a library function that does not change them."""
+        path = (dotted(node) or "").split(".")
+        return builtin(node, *READING_BUILTINS) or path[0] in LIBRARIES and path[-1] not in IN_PLACE
+
+    def data(node):
+        """Whether node is a known literal, a library function (also by an alias), or a library call or
+        arithmetic of such values: never a function of the script (lambda, method, partial, other
+        import, ...) or a container that the script could fill with one, which a library could hand
+        a list to."""
+        try:
+            known(node)
+            return True
+        except NOT_LITERAL:
+            pass
+        if isinstance(node, ast.Call):
+            return library(node.func) and all(map(data, [*node.args, *(k.value for k in node.keywords)]))
+        if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+            return all(map(data, [node.left, node.right] if isinstance(node, ast.BinOp) else [node.operand]))
+        return library(node)
 
     def possible(node):
         """The values a subscript of a tracked name can take; an unknown index selects any item."""
@@ -559,7 +577,7 @@ def read_python_params(path):
         values = []
         for container in possible(node.value):
             try:
-                index = None if isinstance(node.slice, ast.Slice) else evaluate(node.slice)
+                index = None if isinstance(node.slice, ast.Slice) else known(node.slice)
             except NOT_LITERAL:
                 values.extend(container.values() if isinstance(container, dict) else container)
             else:
@@ -579,14 +597,12 @@ def read_python_params(path):
         if kind > 1:
             return False
         if isinstance(parent, ast.Call):  # a list of scalars, given to a builtin, a library or reshape
-            function, arguments = parent.func, [*parent.args, *(k.value for k in parent.keywords)]
-            if any(isinstance(a, ast.Lambda) or isinstance(a, ast.Name) and a.id in script_functions
-                   for a in arguments):
-                return False  # a function of the script could receive the list
-            path = (dotted(function) or "").split(".")
-            return (builtin(function, *READING_BUILTINS) or path[0] in LIBRARIES and path[-1] not in IN_PLACE
-                    or isinstance(function, ast.Attribute) and function.attr == "reshape"
-                    and "reshape" not in script_functions)
+            function, others = parent.func, [a for a in (*parent.args, *parent.keywords) if a is not node]
+            owner = function.value if isinstance(function, ast.Attribute) and function.attr == "reshape" else None
+            array = isinstance(owner, ast.Call) and dotted(owner.func) in ("numpy.asarray", "numpy.array") \
+                and all(keyword.arg == "dtype" for keyword in owner.keywords)  # an ndarray, never a subclass
+            return ((library(function) or owner is not None and data(owner) or array)  # NumPy's reshape
+                    and all(data(a.value if isinstance(a, (ast.keyword, ast.Starred)) else a) for a in others))
         return (isinstance(parent, (ast.BinOp, ast.UnaryOp, ast.AugAssign, ast.Subscript,
                                     ast.If, ast.While, ast.Assert, ast.Expr))
                 or isinstance(parent, ast.Assign) and all(isinstance(t, (ast.Tuple, ast.List)) for t in parent.targets))
@@ -606,8 +622,6 @@ def read_python_params(path):
             kind = 3
         if not unchanged(top, kind):
             raise unsupported(f"{node.id} is used where the script or a library could change it.")
-    if any(value != received[0] for value in received):
-        raise unsupported("The script runs calculations with different params, which one PSCF input cannot describe.")
     return received[0] if received else params
 
 

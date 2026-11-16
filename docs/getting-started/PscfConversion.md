@@ -82,27 +82,44 @@ without running it and accepts only a script whose `params` it can follow:
   literal constants, `+ - * / **`, `np.sqrt`, `math.sqrt`, `np.pi`, `math.pi`,
   `[n] * 3` and `dict(base, key=value)`.
 - The script reads `params` only by indexing it down to a number, a string or a list
-  of numbers. Such a list may be given to builtins such as `len`, to functions of
-  NumPy, SciPy, `math` and polymerfts, to `.reshape` and to arithmetic. The script may
-  also print `params`, compare it (`in`, `is`, `==`) and loop over the keys of its
-  dictionaries.
+  of numbers. An index that is not a literal, or that is read or computed from a list or
+  dictionary the script could change, stands for every item. Such a list may be given to
+  arithmetic, to builtins such as `len`, `complex` and `bool`, to functions of NumPy,
+  SciPy, `math` and polymerfts, also under a name assigned one of them once at module level
+  (`zeros = np.zeros`), and to the `.reshape` of `np.asarray(...)` or `np.array(...)`
+  called with at most `dtype=`. The other arguments of such a call, and the object of any
+  other `.reshape`, must be values that cannot run code of the script: literals, constants,
+  lists of `params`, these functions and builtins (as in `dtype=complex` or `key=sum`), and
+  calls and arithmetic of such values written out in the call. A list, dictionary or array
+  that a name holds is not such a value, also given with `*` or `**`, since the script could
+  fill it with a function: write the computation in the call
+  (`np.cos(2 * np.pi * np.arange(n) / n)`, not a module-level `z`). The script may also
+  print `params`, compare it (`in`, `is`, `==`) and loop over the keys of its dictionaries.
 - `SCFT`, `LFTS`, `CLFTS` and `GibbsEnsemble`, imported from polymerfts at module
-  level, receive `params` or `dict(params, key=value)`. All simulations of the script
-  must receive the same dictionary; the export describes it, or `params` when the
-  script constructs no simulation.
+  level under their own names, are only called, with `params` or
+  `dict(params, key=value)`. All simulations of the script must receive the same
+  dictionary; the export describes it, or `params` when the script constructs no
+  simulation.
 
 Everything else is refused, in particular a change of `params` or of a list or dictionary
 that the exported dictionary is read from (assignment, `del`, augmented assignment,
 method call, `np.random.shuffle`), handing such a container to a function of the script
-or to other code, a second binding of `params`, of a name holding such a container or
-of a simulation class, `from_file`, star imports, reflection
+or to other code, also through a call that receives a function of the script with it (a
+lambda, function, method, `functools.partial`, a function imported from another module or
+a container holding one, for example as `key=` of `max` or as the function that
+`scipy.optimize.minimize` calls with `args=`), the `.reshape` of any other object (a class
+of the script, or an object a builtin or library returns, such as `max([grid])`), an
+assignment to an attribute named `reshape` or to an attribute of NumPy, SciPy, `math` or
+polymerfts (also through a name assigned one of them), a second binding of `params`, of a
+name holding such a container or of a simulation class, any other use of a simulation
+class (annotations, `isinstance`, `from polymerfts import SCFT as Solver`), `from_file`,
+star imports, reflection
 (`getattr`, `exec`, `sys.modules`, `__main__`, `importlib`, `builtins`, `copy`) and
 constants changed by control flow, `global` or `match`. The reader does not resolve
 scopes, so a local variable named like one of these also refuses the script.
-Annotations and `isinstance` may name the simulation classes. Code written to hide
-what it does, such as operators of objects the script defines or a library that
-keeps a list and hands it back, stays out of scope. Use a saved result or a JSON/YAML
-configuration for a model assembled or changed at run time.
+Code written to hide what it does, such as operators of objects the script defines or a
+library that keeps a list and hands it back, stays out of scope. Use a saved result or a
+JSON/YAML configuration for a model assembled or changed at run time.
 
 To try a complete conversion without running a simulation:
 

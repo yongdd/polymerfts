@@ -561,24 +561,36 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 ### Fixed
 
 - `scripts/pscf/pscf_converter.py` reads a Python parameter file by a short, strict policy
-  (2026-11-16) instead of following aliases, scopes and operators. It accepts a module-level
-  `params` literal built from numbers, strings, earlier literal constants, `+ - * / **`,
-  `np.sqrt`/`math.sqrt`, `np.pi`/`math.pi`, `[n] * 3` and `dict(base, key=value)`. The script may
-  read it only by indexing down to a number, a string or a list of numbers; such a list may be given
-  to builtins, NumPy, SciPy, `math`, polymerfts, `.reshape` or arithmetic. The script may also print
-  `params`, compare it and loop over the keys of its dictionaries, and give it to `SCFT`, `LFTS`,
-  `CLFTS` or `GibbsEnsemble` imported from polymerfts at module level. All simulations must receive
-  the same dictionary, which the export describes. Refused: a change of `params` or of a name
-  sharing its containers, such a container handed to a function of the script or to other code, a
-  second binding of these names, `from_file`, star imports, reflection, and constants changed by
-  control flow, `global` or `match`. A list or dictionary that the exported params is computed from,
-  such as `box` in `dict(params, lx=box)` or in `"lx": [box[0], box[1], box[2]]`, must not change
-  either, and `np.random.shuffle` of a list of params is refused. The reader does not resolve
-  scopes, so a local name equal to one of these refuses the script. Of the 59 example scripts 31 are read (21 before) and 18 exported
-  (13 before), with the same values wherever both readers read a script; among them `BCC`, `FCC`,
-  `SC`, `A15`, `Sigma`, both `ABC_Triblock_Sphere3D` and `Fddd`. `CanonicalCoexistence` and
-  `MonoclinicLamella3D`, which were exported with the module's `params`, are refused because their
-  simulations receive other params (tests/scripts/TestPscfConverter.py).
+  (2026-11-16) instead of following aliases of `params`, scopes and operators. It accepts a
+  module-level `params` literal built from numbers, strings, earlier literal constants, `+ - * /
+  **`, `np.sqrt`/`math.sqrt`, `np.pi`/`math.pi`, `[n] * 3` and `dict(base, key=value)`. The script
+  may read it only by indexing down to a number, a string or a list of numbers; an index read or
+  computed from a list or dictionary that the script could change stands for every item. Such a list
+  may be given to builtins (also `complex` and `bool`), to functions of NumPy, SciPy, `math` and
+  polymerfts, also under a name assigned one of them once at module level, to arithmetic and to the
+  `.reshape` of `np.asarray(...)` or `np.array(...)` called with at most `dtype=`. The other
+  arguments of that call, and the object of any other `.reshape`, must be literals, constants,
+  library functions, or their calls and arithmetic written in the call, so that no function of the
+  script receives the list (a lambda, function, method, `functools.partial`, imported function, or a
+  list, dictionary or array that the script fills with one, also given with `*` or `**`, as `key=`
+  of `max` or as the function that `scipy.optimize.minimize` calls with `args=`). The script may
+  also print `params`, compare it and loop over the keys of its dictionaries, and give it to `SCFT`,
+  `LFTS`, `CLFTS` or `GibbsEnsemble`, imported from polymerfts at module level under their own names
+  and only called. All simulations must receive the same dictionary, which the export describes.
+  Refused: a change of `params` or of a name sharing its containers, such a container handed to a
+  function of the script or to other code, a second binding of these names, an assignment to an
+  attribute named `reshape` or to an attribute of these libraries, also through a name assigned one
+  of them, other uses of the simulation classes (annotations, `isinstance`, `import ... as`),
+  `from_file`, star imports, reflection, and constants changed by control flow, `global` or `match`.
+  A list or dictionary that the exported params is computed from, such as `box` in `dict(params,
+  lx=box)` or in `"lx": [box[0], box[1], box[2]]`, must not change either, and `np.random.shuffle`
+  of a list of params is refused. The reader does not resolve scopes, so a local name equal to one
+  of these refuses the script. Of the 59 example scripts 31 are read (21 before) and 18 exported (13
+  before), with the same values wherever both readers read a script; among them `BCC`, `FCC`, `SC`,
+  `A15`, `Sigma`, both `ABC_Triblock_Sphere3D` and `Fddd`. A test runs the read examples with a
+  stand-in polymerfts and checks that every simulation receives the exported params.
+  `CanonicalCoexistence` and `MonoclinicLamella3D`, which main read with the module's `params`, are
+  refused because their simulations receive other params (tests/scripts/TestPscfConverter.py).
 - `plot_structure_function.ipynb` reads the structure functions of 1D and 2D L-FTS runs
   (2026-11-16); it assumed a 3D grid (`nx[2]`). It groups the modes into shells with `np.bincount`
   instead of a Python loop over the grid (tests/scripts/TestStructureFunctionPlot.py).
