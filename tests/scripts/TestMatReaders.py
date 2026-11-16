@@ -52,7 +52,10 @@ def test_auxiliary_reader_uses_file_representation(names, split, metadata, tmp_p
     for name, expected in zip(names, fields):
         np.testing.assert_array_equal(decoded[name], expected)
         # Selecting one species must still use all stored names to infer the format.
-        np.testing.assert_array_equal(AUX["monomer_field"](loaded, name), expected)
+        np.testing.assert_array_equal(MAT["read_monomer_fields"](loaded, [name])[name], expected)
+    w_aux, aux_names = AUX["auxiliary_fields"](loaded)
+    assert aux_names == list(names)
+    np.testing.assert_allclose(w_aux, inverse @ fields, rtol=1e-13, atol=1e-13)
     output = tmp_path / "aux.mat"
     assert AUX["main"]([str(path), "-o", str(output)]) == 0
     np.testing.assert_allclose(loadmat(output, squeeze_me=True)["w_aux"], inverse @ fields,

@@ -21,7 +21,7 @@ def aggregate(tmp_path, monkeypatch, spectra, counts=None, lx=(1., 1., 1.),
     for step, full, count in zip(range(100000, 500000, 100000), spectra, counts or [None] * 4):
         nx = full.shape
         data = {'nx': nx, 'lx': list(lx), **extra,
-                'structure_function_' + suffix: full[:, :, :nx[2] // 2 + 1]}
+                'structure_function_' + suffix: full[..., :nx[-1] // 2 + 1]}
         if count is not None:
             data['sample_count'] = count
         savemat(directory / f'structure_function_{step:06d}.mat', data)
@@ -32,12 +32,12 @@ def aggregate(tmp_path, monkeypatch, spectra, counts=None, lx=(1., 1., 1.),
     return result['k2_unique'], result['y']
 
 
-@pytest.mark.parametrize('nx', ([4, 4, 4], [5, 5, 5], [4, 5, 6]))
+@pytest.mark.parametrize('nx', ([4, 4, 4], [5, 5, 5], [4, 5, 6], [4, 6], [5, 5], [8]))
 def test_half_spectrum_matches_full_fourier_shells(tmp_path, monkeypatch, nx):
     # A real field gives a valid Hermitian spectrum, including all Nyquist planes.
     field = np.random.default_rng(193).normal(size=nx)
     full = np.abs(np.fft.fftn(field)) ** 2
-    k2, observed = aggregate(tmp_path, monkeypatch, [full] * 4, [3] * 4)
+    k2, observed = aggregate(tmp_path, monkeypatch, [full] * 4, [3] * 4, lx=(1.,) * len(nx))
     modes = np.meshgrid(*(np.fft.fftfreq(n) * n for n in nx), indexing='ij')
     full_k2 = np.round(sum(k * k for k in modes), 7)
     expected = np.array([np.mean(full[full_k2 == shell]) for shell in k2])
@@ -102,9 +102,9 @@ def smallest_k(nx, lx, angles):
     """|k| of every index of the full spectrum: the alias m + a n of the smallest m^T G^-1 m, with the
     metric G_ij = l_i l_j cos(angle_ij) of the cell, by brute force over a window of aliases that
     holds the minimum (an axis of one grid point has no aliases, as in the solvers)."""
-    alpha, beta, gamma = np.deg2rad(angles)
+    alpha, beta, gamma = np.deg2rad([90.0, 90.0, *angles] if len(angles) == 1 else angles)
     cosines = np.array([[1, np.cos(gamma), np.cos(beta)], [np.cos(gamma), 1, np.cos(alpha)],
-                        [np.cos(beta), np.cos(alpha), 1]])
+                        [np.cos(beta), np.cos(alpha), 1]])[:len(nx), :len(nx)]
     metric = np.outer(lx, lx)*cosines
     inverse = np.linalg.inv(metric)
     m = np.stack(np.meshgrid(*(np.arange(n) for n in nx), indexing='ij'), axis=-1)
@@ -127,6 +127,8 @@ def smallest_k(nx, lx, angles):
     ((6, 5, 4), (1.0, 1.2, 1.4), [100.0, 80.0, 110.0], 'angles'),         # triclinic, every angle its own
     ((4, 4, 16), (1.0, 1.0, 1.0), [60.0, 60.0, 60.0], 'angles'),
     ((8, 8, 1), (1.0, 1.0, 0.3), [60.0, 60.0, 60.0], 'angles'),            # one grid point along z
+    ((6, 6), (1.0, 1.0), [90.0, 90.0, 120.0], 'angles'),                   # 2D hexagonal
+    ((6, 4), (1.0, 1.5), [110.0], 'initial_params'),                       # 2D oblique, gamma of the input
 ])
 def test_non_orthogonal_cell_groups_modes_of_equal_wavenumber(tmp_path, monkeypatch, nx, lx, angles, source):
     # A spectrum that depends on |k| alone must come back as that function on every shell
@@ -138,4 +140,4 @@ def test_non_orthogonal_cell_groups_modes_of_equal_wavenumber(tmp_path, monkeypa
     # The shells are labelled by k^2/(2 pi)^2 rounded to 7 decimals, so x is exact to about 1e-7
     np.testing.assert_allclose(mean[shells > 0], np.exp(-x[shells > 0]**2/400), rtol=1e-6)
     # Every distinct |k| of the spectrum is one shell
-    assert len(shells) == len(np.unique(np.round(k[:, :, :nx[2]//2 + 1]/(2*np.pi), 6)))
+    assert len(shells) == len(np.unique(np.round(k[..., :nx[-1]//2 + 1]/(2*np.pi), 6)))

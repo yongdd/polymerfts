@@ -551,45 +551,28 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
-- `scripts/pscf/pscf_converter.py` reads again most examples that build their initial fields after
-  `params` (2026-11-15): `Cylinder2D`, `HCP_Hexagonal` and `PL_Hexagonal` export again, and the
-  `params` of the L-FTS `Gyroid` and `Lamella`, the CL-FTS `Lamella` and the blend `GibbsEnsemble`
-  examples are read. The alias checks refused a loop that unpacks
-  only numbers (`for y, z in positions`), an element of a list of numbers such as `params["nx"][i]`,
-  arithmetic of such a list with numbers or a NumPy array, comparisons of builtin values,
-  `np.reshape` and `np.broadcast_to` of a new array, and the `params` argument of `LFTS`, `CLFTS`
-  and `GibbsEnsemble`. A constructor's `params` argument must be a literal value, also as a copy
-  such as `SCFT(dict(params, ds=.02))`: its deep copy then runs no code of the script, whose
-  `__deepcopy__` would receive the original containers. `CanonicalCoexistence`, which passes a
-  list built in a function, is therefore refused; its `params` has no `polymers` to export. A
-  parameter container given to an operator of an object the converter cannot identify
-  (arithmetic, a comparison, `in`, an augmented assignment, a subscript key or a `match` value
-  pattern, as in `M() | params["nx"]`) is refused as well, and so are a mutation through an
-  expression such as `(params["polymers"] + [])[0]`, `max` and `min` with `key=` or a non-numeric
-  argument, reflection (`getattr`, `exec`, ..., also by reference), `sys.modules` and the internals
-  of the `copy` module. `Fddd` and `MonoclinicLamella3D` give `params["nx"]` to an operator or a
-  NumPy call on arrays the converter cannot identify; they export from a saved SCFT result.
-  The export describes the `params` that a simulation constructor receives: `SCFT(dict(params,
-  ds=.02))` exported the module's `params` with its `ds`, and a script whose calculations receive
-  different `params`, or `params` the converter cannot read, is refused. So is a calculation made
-  with `SCFT.from_file`, `LFTS.from_file` or `CLFTS.from_file`, also through an import in a function
-  or an alias, whose `params` come from a file when the script runs; the module's `params` was
-  exported in its place. A `from_file` of an object the converter cannot identify is refused as
-  well, and so is a simulation class, or its module, reached through an import in a function or
-  under a condition, or given to another name, a function, a loop or a subclass: `def main(): from
-  polymerfts import SCFT` followed by a call with a literal dictionary exported the module's
-  `params`. An import of `__main__` is refused like `sys.modules`, and so are reflection names
-  (`sys.modules`, `importlib.import_module`, `exec`, ...) imported in a function under another name.
-  An in-place operator keeps a new array only when its other operand is built from numbers, arrays
-  and NumPy math, since `__array_ufunc__` of an object of the script can replace the array. A
-  function defined before
-  a container or a constant is checked for changes to it too: a mutation of a list defined after
-  the function, or a `global` constant that the function rebinds, gave the values before the call.
-  A class body that applies `+=` to a module list before binding the name itself is refused, and a
-  name that a class body binds inside a compound statement or with `:=` is no longer taken for the
-  module's import. NumPy arithmetic of a new array with a list of numbers, such as `center = center
-  * params["lx"]`, gives a new array, which later operators may combine with parameter lists as
-  they do after `center *= params["lx"]`.
+- `scripts/pscf/pscf_converter.py` reads a Python parameter file by a short, strict policy
+  (2026-11-16) instead of following aliases, scopes and operators. It accepts a module-level
+  `params` literal built from numbers, strings, earlier literal constants, `+ - * / **`,
+  `np.sqrt`/`math.sqrt`, `np.pi`/`math.pi`, `[n] * 3` and `dict(base, key=value)`. The script may
+  read it only by indexing down to a number, a string or a list of numbers; such a list may be given
+  to builtins, NumPy, SciPy, `math`, polymerfts, `.reshape` or arithmetic. The script may also print
+  `params`, compare it and loop over the keys of its dictionaries, and give it to `SCFT`, `LFTS`,
+  `CLFTS` or `GibbsEnsemble` imported from polymerfts at module level. All simulations must receive
+  the same dictionary, which the export describes. Refused: a change of `params` or of a name
+  sharing its containers, such a container handed to a function of the script or to other code, a
+  second binding of these names, `from_file`, star imports, reflection, and constants changed by
+  control flow, `global` or `match`. A list or dictionary that the exported params is computed from,
+  such as `box` in `dict(params, lx=box)` or in `"lx": [box[0], box[1], box[2]]`, must not change
+  either, and `np.random.shuffle` of a list of params is refused. The reader does not resolve
+  scopes, so a local name equal to one of these refuses the script. Of the 59 example scripts 31 are read (21 before) and 18 exported
+  (13 before), with the same values wherever both readers read a script; among them `BCC`, `FCC`,
+  `SC`, `A15`, `Sigma`, both `ABC_Triblock_Sphere3D` and `Fddd`. `CanonicalCoexistence` and
+  `MonoclinicLamella3D`, which were exported with the module's `params`, are refused because their
+  simulations receive other params (tests/scripts/TestPscfConverter.py).
+- `plot_structure_function.ipynb` reads the structure functions of 1D and 2D L-FTS runs
+  (2026-11-16); it assumed a 3D grid (`nx[2]`). It groups the modes into shells with `np.bincount`
+  instead of a Python loop over the grid (tests/scripts/TestStructureFunctionPlot.py).
 - Long multiblock chains no longer exhaust the process stack (2026-11-14): the propagator keys
   were generated by a recursion over the blocks, and a linear chain of 24,000 blocks overflowed an
   8 MiB stack. The architecture diagram that `SCFT`, `LFTS` and `CLFTS` print when they are

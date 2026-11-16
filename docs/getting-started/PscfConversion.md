@@ -75,31 +75,34 @@ Supplying both an alias and its canonical name is an error. As in SCFT, a space-
 symbol with several Hall settings (for example `P2/m`) needs `space_group.hall_number`,
 which must be a setting of that symbol.
 
-A Python parameter file can also be used with `--fields`. The converter reads a
-module-level `params` dictionary and simple numerical expressions such as
-`f = 0.36` and `1-f` statically. It never executes the Python file. When the
-script constructs `SCFT`, `LFTS`, `CLFTS` or `GibbsEnsemble`, the export describes
-the `params` the constructor receives, such as `dict(params, ds=.02)`; a script
-whose calculations receive different `params`, or `params` the converter cannot
-read, is rejected. These classes are followed through module-level import
-statements: a class or its module reached through an import in a function or
-under a condition, or given to another name, a function or a loop, is rejected;
-annotations, `isinstance` and `is` may name them. Runtime
-configuration loading, such as `SCFT.from_file` or a `from_file` of an object
-the converter cannot identify (export the parameter file instead), recognized
-parameter mutations (including through
-container aliases and in functions defined before the containers they change),
-and constants changed by unsupported assignments, control flow or a function
-(`global`) are rejected. Literal helper containers and indexing are supported;
-container method calls are rejected, and so is a parameter container given to
-code of the script: an unsupported call, an operator of an object the converter
-cannot identify, a simulation constructor whose `params` is not a literal value,
-reflection (`getattr`, `exec`, `__main__`, ...) or a change to the `copy` module. The check
-reads the source; code written to hide what it does can still change `params`
-when it runs. Other runtime code, including Python
-initial-field generation and calls to external functions, is not executed or
-extracted. Use a saved result or JSON/YAML configuration for a model assembled
-or changed at runtime.
+A Python parameter file can also be used with `--fields`. The converter reads it
+without running it and accepts only a script whose `params` it can follow:
+
+- `params` is a module-level dictionary literal built from numbers, strings, earlier
+  literal constants, `+ - * / **`, `np.sqrt`, `math.sqrt`, `np.pi`, `math.pi`,
+  `[n] * 3` and `dict(base, key=value)`.
+- The script reads `params` only by indexing it down to a number, a string or a list
+  of numbers. Such a list may be given to builtins such as `len`, to functions of
+  NumPy, SciPy, `math` and polymerfts, to `.reshape` and to arithmetic. The script may
+  also print `params`, compare it (`in`, `is`, `==`) and loop over the keys of its
+  dictionaries.
+- `SCFT`, `LFTS`, `CLFTS` and `GibbsEnsemble`, imported from polymerfts at module
+  level, receive `params` or `dict(params, key=value)`. All simulations of the script
+  must receive the same dictionary; the export describes it, or `params` when the
+  script constructs no simulation.
+
+Everything else is refused, in particular a change of `params` or of a list or dictionary
+that the exported dictionary is read from (assignment, `del`, augmented assignment,
+method call, `np.random.shuffle`), handing such a container to a function of the script
+or to other code, a second binding of `params`, of a name holding such a container or
+of a simulation class, `from_file`, star imports, reflection
+(`getattr`, `exec`, `sys.modules`, `__main__`, `importlib`, `builtins`, `copy`) and
+constants changed by control flow, `global` or `match`. The reader does not resolve
+scopes, so a local variable named like one of these also refuses the script.
+Annotations and `isinstance` may name the simulation classes. Code written to hide
+what it does, such as operators of objects the script defines or a library that
+keeps a list and hands it back, stays out of scope. Use a saved result or a JSON/YAML
+configuration for a model assembled or changed at run time.
 
 To try a complete conversion without running a simulation:
 

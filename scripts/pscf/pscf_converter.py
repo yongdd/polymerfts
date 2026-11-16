@@ -12,10 +12,10 @@ PSCF reference: https://dmorse.github.io/pscfpp-man/user_field_rgrid_page.html
 
 import argparse
 import ast
-import builtins
 import copy
 import json
 import math
+import operator
 from pathlib import Path
 from pprint import pformat
 import runpy
@@ -294,959 +294,321 @@ def write_rgrid(path, nx, lattice, cell, fields):
         np.savetxt(handle, np.column_stack([field.ravel(order="F") for field in fields]), fmt="%.17e")
 
 
+# A Python parameter file is read, never run (docs/getting-started/PscfConversion.md). The reader
+# accepts a module-level params literal that the script reads only where neither it nor a library
+# can change it, and gives unchanged to the simulation. It does not resolve scopes: a local name
+# equal to a name it follows makes it refuse the script, never export other params.
+SIMULATIONS = {"SCFT", "LFTS", "CLFTS", "GibbsEnsemble"}
+REFLECTION = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "compile",
+              "__import__", "import_module", "__builtins__", "__dict__", "modules", "__main__"}
+RUNTIME_MODULES = {"__main__", "importlib", "builtins", "copy", "copyreg"}
+# Functions that read a list of scalars without keeping it
+READING_BUILTINS = {"print", "len", "list", "tuple", "sorted", "sum", "min", "max", "range", "zip", "enumerate",
+                    "str", "repr", "int", "float", "abs", "round", "any", "all"}
+LIBRARIES = {"numpy", "scipy", "math", "polymerfts"}
+# Their functions that change a list in place: numpy.random.shuffle (also as a method of a
+# Generator or RandomState class). NumPy's other in-place functions (put, place, putmask, copyto,
+# fill_diagonal, out=) raise for a list.
+IN_PLACE = {"shuffle"}
+SCALARS = (int, float, complex, str, bool, type(None))
+NOT_LITERAL = (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError)
+ARITHMETIC = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+              ast.Pow: operator.pow}
+PYTHON_POLICY = ("Write params as a module-level literal, read it only by indexing and give it unchanged to "
+                 "the simulation, or export a saved SCFT result or a JSON/YAML parameter file.")
+
+
+def unsupported(reason):
+    return ValueError(f"{reason} {PYTHON_POLICY}")
+
+
+def bound_names(node):
+    """The names a node binds, in whichever scope."""
+    if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+        return [node.id]
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [alias.asname or alias.name.split(".")[0] for alias in node.names]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return node.names
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
+def container_ids(value):
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else None
+    return set() if children is None else {id(value)}.union(*map(container_ids, children))
+
+
+def kind_of(value):
+    """0 for a scalar, 1 for a list of scalars, 2 for a dictionary and 3 for other containers."""
+    if isinstance(value, SCALARS):
+        return 0
+    if isinstance(value, list) and all(isinstance(item, SCALARS) for item in value):
+        return 1
+    return 2 if isinstance(value, dict) else 3
+
+
 def read_python_params(path):
-    """Read simple module-level parameter expressions, never execute user Python."""
-    symbols, params = {}, None
-    imports, rebound = {}, set()
+    """The params a Python script gives its simulation, read from the source without running it."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    # Reflection reaches objects and modules by names built at run time, which a
-    # reading of the source cannot follow.
-    reflection = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval",
-                  "compile", "__import__", "importlib.import_module"}
-    untraceable_error = ("SCFT, LFTS, CLFTS and GibbsEnsemble are followed through module-level import statements "
-                         "and calls by those names; reached through an import in a function or under a condition, "
-                         "or given to another name, a function or a loop, they can receive params the converter "
-                         "does not see.")
-    reflection_error = ("Reflection and module internals (getattr, exec, sys.modules, __main__, copy._...) may "
-                        "cause parameter mutations that a reading of the script cannot follow; use a saved SCFT result.")
+    nodes = list(ast.walk(tree))
+    parents = {id(child): node for node in nodes for child in ast.iter_child_nodes(node)}
+    binders = {}
+    for node in nodes:
+        for name in bound_names(node):
+            binders.setdefault(name, []).append(node)
+    module_level = {id(statement) for statement in tree.body}
+    redeclared = {name for node in nodes if isinstance(node, (ast.Global, ast.Nonlocal)) for name in node.names}
 
-    def callable_name(node):
-        if isinstance(node, ast.Name):
-            return imports.get(node.id, node.id if node.id not in rebound else "")
-        if isinstance(node, ast.Attribute):
-            owner = callable_name(node.value)
-            return owner + "." + node.attr if owner else ""
-        return ""
-
-    # These calls consume literal configuration values without modifying them.
-    # Resolve imported names, rather than trusting an arbitrary function named SCFT.
-    # The simulation constructors deep-copy their params argument; they keep the
-    # others (callbacks, an integrator) as given, so those are checked as usual.
-    simulations = {"polymerfts.SCFT", "polymerfts.scft.SCFT", "polymerfts.scft.scft.SCFT",
-                   "polymerfts.LFTS", "polymerfts.lfts.LFTS", "polymerfts.fts.lfts.LFTS",
-                   "polymerfts.CLFTS", "polymerfts.clfts.CLFTS", "polymerfts.fts.clfts.CLFTS",
-                   "polymerfts.GibbsEnsemble", "polymerfts.fts.gibbs_ensemble.GibbsEnsemble"}
-    # Simulation classes and the modules that hold one
-    simulation_modules = {name.rsplit(".", i)[0] for name in simulations for i in range(1, name.count(".") + 1)}
-    traced = simulations | simulation_modules
-    # How each name, attribute or call appears: the function of a call, the owner of an
-    # attribute, in an annotation, or a type in isinstance, issubclass or an `is` test
-    called, owners, annotated, type_tests = set(), set(), set(), {}
-    # What an import in a function, a class or a compound statement binds each name to;
-    # the converter does not resolve these names
-    untraced = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            called.add(id(node.func))
-            if isinstance(node.func, ast.Name) and len(node.args) == 2:
-                types = node.args[1].elts if isinstance(node.args[1], ast.Tuple) else [node.args[1]]
-                type_tests.update((id(part), node.func) for part in types)
-        elif isinstance(node, ast.Attribute):
-            owners.add(id(node.value))
-        elif isinstance(node, ast.Compare) and all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops):
-            type_tests.update((id(part), None) for part in (node.left, *node.comparators))
-        annotations = ([node.annotation] if isinstance(node, (ast.arg, ast.AnnAssign)) else
-                       [node.returns] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else [])
-        annotated.update(id(part) for annotation in annotations if annotation is not None
-                         for part in ast.walk(annotation))
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and node not in tree.body \
-                and not (isinstance(node, ast.ImportFrom) and node.level):
+    def origin(name):
+        """The dotted path a name is imported as, if module-level imports alone bind it, else None."""
+        paths = set()
+        for node in binders.get(name, [None]):
+            if not (isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) in module_level):
+                return None
             for alias in node.names:
+                if (alias.asname or alias.name.split(".")[0]) != name:
+                    continue
                 if isinstance(node, ast.ImportFrom):
-                    name, target = alias.asname or alias.name, f"{node.module}.{alias.name}"
-                else:  # import a.b binds a
-                    name = alias.asname or alias.name.split(".")[0]
-                    target = alias.name if alias.asname else name
-                untraced.setdefault(name, set()).add(target)
-    # The names, attributes and calls the rules below can concern, found once
-    imported = {name for statement in tree.body if isinstance(statement, (ast.Import, ast.ImportFrom))
-                for alias in statement.names
-                for name in [alias.asname or (alias.name.split(".")[0] if isinstance(statement, ast.Import)
-                                              else alias.name)]}
-    may_hide, reach_untraced, from_files, main_imports = set(), set(), set(), set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and "__main__" in (
-                [(node.module or "").partition(".")[0]] if isinstance(node, ast.ImportFrom)
-                else [alias.name.partition(".")[0] for alias in node.names]):
-            main_imports.add(id(node))
-        if not (isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load)):
-            continue
-        if isinstance(node, ast.Attribute) and node.attr == "from_file":
-            from_files.add(id(node))
-        root = node
-        while isinstance(root, ast.Attribute):
-            root = root.value
-        if isinstance(root, ast.Name) and root.id in untraced:
-            reach_untraced.add(id(node))
-        if (isinstance(root, ast.Name) and (root.id in imported or root.id in untraced)
-                and id(node) not in owners and id(node) not in annotated):
-            may_hide.add(id(node))
-    # Shape-only functions; on an array from array_makers they run ndarray code.
-    shape_readers = {"numpy.reshape", "numpy.broadcast_to"}
-    # Without `like=` these return a base-class ndarray (or a float), whose arithmetic
-    # and reshape pass no operand or shape list on to code of the script.
-    array_makers = {*("numpy." + name for name in ("array", "asarray", "zeros", "ones", "empty", "full")),
-                    *("numpy.random." + name for name in ("normal", "uniform", "random"))}
-    readers = {"print", "len", "sum", "min", "max",
-               "range", "list", "tuple", "dict",
-               *("numpy." + name for name in ("zeros", "ones", "empty", "full", "array", "asarray", "prod", "sum", "mean", "min", "max")),
-               *("numpy.random." + name for name in ("normal", "uniform", "random"))}
-    numeric_readers = {"sum", "min", "max", *("numpy." + name for name in ("array", "asarray", "prod", "sum", "mean", "min", "max"))}
-    numpy_math = {"numpy." + name for name in ("sqrt", "cbrt", "square", "exp", "log", "sin", "cos", "tan",
-                                               "abs", "absolute", "linspace", "arange")}
+                    paths.add(f"{node.module}.{alias.name}")
+                else:  # import a.b binds a, import a.b as c binds a.b
+                    paths.add(alias.name if alias.asname else name)
+        return paths.pop() if len(paths) == 1 else None
 
-    def numeric(value):
-        return (isinstance(value, (int, float, complex))
-                or isinstance(value, (list, tuple)) and all(numeric(item) for item in value))
+    def dotted(node):
+        """The dotted path of an imported name or of an attribute of one, else None."""
+        if isinstance(node, ast.Name):
+            return origin(node.id)
+        owner = dotted(node.value) if isinstance(node, ast.Attribute) else None
+        return owner and owner + "." + node.attr
 
-    def flat_scalars(value, mappings=True):
-        # An element of such a container is immutable, and arithmetic or a slice
-        # makes a new container: neither can alias a parameter container.
-        scalar = (int, float, complex, str, type(None))
-        if isinstance(value, scalar):
-            return True
-        if isinstance(value, dict):
-            items = value.values() if mappings else None
-        else:
-            items = value if isinstance(value, (list, tuple)) else None
-        return items is not None and all(isinstance(item, scalar) for item in items)
-
-    # The checks revisit every function body at each later statement; cache the
-    # names in each node of the tree, which stays alive while it is read.
-    name_cache = {}
-
-    def names_in(node):
-        found = name_cache.get(id(node))
-        if found is None:
-            found = frozenset((node.id,) if isinstance(node, ast.Name) else ()).union(
-                *(names_in(child) for child in ast.iter_child_nodes(node)))
-            name_cache[id(node)] = found
-        return found
-
-    # `untrusted` holds the names whose module literal may not be their value here:
-    # locals of a function or comprehension, and names a compound statement rebinds.
-    def uses(node, untrusted):
-        return not names_in(node).isdisjoint(untrusted)
-
-    def evaluates_to_flat_scalars(node, untrusted=frozenset(), mappings=True):
-        if not uses(node, untrusted):
-            try:
-                return flat_scalars(evaluate(node), mappings)
-            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                pass
-        # An element or slice of a flat container is a scalar or a new list, whatever the index.
-        return isinstance(node, ast.Subscript) and evaluates_to_flat_scalars(node.value, untrusted)
-
-    def new_array(node, untrusted=frozenset()):
-        return (isinstance(node, ast.Call) and not uses(node.func, untrusted)
-                and callable_name(node.func) in array_makers
-                and all(keyword.arg in ("dtype", "size") for keyword in node.keywords))
-
-    def is_array(node, untrusted):
-        # A new array, or a module name whose last binding was one
-        return new_array(node, untrusted) or (isinstance(node, ast.Name) and node.id in array_names
-                                              and node.id not in untrusted)
-
-    def array_result(node, untrusted):
-        """A new array, or NumPy arithmetic of an array with a list of numbers, which makes another.
-
-        With scalars only, a 0-d array gives an element, which can be any object, and
-        matrix multiplication of two vectors gives a scalar. A list makes the result an
-        array of at least one dimension, and so does such an array as an operand.
-        """
-        if new_array(node, untrusted):
-            return True
-        if not isinstance(node, ast.BinOp) or isinstance(node.op, ast.MatMult):
-            return False
-        parts = (node.left, node.right)
-        made = [array_result(part, untrusted) and isinstance(part, ast.BinOp) for part in parts]
-        if not all(done or builtin_operand(part, untrusted) for done, part in zip(made, parts)):
-            return False
-        if not any(done or is_array(part, untrusted) for done, part in zip(made, parts)):
-            return False
-        return any(made) or any(evaluates_to_list(part, untrusted) for part in parts)
-
-    def numerical(node, untrusted):
-        """Arithmetic of numbers, arrays and NumPy math, which runs no method of the script."""
-        if isinstance(node, ast.BinOp):
-            return numerical(node.left, untrusted) and numerical(node.right, untrusted)
-        if isinstance(node, ast.UnaryOp):
-            return numerical(node.operand, untrusted)
-        if isinstance(node, ast.Attribute) and not uses(node, untrusted):
-            return callable_name(node) in ("numpy.pi", "numpy.e")
-        if (isinstance(node, ast.Call) and not node.keywords and not uses(node.func, untrusted)
-                and callable_name(node.func) in numpy_math):
-            return all(numerical(argument, untrusted) for argument in node.args)
-        if (isinstance(node, ast.Call) and not node.keywords and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("mean", "sum", "min", "max", "std") and is_array(node.func.value, untrusted)):
-            return all(numerical(argument, untrusted) for argument in node.args)  # such as center.mean()
-        return builtin_operand(node, untrusted)
-
-    def evaluates_to_list(node, untrusted):
-        if uses(node, untrusted):
-            return False
-        try:
-            return isinstance(evaluate(node), (list, tuple))
-        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-            return False
-
-    def builtin_operand(node, untrusted):
-        """Arithmetic with this operand runs builtin or NumPy code, not a method of the script."""
-        if is_array(node, untrusted):
-            return True
-        if uses(node, untrusted):
-            return False
-        try:
-            evaluate(node)
-        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-            return evaluates_to_flat_scalars(node)
-        return True
-
-    def operands(node):
-        """The operands of an operator and those it hands to a method of another operand."""
-        if isinstance(node, ast.BinOp):
-            return [node.left, node.right], [node.left, node.right]
-        if isinstance(node, ast.Compare):  # __eq__, __lt__, __contains__, ...
-            if all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops):
-                return None, None  # identity calls no method
-            return [node.left, *node.comparators], [node.left, *node.comparators]
-        if isinstance(node, ast.AugAssign):  # target.__iadd__(value), ...
-            return [node.target, node.value], [node.value]
-        if isinstance(node, ast.Subscript):  # value.__getitem__(key), __setitem__, __delitem__
-            return [node.value, node.slice], [node.slice]
-        return None, None
-
-    def inert_operation(parts, containers, untrusted, result=False):
-        # A parameter container given to an operator of another type reaches that type's
-        # method (__rmul__, __eq__, __getitem__, ...) as it is; builtin operators run no
-        # code of the script. An object array hands each element's method the other
-        # operand converted to an array: a list of scalars arrives as numbers, a dict as
-        # itself. With result, the new object (a concatenation, a merged dict) must not
-        # hold a container of the operands either.
-        if not all(builtin_operand(part, untrusted) for part in parts):
-            return False
-        arrays = any(is_array(part, untrusted) for part in parts)
-        if not (arrays or result):
-            return True
-        return all(evaluates_to_flat_scalars(part, untrusted, not arrays) for part in parts
-                   if references_container(part, containers, untrusted))
-
-    def params_argument(node):
-        return (node.args[0] if node.args and not isinstance(node.args[0], ast.Starred)
-                else next((keyword.value for keyword in node.keywords if keyword.arg == "params"), None))
-
-    def simulation_params(node, untrusted):
-        """The params argument of a simulation constructor, when it is a literal value.
-
-        Its deep copy then meets only builtin objects. Any other object could bring a
-        copy hook of the script, and __deepcopy__ receives the memo, which keeps the
-        original parameter containers.
-        """
-        argument = params_argument(node)
-        if argument is None or uses(argument, untrusted):
-            return None
-        try:
-            evaluate(argument)
-        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-            return None
-        return argument
-
-    def simulation_extras(node, untrusted):
-        trusted = simulation_params(node, untrusted)
-        return [argument for argument in [*node.args, *(keyword.value for keyword in node.keywords)]
-                if argument is not trusted]
-
-    def plain(value):
-        # A constant or a dotted name such as float or np.float64: no call, no container
-        return all(isinstance(part, (ast.Constant, ast.Name, ast.Attribute, ast.Load)) for part in ast.walk(value))
-
-    def independent_result(node, untrusted=frozenset()):
-        name = callable_name(node.func)
-        if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
-                and isinstance(node.func.value, ast.Call)
-                and callable_name(node.func.value.func) in {"numpy.asarray", "numpy.array", "numpy.zeros",
-                                                           "numpy.ones", "numpy.empty", "numpy.full"}):
-            return True  # the shape cannot alias the array produced by this call
-        if name in {"print", "len", "range",
-                    "numpy.zeros", "numpy.ones", "numpy.empty", "numpy.random.normal",
-                    "numpy.random.uniform", "numpy.random.random"}:
-            return True
-        if name in numeric_readers and node.args and not uses(node, untrusted):
-            # max and min compare all their arguments and pass them to key=: every argument
-            # must be numbers. NumPy reads the first and dispatches on out= and like=; its
-            # other arguments may be plain values such as a dtype.
-            try:
-                if name.startswith("numpy."):
-                    return (numeric(evaluate(node.args[0])) and all(plain(argument) for argument in node.args[1:])
-                            and all(keyword.arg not in (None, "out", "like", "where") and plain(keyword.value)
-                                    for keyword in node.keywords))
-                return (all(numeric(evaluate(argument)) for argument in node.args)
-                        and all(keyword.arg in ("default", "start") and numeric(evaluate(keyword.value))
-                                for keyword in node.keywords))
-            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                pass
-        return False
-
-    def references_container(node, containers, untrusted=frozenset()):
-        if names_in(node).isdisjoint(containers):
-            return False  # each finding below is the name of a container inside node
-        if isinstance(node, ast.Lambda):
-            # Defaults and the result are checked in their own lexical scopes.
-            return False
-        # A random-field initializer often receives np.prod(params["nx"]). Its
-        # scalar result cannot give the initializer access to the original list.
-        if isinstance(node, ast.Call) and independent_result(node, untrusted):
-            return False
-        if isinstance(node, ast.JoinedStr):
-            return False  # an f-string makes a new str
-        if isinstance(node, ast.Call) and callable_name(node.func) in simulations:
-            # The simulation holds a deep copy of params, and its other arguments as given.
-            return any(references_container(argument, containers, untrusted)
-                       for argument in simulation_extras(node, untrusted))
-        if (isinstance(node, ast.Call) and callable_name(node.func) in shape_readers
-                and node.args and new_array(node.args[0], untrusted)):
-            return references_container(node.args[0], containers, untrusted)  # a view; the shape is not kept
-        if isinstance(node, ast.BinOp) and inert_operation(operands(node)[0], containers, untrusted, result=True):
-            return False  # a new object without a container of the operands
-        if isinstance(node, ast.Compare) and (operands(node)[0] is None
-                                              or inert_operation(operands(node)[0], containers, untrusted)):
-            return False  # a bool, or a new array of them
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            # The iterator bindings are checked separately by scoped_nodes. Only
-            # output expressions can put a known container into the new result.
-            outputs = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
-            bound = comprehension_bindings(node)
-            return any(references_container(output, containers - bound, untrusted | bound) for output in outputs)
-        if isinstance(node, ast.Subscript):
-            try:
-                if not uses(node, untrusted) and not isinstance(evaluate(node), (dict, list, tuple)):
-                    return False
-            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                pass
-            # An index unknown statically still selects a scalar, or slices a new list.
-            if evaluates_to_flat_scalars(node.value, untrusted):
-                return False
-        return ((isinstance(node, ast.Name) and node.id in containers)
-                or any(references_container(child, containers, untrusted) for child in ast.iter_child_nodes(node)))
-
-    def container_ids(value):
-        if isinstance(value, dict):
-            children = value.values()
-        elif isinstance(value, (list, tuple)):
-            children = value
-        else:
-            return set()
-        return {id(value)}.union(*(container_ids(child) for child in children))
-
-    def bound_values(target, value):
-        """Values that assigning value to target gives to names: unpacking binds the items."""
-        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (dict, list, tuple)):
-            items = list(value)
-            if (len(items) == len(target.elts)
-                    and not any(isinstance(element, ast.Starred) for element in target.elts)):
-                return [bound for element, item in zip(target.elts, items)
-                        for bound in bound_values(element, item)]
-            return items  # a starred name gets a new list of the remaining items
-        return [value]
+    def builtin(node, *names):
+        return isinstance(node, ast.Name) and node.id in names and node.id not in binders
 
     def evaluate(node):
-        if isinstance(node, ast.Name):
-            # Keep literal containers shared so aliases cannot conceal mutations.
-            return symbols[node.id]
-        if isinstance(node, ast.Constant):
+        """The value of a literal expression; raises one of NOT_LITERAL for anything else."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, SCALARS):
             return node.value
+        if isinstance(node, ast.Name) and node.id not in redeclared:
+            value = symbols[node.id]
+            looked_up.add(node.id)
+            return value
         if isinstance(node, (ast.List, ast.Tuple)):
-            return [evaluate(v) for v in node.elts]
-        if isinstance(node, ast.Dict):
-            return {evaluate(k): evaluate(v) for k, v in zip(node.keys, node.values)}
-        if isinstance(node, ast.Slice):
-            return slice(*(None if value is None else evaluate(value) for value in (node.lower, node.upper, node.step)))
+            return [evaluate(item) for item in node.elts]
+        if isinstance(node, ast.Dict) and None not in node.keys:
+            return {evaluate(key): evaluate(value) for key, value in zip(node.keys, node.values)}
         if isinstance(node, ast.Subscript):
             container, index = evaluate(node.value), evaluate(node.slice)
-            if isinstance(container, (dict, list, tuple)) and isinstance(index, (str, int, slice)):
+            if isinstance(container, (dict, list)) and isinstance(index, (str, int)):
                 return container[index]
-        if isinstance(node, ast.Call):
-            name = callable_name(node.func)
-            constructor = {"list": list, "tuple": tuple, "dict": dict}.get(name)
-            if constructor is not None and len(node.args) <= 1 and (not node.keywords or name == "dict"):
-                # Shallow copies must retain their nested aliases in symbols.
-                value = constructor(*(evaluate(arg) for arg in node.args))
-                for keyword in node.keywords:
-                    if keyword.arg is None:
-                        value.update(evaluate(keyword.value))
-                    else:
-                        value[keyword.arg] = evaluate(keyword.value)
-                return value
+        if isinstance(node, ast.Call) and builtin(node.func, "dict") and len(node.args) <= 1 \
+                and all(keyword.arg for keyword in node.keywords):  # dict(params, key=value)
+            base = evaluate(node.args[0]) if node.args else {}
+            if isinstance(base, dict):
+                return {**base, **{keyword.arg: evaluate(keyword.value) for keyword in node.keywords}}
+        if isinstance(node, ast.Attribute) and node.attr == "pi" and dotted(node) in ("numpy.pi", "math.pi"):
+            return math.pi
+        if isinstance(node, ast.Call) and dotted(node.func) in ("numpy.sqrt", "math.sqrt") \
+                and len(node.args) == 1 and not node.keywords:
+            value = evaluate(node.args[0])
+            if isinstance(value, (int, float)) and value >= 0:
+                return math.sqrt(value)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = evaluate(node.operand)
-            return value if isinstance(node.op, ast.UAdd) else -value
-        if isinstance(node, ast.BinOp):
+            if isinstance(value, (int, float)):
+                return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and type(node.op) in ARITHMETIC:
             a, b = evaluate(node.left), evaluate(node.right)
-            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                raise ValueError("Only numerical arithmetic is supported.")
-            if isinstance(node.op, ast.Add): return a + b
-            if isinstance(node.op, ast.Sub): return a - b
-            if isinstance(node.op, ast.Mult): return a * b
-            if isinstance(node.op, ast.Div): return a / b
-            if isinstance(node.op, ast.Pow) and abs(b) <= 100: return a ** b
-        raise ValueError("Use literal params with simple arithmetic, or a saved SCFT result/configuration file.")
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
+                    and not (isinstance(node.op, ast.Pow) and abs(b) > 100):
+                return ARITHMETIC[type(node.op)](a, b)
+            if isinstance(node.op, ast.Mult) and isinstance(a, int) and isinstance(b, list):
+                a, b = b, a
+            if isinstance(node.op, ast.Mult) and kind_of(a) == 1 and isinstance(b, int) and 0 <= b <= 1000:
+                return a * b  # [n] * 3 repeats a list of scalars
+        raise ValueError("not a literal")
 
-    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-    comprehensions = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-
-    def comprehension_values(node):
-        return (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
-
-    def comprehension_bindings(node):
-        return {part.id for generator in node.generators for part in ast.walk(generator.target)
-                if isinstance(part, ast.Name)}
-
-    def scope_nodes(node):
-        yield node
-        if isinstance(node, comprehensions):
-            # Iteration targets belong to the comprehension, not its surrounding
-            # function. Assignment expressions in its values still bind outside.
-            for generator in node.generators:
-                for child in (generator.iter, *generator.ifs):
-                    yield from scope_nodes(child)
-            for child in comprehension_values(node):
-                yield from scope_nodes(child)
-        elif not isinstance(node, definitions):
-            for child in ast.iter_child_nodes(node):
-                yield from scope_nodes(child)
-
-    def bound_names(node):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            return {node.id}
-        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
-            return {node.name}
-        if isinstance(node, ast.MatchMapping) and node.rest is not None:
-            return {node.rest}
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            return {node.name}
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            return {alias.asname or (alias.name.split(".")[0] if isinstance(node, ast.Import) else alias.name)
-                    for alias in node.names}
-        return set()
-
-    def scope_info(node):
-        body = [node.body] if isinstance(node, ast.Lambda) else node.body
-        nodes = [part for item in body for part in scope_nodes(item)]
-        declared = {name for part in nodes if isinstance(part, ast.Global) for name in part.names}
-        local = set().union(*(bound_names(part) for part in nodes))
-        if not isinstance(node, ast.ClassDef):
-            local.update(arg.arg for arg in ast.walk(node.args) if isinstance(arg, ast.arg))
-        local.difference_update(declared)
-        return body, local, declared
-
-    def scoped_nodes(node, hidden=frozenset(), closure=frozenset()):
-        """Nodes with names shadowed in their lexical scope; never execute their bodies."""
-        if isinstance(node, comprehensions):
-            yield node, hidden
-            # Like a nested function, the body cannot see class-local names.
-            inner = closure | comprehension_bindings(node)
-            for index, generator in enumerate(node.generators):
-                # Only the first iterable is evaluated in the enclosing scope.
-                iterator_scope = hidden if index == 0 else inner
-                yield generator, iterator_scope
-                yield from scoped_nodes(generator.iter, iterator_scope, closure if index == 0 else inner)
-                yield from scoped_nodes(generator.target, inner, inner)
-                for condition in generator.ifs:
-                    yield from scoped_nodes(condition, inner, inner)
-            for value in comprehension_values(node):
-                yield from scoped_nodes(value, inner, inner)
-            return
-        if isinstance(node, definitions):
-            body, local, declared = scope_info(node)
-            for child in ast.iter_child_nodes(node):
-                if child not in body:
-                    yield from scoped_nodes(child, hidden, closure)
-            if isinstance(node, ast.ClassDef):
-                # A name the class body binds is looked up in the class namespace and
-                # then the module, not in an enclosing function, so before its binding
-                # it is the module's. Other names resolve through the enclosing scope.
-                # Only definite, preceding bindings hide a name; methods do not close
-                # over the class namespace. A nonlocal name stays the enclosing function's.
-                nonlocal_names = {name for item in body for part in scope_nodes(item)
-                                  if isinstance(part, ast.Nonlocal) for name in part.names}
-                inner = closure - declared - (local - nonlocal_names)
-                for item in body:
-                    yield from scoped_nodes(item, inner, closure)
-                    if (isinstance(item, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-                            and not (isinstance(item, ast.AnnAssign) and item.value is None)):
-                        targets = item.targets if isinstance(item, ast.Assign) else [item.target]
-                        bindings = set().union(*(bound_names(part) for target in targets for part in ast.walk(target)))
-                        inner = inner | (bindings - declared)
-                    elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
-                        inner = inner | (bound_names(item) - declared)
-                    elif isinstance(item, ast.Delete):
-                        inner = inner - set().union(*(bound_names(part) for part in ast.walk(item)))
-                return
-            inner = (closure - declared) | local
-            yield node, inner  # function bodies resolve their globals when called
-            for item in body:
-                yield from scoped_nodes(item, inner, inner)
-            return
-        yield node, hidden
-        for child in ast.iter_child_nodes(node):
-            yield from scoped_nodes(child, hidden, closure)
-
-    def module_bindings(statement, hidden=frozenset()):
-        """Names changed in the module namespace, including explicit global writes.
-
-        A function or class has its own local bindings. Inspect its body for
-        declared globals and mutations of imported objects, without treating a
-        local variable called np or SCFT as a change to the module import.
-        hidden holds the local names of a function whose body statement this is.
-        """
-
-        assigned = set()
-
-        def visit(node, hidden):
-            assigned.update(bound_names(node) - hidden)
-            if isinstance(node, comprehensions):
-                inner = hidden | comprehension_bindings(node)
-                for index, generator in enumerate(node.generators):
-                    visit(generator.iter, hidden if index == 0 else inner)
-                    visit(generator.target, inner)
-                    for condition in generator.ifs:
-                        visit(condition, inner)
-                for value in comprehension_values(node):
-                    visit(value, inner)
-                return
-            if isinstance(node, definitions):
-                body, local, declared = scope_info(node)
-                inner_hidden = (hidden | local) - declared
-                # Defaults, decorators and class bases are evaluated in the containing scope.
-                for child in ast.iter_child_nodes(node):
-                    if child not in body:
-                        visit(child, hidden)
-                for item in body:
-                    visit(item, inner_hidden)
-                return
-            if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
-                owner = node.value
-                while isinstance(owner, (ast.Attribute, ast.Subscript)):
-                    owner = owner.value
-                if isinstance(owner, ast.Name) and owner.id not in hidden and owner.id in imports:
-                    if imports[owner.id].split(".")[0] in ("copy", "copyreg"):
-                        raise ValueError("Changes to the copy module may cause parameter mutations when a "
-                                         "simulation constructor copies params; use a saved SCFT result.")
-                    assigned.add(owner.id)
-            for child in ast.iter_child_nodes(node):
-                visit(child, hidden)
-
-        visit(statement, set(hidden))
-        return assigned
-
-    def unsettled_class_names(node):
-        """Names a class body binds other than by one of its own statements.
-
-        After a binding inside if, for, while, try, with or match, by := or del, the
-        name may be the class's or still the module's: its module value cannot be
-        trusted, and a module container under that name is still checked.
-        """
-        names = set()
-        for item in node.body:
-            if isinstance(item, (ast.Assign, ast.AugAssign)) or (isinstance(item, ast.AnnAssign) and item.value is not None):
-                targets = item.targets if isinstance(item, ast.Assign) else [item.target]
-                definite = {id(part) for target in targets for part in ast.walk(target)}
-            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
-                definite = {id(item)}
-            else:
-                definite = set()
-            names.update(name for part in scope_nodes(item) if id(part) not in definite for name in bound_names(part))
-        return names
-
-    # For each node in the scope of a class body, the names that body binds unsettled
-    class_unsettled = {}
-    for cls in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
-        names = frozenset(unsettled_class_names(cls))
-        for part in (part for item in cls.body for part in scope_nodes(item)) if names else ():
-            class_unsettled[id(part)] = class_unsettled.get(id(part), frozenset()) | names
-    # Names a module has before its first statement
-    predefined = set(dir(builtins)) | {"__file__", "__cached__", "__builtins__", "__annotations__"}
-
-    def resolved_name(node, hidden, unsettled):
-        owner = node
-        while isinstance(owner, ast.Attribute):
-            owner = owner.value
-        if isinstance(owner, ast.Name) and (owner.id in hidden or owner.id in unsettled):
-            return ""
-        return callable_name(node)
-
-    def call_name(node, hidden, unsettled):
-        return resolved_name(node.func, hidden, unsettled)
-
-    def loads_params(node, hidden, unsettled):
-        """SCFT.from_file and the like, reached through any name the converter cannot resolve:
-        an import in a function or under a condition, an alias, a subclass, an instance."""
-        if id(node) not in from_files:
-            return False
-        owner = resolved_name(node.value, hidden, unsettled)
-        return not owner or owner == "polymerfts" or owner.startswith("polymerfts.")
-
-    def hides_simulation(node, hidden, unsettled):
-        """A simulation class or its module where the converter cannot follow the calls.
-
-        A name that an import in a function or under a condition binds is not resolved,
-        and the class or module given to another name, a loop or a function can be
-        called there with any params. Annotations, isinstance and `is` only name it.
-        """
-        if id(node) not in may_hide:
-            return False  # a name nothing imports, an owner of an attribute or an annotation
-        if id(node) in type_tests and (type_tests[id(node)] is None or resolved_name(
-                type_tests[id(node)], hidden, unsettled) in ("isinstance", "issubclass")):
-            return False
-        if id(node) not in called and resolved_name(node, hidden, unsettled) in traced:
-            return True
-        return any(path in traced for path in untraced_paths(node, hidden, unsettled))
-
-    def untraced_paths(node, hidden, unsettled):
-        """What a name the converter does not resolve may reach through those imports."""
-        if id(node) not in reach_untraced:
-            return []
-        root, attributes = node, []
-        while isinstance(root, ast.Attribute):
-            attributes.insert(0, root.attr)
-            root = root.value
-        if resolved_name(root, hidden, unsettled):
-            return []
-        return [".".join([target, *attributes]) for target in untraced.get(root.id, ())]
-
-    def reflective(name):
-        return (name in reflection or name.removeprefix("builtins.") in reflection
-                or name in ("__builtins__", "sys.modules") or name.startswith("copy._")
-                or name.partition(".")[0] == "__main__")  # the script's own module
-
-    def record_construction(node, hidden, untrusted, bound, from_file=False):
-        """Record the params a simulation constructor receives here.
-
-        Nothing is recorded while a global it reads is unbound: the call would stop
-        with a NameError before it constructs anything. A constructor that loads its
-        params from a file records `loaded` in place of a value.
-        """
-        argument = None if from_file else simulation_params(node, untrusted)
-        given = node if from_file else params_argument(node)
-        if argument is not None:
-            constructed.setdefault(id(node), []).append(evaluate(argument))
-        elif given is None or not (names_in(given) - hidden - predefined - bound):
-            constructed.setdefault(id(node), []).append(loaded if from_file else None)
-
-    deferred_bodies = []
-    array_names = set()  # module names bound to a new base-class ndarray
-    runtime_globals = set()  # module names that a function body binds whenever it runs
-    ever_bound = set()  # module names bound by an earlier statement
-    constructed = {}  # each simulation constructor: the params values it is seen to receive
-    loaded = object()  # stands for params that a constructor loads from a file
+    # Module-level assignments in order. Any other binding of a name, in any scope, forgets its value.
+    symbols, params, history, read, looked_up, computed_from = {}, None, [], set(), set(), {}
     for statement in tree.body:
-        if isinstance(statement, ast.Import):
-            for alias in statement.names:
-                imports[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
-        elif isinstance(statement, ast.ImportFrom):
-            for alias in statement.names:
-                imports[alias.asname or alias.name] = (statement.module or "") + "." + alias.name
-        assigned = module_bindings(statement)
-        for node in ast.walk(statement):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                for name in bound_names(node) & assigned:
-                    if name == "*":
-                        raise ValueError("Star imports may rebind parameter values; use explicit imports "
-                                         "or saved SCFT result/JSON/YAML parameters.")
-                    if name == "params" and params is not None:
-                        raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
-                    # Imported values are not evaluated. A previous literal with
-                    # the same name must not stand in for the new binding.
-                    symbols.pop(name, None)
-        # We do not execute control flow. Any binding it might change must be
-        # untrusted before looking at calls later in that same compound statement.
-        if not isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Import, ast.ImportFrom,
-                                      ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            for name in assigned:
-                imports.pop(name, None)
-            rebound.update(assigned)
-        containers = {name for name, value in symbols.items() if isinstance(value, (dict, list, tuple))}
-        known_containers = set().union(*(container_ids(symbols[name]) for name in containers))
-        # Check escapes before unsupported assignments discard their old symbols.
-        # Passing a parameter container to arbitrary Python can mutate any nested
-        # value; observing its AST cannot establish the configuration afterwards.
-        nodes = list(scoped_nodes(statement))
-        current = {id(node) for node, _ in nodes}  # the rest are earlier function bodies
-        # An assignment evaluates its value, and an augmented one also its target, with
-        # the old bindings of the names it binds, unless an assignment expression (:=)
-        # rebinds one first. A lambda or generator in the value runs later.
-        settled, before_binding = set(), set()
-        if (isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and statement.value is not None
-                and not any(isinstance(part, ast.NamedExpr) for part in ast.walk(statement))):
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            settled = set().union(*(bound_names(part) for target in targets for part in ast.walk(target)))
-            pending = [statement.value]
-            before_binding.add(id(statement))
-            while pending:
-                part = pending.pop()
-                before_binding.add(id(part))
-                if not isinstance(part, (ast.Lambda, ast.GeneratorExp)):
-                    pending.extend(ast.iter_child_nodes(part))
-        # A function can read a global container that is defined after it.
-        # Revisit its body as later module bindings become known.
-        for node, hidden in [*deferred_bodies, *nodes]:
-            # Only direct module assignments to names are evaluated below. Other
-            # bindings must not hide an alias that later mutates a known container.
-            # Iterating a dictionary yields its scalar keys; numeric shape loops
-            # and the generated script's monomer-name comprehension remain safe.
-            # targets: what the value (or each iterated item) is assigned to; None binds it whole.
-            expression, iterated, targets = None, False, [None]
-            expressions = []
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                expression = node.value
-                if node is statement and all(isinstance(target, ast.Name) for target in targets):
-                    try:
-                        evaluate(expression)
-                    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                        pass
-                    else:
-                        expression = None  # this assignment retains its aliases in symbols below
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-                expression, iterated, targets = node.iter, True, [node.target]
-            elif isinstance(node, ast.NamedExpr):
-                expression = node.value
-            elif isinstance(node, ast.arguments):
-                # Defaults bind before entering the function's scope, including
-                # defaults of lambdas and keyword-only arguments.
-                expressions = [value for value in [*node.defaults, *node.kw_defaults] if value is not None]
-            elif isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom)):
-                expression, iterated = node.value, isinstance(node, ast.YieldFrom)
-            elif isinstance(node, ast.Lambda):
-                expression = node.body
-            elif isinstance(node, ast.Match) and any(
-                    bound_names(part) for case in node.cases for part in ast.walk(case.pattern)):
-                expression = node.subject
-            if expression is not None:
-                expressions.append(expression)
-            here = class_unsettled.get(id(node), frozenset())
-            untrusted = hidden | here | (assigned - settled if id(node) in before_binding else assigned)
-            for expression in expressions:
-                if not references_container(expression, containers - hidden, untrusted):
-                    continue
-                try:
-                    value = evaluate(expression)
-                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    aliases = True
-                else:
-                    items = list(value) if iterated and isinstance(value, (dict, list, tuple)) else [value]
-                    values = [bound for item in items for target in targets for bound in bound_values(target, item)]
-                    aliases = any(container_ids(item) & known_containers for item in values)
-                if aliases:
-                    raise ValueError("Runtime container alias bindings may cause parameter mutations; "
-                                     "use direct assignments or saved SCFT result/JSON/YAML parameters.")
-            if isinstance(node, ast.Attribute) or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-                                                   and node.id not in hidden):
-                # Also a reference, such as g = getattr, or a table reached through a module
-                if reflective(callable_name(node)):
-                    raise ValueError(reflection_error)
-            if id(node) in main_imports:
-                raise ValueError(reflection_error)  # also under another name in a function
-            if id(node) in reach_untraced and any(reflective(path) for path in untraced_paths(node, hidden, here)):
-                raise ValueError(reflection_error)  # such as import sys as s in a function
-            if id(node) in from_files and loads_params(node, hidden, here):
-                bound = ever_bound | (assigned if id(node) in current else assigned - settled)
-                record_construction(node, hidden, untrusted, bound | here, from_file=True)
-            if id(node) in may_hide and hides_simulation(node, hidden, here):
-                raise ValueError(untraceable_error)
-            parts, given = operands(node)
-            if isinstance(node, ast.Match) and references_container(node.subject, containers - hidden, untrusted):
-                # A value pattern compares the subject with its value (__eq__), a class
-                # pattern runs isinstance, which a metaclass of the script can define.
-                for part in (part for case in node.cases for part in ast.walk(case.pattern)):
-                    if ((isinstance(part, ast.MatchValue) and not builtin_operand(part.value, untrusted))
-                            or (isinstance(part, ast.MatchClass) and not (
-                                isinstance(part.cls, ast.Name) and part.cls.id not in untrusted
-                                and callable_name(part.cls) in ("int", "float", "complex", "str", "bool",
-                                                                "list", "tuple", "dict")))):
-                        raise ValueError("Runtime params containers given to operators of unsupported objects may "
-                                         "cause mutations; use a saved SCFT result or JSON/YAML parameters.")
-            if parts is not None and any(references_container(part, containers - hidden, untrusted) for part in given) \
-                    and not inert_operation(parts, containers - hidden, untrusted):
-                raise ValueError("Runtime params containers given to operators of unsupported objects may cause "
-                                 "mutations; use a saved SCFT result or JSON/YAML parameters.")
-            if not isinstance(node, ast.Call):
-                continue
-            name = call_name(node, hidden, here)
-            safe = name in readers
-            if (isinstance(node.func, ast.Attribute) and node.func.attr == "reshape"
-                    and isinstance(node.func.value, ast.Call)):
-                # Generated SCFT scripts reshape a loaded NumPy field to params["nx"].
-                # Trust this shape-only operation on a known NumPy constructor,
-                # not an arbitrary object's method with the same name.
-                safe = call_name(node.func.value, hidden, here) in {"numpy.asarray", "numpy.array", "numpy.zeros",
-                                                                    "numpy.ones", "numpy.empty", "numpy.full"}
-            arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
-            if name in simulations:
-                arguments = simulation_extras(node, untrusted)  # a literal params is deep-copied
-                # The export describes the calculation the script runs: what the constructor
-                # receives, as seen here (a function body is seen again at later statements).
-                # An earlier function body can run during this statement after any of its
-                # bindings except the targets of a plain assignment, which are bound last.
-                bound = ever_bound | (assigned if id(node) in current else assigned - settled)
-                record_construction(node, hidden, untrusted, bound | here)
-            if name in numeric_readers:
-                safe = independent_result(node, untrusted)
-            elif name in ("list", "tuple", "dict"):
-                try:
-                    evaluate(node)
-                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    safe = False
-            elif name in shape_readers:
-                # ndarray.reshape and broadcast_to read the shape; another first
-                # argument could pass the shape list to its own reshape method.
-                safe = bool(node.args) and new_array(node.args[0], untrusted)
-            elif name == "numpy.full":
-                # Object fill values can retain a reference to a parameter dict.
-                fill = node.args[1] if len(node.args) > 1 else next(
-                    (kw.value for kw in node.keywords if kw.arg == "fill_value"), None)
-                safe = fill is None or not references_container(fill, containers - hidden, untrusted)
-            if safe:
-                continue
-            for argument in arguments:
-                if isinstance(argument, ast.Starred):
-                    argument = argument.value
-                try:
-                    value = evaluate(argument)
-                except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
-                    escaped = references_container(argument, containers - hidden, untrusted)
-                else:
-                    escaped = isinstance(value, (dict, list, tuple)) and references_container(argument, containers - hidden, untrusted)
-                if escaped:
-                    raise ValueError("Runtime params container arguments to unsupported calls may cause mutations; "
-                                     "use a saved SCFT result or JSON/YAML parameters.")
-        names = []
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            names = [t.id for t in targets if isinstance(t, ast.Name)]
-            if "params" in names and params is not None:
-                raise ValueError("Repeated params assignments are not supported; use a saved SCFT result.")
+        targets = (statement.targets if isinstance(statement, ast.Assign) else
+                   [statement.target] if isinstance(statement, ast.AnnAssign) and statement.value else [])
+        names = [target.id for target in targets] if all(isinstance(t, ast.Name) for t in targets) else []
+        if names:
             try:
+                looked_up.clear()
                 value = evaluate(statement.value)
-            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+            except NOT_LITERAL:
                 if "params" in names:
-                    raise ValueError("Could not read params statically. Use a saved SCFT result or JSON/YAML parameters.") from None
-                # Never retain a stale constant after an unsupported assignment.
-                for name in names:
-                    symbols.pop(name, None)
+                    raise unsupported("Could not read params statically.") from None
+                names = []
             else:
+                symbols.update((name, value) for name in names)
+                history.extend((name, value) for name in names)
                 for name in names:
-                    symbols[name] = value
-                if "params" in names:
-                    params = value
-        # Parameter mutations are ambiguous without executing the script.
-        containers.update(name for name, value in symbols.items() if isinstance(value, (dict, list, tuple)))
-        for node, hidden in nodes:
-            if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.MatchMapping)):
-                for name in (bound_names(node) & assigned) - hidden:
-                    if name == "params":
-                        raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
-                    # Pattern captures store names as strings, without Name(Store)
-                    # nodes. Do not reuse a pre-match scalar or container binding.
+                    computed_from.setdefault(name, set()).update(looked_up)
+                read.update(id(node) for node in ast.walk(statement.value))
+                params = value if "params" in names else params
+        for node in ast.walk(statement):
+            for name in bound_names(node):
+                if name not in names:
                     symbols.pop(name, None)
-            if (isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
-                    and node.id not in names and node.id in assigned and node.id not in hidden):
-                if node.id == "params":
-                    raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
-                if isinstance(node.ctx, ast.Store) and node.id in containers:
-                    raise ValueError("Runtime container mutations are not supported; use a saved SCFT result.")
-                # Assignments inside control flow and tuple unpacking are not evaluated.
-                symbols.pop(node.id, None)
-        # A function body may run at any later statement, so it is checked against the
-        # containers known at each of them, also when it is defined before them.
-        for node, hidden in [*deferred_bodies, *nodes]:
-            if (isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
-                    and node.target.id not in hidden and node.target.id in containers):
-                # Also in a class body before its own binding: += changes the module's list
-                raise ValueError("Runtime container mutations are not supported; use a saved SCFT result.")
-            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
-                target = node
-                while isinstance(target, ast.Subscript): target = target.value
-                if (isinstance(target, ast.Name) and target.id not in hidden
-                        and (target.id == "params" or target.id in containers)):
-                    raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
-                # An expression, such as (params["polymers"] + [])[0], can hold the containers
-                if not isinstance(target, ast.Name) and references_container(node.value, containers - hidden,
-                                                                              hidden | assigned | class_unsettled.get(id(node), frozenset())):
-                    raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                target = node.func.value
-                while isinstance(target, ast.Subscript): target = target.value
-                if (isinstance(target, ast.Name) and target.id not in hidden
-                        and (target.id == "params" or target.id in containers)):
-                    raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
-                if not isinstance(target, ast.Name) and references_container(node.func.value, containers - hidden,
-                                                                              hidden | assigned | class_unsettled.get(id(node), frozenset())):
-                    raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
-        for node, hidden in nodes:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for item in node.body:
-                    deferred_bodies.extend(scoped_nodes(item, hidden, hidden))
-            elif isinstance(node, ast.Lambda):
-                deferred_bodies.append((node, hidden))
-                deferred_bodies.extend(scoped_nodes(node.body, hidden, hidden))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                # A global the body binds (global x) can change whenever the function runs
-                body, local, _ = scope_info(node)
-                runtime_globals.update(*(module_bindings(item, local) for item in body))
-        # A plain assignment of a new array, also center = center * params["lx"], binds one.
-        # ndarray.__iadd__ and the like keep the array with a NumPy or builtin operand; an
-        # object of the script can override them (__array_ufunc__) and become the binding.
-        # Any other binding ends it.
-        made = (isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets)
-                and array_result(statement.value, assigned - settled))
-        kept = (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)
-                and numerical(statement.value, assigned - settled))
-        if not kept:
-            array_names.difference_update(assigned)
-        if made:
-            array_names.update(target.id for target in statement.targets)
-        # Neither a later literal, an import nor a new array settles such a global
-        for name in runtime_globals:
-            symbols.pop(name, None)
-            imports.pop(name, None)
-        array_names.difference_update(runtime_globals)
-        rebound.update(runtime_globals)
-        ever_bound.update(assigned)
-        # An imported safe reader can be shadowed by a later assignment or definition.
-        if isinstance(statement, (ast.Import, ast.ImportFrom)):
-            continue  # The direct import above establishes its new binding.
-        for name in assigned:
-            imports.pop(name, None)
-        rebound.update(assigned)
-    # A function body can also run after the last statement (atexit, or a module importing this one).
-    for node, hidden in deferred_bodies:
-        here = class_unsettled.get(id(node), frozenset())
-        if isinstance(node, ast.Call) and call_name(node, hidden, here) in simulations:
-            record_construction(node, hidden, hidden | here, ever_bound | here)
-        elif loads_params(node, hidden, here):
-            record_construction(node, hidden, hidden | here, ever_bound | here, from_file=True)
-        if hides_simulation(node, hidden, here):
-            raise ValueError(untraceable_error)  # with the bindings of the last statement
     if not isinstance(params, dict):
-        raise ValueError("The Python file needs a module-level params dictionary.")
-    if not constructed:
-        return params
-    # A constructor in a function body may run at any later statement: every value it
-    # can receive there must be readable and the same, and so must those of all constructors.
-    received = [value for seen in constructed.values() for value in seen]
-    if any(value is loaded for value in received):
-        raise ValueError("SCFT.from_file, LFTS.from_file and CLFTS.from_file, and a from_file of an object the "
-                         "converter cannot identify, load their params when the script runs; export the parameter "
-                         "file, with the overrides applied, or a saved SCFT result.")
-    if not all(isinstance(value, dict) for value in received):
-        raise ValueError("The params argument of SCFT, LFTS, CLFTS or GibbsEnsemble must be a dictionary "
-                         "written with literal values, such as params or dict(params, ds=.02); "
-                         "use a saved SCFT result.")
+        raise unsupported("The Python file needs a module-level params dictionary.")
+
+    def bound_once(names):
+        for name in names:
+            if len(binders[name]) > 1:
+                source = "" if name == "params" else ", which the exported params is read from,"
+                raise unsupported(f"{name}{source} is bound more than once.")
+
+    bound_once(name for name, value in history if container_ids(value) & container_ids(params))
+    # From here on, only a name bound once has a known value everywhere.
+    for name in [name for name in symbols if len(binders[name]) > 1]:
+        del symbols[name]
+
+    # Simulation classes: called with readable params, or named in annotations, isinstance and `is`.
+    annotations = {id(part) for node in nodes for annotation in (getattr(node, "annotation", None),
+                                                                 getattr(node, "returns", None))
+                   if annotation is not None for part in ast.walk(annotation)}
+    simulation_names = SIMULATIONS | {alias.asname for node in nodes if isinstance(node, ast.ImportFrom)
+                                      for alias in node.names if alias.name in SIMULATIONS and alias.asname}
+
+    def names_a_class(node):
+        parent = parents.get(id(node))
+        if isinstance(parent, ast.Tuple):
+            node, parent = parent, parents.get(id(parent))
+        return (id(node) in annotations
+                or isinstance(parent, ast.Call) and builtin(parent.func, "isinstance", "issubclass")
+                and parent.args[1:2] == [node]
+                or isinstance(parent, ast.Compare) and all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops))
+
+    received, received_from = [], set()
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
+            if any(module.split(".")[0] in RUNTIME_MODULES for module in modules):
+                raise unsupported("Imports of __main__, importlib, builtins or copy can change params at run time.")
+            if any(alias.name == "*" for alias in node.names):
+                raise unsupported("A star import can bind any name, params or a simulation class too.")
+        name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        if name in REFLECTION:
+            raise unsupported(f"Reflection ({name}) can change params at run time.")
+        if name == "from_file":
+            raise ValueError("from_file loads params when the script runs; export that parameter file instead.")
+        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load) \
+                and (dotted(node) or "").split(".")[0] in LIBRARIES:
+            raise unsupported(f"The script replaces {dotted(node)}.")  # a simulation class or a library function
+        if name not in (simulation_names if isinstance(node, ast.Name) else SIMULATIONS) \
+                or not isinstance(node.ctx, ast.Load):
+            continue
+        call = parents.get(id(node))
+        if not (isinstance(call, ast.Call) and call.func is node):
+            if names_a_class(node):
+                continue
+            raise unsupported(f"{name} is used other than by calling it, in an annotation or in isinstance.")
+        path = dotted(node) or ""
+        if path.split(".")[0] != "polymerfts" or path.split(".")[-1] not in SIMULATIONS:
+            raise unsupported(f"{name} is not imported from polymerfts by a module-level import.")
+        given = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "params"), None)
+        try:
+            if given is None or isinstance(given, ast.Starred) or any(k.arg is None for k in call.keywords):
+                raise ValueError("params is not given by name or position")
+            looked_up.clear()
+            received.append(evaluate(given))
+            received_from |= looked_up
+        except NOT_LITERAL:
+            raise unsupported(f"{name} receives params the converter cannot read.") from None
+        if not isinstance(received[-1], dict):
+            raise unsupported(f"{name} needs a params dictionary.")
+        read.update(id(part) for part in ast.walk(given))
+
+    # The containers the export is read from: those of params, of the params the simulations
+    # receive and of every module-level value these were computed from. The names that share
+    # one of them must keep it unchanged.
+    sources, pending = set(), ["params", *received_from]
+    while pending:
+        name = pending.pop()
+        if name not in sources:
+            sources.add(name)
+            pending.extend(computed_from.get(name, ()))
+    exported = container_ids(params).union(*map(container_ids, received),
+                                           *(container_ids(value) for name, value in history if name in sources))
+    tracked = {name for name, value in history if container_ids(value) & exported}
+    bound_once(tracked)
+
+    # Uses of params and of the names that share its containers
+    script_functions = {node.name for node in nodes
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    for node in nodes:
+        if isinstance(node, ast.Assign) and (isinstance(node.value, ast.Lambda) or
+                                             isinstance(node.value, ast.Name) and node.value.id in script_functions):
+            script_functions.update(target.id for target in node.targets if isinstance(target, ast.Name))
+
+    def possible(node):
+        """The values a subscript of a tracked name can take; an unknown index selects any item."""
+        if isinstance(node, ast.Name):
+            return [symbols[node.id]]
+        values = []
+        for container in possible(node.value):
+            try:
+                index = None if isinstance(node.slice, ast.Slice) else evaluate(node.slice)
+            except NOT_LITERAL:
+                values.extend(container.values() if isinstance(container, dict) else container)
+            else:
+                values.append(container if index is None else container[index])
+        return values
+
+    def unchanged(node, kind):
+        """Whether the value of node, of the given kind, is read where nothing can change it."""
+        parent = parents.get(id(node))
+        while isinstance(parent, (ast.keyword, ast.Starred)):
+            node, parent = parent, parents.get(id(parent))
+        if kind == 0 or isinstance(parent, (ast.Compare, ast.FormattedValue)) \
+                or isinstance(parent, ast.Call) and builtin(parent.func, "print") and parent.func is not node:
+            return True
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)) and parent.iter is node:
+            return kind <= 2  # scalars, or the keys of a dictionary
+        if kind > 1:
+            return False
+        if isinstance(parent, ast.Call):  # a list of scalars, given to a builtin, a library or reshape
+            function, arguments = parent.func, [*parent.args, *(k.value for k in parent.keywords)]
+            if any(isinstance(a, ast.Lambda) or isinstance(a, ast.Name) and a.id in script_functions
+                   for a in arguments):
+                return False  # a function of the script could receive the list
+            path = (dotted(function) or "").split(".")
+            return (builtin(function, *READING_BUILTINS) or path[0] in LIBRARIES and path[-1] not in IN_PLACE
+                    or isinstance(function, ast.Attribute) and function.attr == "reshape"
+                    and "reshape" not in script_functions)
+        return (isinstance(parent, (ast.BinOp, ast.UnaryOp, ast.AugAssign, ast.Subscript,
+                                    ast.If, ast.While, ast.Assert, ast.Expr))
+                or isinstance(parent, ast.Assign) and all(isinstance(t, (ast.Tuple, ast.List)) for t in parent.targets))
+
+    for node in nodes:
+        if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in tracked) \
+                or id(node) in read:
+            continue
+        top = node
+        while isinstance(parents.get(id(top)), ast.Subscript) and parents[id(top)].value is top:
+            top = parents[id(top)]
+        if not isinstance(top.ctx, ast.Load):
+            raise unsupported(f"The script changes {node.id}.")
+        try:
+            kind = max(map(kind_of, possible(top)), default=0)
+        except NOT_LITERAL:
+            kind = 3
+        if not unchanged(top, kind):
+            raise unsupported(f"{node.id} is used where the script or a library could change it.")
     if any(value != received[0] for value in received):
-        raise ValueError("The script runs calculations with different params, which one PSCF input cannot "
-                         "describe; export one calculation from its saved SCFT result.")
-    return received[0]
+        raise unsupported("The script runs calculations with different params, which one PSCF input cannot describe.")
+    return received[0] if received else params
 
 
 def read_input(path):

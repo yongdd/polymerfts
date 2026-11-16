@@ -43,9 +43,9 @@ for the isosurfaces).
 
 | File | Description |
 |------|-------------|
-| `plot_structure_function.ipynb` | Plot the spherically averaged structure function S(k) |
+| `plot_structure_function.ipynb` | Plot the angle-averaged structure function S(k) |
 
-Reads structure function data from L-FTS simulations and computes spherically-averaged S(k) by grouping Fourier modes with equal |k|².
+Reads structure function data from L-FTS simulations in 1D, 2D or 3D and computes the angular average of S(k) by grouping Fourier modes with equal |k|².
 In a cell that is not orthogonal, |k| follows from the reciprocal metric of the cell, with the index
 alias of the smallest |k| that the solvers use ([Numerical Methods, Sections 3.1 and 3.5](../theory/NumericalMethods.md#35-boltzmann-weight-calculation));
 the files save the lattice angles (older files keep those of the input in `initial_params`).
@@ -66,7 +66,7 @@ jupyter notebook plot_structure_function.ipynb
 
 **Parameters to edit in the notebook:**
 - `file_path`: Path to structure function files
-- `type_pair`: Correlation type (`"A_A"`, `"A_B"`, or `"B_B"`)
+- `type_pair`: the pair of monomer types, e.g. `("A", "B")`
 - `iterations`: the steps of the files to average (`range(100000, 500000, 100000)` reads 100000 to 400000)
 
 ### 1.3 WTMD Statistics

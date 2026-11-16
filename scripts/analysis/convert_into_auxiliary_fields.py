@@ -26,11 +26,6 @@ from scipy.io.matlab import MatReadError
 _MAT = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/mat_fields.py"))
 
 
-def monomer_field(data, name):
-    """w of a monomer type: w_<name>, or the real and imaginary parts of CL-FTS."""
-    return _MAT['read_monomer_fields'](data, [name])[name]
-
-
 def auxiliary_fields(data):
     """w_aux = A^-1 w and the monomer types, in the order of matrix_a_inverse."""
     names = [str(name).strip() for name in np.atleast_1d(data['monomer_types'])]
