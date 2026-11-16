@@ -2,8 +2,9 @@
  * @file CudaFourierTransform.h
  * @brief FourierTransform on the GPU (cuFFT and the CUDA cosine/sine transforms).
  *
- * A box that mixes periodic and wall axes is transformed with the complex cuFFT of
- * its mirror image (FourierTransform), built and read by element kernels.
+ * A box that mixes periodic and wall axes runs CudaMakhoulTransform: one cuFFT of
+ * the grid, the DFT along the periodic axes and the cosine or sine series along
+ * the walls, as MakhoulTransform on the CPU.
  *
  * The multipliers stay in device memory. A call uploads its fields, transforms
  * and multiplies them on the device and downloads the result, all on the
@@ -25,6 +26,7 @@
 
 #include "CudaCommon.h"
 #include "CudaFFT.h"
+#include "CudaMakhoulTransform.h"
 #include "FourierTransform.h"
 
 /// Multiplier values in device memory
@@ -37,19 +39,6 @@ public:
 
     CudaDeviceBuffer<cuDoubleComplex> complex_values;   ///< complex coefficients
     CudaDeviceBuffer<double> real_values;               ///< real coefficients
-};
-
-/// Device tables of the mirror image of a mixed box (FourierTransform::MirrorAxis), passed to the kernels by value
-struct CudaMirrorTables
-{
-    int n[3];            ///< grid points of each axis
-    int n_extended[3];   ///< points of each extended axis
-    const int* extend_source[3];
-    const double* extend_sign[3];
-    const int* extract_source[3];
-    const cuDoubleComplex* extract_factor[3];
-    const int* fill_source[3];
-    const cuDoubleComplex* fill_factor[3];
 };
 
 template <typename T>
@@ -73,17 +62,10 @@ protected:
 private:
     using DeviceT = CuDeviceData<T>;
 
-    std::unique_ptr<CudaFFTBase<T>> fft_;                             ///< periodic or wall boxes
-    std::unique_ptr<CudaFFTBase<std::complex<double>>> mirror_fft_;   ///< mirror image of a mixed box
+    std::unique_ptr<CudaFFTBase<T>> fft_;                 ///< periodic or wall boxes
+    std::unique_ptr<CudaMakhoulTransform<T>> mixed_fft_;  ///< boxes that mix periodic and wall axes
+    double mixed_forward_scale_ = 1.0;                    ///< 1/2 per wall axis: REDFT10/RODFT10 are twice the series
     cudaStream_t stream_ = nullptr;
-
-    // Mixed boxes: the tables of the mirror image and its field and modes (one field at a time)
-    CudaDeviceBuffer<int> d_mirror_indices_;
-    CudaDeviceBuffer<double> d_mirror_signs_;
-    CudaDeviceBuffer<cuDoubleComplex> d_mirror_factors_;
-    CudaDeviceBuffer<cuDoubleComplex> d_image_;
-    CudaDeviceBuffer<cuDoubleComplex> d_modes_;
-    CudaMirrorTables mirror_tables_{};
 
     CudaDeviceBuffer<DeviceT> d_fields_;           ///< fields of a call (inputs, then outputs)
     CudaDeviceBuffer<double> d_coefficients_in_;   ///< coefficients of the inputs of a term
@@ -91,8 +73,6 @@ private:
     long long field_pitch_ = 0;                    ///< elements of T from one device field to the next
     long long coefficient_pitch_ = 0;              ///< doubles from one field's device coefficients to the next
 
-    /// Upload the tables of the mirror image and allocate its buffers (mixed boxes)
-    void set_mirror_image();
     /// Upload n_fields packed host fields to d_fields_
     void upload_fields(const T* fields, int n_fields);
     /// Download the first n_fields fields of d_fields_ to packed host fields

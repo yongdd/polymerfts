@@ -636,6 +636,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/PinnedCircularBuffer.cu
         src/platforms/cuda/CudaAndersonMixing.cu
         src/platforms/cuda/CudaAndersonMixingReduceMemory.cu
+        src/platforms/cuda/CudaMakhoulTransform.cu
         src/platforms/cuda/CudaFourierTransform.cu
         src/platforms/cuda/CudaFactory.cu
     )

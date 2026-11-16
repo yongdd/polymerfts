@@ -28,7 +28,7 @@ The library provides spectral transforms for solving the modified diffusion equa
 
 **Implementations:**
 - **CPU**: MKL or FFTW library for FFT, `MakhoulTransform` over that FFT for DCT/DST
-- **CUDA**: cuFFT for FFT, custom `CudaRealTransform` for DCT/DST
+- **CUDA**: cuFFT for FFT, custom `CudaRealTransform` for DCT/DST, `CudaMakhoulTransform` for boxes that mix periodic axes and walls (Section 2.5)
 
 ---
 
@@ -98,7 +98,7 @@ where mode 0 gains 2 and mode $`N/2`$ gains $`\sqrt{2}`$. The last axis, which h
 
 so it changes only the tables that place the samples and the coefficients. The real FFT runs unnormalized on per-thread scratch of `MakhoulTransform`, which starts on a 64-byte boundary and which it may overwrite, so the transform adds no copy and no 1/N pass. Complex fields transform their real and imaginary parts in turn, read from and written to every second value.
 
-### 2.5 Boxes that Mix Periodic Axes and Walls (CPU)
+### 2.5 Boxes that Mix Periodic Axes and Walls
 
 The Fourier transform of a box that mixes periodic axes and walls (`FourierTransform.h`) has complex coefficients: the DFT along the periodic axes and the cosine or sine series along the walls; `PropagatorSolver.fourier` takes the cosine series along every wall. On the CPU, `MakhoulTransform` runs this transform as well. A periodic axis is neither reordered nor combined, so the same real FFT of the grid leaves the DFT on it. The coefficients $`Y`$ of a real field are conjugate under $`\mathbf{k}_p \to -\mathbf{k}_p`$ on the periodic axes, with the wall coefficients unchanged, so the half of the last axis that the real FFT does not hold is $`Y(\mathbf{k}_p, -k) = \overline{Y(-\mathbf{k}_p, k)}`$. A wall as the last axis then gives the cosine transform of a complex line,
 
@@ -108,7 +108,7 @@ X_k = a + b, \qquad X_{N-k} = i\,(a - b), \qquad a = W_N^k\, Y(\mathbf{k}_p, k),
 
 and a periodic last axis takes $`\overline{Y(-\mathbf{k}_p, N-k)}`$ for its upper half. The backward transform reads the Hermitian part $`\left(C(\mathbf{k}) + \overline{C(-\mathbf{k})}\right)/2`$ of the coefficients, which holds the coefficients of the real part of the field, and runs these steps backward. A complex field has $`C = C[\mathrm{Re}\, f] + i\, C[\mathrm{Im}\, f]`$ and is restored from the Hermitian parts of $`C`$ and of $`-iC`$.
 
-The CUDA version transforms the mirror image of the box: every wall axis is extended to twice its length by the even or odd reflection, the complex FFT of this periodic grid gives its modes, and a phase factor per wall axis turns them into the series coefficients. The CPU transform runs one real FFT of the grid instead of a complex FFT of a grid two or four times larger (one or two walls in 3D), with scratch of about two grids of doubles, one grid of complex values (Section 8.6).
+On CUDA, `CudaMakhoulTransform` runs the same scheme with one cuFFT of the grid. A kernel reorders the samples along the wall axes; D2Z transforms a real field, and Z2Z transforms a complex field in place, without the split into its real and imaginary parts that the CPU makes. A second kernel forms each coefficient from its $`2^w`$ modes, $`w`$ the number of wall axes, by the cosine transform of a complex line, $`X_k = W_N^k V_k + W_N^{-k} V_{-k}`$, along every wall axis at once, a sine axis taking its coefficients in reverse order; it reads the half of a real field's spectrum that D2Z does not hold as $`V(-\mathbf{k}) = \overline{V(\mathbf{k})}`$. The backward transform forms each mode from its coefficients, from their Hermitian part for a real field, with $`V_k = W_N^{-k}\left(X_k - i X_{N-k}\right)`$ ($`X_N = 0`$) per wall axis, twice the inverse of the forward step as REDFT01, then runs Z2D or the inverse Z2Z and restores the samples. Each output is gathered from its inputs, so one pass covers all wall axes and no pair of values is updated in place. Both platforms thus avoid the mirror image of the box, in which every wall axis is extended to twice its length by the even or odd reflection: a complex FFT of a grid two or four times larger (one or two walls in 3D). The scratch holds about two grids of doubles per thread on the CPU and two to three, with the work area of cuFFT, on CUDA (Section 8.6).
 
 ---
 
@@ -364,6 +364,7 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
 - `CudaFFT<T, DIM>`: Standard FFT using cuFFT
 - `CudaRealTransform1D/2D/3D`: DCT/DST using FCT/FST algorithms
 - `CudaCrysFFT`: Pmmm DCT via CudaRealTransform
+- `CudaMakhoulTransform`: the DFT along periodic axes and the cosine or sine series along walls through one cuFFT of the grid, with reordering and combining kernels (Section 2.5); `CudaFourierTransform` uses it for boxes that mix periodic axes and walls
 - `CudaCrysFFTRecursive3m`: Recursive 3m on GPU with stream-aware diffusion
 - `CudaCrysFFTObliqueZ`: DCT-z + FFT-xy as one real 3D FFT of the physical grid
   after Makhoul's permutation along z (even samples forward, odd samples backward).
@@ -425,7 +426,7 @@ transform.execute(d_data);
 
 ### 8.1 DCT/DST Numerical Accuracy
 
-Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (all types) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `FftwFFT` and `MklFFT` agree with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`). With periodic axes among the walls (Section 2.5), `MakhoulTransform` over either library agrees with the DFT and the series to 3×10⁻¹⁵ on 154 grids of two and three axes with every mix of periodic, cosine and sine axes, real fields taking the real part of the inverse of coefficients without symmetry.
+Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (all types) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `FftwFFT` and `MklFFT` agree with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`). With periodic axes among the walls (Section 2.5), `MakhoulTransform` over either library agrees with the DFT and the series to 3×10⁻¹⁵ on 154 grids of two and three axes with every mix of periodic, cosine and sine axes, real fields taking the real part of the inverse of coefficients without symmetry. `CudaMakhoulTransform` agrees with them to 2×10⁻¹⁴ on these grids and 40 larger ones, and with `MakhoulTransform` to 7×10⁻¹⁶ (`TestCudaMakhoulTransform`).
 
 ### 8.2 FFTW vs MKL Benchmark (CPU)
 
@@ -510,9 +511,9 @@ Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on
 
 Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
 
-### 8.6 Boxes that Mix Periodic Axes and Walls (CPU)
+### 8.6 Boxes that Mix Periodic Axes and Walls
 
-**Setup**: forward and backward transform of one real field through the Fourier transform of a box with periodic x and y and a reflecting z wall (P/P/R), or periodic x, a reflecting y wall and an absorbing z wall (P/R/A), in double precision, cubic grids, one thread, best of five runs of five round trips. `MakhoulTransform` with periodic axes (Section 2.5) against, in parentheses, the complex FFT of the mirror image of the box, the transform of the CUDA version, with the same library.
+**Setup (CPU)**: forward and backward transform of one real field through the Fourier transform of a box with periodic x and y and a reflecting z wall (P/P/R), or periodic x, a reflecting y wall and an absorbing z wall (P/R/A), in double precision, cubic grids, one thread, best of five runs of five round trips. `MakhoulTransform` with periodic axes (Section 2.5) against, in parentheses, the complex FFT of the mirror image of the box, with the same library.
 
 | Box | Processor, library | 32³ | 64³ | 96³ |
 |-----|--------------------|-----|-----|-----|
@@ -526,6 +527,21 @@ Whole SCFT iterations of the Gyroid example on 64³ with stress at every iterati
 | P/R/A | Intel Xeon 6737P, MKL | 0.28 ms (2.0 ms) | 2.8 ms (26 ms) | 14 ms (117 ms) |
 
 One real FFT of the grid replaces a complex FFT of twice (one wall) or four times (two walls) as many points: 3.3-5.7x and 6-12x faster. A complex field takes two real FFTs, one for its real and one for its imaginary part, and gains about half as much (1.6-2.8x with one wall, 3-5.7x with two). The per-thread scratch holds about two grids of doubles instead of two complex mirror images, 4 or 8 times less.
+
+**Setup (CUDA)**: forward and backward transform of one field in device memory, in the same boxes, through `CudaMakhoulTransform` (Section 2.5) against, in parentheses, the complex cuFFT of the mirror image of the box between an extending and an extracting kernel; CUDA 12.4.1, double precision, best of five runs of twenty calls timed with CUDA events. The scratch is that of the transform: its device buffers and the work area of its cuFFT plans.
+
+| Box, field | GPU | 32³ | 64³ | 96³ | Scratch, 96³ |
+|------------|-----|-----|-----|-----|--------------|
+| P/P/R, real | A10 | 0.069 ms (0.079 ms) | 0.22 ms (0.54 ms) | 0.87 ms (1.9 ms) | 21 MiB (81 MiB) |
+| P/P/R, complex | A10 | 0.076 ms (0.079 ms) | 0.32 ms (0.55 ms) | 1.2 ms (2.0 ms) | 14 MiB (81 MiB) |
+| P/R/A, real | A10 | 0.078 ms (0.13 ms) | 0.28 ms (1.1 ms) | 1.1 ms (3.8 ms) | 21 MiB (162 MiB) |
+| P/R/A, complex | A10 | 0.086 ms (0.13 ms) | 0.40 ms (1.1 ms) | 1.4 ms (3.8 ms) | 14 MiB (162 MiB) |
+| P/P/R, real | A40 | 0.068 ms (0.077 ms) | 0.20 ms (0.50 ms) | 0.73 ms (1.7 ms) | 21 MiB (81 MiB) |
+| P/P/R, complex | A40 | 0.076 ms (0.077 ms) | 0.29 ms (0.50 ms) | 1.0 ms (1.7 ms) | 14 MiB (81 MiB) |
+| P/R/A, real | A40 | 0.077 ms (0.13 ms) | 0.25 ms (0.95 ms) | 0.90 ms (3.2 ms) | 21 MiB (162 MiB) |
+| P/R/A, complex | A40 | 0.084 ms (0.13 ms) | 0.35 ms (0.95 ms) | 1.2 ms (3.2 ms) | 14 MiB (162 MiB) |
+
+From 64³ on, one cuFFT of the grid is 2.2-2.5x faster than the mirror image with one wall and 3.5-3.9x with two for real fields, and 1.6-1.7x and 2.6-2.8x for complex fields, whose Z2Z transforms twice the data of D2Z. On 32³ the kernel launches take most of the time (1.0-1.7x). The scratch is 4-12 times smaller: the samples and the half spectrum of a real field, the samples of a complex field transformed in place, and one cuFFT work area for both directions. With the fields on the host, a call of `PropagatorSolver.fourier.apply` on one field, which also uploads and downloads it, takes 1.2-1.5x less time with one wall and 1.6-2.2x less with two from 64³ on (A10).
 
 ---
 

@@ -59,11 +59,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 ### Added
 
 - Electrostatics in boxes that mix periodic axes and walls (2026-11-09): the platform Fourier
-  transform gives such a box the coefficients of its mirror image, in which each wall axis is
-  extended to twice its length by the even (cosine) or odd (sine) reflection. The CPU computes them
-  with one real FFT of the grid (`MakhoulTransform` with periodic axes, 2026-11-16), CUDA with the
-  complex cuFFT of the image and a phase factor per wall axis (docs/internals/FFTImplementation.md,
-  Section 2.5).
+  transform gives such a box the DFT along the periodic axes and the cosine or sine series along the
+  walls, computed with one FFT of the grid whose wall axes are reordered and combined as in Makhoul's
+  cosine transform: `MakhoulTransform` with periodic axes on the CPU and `CudaMakhoulTransform` (one
+  cuFFT of the grid between a reordering and a combining kernel) on CUDA (both 2026-11-16;
+  docs/internals/FFTImplementation.md, Section 2.5).
   The coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
   series along the walls, also for real fields, which take the real part of `backward`.
   `PropagatorSolver.fourier` takes the cosine series along every wall, absorbing ones included, so
@@ -972,6 +972,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestCudaMakhoulTransform` compares the CUDA transform of boxes that mix periodic axes and walls
+  with the O(N^2) definitions on the 154 grids of `TestCpuMakhoulTransform` and 40 larger ones, for
+  real and complex fields (to 1.9e-14), and with `MakhoulTransform` (to 6.5e-16), and checks that the
+  inputs are kept (2026-11-16).
 - `TestCpuFFTAddressIndependence` also checks the periodic FFTW transforms at every 8-byte offset
   within a 64-byte line, on even and odd grids, real and complex fields, in place, with unchanged
   inputs; `TestCpuMakhoulTransform` compares the mixed-box transform with the O(N^2) definitions on

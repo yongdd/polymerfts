@@ -337,7 +337,7 @@ def mixed_series(grids, kinds, inverse=False):
 
 
 def mixed(platform):
-    """Boxes that mix periodic and wall axes (one real FFT of the grid on the CPU, the mirror image on CUDA)."""
+    """Boxes that mix periodic and wall axes (one FFT of the grid with Makhoul's reordering on the walls)."""
     results = {}
     for kinds, field_type, nx, lx in [(["periodic", "reflecting"], "real", [6, 7], [1.8, 2.2]),
                                       (["reflecting", "periodic"], "complex", [5, 8], [1.8, 2.2]),

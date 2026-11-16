@@ -452,11 +452,10 @@ hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT wo
 other values differently; on the device every field starts an even number of doubles from
 the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
 has complex coefficients, with the full spectrum on the periodic axes, and real fields take
-the real part of `backward`. The CUDA version transforms its mirror image: each wall axis is
-extended to twice its length by the even (cosine) or odd (sine) reflection, the complex cuFFT
-of the extended periodic grid gives its modes, and a phase factor per wall axis turns them
-into the series coefficients. The CPU version gets the same coefficients from one real FFT
-of the grid, `MakhoulTransform` with periodic axes ([FFTImplementation.md](FFTImplementation.md),
+the real part of `backward`. Both versions compute them with one FFT of the grid whose wall
+axes are reordered and combined as in Makhoul's cosine transform: `MakhoulTransform` with
+periodic axes on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid between a reordering
+and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
 Section 2.5). `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing

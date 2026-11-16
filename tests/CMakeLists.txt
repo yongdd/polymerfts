@@ -85,6 +85,7 @@ SET(BASIC_TESTS
     # CUDA FFT & utilities
     TestCudaFFT
     TestCudaFFTMixedBC
+    TestCudaMakhoulTransform
     TestCudaDCT
     TestCudaDST
     TestCudaSimulationBox

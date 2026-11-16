@@ -8,8 +8,7 @@
  *
  * A box that mixes periodic and wall axes runs MakhoulTransform with periodic
  * axes: one real FFT of the grid, the DFT along the periodic axes and the
- * cosine or sine series along the walls. It gives the coefficients of the
- * mirror image that FourierTransform defines without forming the image.
+ * cosine or sine series along the walls.
  *
  * @see FourierTransform for the interface and layouts
  */
