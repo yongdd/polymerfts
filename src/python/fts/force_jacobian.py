@@ -1,4 +1,4 @@
-"""The linear response of a CL-FTS simulation at the homogeneous state.
+"""The Jacobian of the forces of a CL-FTS simulation at the homogeneous state: its linear response.
 
 An integrator that declares ``linear_response`` (the built-in "etd", integrators.py) integrates
 the linear part of the forces exactly. Before the run CLFTS measures the Jacobian of its forces at

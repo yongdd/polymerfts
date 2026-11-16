@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The "etd" integrator: Leimkuhler-Matthews steps with the exact linear response (integrators.py,
-linear_response.py).
+force_jacobian.py).
 
 1. Linear force F = J w with a synthetic Jacobian that couples a real-type field to two
    imaginary-type fields (complex symmetric in the variables of real noise): without
@@ -44,7 +44,7 @@ import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
-from polymerfts.fts.linear_response import force_jacobian, symmetric_jacobian
+from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
 from fts_checks import exact_restart, quiet
 
 Z_A = 0.2

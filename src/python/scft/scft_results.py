@@ -1,5 +1,5 @@
-"""What SCFT keeps, returns and writes: its result classes, the final state of a run, the result files and
-the final report."""
+"""What SCFT returns and writes: its result classes, the chemical potentials and the grand potential of the
+final state of a run, the result files and the final report."""
 
 import json
 import os
@@ -264,43 +264,39 @@ def save_results(sim, path):
         raise ValueError("Invalid output file extension. Use .mat, .json, or .yaml.")
 
 
-def store_results(sim, phi, w, energy_total, energy_absolute, error_level, iter, total_partitions, q_init):
-    """Keep the final state of SCFT.run on sim (phi, w, free energies, error, iterations, Q), and the
-    chemical potentials of the chains and point ions and the grand potential, which it prints."""
+def ion_chemical_potentials(sim, phi):
+    """With electrostatics, prints the Poisson residual of the final ψ of SCFT.run (concentrations phi) and
+    returns βμ_s of the point ions, which it prints with the ions per reference chain; None without
+    point ions."""
     es = sim.electrostatics
-    # Store phi and w
-    sim.phi = phi
-    sim.w = w
-    sim.ion_chemical_potentials = None
-    if es is not None:
-        print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
-              % es.poisson_error(sim.smearing.apply_to_dict(phi), sim.psi))
-        if es.ions:
-            sim.ion_chemical_potentials = es.ion_chemical_potentials(sim.psi)
-            print("Point ions: chemical potentials βμ", sim.ion_chemical_potentials,
-                  "ions per reference chain", es.ion_number_densities(sim.psi))
+    if es is None:
+        return None
+    print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
+          % es.poisson_error(sim.smearing.apply_to_dict(phi), sim.psi))
+    if not es.ions:
+        return None
+    mu = es.ion_chemical_potentials(sim.psi)
+    print("Point ions: chemical potentials βμ", mu, "ions per reference chain", es.ion_number_densities(sim.psi))
+    return mu
 
-    # Store free energy
-    sim.free_energy = energy_total
-    sim.free_energy_absolute = energy_absolute
-    sim.error_level = error_level
-    sim.iter = iter
-    sim.partition_functions = list(total_partitions)
-    sim.chemical_potentials = None
-    sim.grand_potential = None
-    # Grafted chains (initial propagators) have no chemical potential
-    if q_init is None and not any(p.get("initial_conditions") for p in sim.polymers):
-        sim.chemical_potentials = sim.compute_chemical_potentials()
-        present = sim.chain_densities > 0.0
-        sim.grand_potential = float(energy_absolute - np.dot(sim.chain_densities[present],
-                                                            np.array(sim.chemical_potentials)[present]))
-        # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
-        if es is not None:
-            for ion, mu in zip(es.ions, sim.ion_chemical_potentials or []):
-                if ion["concentration"] is not None and ion["concentration"] > 0:
-                    sim.grand_potential -= es.n_segments * ion["concentration"] * mu
-        print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", sim.chemical_potentials)
-        print("Grand potential in the same pressure convention: %.9f" % sim.grand_potential)
+
+def chemical_potentials(sim, q_init):
+    """βμ_p of the chains and the grand potential of the final state of SCFT.run, which it prints; (None,
+    None) for grafted chains (initial propagators), which have no chemical potential."""
+    if q_init is not None or any(p.get("initial_conditions") for p in sim.polymers):
+        return None, None
+    mu = sim.compute_chemical_potentials()
+    present = sim.chain_densities > 0.0
+    grand_potential = float(sim.free_energy_absolute - np.dot(sim.chain_densities[present], np.array(mu)[present]))
+    # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
+    es = sim.electrostatics
+    if es is not None:
+        for ion, ion_mu in zip(es.ions, sim.ion_chemical_potentials or []):
+            if ion["concentration"] is not None and ion["concentration"] > 0:
+                grand_potential -= es.n_segments * ion["concentration"] * ion_mu
+    print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", mu)
+    print("Grand potential in the same pressure convention: %.9f" % grand_potential)
+    return mu, grand_potential
 
 
 def scft_result(sim):

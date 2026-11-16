@@ -1,23 +1,26 @@
-"""What a Langevin run saves and restores: its measurements, checkpoints and the state of extensions.
+"""What a Langevin run saves and restores: its status, measurements, checkpoints and the state of extensions.
 
+recording_run_status() keeps the status of a run in run_status.json, from its start to its end.
 RunRecord holds what a run has measured since its last statistics file. checkpoint_data() writes the
 settings and measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a
 continuation changes any state. The extension functions capture and restore the state of an integrator
 and of callbacks.
 """
 
+import contextlib
 import copy
 import hashlib
 import itertools
 import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat
 
-from .common import fields_hash, input_hash, json_ready, mat_ready, settings_json
+from .common import atomic_write_json, fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .mat_fields import decode_mat_fields
-from .validation import _rename_parameter, normalize_params, ValidationError
+from .validation import _rename_parameter, normalize_params, ValidationError, SaddlePointError
 
 
 def checkpoint_settings(sim):
@@ -126,8 +129,17 @@ def load_checkpoint(sim, file_name, allow_legacy=False):
     return data
 
 
-def start_run_status(sim, start_langevin_step, initial_fields, restart_data, **counters):
-    """The run status and metadata of a run that is about to start; `counters` carry over a restart."""
+@contextlib.contextmanager
+def recording_run_status(sim, start_langevin_step, initial_fields, restart_data, *, saddle_search, **counters):
+    """The status of a Langevin run, sim.run_status, which run_status.json holds with the metadata.
+
+    The run starts "running" from start_langevin_step, with the hash of its initial fields and the states
+    of its random-number streams in the metadata; `counters` start at their given values, or continue
+    those of a checkpoint (restart_data). The file is written when the run starts and again when it ends:
+    "completed", or stopped by an exception, which is raised again: "interrupted", "aborted_saddle_failure"
+    for a SaddlePointError of a run that solves saddle points (saddle_search, L-FTS), and "failed" with
+    the exception otherwise.
+    """
     first_step = 1 if start_langevin_step is None else start_langevin_step
     if isinstance(first_step, (bool, np.bool_)) or not isinstance(first_step, (int, np.integer)) or first_step < 1:
         raise ValidationError("start_langevin_step must be a positive integer")
@@ -139,6 +151,31 @@ def start_run_status(sim, start_langevin_step, initial_fields, restart_data, **c
         for key in counters:
             sim.run_status[key] = previous_status.get(key, 0)
     sim.metadata["initial_rng_state"] = sim.random_bg.state
+    if getattr(sim, "electrostatics", None) is not None:
+        sim.metadata["initial_psi_rng_state"] = sim.electrostatics.random_bg.state
+    _write_run_status(sim)
+
+    ended = {"status": "completed"}
+    try:
+        yield
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            ended = {"status": "interrupted", "reason": "Run interrupted"}
+        elif saddle_search and isinstance(exc, SaddlePointError):
+            ended = {"status": "aborted_saddle_failure", "reason": str(exc)}
+        else:
+            ended = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+        raise
+    finally:
+        sim.run_status.update(ended)
+        _write_run_status(sim)
+
+
+def _write_run_status(sim):
+    """run_status.json in the recording directory: the status of the run and the metadata."""
+    directory = Path(sim.recording["dir"])
+    directory.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(directory / "run_status.json", {**sim.run_status, "metadata": sim.metadata})
 
 
 def _measurement_key(kind, pair):

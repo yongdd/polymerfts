@@ -265,16 +265,8 @@ class WTMD:
 
     def write_data(self, file_name):
         mdic = {
-            "l": self.l,
-            "kc": self.kc,
-            "sigma_psi": self.sigma_psi,
-            "dT": self.dT,
-            "psi_min": self.psi_min,
-            "psi_max": self.psi_max,
-            "dpsi": self.dpsi,
-            "bins": self.bins,
+            **self.settings(),
             "psi_range": self.psi_range,
-            "update_freq": self.update_freq,
             "nx": self.nx,
             "lx": self.lx,
             "volume": self.V,
@@ -302,7 +294,8 @@ class WTMD:
     # ---------------- Checkpoints: settings, state, checks and restore ----------------
 
     def settings(self):
-        """Settings that define a continuation (checkpoint hash)."""
+        """Settings of the bias and its statistics, which define a continuation (checkpoint hash); the
+        checkpoints (wtmd_params) and the WTMD files (write_data) store them too."""
         return {key: getattr(self, key) for key in
                 ("l", "kc", "dT", "sigma_psi", "psi_min", "psi_max", "dpsi", "bins", "update_freq")}
 
@@ -323,18 +316,7 @@ class WTMD:
         data["wtmd_order_parameter_history"] = np.array(self.order_parameter_history, dtype=np.float64)
         for key, values in self.dH_history.items():
             data["wtmd_dH_history_" + pair_suffix(key)] = np.array(values, dtype=np.float64)
-        data["wtmd_params"] = {
-            "l": self.l,
-            "sigma_psi": self.sigma_psi,
-            "dT": self.dT,
-            "kc": self.kc,
-            "psi_min": self.psi_min,
-            "psi_max": self.psi_max,
-            "dpsi": self.dpsi,
-            "bins": self.bins,
-            "update_freq": self.update_freq,
-            "recording_period": self.recording_period,
-        }
+        data["wtmd_params"] = {**self.settings(), "recording_period": self.recording_period}
         return data
 
     def validate_checkpoint(self, data, pairs):

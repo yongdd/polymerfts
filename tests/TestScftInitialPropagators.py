@@ -5,7 +5,9 @@ Nonuniform profiles with the symmetry of Pmmm, Im-3m and P-1 give the same
 one-iteration state as the existing reduced-input interface and a full-grid
 solver. Test each available backend, including physical and irreducible bases.
 Full and reduced profiles that break the group symmetry are rejected instead
-of changing the graft distribution. No conversion may modify the caller's arrays.
+of changing the graft distribution. Complex and non-finite values, strings (also of
+numbers), ragged lists and integers beyond float64 are rejected as for the initial
+fields. No conversion may modify the caller's arrays.
 """
 
 import copy
@@ -74,14 +76,17 @@ def same_state(actual, expected):
 
 
 def expect_invalid(sim, fields, profile, message):
-    before = profile.copy()
+    before = copy.deepcopy(profile)
     try:
         quiet(lambda: sim.run(fields, q_init={"G": profile}, return_result=True))
     except ValidationError as error:
         assert message in str(error), str(error)
     else:
         raise AssertionError(f"q_init accepted: expected {message!r}")
-    np.testing.assert_array_equal(profile, before)
+    if isinstance(profile, np.ndarray):
+        np.testing.assert_array_equal(profile, before)
+    else:
+        assert profile == before, "validation changed a caller's list"
 
 
 def check_group(platform, symbol, nx, angles):
@@ -131,6 +136,10 @@ def check_group(platform, symbol, nx, angles):
     nonfinite = profile.copy()
     nonfinite[0] = np.nan
     expect_invalid(control, fields, nonfinite, "real, finite")
+    # Strings (also of numbers), ragged lists and integers beyond float64, as for initial_fields
+    expect_invalid(control, fields, np.full(profile.shape, "0.5"), "real, finite")
+    expect_invalid(control, fields, [list(profile[:-1]), [profile[-1]]], "real, finite")
+    expect_invalid(control, fields, [10**400] + [1] * (profile.size - 1), "real, finite")
     if np.finfo(np.longdouble).max > np.finfo(np.float64).max:
         overflowing = np.full(profile.shape, np.finfo(np.longdouble).max, dtype=np.longdouble)
         expect_invalid(control, fields, overflowing, "float64 precision")

@@ -18,7 +18,7 @@ import copy
 import json
 import numpy as np
 from .integrators import checked_fields
-from .linear_response import force_jacobian, symmetric_jacobian
+from .force_jacobian import force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
@@ -35,7 +35,6 @@ from ..utils.common import (
     calculate_sigma,
     atomic_savemat,
     simulation_metadata,
-    recording_run_status,
     notify_callbacks,
     DriftTailSummary,
     PartitionRatioSummary,
@@ -44,7 +43,7 @@ from ..utils.checkpoint import (
     RunRecord,
     fields_data,
     load_checkpoint,
-    start_run_status,
+    recording_run_status,
     initialize_extensions,
     extension_state,
     restore_extensions,
@@ -412,10 +411,8 @@ class CLFTS:
             if np.size(psi_noise_prev) != self.prop_solver.n_grid or not np.all(np.isfinite(psi_noise_prev)) \
                     or np.iscomplexobj(psi_noise_prev):
                 raise ValidationError("psi_noise_prev must hold one real, finite value per grid point")
-        start_run_status(self, start_langevin_step, initial_fields, _restart_data)
-        if self.electrostatics is not None:
-            self.metadata["initial_psi_rng_state"] = self.electrostatics.random_bg.state
-        with recording_run_status(self, saddle_search=False):   # no saddle points: any error fails
+        # CL-FTS solves no saddle points: a SaddlePointError (of an extension) fails the run like other errors
+        with recording_run_status(self, start_langevin_step, initial_fields, _restart_data, saddle_search=False):
             if _restart_data is None:
                 restore_extensions(self)
             self._run(initial_fields, normal_noise_prev, start_langevin_step, initial_psi=initial_psi,

@@ -4,7 +4,8 @@
 AB diblocks with charged blocks in 1D periodic boxes (Gaussian smearing 0.05):
 1. Input: bjerrum_length (SCFT has no N̄), psi_dt_scaling, a zero coupling, grand-canonical ions
    that cannot neutralize the system, a space group and a smearing without a length are rejected,
-   and so is an initial_psi without electrostatics or with complex or non-finite values.
+   and so is an initial_psi without electrostatics, of another size, or with complex or non-finite
+   values, strings (also of numbers), ragged lists or integers beyond float64.
 2. Zero valences reproduce SCFT without electrostatics.
 3. Strong screening: E/(k^2 + kappa^2) -> E/kappa^2 turns the charges into the contact interaction
    chi_eff N = chi N - E (z_A - z_B)^2/(2 kappa^2). The free energy and the relaxed period of a
@@ -103,7 +104,8 @@ def inputs():
     expect_validation_error(lambda: SCFT(parameters(18.0)).run(initial_fields=fields, initial_psi=np.zeros(NX)),
                             "initial_psi needs")
     charged = parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()})
-    for psi in (np.ones(NX) + 1j, np.full(NX, np.nan), np.zeros(NX + 1)):
+    for psi in (np.ones(NX) + 1j, np.full(NX, np.nan), np.zeros(NX + 1), np.full(NX, "0.5"),
+                [[0.0] * (NX - 1), [0.0]], [10**400] + [0] * (NX - 1)):
         expect_validation_error(lambda: SCFT(charged).run(initial_fields=fields, initial_psi=psi), "real, finite")
 
 

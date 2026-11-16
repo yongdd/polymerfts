@@ -135,8 +135,8 @@ def chain_solver(params, segment_lengths, polymers, **options):
     """The PropagatorSolver of the chains, with the polymers of read_chains() added.
 
     The grid, the box, the boundary conditions (default: periodic), the chain model, the numerical
-    method and the other solver options come from the input; `options` (space_group, angles,
-    field_type) are passed to PropagatorSolver in their place. Grand-canonical polymers
+    method and the other solver options come from the input; `options` (space_group, field_type)
+    are passed to PropagatorSolver as well. Grand-canonical polymers
     (chemical_potential βμ_p, CL-FTS) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
     reference chain, come from get_concentration_gce.
     """

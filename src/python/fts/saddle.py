@@ -27,8 +27,6 @@ class LR:
 
     Parameters
     ----------
-    nx : list of int
-        Grid dimensions [nx, ny, nz].
     jk : ndarray
         J(k) in the coefficient shape of fourier, measured by finite difference of δH/δw.
     fourier : FourierTransform
@@ -37,13 +35,10 @@ class LR:
 
     Attributes
     ----------
-    nx : list of int
-        Grid dimensions.
     jk : ndarray
         J(k), a copy of the given values.
     """
-    def __init__(self, nx, jk, fourier):
-        self.nx = nx
+    def __init__(self, jk, fourier):
         self.jk = jk.copy()
         self._fourier = fourier
         self._inverse = fourier.set_multiplier(1.0 / self.jk)
@@ -141,10 +136,8 @@ class LRAM:
         w_new : ndarray
             Updated field values after LR + AM, same shape as w_current.
         """
-        nx = self.lr.nx
-
-        w_lr_old = np.reshape(w_current, [1, np.prod(nx)])
-        w_lr_new = np.reshape(self.lr.calculate_new_fields(w_lr_old, negative_h_deriv, old_error_level, error_level), [1, np.prod(nx)])
+        w_lr_old = np.reshape(w_current, (1, -1))
+        w_lr_new = np.reshape(self.lr.calculate_new_fields(w_lr_old, negative_h_deriv, old_error_level, error_level), (1, -1))
         w_diff = w_lr_new - w_lr_old
         w_new = self.am.calculate_new_fields(w_lr_new, w_diff, old_error_level, error_level)
 
@@ -219,7 +212,7 @@ class SaddlePointSearch:
             # keeps 1/J finite, and the gauge fix of the saddle search removes the uniform mode
             if self.zeta_n is None:
                 jk_numeric.flat[0] = 1.0
-            lr = LR(self.prop_solver.nx, jk_numeric, fourier=fourier)
+            lr = LR(jk_numeric, fourier=fourier)
 
         if params["compressor"]["name"] == "am":
             return am

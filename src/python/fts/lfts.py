@@ -11,13 +11,12 @@ from ..utils.common import (
     calculate_sigma,
     atomic_savemat,
     simulation_metadata,
-    recording_run_status,
     notify_callbacks,
 )
 from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
-    start_run_status,
+    recording_run_status,
     RunRecord,
     initialize_extensions,
     restore_extensions,
@@ -309,8 +308,8 @@ class LFTS:
         # The WTMD bins (unless a checkpoint restores the statistics) are checked before the run starts
         if self.wtmd is not None:
             self.wtmd.check_bin_width(_restart_data)
-        start_run_status(self, start_langevin_step, initial_fields, _restart_data, saddle_failures=0, noise_resamples=0)
-        with recording_run_status(self, saddle_search=True):
+        with recording_run_status(self, start_langevin_step, initial_fields, _restart_data, saddle_search=True,
+                                  saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
                 restore_extensions(self)
                 # A fresh run keeps the WTMD bias the object holds and drops the samples an earlier run

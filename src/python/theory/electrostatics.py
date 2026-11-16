@@ -204,7 +204,9 @@ class Electrostatics:
         for ion in self.ions:
             ion["gamma"] = np.exp(-ion["smearing_length"] ** 2 * self.k_sq / 2)
             ion["smear"] = fourier.set_multiplier(ion["gamma"])
-        self._ion_state = None
+        # Densities c_s(r), ln Q_s and partition ratios of the point ions for the current ψ, one entry per
+        # ion, computed once per ψ (_compute_ions)
+        self._forget_ions()
         self.periodic = bool(fourier.periodic)
         self.fixed_charge = (None if params.get("fixed_charge") is None
                              else np.asarray(params["fixed_charge"], dtype=np.complex128).reshape(-1))
@@ -242,7 +244,7 @@ class Electrostatics:
     def psi(self, value):
         self._psi = np.array(value, dtype=np.complex128).reshape(-1)
         self._psi_k = self._fourier.forward(self._psi)
-        self._ion_state = None
+        self._forget_ions()
 
     @property
     def psi_k(self):
@@ -274,16 +276,25 @@ class Electrostatics:
             c += self.fixed_charge
         return c
 
-    def ion_densities(self):
-        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for the
-        current ψ."""
-        if self._ion_state is None:
+    def _forget_ions(self):
+        """The point ions of a new ψ are computed when they are needed (_compute_ions)."""
+        self._ion_densities = self._ion_log_partitions = self._ion_partition_ratios = None
+
+    def _compute_ions(self):
+        """Computes the densities c_s(r), ln Q_s and the partition ratios of the point ions for the current ψ,
+        once per ψ (one list each, one entry per ion)."""
+        if self._ion_densities is None:
             potentials = [ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
                           for ion in self.ions]
             ions = [_point_ion(ion, u, self.n_segments) for ion, u in zip(self.ions, potentials)]
-            # Densities, ln Q and partition ratios, one entry per ion
-            self._ion_state = tuple([values[i] for values in ions] for i in range(3))
-        return self._ion_state[0], self._ion_state[1]
+            self._ion_densities, self._ion_log_partitions, self._ion_partition_ratios = (
+                [list(values) for values in zip(*ions)] if ions else ([], [], []))
+
+    def ion_densities(self):
+        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for the
+        current ψ."""
+        self._compute_ions()
+        return self._ion_densities, self._ion_log_partitions
 
     def ion_charge(self):
         """Smeared charge density of the point ions, Σ_s z_s (Γ_s * c_s), for the current ψ."""
@@ -342,17 +353,18 @@ class Electrostatics:
             psi_k[(0,) * len(self.nx)] = 0.0
         self._psi_k = psi_k
         self._psi = self._fourier.backward(psi_k)
-        self._ion_state = None
+        self._forget_ions()
 
     @contextlib.contextmanager
     def trial(self, psi):
         """Set ψ for an intermediate evaluation and restore ψ and ψ(k) exactly afterwards."""
-        saved = self._psi, self._psi_k, self._ion_state
+        saved = self._psi, self._psi_k, self._ion_densities, self._ion_log_partitions, self._ion_partition_ratios
         try:
             self.psi = psi
             yield
         finally:
-            self._psi, self._psi_k, self._ion_state = saved
+            (self._psi, self._psi_k, self._ion_densities, self._ion_log_partitions,
+             self._ion_partition_ratios) = saved
 
     def hamiltonian(self):
         """Electrostatic term (1/(2E V)) ∫ ψ (∇² - κ²) ψ dr of the current ψ, -Σ_s N c_s ln Q_s
@@ -431,8 +443,8 @@ class Electrostatics:
     def ion_partition_ratios(self):
         """|Q_s| / <|e^(-z_s (Γ_s * ψ)/N)|> of every canonical point ion: 1 for a real ψ, and close to 0 where
         the average of the complex weights nearly cancels, a zero of Q_s at which -N c_s ln Q_s has a pole."""
-        self.ion_densities()
-        return [ratio for ion, ratio in zip(self.ions, self._ion_state[2]) if ion["concentration"] is not None]
+        self._compute_ions()
+        return [ratio for ion, ratio in zip(self.ions, self._ion_partition_ratios) if ion["concentration"] is not None]
 
     def settings(self):
         """Settings that define a continuation (checkpoint hash)."""
@@ -505,7 +517,7 @@ class Electrostatics:
         self.psi = np.asarray(data["psi_real"]) + 1j * np.asarray(data["psi_imag"])
         self._psi_k = np.reshape(np.asarray(data["psi_k_real"]) + 1j * np.asarray(data["psi_k_imag"]),
                                  self.nx).astype(np.complex128)
-        self._ion_state = None
+        self._forget_ions()
         self.random_bg.state = json.loads(str(data["psi_rng_state_json"]))
         self.previous_noise = np.asarray(data["psi_noise_prev"], dtype=np.float64).reshape(-1).copy()
 

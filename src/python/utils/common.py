@@ -4,7 +4,6 @@ This module provides common utility functions and constants used across
 the SCFT and LFTS simulation classes to reduce code duplication.
 """
 
-import contextlib
 import itertools
 import inspect
 import json
@@ -18,7 +17,7 @@ from types import MappingProxyType
 from pathlib import Path
 import numpy as np
 
-from .validation import ValidationError, SaddlePointError
+from .validation import ValidationError
 from .mat_fields import _encode_mat_fields
 
 
@@ -147,44 +146,18 @@ def atomic_savemat(path, data, **kwargs):
             os.unlink(temporary)
 
 
-def write_run_status(sim):
-    """Persist completion/failure separately from periodic field checkpoints."""
-    path = Path(sim.recording["dir"])
-    path.mkdir(parents=True, exist_ok=True)
-    stream, temporary = _new_file_next_to(path / "run_status.json", "w")
+def atomic_write_json(path, value):
+    """Atomically write value as strict, indented JSON (json_ready) with a final newline."""
+    path = Path(path)
+    stream, temporary = _new_file_next_to(path, "w")
     try:
         with stream:
-            json.dump(json_ready({**sim.run_status, "metadata": sim.metadata}), stream, indent=2, allow_nan=False)
+            json.dump(json_ready(value), stream, indent=2, allow_nan=False)
             stream.write("\n")
-        os.replace(temporary, path / "run_status.json")
+        os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-
-
-@contextlib.contextmanager
-def recording_run_status(sim, saddle_search):
-    """Writes run_status.json when a Langevin run starts and again when it ends: completed, or how it
-    stopped (a failed saddle-point solve of L-FTS, an interrupt or another error, which is raised again).
-    saddle_search: the run solves saddle points (L-FTS), so SaddlePointError is its own status."""
-    write_run_status(sim)
-    try:
-        yield
-        sim.run_status["status"] = "completed"
-    except SaddlePointError as exc:
-        if not saddle_search:
-            sim.run_status.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
-            raise
-        sim.run_status.update(status="aborted_saddle_failure", reason=str(exc))
-        raise
-    except (KeyboardInterrupt, SystemExit):
-        sim.run_status.update(status="interrupted", reason="Run interrupted")
-        raise
-    except Exception as exc:
-        sim.run_status.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
-        raise
-    finally:
-        write_run_status(sim)
 
 
 def report_partition_consistency(prop_solver):

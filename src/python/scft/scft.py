@@ -16,7 +16,8 @@ from ..utils.common import (
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
-from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results, store_results
+from .scft_results import (SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results,
+                           ion_chemical_potentials, chemical_potentials)
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
@@ -168,7 +169,7 @@ class SCFT:
         self.sg = self._create_space_group(params, angles) if params.get("space_group", None) is not None else None
 
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
-        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg, angles=angles)
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg)
         # Box relaxation needs the stress, which cn-adi2 does not compute
         if params["relax_cell"] and not PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
             raise ValidationError(f"'relax_cell' needs the stress; '{self.prop_solver.numerical_method}' computes none")
@@ -580,8 +581,8 @@ class SCFT:
         if initial_psi is not None:
             if self.electrostatics is None:
                 raise ValidationError("initial_psi needs 'electrostatics'")
-            if np.size(initial_psi) != self.prop_solver.n_grid or np.iscomplexobj(initial_psi) \
-                    or not np.all(np.isfinite(initial_psi)):
+            initial_psi = real_values(initial_psi, "initial_psi")
+            if initial_psi.size != self.prop_solver.n_grid:
                 raise ValidationError("initial_psi must hold one real, finite value per grid point")
 
         # Reject invalid input before resetting the optimizer or changing the run state.
@@ -681,8 +682,15 @@ class SCFT:
         if not report_partition_consistency(self.prop_solver):
             print("Warning: Final partition consistency check failed.")
 
-        # Keep the final state, and the chemical potentials of the chains and point ions (scft_results.py)
-        store_results(self, phi, w, energy_total, energy_absolute, error_level, iter, total_partitions, q_init)
+        # Keep the final state
+        self.phi, self.w = phi, w
+        self.free_energy, self.free_energy_absolute = energy_total, energy_absolute
+        self.error_level, self.iter = error_level, iter
+        self.partition_functions = list(total_partitions)
+
+        # The chemical potentials of the point ions and of the chains, and the grand potential (scft_results.py)
+        self.ion_chemical_potentials = ion_chemical_potentials(self, phi)
+        self.chemical_potentials, self.grand_potential = chemical_potentials(self, q_init)
 
         # Return SCFTResult if requested
         return scft_result(self) if return_result else None

@@ -11,7 +11,7 @@ in LFTS. Noise is drawn by the run loop once per proposal; do not draw it here.
 ``previous_noise`` (Leimkuhler-Matthews), False for fresh noise. CLFTS with
 electrostatics gives the electrostatic potential the same scheme and requires it.
 An integrator that declares ``linear_response`` receives the Jacobian of the forces at the
-homogeneous state (measured in linear_response.py) through ``set_linear_response(jacobian, *,
+homogeneous state (measured in force_jacobian.py) through ``set_linear_response(jacobian, *,
 dt, mobility, noise_direction, fourier)`` before the run (CLFTS only), with the simulation's
 PropagatorSolver.fourier to apply it; CLFTS then also passes the electrostatic potential,
 as the last field.
@@ -60,7 +60,7 @@ class ExponentialTimeDifferencing:
     """Leimkuhler-Matthews step whose linear part is integrated exactly for each wavevector.
 
     Before the run the simulation measures the Jacobian J(k) = dF/dw of the forces at the
-    homogeneous state and passes it to set_linear_response (linear_response.py). In the
+    homogeneous state and passes it to set_linear_response (force_jacobian.py). In the
     variables x = w/n, n the noise direction, the noise is real and the linear force is K x,
     K = N⁻¹ J N. With the mobilities S, K' = S^½ K S^½ and φ₁(z) = (1 - e^(-z))/z the step is
 
@@ -136,7 +136,7 @@ class ExponentialTimeDifferencing:
 
         # K' is complex symmetric (the second derivatives of H); an asymmetric Jacobian means an
         # inconsistent measurement, and the factorizations below would not match the drift. CLFTS
-        # passes the symmetric part of its measurement (linear_response.symmetric_jacobian)
+        # passes the symmetric part of its measurement (force_jacobian.symmetric_jacobian)
         transpose = np.swapaxes(K, 1, 2)
         asymmetry = np.max(np.abs(K - transpose)) / max(np.max(np.abs(K)), 1e-300)
         if asymmetry > 1e-5:
