@@ -22,7 +22,9 @@ polymerfts package with a suitable computational backend.
 
 ## Export an SCFT result
 
-Use the file saved by `SCFT.save_results`, in `.mat`, `.json` or `.yaml` format:
+Export reads a result saved by `SCFT.save_results` (`.mat`, `.json` or `.yaml`), an
+L-FTS fields file (`fields_*.mat`), or a JSON or YAML parameter dictionary with
+separate initial fields (below):
 
 ```bash
 python scripts/pscf/pscf_converter.py export /path/to/fields.mat -o /path/to/pscf-input
@@ -75,51 +77,9 @@ Supplying both an alias and its canonical name is an error. As in SCFT, a space-
 symbol with several Hall settings (for example `P2/m`) needs `space_group.hall_number`,
 which must be a setting of that symbol.
 
-A Python parameter file can also be used with `--fields`. The converter reads it
-without running it and accepts only a script whose `params` it can follow:
-
-- `params` is a module-level dictionary literal built from numbers, strings, earlier
-  literal constants, `+ - * / **`, `np.sqrt`, `math.sqrt`, `np.pi`, `math.pi`,
-  `[n] * 3` and `dict(base, key=value)`.
-- The script reads `params` only by indexing it down to a number, a string or a list
-  of numbers. An index that is not a literal, or that is read or computed from a list or
-  dictionary the script could change, stands for every item. Such a list may be given to
-  arithmetic, to builtins such as `len`, `complex` and `bool`, to functions of NumPy,
-  SciPy, `math` and polymerfts, also under a name assigned one of them once at module level
-  (`zeros = np.zeros`), and to the `.reshape` of `np.asarray(...)` or `np.array(...)`
-  called with at most `dtype=`. The other arguments of such a call, and the object of any
-  other `.reshape`, must be values that cannot run code of the script: literals, constants,
-  lists of `params`, these functions and builtins (as in `dtype=complex` or `key=sum`), and
-  calls and arithmetic of such values written out in the call. A list, dictionary or array
-  that a name holds is not such a value, also given with `*` or `**`, since the script could
-  fill it with a function: write the computation in the call
-  (`np.cos(2 * np.pi * np.arange(n) / n)`, not a module-level `z`). The script may also
-  print `params`, compare it (`in`, `is`, `==`) and loop over the keys of its dictionaries.
-- `SCFT`, `LFTS`, `CLFTS` and `GibbsEnsemble`, imported from polymerfts at module
-  level under their own names, are only called, with `params` or
-  `dict(params, key=value)`. All simulations of the script must receive the same
-  dictionary; the export describes it, or `params` when the script constructs no
-  simulation.
-
-Everything else is refused, in particular a change of `params` or of a list or dictionary
-that the exported dictionary is read from (assignment, `del`, augmented assignment,
-method call, `np.random.shuffle`), handing such a container to a function of the script
-or to other code, also through a call that receives a function of the script with it (a
-lambda, function, method, `functools.partial`, a function imported from another module or
-a container holding one, for example as `key=` of `max` or as the function that
-`scipy.optimize.minimize` calls with `args=`), the `.reshape` of any other object (a class
-of the script, or an object a builtin or library returns, such as `max([grid])`), an
-assignment to an attribute named `reshape` or to an attribute of NumPy, SciPy, `math` or
-polymerfts (also through a name assigned one of them), a second binding of `params`, of a
-name holding such a container or of a simulation class, any other use of a simulation
-class (annotations, `isinstance`, `from polymerfts import SCFT as Solver`), `from_file`,
-star imports, reflection
-(`getattr`, `exec`, `sys.modules`, `__main__`, `importlib`, `builtins`, `copy`) and
-constants changed by control flow, `global` or `match`. The reader does not resolve
-scopes, so a local variable named like one of these also refuses the script.
-Code written to hide what it does, such as operators of objects the script defines or a
-library that keeps a list and hands it back, stays out of scope. Use a saved result or a
-JSON/YAML configuration for a model assembled or changed at run time.
+Python scripts are not read. Run the script and export the result it saves, or write
+its `params` with `json.dump(params, file)` (or as YAML) and export that file with
+`--fields`.
 
 To try a complete conversion without running a simulation:
 
@@ -336,7 +296,8 @@ source space group can determine lattice constraints, but its operations and
 Hall setting are not transferred. All exported fields must be on the full grid.
 SCFT result files already expand symmetry-reduced fields before saving.
 
-Discrete chains, complex fields, finite compressibility, random-copolymer blocks,
+Discrete chains, complex fields, finite compressibility (also CL-FTS, whose `zeta_n`
+is 100 by default), Gibbs ensembles of two boxes, random-copolymer blocks,
 grafting, grand-canonical polymers, masks, nonperiodic boundaries, interaction
 smearing and electrostatics are rejected instead of being approximated. Use a supported continuous incompressible model
 for cross-code comparisons. A PSCF calculation still needs its own convergence

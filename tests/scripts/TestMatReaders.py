@@ -141,7 +141,9 @@ def parameter_file(name):
               "segment_lengths": {name: 1., "B": 1.}, "chi_n": {name + ",B": 12.},
               "polymers": [{"volume_fraction": 1., "blocks": [
                   {"type": name, "length": .4}, {"type": "B", "length": .6}]}],
-              "langevin": {"nbar": 1e4, "dt": .01}}
+              # L-FTS params, which have a saddle and a compressor; the export refuses CL-FTS
+              "langevin": {"nbar": 1e4, "dt": .01},
+              "saddle": {"max_iter": 100, "tolerance": 1e-4}, "compressor": {"name": "lr"}}
     field = (np.arange(24, dtype=float) + .125).reshape(params["nx"])
     return {"initial_params": params, "nx": params["nx"], "lx": params["lx"],
             "chi_n": params["chi_n"], "w_" + name: field, "w_B": -field}

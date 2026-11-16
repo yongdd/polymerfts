@@ -173,11 +173,11 @@ Tools for converting between PolymerFTS and [PSCF](https://github.com/dmorse/psc
 python scripts/pscf/pscf_converter.py export fields.mat -o pscf-input
 ```
 
-The converter reads saved SCFT results or a parameter file with separate fields.
-It writes `param`, `command`, `in/omega`, and a monomer-name mapping in
+The converter reads saved SCFT results, L-FTS fields files, or a JSON/YAML
+parameter file with separate fields; it reads no Python scripts and never runs a
+simulation. It writes `param`, `command`, `in/omega`, and a monomer-name mapping in
 `metadata.json`. It supports continuous Gaussian chains, mixtures, linear and
-branched polymers, and 1D/2D/3D periodic cells. Python input is read statically;
-conversion never runs a simulation.
+branched polymers, and 1D/2D/3D periodic cells.
 
 ### 2.2 Import from PSCF
 
