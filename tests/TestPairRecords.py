@@ -1,17 +1,17 @@
-"""Pair-labelled records preserve underscore names through MAT files and restarts.
+"""Monomer names in the keys of the measurement files, and the names that L-FTS and CL-FTS refuse.
 
-The distinct pairs A,B_C and A_B,C used to overwrite each other. Exercise the
-actual LFTS/CLFTS structure writers, the six interaction histories of four
-monomers, and WTMD files and checkpoint restoration. Old, unambiguous WTMD
-checkpoints remain readable; ambiguous old payloads and malformed new maps
-must fail before mutating a simulation.
+The files name the measurements of a monomer pair by the two names joined with '_' (dH_history_A_B,
+structure_function_A_B, I1_A_B, wtmd_I1_A_B). Names whose pairs would share such a key, as A,B_C and
+A_B,C do, are refused when a simulation is constructed, and so is a monomer type named 'aux' in L-FTS,
+whose field would take the key w_aux of the auxiliary fields. Underscores alone are no problem: the
+statistics of four names keep their six and ten pairs apart, a WTMD run keeps its keys through its files
+and an exact continuation, and CL-FTS (fields w_<type>_real/_imag) runs and continues with a type 'aux'.
 """
 
 import contextlib
 import copy
 import io
 import itertools
-import json
 import os
 import tempfile
 from pathlib import Path
@@ -22,49 +22,18 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
-from polymerfts.utils.checkpoint import (
-    RunRecord,
-    extension_state,
-    pair_key_data,
-    pair_suffix,
-    recorded_pair_suffix,
-)
+from cuda_part import cuda_part_missing
+from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
 
 
-NAMES = ("A", "A_B", "B_C", "C")
-
-
-class Counter:
-    def __init__(self, count=0):
-        self.count = count
-
-    def __call__(self, sample):
-        self.count += 1
-
-    def state_dict(self):
-        return {"count": self.count}
-
-    def load_state_dict(self, state):
-        self.count = state["count"]
-
-
 def read_mat(path):
-    return {key: value for key, value in loadmat(path, squeeze_me=True).items()
-            if not key.startswith("__")}
+    return {key: value for key, value in loadmat(path, squeeze_me=True).items() if not key.startswith("__")}
 
 
-def rejects(call):
-    try:
-        call()
-    except ValidationError:
-        return
-    raise AssertionError("An invalid or ambiguous pair record was accepted")
-
-
-def parameters(directory, platform, names=NAMES, steps=4, wtmd=False):
+def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4)):
     result = {
-        "nx": [4, 4, 4], "lx": [3.0, 3.0, 3.0], "ds": 0.05,
+        "nx": list(nx), "lx": [3.0] * len(nx), "ds": 0.05,
         "chain_model": "continuous", "platform": platform,
         "segment_lengths": {name: 1.0 for name in names},
         "chi_n": {",".join(pair): 15.0 for pair in itertools.combinations(names, 2)},
@@ -83,84 +52,58 @@ def parameters(directory, platform, names=NAMES, steps=4, wtmd=False):
     return result
 
 
-def fields(names=NAMES):
+def fields(names, size=64):
     rng = np.random.default_rng(710)
-    return {name: rng.normal(0.0, 5.0, 64) for name in names}
+    return {name: rng.normal(0.0, 5.0, size) for name in names}
 
 
-def check_helpers():
-    pairs = [("A", "B"), ("A", "B_C"), ("A_B", "C"),
-             ("pair", "A"), ("Long" * 15, "Name" * 15)]
-    suffixes = [pair_suffix(pair) for pair in pairs]
-    assert suffixes[0] == "A_B"
-    assert len(set(suffixes)) == len(pairs)
-    for pair, suffix in zip(pairs, suffixes):
-        assert pair_suffix(tuple(reversed(pair))) == suffix
-        assert pair_suffix(",".join(pair)) == suffix
-        assert len(("structure_function_" + suffix + "_real").encode("ascii")) <= 63
-    assert suffixes[1].startswith("pair__") and suffixes[2].startswith("pair__")
-    assert suffixes[-1].startswith("pair__")
-    data = pair_key_data(pairs)
-    for pair, suffix in zip(pairs, suffixes):
-        assert recorded_pair_suffix(data, pair) == suffix
-    assert recorded_pair_suffix({}, ("A_B", "C")) == "A_B_C"
-
-    malformed = [
-        {"pair_key_format_version": 1},
-        {"pair_keys_json": data["pair_keys_json"]},
-        {"pair_key_format_version": 2, "pair_keys_json": data["pair_keys_json"]},
-        {"pair_key_format_version": 1, "pair_keys_json": "{"},
-        {"pair_key_format_version": 1, "pair_keys_json": "[]"},
-        {"pair_key_format_version": 1, "pair_keys_json": "{}"},
-    ]
-    for bad in malformed:
-        rejects(lambda bad=bad: recorded_pair_suffix(bad, pairs[1]))
-    wrong = copy.deepcopy(data)
-    mapping = json.loads(str(wrong["pair_keys_json"]))
-    mapping[suffixes[1]] = ["A_B", "C"]
-    wrong["pair_keys_json"] = json.dumps(mapping)
-    rejects(lambda: recorded_pair_suffix(wrong, pairs[1]))
+def refused(root, platform):
+    for cls in (LFTS, CLFTS):
+        try:
+            cls(parameters(root / "refused", platform, ("A", "A_B", "B_C", "C")))
+        except ValidationError as error:
+            assert "A,B_C" in str(error) and "A_B,C" in str(error), str(error)
+        else:
+            raise AssertionError(f"{cls.__name__} accepted the pairs A,B_C and A_B,C with one key suffix")
+    try:
+        LFTS(parameters(root / "refused", platform, ("aux", "B")))
+    except ValidationError as error:
+        assert "w_aux" in str(error), str(error)
+    else:
+        raise AssertionError("L-FTS accepted a monomer type 'aux', whose field would be w_aux")
 
 
 def check_statistics(root, platform, cls):
     output = root / (cls.__name__ + "_statistics")
     output.mkdir()
-    sim = cls(parameters(output, platform), random_seed=11)
+    names = ("A", "B_C", "D_E", "F")
+    sim = cls(parameters(output, platform, names), random_seed=11)
     pairs = list(itertools.combinations(sim.monomer_types, 2))
     spectrum_pairs = list(itertools.combinations_with_replacement(sim.monomer_types, 2))
     assert len(pairs) == 6 and len(spectrum_pairs) == 10
     complex_values = cls is CLFTS
     record = RunRecord({"dH " + ",".join(pair): 0 for pair in pairs},
                        sim.structure_functions.empty_sums(), complex_values=complex_values)
-    expected_history = {}
     for index, pair in enumerate(pairs):
-        value = 11.0 * (index + 1) + (1j * (index + 1) if complex_values else 0)
-        expected_history[pair] = value
-        record.add("dH " + ",".join(pair), value)
+        record.add("dH " + ",".join(pair), 11.0 * (index + 1) + (1j * (index + 1) if complex_values else 0))
     record.sample_count = 1
     atomic_savemat(output / "dH.mat", record.statistics(), long_field_names=True)
     history = read_mat(output / "dH.mat")
-    suffixes = {recorded_pair_suffix(history, pair) for pair in pairs}
-    assert len(suffixes) == 6
-    for pair, value in expected_history.items():
-        key = "dH_history_" + recorded_pair_suffix(history, pair)
+    for index, pair in enumerate(pairs):
+        key = "dH_history_" + "_".join(pair)
         actual = history[key + "_real"] + 1j * history[key + "_imag"] if complex_values else history[key]
-        np.testing.assert_array_equal(actual, value)
+        np.testing.assert_array_equal(actual, 11.0 * (index + 1) + (1j * (index + 1) if complex_values else 0))
     assert len([key for key in history if key.startswith("dH_history_")]) == (12 if complex_values else 6)
 
-    expected_spectra = {}
     scale = sim.prop_solver.get_volume() * np.sqrt(sim.langevin["nbar"])
     for index, pair in enumerate(spectrum_pairs):
-        value = (index + 1) * (1.0 + 0.5j)
-        record.sums[",".join(pair)][:] = value
-        expected_spectra[pair] = value * scale
+        record.sums[",".join(pair)][:] = (index + 1) * (1.0 + 0.5j)
     sim.structure_functions.save(2, record)
     data = read_mat(output / "structure_function_000002.mat")
-    assert len({recorded_pair_suffix(data, pair) for pair in spectrum_pairs}) == 10
-    for pair, value in expected_spectra.items():
-        key = "structure_function_" + recorded_pair_suffix(data, pair)
+    for index, pair in enumerate(spectrum_pairs):
+        key = "structure_function_" + "_".join(pair)
         actual = data[key + "_real"] + 1j * data[key + "_imag"] if complex_values else data[key]
-        np.testing.assert_allclose(actual, value, rtol=1e-15, atol=0)
+        np.testing.assert_allclose(actual, (index + 1) * (1.0 + 0.5j) * scale, rtol=1e-15, atol=0)
     assert len([key for key in data if key.startswith("structure_function_")]) == (20 if complex_values else 10)
 
 
@@ -179,138 +122,64 @@ def assert_wtmd_state(actual, expected):
             np.testing.assert_array_equal(actual[name], expected[name], err_msg=name)
 
 
-def legacy_v2(data, pairs):
-    """The actual old writer joined names with underscores, including overwrites."""
-    legacy = copy.deepcopy(data)
-    for pair in pairs:
-        suffix = recorded_pair_suffix(data, pair)
-        old_suffix = "_".join(sorted(pair.split(",")))
-        for prefix in ("wtmd_I1_", "wtmd_unscaled_I1_", "wtmd_dH_history_"):
-            if prefix + suffix in data:
-                legacy.pop(prefix + suffix, None)
-                legacy[prefix + old_suffix] = copy.deepcopy(data[prefix + suffix])
-    legacy.pop("pair_key_format_version", None)
-    legacy.pop("pair_keys_json", None)
-    legacy["checkpoint_format_version"] = 2
-    return legacy
-
-
-def assert_rejected_without_mutation(sim, data, path):
-    before_rng = copy.deepcopy(sim.random_bg.state)
-    before_extensions = copy.deepcopy(extension_state(sim))
-    before_metadata = copy.deepcopy(sim.metadata)
-    before_wtmd = wtmd_state(sim)
-    atomic_savemat(path, data, long_field_names=True)
-    rejects(lambda: sim.continue_run(path))
-    assert sim.random_bg.state == before_rng
-    assert extension_state(sim) == before_extensions
-    assert sim.metadata == before_metadata
-    assert_wtmd_state(wtmd_state(sim), before_wtmd)
-
-
 def check_wtmd(root, platform):
+    names = ("A_B", "C")
     full_dir = root / "wtmd_full"
-    full = LFTS(parameters(full_dir, platform, wtmd=True), random_seed=21,
-                callbacks={"counter": Counter()})
-    assert full.run(fields())["status"] == "completed"
+    full = LFTS(parameters(full_dir, platform, names, wtmd=True), random_seed=21)
+    assert full.run(fields(names))["status"] == "completed"
     saved = read_mat(full_dir / "fields_000004.mat")
-    assert saved["checkpoint_format_version"] == 3
     expected = wtmd_state(full)
-    assert len(expected["I1"]) == 6 and len(expected["dH_history"]) == 6
-    assert len(expected["order_parameter_history"]) == 1
-    for pair in full.chi_n:
-        suffix = recorded_pair_suffix(saved, pair)
-        np.testing.assert_array_equal(saved["wtmd_unscaled_I1_" + suffix], expected["I1"][pair])
-        np.testing.assert_array_equal(np.atleast_1d(saved["wtmd_dH_history_" + suffix]),
-                                      expected["dH_history"][pair])
-
+    assert list(expected["I1"]) == ["A_B,C"] and pair_suffix("A_B,C") == "A_B_C"
+    np.testing.assert_array_equal(saved["wtmd_unscaled_I1_A_B_C"], expected["I1"]["A_B,C"])
+    np.testing.assert_array_equal(np.atleast_1d(saved["wtmd_dH_history_A_B_C"]), expected["dH_history"]["A_B,C"])
     full.wtmd.write_data(root / "wtmd_statistics.mat")
     statistics = read_mat(root / "wtmd_statistics.mat")
-    assert len([key for key in statistics if key.startswith("I1_")]) == 6
-    assert len([key for key in statistics if key.startswith("dH_psi_")]) == 6
-    for pair, values in expected["I1"].items():
-        suffix = recorded_pair_suffix(statistics, pair)
-        np.testing.assert_array_equal(statistics["I1_" + suffix], values * full.wtmd.CV)
-        conditional = values * full.wtmd.CV
-        nonzero = np.abs(full.wtmd.I0) > 0
-        conditional[nonzero] /= full.wtmd.I0[nonzero]
-        np.testing.assert_array_equal(statistics["dH_psi_" + suffix], conditional)
+    np.testing.assert_array_equal(statistics["I1_A_B_C"], expected["I1"]["A_B,C"] * full.wtmd.CV)
+    conditional = expected["I1"]["A_B,C"] * full.wtmd.CV
+    nonzero = np.abs(full.wtmd.I0) > 0
+    conditional[nonzero] /= full.wtmd.I0[nonzero]
+    np.testing.assert_array_equal(statistics["dH_psi_A_B_C"], conditional)
 
-    continued_dir = root / "wtmd_continued"
-    continued = LFTS(parameters(continued_dir, platform, wtmd=True), random_seed=99,
-                     callbacks={"counter": Counter(17)})
-    continued.continue_run(full_dir / "fields_000001.mat")
+    continued = LFTS(parameters(root / "wtmd_continued", platform, names, wtmd=True), random_seed=99)
+    assert continued.continue_run(full_dir / "fields_000001.mat")["status"] == "completed"
     assert_wtmd_state(wtmd_state(continued), expected)
     assert continued.random_bg.state == full.random_bg.state
     assert extension_state(continued) == extension_state(full)
-    actual = read_mat(continued_dir / "fields_000004.mat")
-    np.testing.assert_array_equal(actual["w_aux"], saved["w_aux"])
+    np.testing.assert_array_equal(read_mat(root / "wtmd_continued" / "fields_000004.mat")["w_aux"], saved["w_aux"])
 
-    candidate = LFTS(parameters(root / "wtmd_rejected", platform, wtmd=True), random_seed=47,
-                     callbacks={"counter": Counter(17)})
-    # At step 1 only pending derivatives exist; at step 3 only accumulated I1 exists.
-    # Either old payload has lost one pair and must fail before any state is restored.
-    for step, label in ((1, "pending"), (3, "integral")):
-        old = legacy_v2(read_mat(full_dir / f"fields_{step:06d}.mat"), full.chi_n)
-        assert_rejected_without_mutation(candidate, old, root / ("ambiguous_v2_" + label + ".mat"))
 
-    corruptions = []
-    no_mapping = copy.deepcopy(saved)
-    no_mapping.pop("pair_key_format_version")
-    no_mapping.pop("pair_keys_json")
-    corruptions.append(("no_mapping", no_mapping))
-    bad_json = copy.deepcopy(saved)
-    bad_json["pair_keys_json"] = "{"
-    corruptions.append(("bad_json", bad_json))
-    missing_pair = copy.deepcopy(saved)
-    mapping = json.loads(str(saved["pair_keys_json"]))
-    mapping.pop(pair_suffix("A,B_C"))
-    missing_pair["pair_keys_json"] = json.dumps(mapping)
-    corruptions.append(("missing_pair", missing_pair))
-    extra_pair = copy.deepcopy(saved)
-    mapping = json.loads(str(saved["pair_keys_json"]))
-    mapping[pair_suffix(("X", "Y"))] = ["X", "Y"]
-    extra_pair["pair_keys_json"] = json.dumps(mapping)
-    corruptions.append(("extra_pair", extra_pair))
-    wrong_pair = copy.deepcopy(saved)
-    mapping = json.loads(str(saved["pair_keys_json"]))
-    mapping[pair_suffix("A,B_C")] = ["A_B", "C"]
-    wrong_pair["pair_keys_json"] = json.dumps(mapping)
-    corruptions.append(("wrong_pair", wrong_pair))
-    for label, bad in corruptions:
-        assert_rejected_without_mutation(candidate, bad, root / ("invalid_v3_" + label + ".mat"))
-
-    # An underscore in a name alone is not ambiguous. Existing v2 files remain usable.
-    names = ("A_B", "C")
-    old_dir = root / "unambiguous_original"
-    original = LFTS(parameters(old_dir, platform, names=names, wtmd=True), random_seed=31)
-    original.run(fields(names))
-    old = legacy_v2(read_mat(old_dir / "fields_000004.mat"), original.chi_n)
-    old_path = root / "unambiguous_v2.mat"
-    atomic_savemat(old_path, old, long_field_names=True)
-    restored = LFTS(parameters(root / "unambiguous_restored", platform, names=names, wtmd=True), random_seed=73)
-    assert restored.continue_run(old_path)["status"] == "completed"
-    assert_wtmd_state(wtmd_state(restored), wtmd_state(original))
-    assert restored.random_bg.state == original.random_bg.state
+def check_clfts_aux(root, platform):
+    names = ("aux", "B")
+    full = CLFTS(parameters(root / "aux_full", platform, names, nx=[8]), random_seed=5)
+    assert full.run(fields(names, 8))["status"] == "completed"
+    continued = CLFTS(parameters(root / "aux_continued", platform, names, nx=[8]), random_seed=99)
+    assert continued.continue_run(root / "aux_full" / "fields_000002.mat")["status"] == "completed"
+    a, b = (read_mat(root / name / "fields_000004.mat") for name in ("aux_full", "aux_continued"))
+    assert a["w_aux"].shape == (2, 8) and "w_aux_real" in a and "w_aux_imag" in a
+    for key in ("w_aux", "w_aux_real", "w_aux_imag", "w_B_real", "w_B_imag", "phi_aux_real", "normal_noise_prev"):
+        np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
 def main():
-    check_helpers()
-    platforms = [name for name in PlatformSelector.avail_platforms() if name.startswith("cpu")]
+    # Fixes in Python: one platform, a CPU one where the build has it
+    platforms = PlatformSelector.avail_platforms()
     if not platforms:
-        return 77
+        return int(cuda_part_missing()) or 77
+    platforms = [next((name for name in platforms if name.startswith("cpu")), platforms[0])]
     with tempfile.TemporaryDirectory(prefix="polymerfts_pair_records_") as directory:
         root = Path(directory)
         previous = Path.cwd()
         os.chdir(root)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
+                refused(root, platforms[0])
                 for cls in (LFTS, CLFTS):
                     check_statistics(root, platforms[0], cls)
                 check_wtmd(root, platforms[0])
+                check_clfts_aux(root, platforms[0])
         finally:
             os.chdir(previous)
-    print("Pair records: statistics, WTMD files and versioned restarts preserve every pair")
+    print("Pair records: colliding names refused, distinct keys through statistics, WTMD files and restarts")
     return 0
 
 

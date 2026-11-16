@@ -12,7 +12,7 @@ import sys
 
 import numpy as np
 
-from polymerfts import LR, LRAM, PlatformSelector, PropagatorSolver, ValidationError
+from polymerfts import LR, LRAM, PlatformSelector, PropagatorSolver
 
 
 def cpu_platform():
@@ -45,14 +45,6 @@ def main():
 
     solver = PropagatorSolver(nx=nx, lx=lx, ds=0.1, bond_lengths={"A": 1.0}, bc=["periodic"]*6,
                               chain_model="continuous", platform=cpu_platform())
-
-    # LR transforms with fourier or with axis_bc, not with both or neither
-    for transforms in ({}, {"fourier": solver.fourier, "axis_bc": ["periodic"]*3}):
-        try:
-            LR(nx, lx, jk, **transforms)
-            failed.append(f"LR accepted the transforms {sorted(transforms)}")
-        except ValidationError:
-            pass
 
     # LR with the exact J(k) is exact in one step, for both shapes
     lr = LR(nx, lx, jk, fourier=solver.fourier)

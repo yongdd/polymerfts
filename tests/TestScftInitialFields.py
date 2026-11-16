@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""SCFT validates original initial fields before casting or resetting the solver.
+"""SCFT validates the initial fields before resetting the solver.
 
-Complex and nonfinite values, invalid sizes and missing monomers fail before
-the optimizer or propagators are touched, including axis and space-group
-conversions. Valid real arrays remain unchanged and preserve their first
-iteration fields; a homogeneous control converges on every backend.
+Complex values, values that are not finite at float64 precision, invalid sizes and
+missing monomers fail before the optimizer or propagators are touched, including
+axis and space-group conversions. Valid real arrays remain unchanged and preserve
+their first iteration fields; a homogeneous control converges on every backend.
 """
 
 import contextlib
@@ -77,11 +77,10 @@ def check_inputs(sim, shape):
         field = zeros.copy()
         field.flat[0] = value
         bad_values.append((field, "real, finite"))
-    bad_values += [(np.zeros(zeros.size - 1), "needs"),
-                   (np.full(shape, "not a number"), "real, finite")]
+    bad_values.append((np.zeros(zeros.size - 1), "needs"))
     if np.finfo(np.longdouble).max > np.finfo(np.float64).max:
         bad_values.append((np.full(shape, np.finfo(np.longdouble).max, dtype=np.longdouble),
-                           "float64 precision"))
+                           "real, finite"))
     for bad, message in bad_values:
         fields = {"A": bad, "B": zeros.copy()}
         for value in fields.values():

@@ -27,7 +27,6 @@ SET(BASIC_TESTS
     TestJunctionProduct
     TestCanonicalIonRange
     TestThinObliqueCell
-    TestAuxFieldCheckpointNames
     TestLftsIdealLimit
     TestRandomCopolymerFractions
     TestNumpyScalarSerialization
@@ -182,7 +181,7 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestJunctionRange
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange
     TestCnAdiLongLines TestCrysFFTCellChange
-    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
 
 # Generate files named "Test*.cpp"

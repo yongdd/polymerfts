@@ -1,4 +1,4 @@
-"""WTMD state across fresh runs, manual continuations and checkpoint restarts."""
+"""WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set before the first run."""
 import contextlib
 import copy
 import io
@@ -47,6 +47,8 @@ def constructor_reset():
     wtmd = quiet(WTMD, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0],
                  psi_max=2.0, dpsi=0.1, **inputs)
     expected = state(wtmd)
+    wtmd.start_run(fresh=True)   # the first run keeps the constructor's state
+    assert_state(wtmd, expected)
     for name in ("u", "up", "I0"):
         np.testing.assert_array_equal(inputs[name], originals[name])
         np.testing.assert_array_equal(expected[name], inputs[name] / (1 if name == "I0" else wtmd.CV))
@@ -62,7 +64,7 @@ def constructor_reset():
         wtmd.I1["another pair"] = np.ones(wtmd.bins)
         wtmd.order_parameter_history.append(0.4)
         wtmd.dH_history["A,B"] = [0.5]
-        wtmd.reset()
+        wtmd.start_run(fresh=True)
         assert_state(wtmd, expected)
 
 
@@ -170,6 +172,33 @@ def checkpoint_restart(root, platform):
     compare_checkpoints(checkpoint(continued, 4), checkpoint(fresh, 4))
 
 
+def preset_bias(root, platform):
+    """A bias set on sim.wtmd before the first run is used by that run and by later fresh runs."""
+    sim = quiet(LFTS, parameters(root / "preset", platform, 2), random_seed=5)
+    unbiased = quiet(LFTS, parameters(root / "unbiased", platform, 2), random_seed=5)
+    bins = sim.wtmd.bins
+    sim.wtmd.u = np.linspace(0.0, 2.0, bins) / sim.wtmd.CV
+    sim.wtmd.up = np.full(bins, 40.0) / sim.wtmd.CV
+    preset = state(sim.wtmd)
+    rng = copy.deepcopy(sim.random_bg.state)
+    quiet(sim.run, fields())
+    quiet(unbiased.run, fields())
+    # update_freq 3 > 2 steps: the run deposits no hill, and its bias is the preset one
+    for name in ("u", "up", "I0"):
+        np.testing.assert_array_equal(getattr(sim.wtmd, name), preset[name])
+    first = loadmat(checkpoint(sim, 2), squeeze_me=True)
+    np.testing.assert_array_equal(first["wtmd_unscaled_up"], preset["up"])
+    assert np.any(first["w_A"] != loadmat(checkpoint(unbiased, 2), squeeze_me=True)["w_A"]), \
+        "The run did not feel the preset bias"
+    # A later fresh run starts from the preset bias again, not from zero, and repeats the first run
+    sim.wtmd.u[:] = 99.0
+    sim.random_bg.state = rng
+    quiet(sim.run, fields())
+    second = loadmat(checkpoint(sim, 2), squeeze_me=True)
+    for key in ("w_A", "w_B", "wtmd_unscaled_u", "wtmd_unscaled_up", "wtmd_order_parameter_history"):
+        np.testing.assert_array_equal(second[key], first[key], err_msg=key)
+
+
 def main():
     constructor_reset()
     print("[PASS] WTMD constructor state and reset copies")
@@ -182,7 +211,8 @@ def main():
             sim = repeated_runs(root / platform, platform)
             manual_continuation(sim)
             checkpoint_restart(root / platform, platform)
-            print(f"[PASS] {platform}: WTMD fresh runs, manual continuation and checkpoint restart")
+            preset_bias(root / platform, platform)
+            print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart and preset bias")
     return int(cuda_part_missing())
 
 

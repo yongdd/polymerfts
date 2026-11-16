@@ -22,8 +22,8 @@ class ThermodynamicOperators:
         self.electrostatics = sim.electrostatics
 
         # Thermodynamic operators, recorded with H: the chemical potential of each species,
-        # βμ_p = ln(φ_p/α_p) - ln Q_p per chain (validation rejects grafted chains), and with
-        # recording.pressure the osmotic pressure (pressure_virial())
+        # βμ_p = ln(φ_p/α_p) - ln Q_p per chain (validation rejects grafted chains, so it is always
+        # recorded), and with recording.pressure the osmotic pressure (pressure_virial())
         chains = [self.prop_solver.get_polymer(p) for p in range(self.prop_solver.get_n_polymer_types())]
         self.chain_densities = np.array([chain.get_volume_fraction() / chain.get_alpha() for chain in chains])
         # One chemical potential per polymer, then one per point ion; with grand-canonical species the
@@ -31,11 +31,8 @@ class ThermodynamicOperators:
         self.n_chemical_potentials = len(self.chain_densities) + (len(self.electrostatics.ions) if self.electrostatics else 0)
         self.record_number_densities = bool(self.sim.grand_canonical) or (
             self.electrostatics is not None and any(ion["concentration"] is None for ion in self.electrostatics.ions))
-        self.record_chemical_potentials = not any(polymer.get("initial_conditions") for polymer in self.sim.polymers)
         self.record_pressure = bool(self.sim.recording.get("pressure", False))
         if self.record_pressure:
-            if not self.record_chemical_potentials:
-                raise ValidationError("'recording.pressure' needs free chains (no initial_conditions)")
             if any(b.lower() != "periodic" for b in self.prop_solver.bc):
                 raise ValidationError("'recording.pressure' needs a periodic box")
             if not self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:

@@ -71,54 +71,28 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
-def _ion_partition(potential):
-    """Q = <exp(-u)> of one point ion, finite whenever |Q| is representable.
+def _point_ion(ion, potential, n_segments):
+    """Density c(r), ln Q and the partition ratio |Q|/<|e^(-u)|> of one point ion in the dimensionless
+    potential u (the ratio None for a grand-canonical ion).
 
-    Only real exponentials may overflow here: complex exp of an overflowing
-    argument returns an infinite or NaN imaginary part (C library dependent,
-    as on Windows), and the complex mean then makes the real part NaN as well.
-    The mean is taken after removing the smallest real u, which is restored
-    with log|mean| in one real exponential, so Q overflows only when |Q| does.
+    The weights e^(-(u - u_min)), with the smallest real part u_min of u removed, have moduli of at most
+    1, and one of them is 1, so Q = e^(-u_min) <e^(-(u - u_min))> is kept as ln Q, which -N c ln Q and βμ
+    need. ln Q is -inf only where the complex weights cancel exactly, Q = 0, a pole of an occupied
+    canonical species. A grand-canonical ion has the density e^(βμ - u)/N = e^(βμ - u_min) e^(-(u - u_min))/N,
+    finite also when βμ and u share a large (Donnan) offset.
     """
-    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-        offset = np.min(np.real(potential))
-        mean = np.mean(np.exp(-(potential - offset)))
-        size = np.abs(mean)
-        if size == 0.0:
-            return mean  # complex weights that cancel exactly: a true zero of Q
-        scale = np.exp(np.log(size) - offset)
-        if np.isrealobj(mean):
-            return scale
-        # Divide the parts by |mean| separately: complex division overflows
-        # the reciprocal of a subnormal |mean|.
-        return scale * (mean.real / size + 1j * (mean.imag / size))
-
-
-def _point_ion_density(ion, potential, n_segments):
-    """Density and partition Q of one point ion with the dimensionless potential u.
-
-    For a grand-canonical ion, mu and u can have a large common Donnan offset:
-    exp(mu - u) stays finite even when exp(mu) or exp(-u) cannot be represented.
-    Q is still the unshifted partition, but it does not enter this density.
-    Canonical ions keep their normalization by Q, including its physical poles.
-    """
+    u_min = np.min(np.real(potential))
+    weight = np.exp(-(potential - u_min))
+    mean = np.mean(weight)
+    with np.errstate(divide="ignore"):
+        log_q = np.log(mean) - u_min
     if ion["concentration"] is None:
-        density = np.exp(ion["chemical_potential"] - potential) / n_segments
-        # Only the diagnostic partition may overflow or underflow here; do not
-        # silence a genuinely non-finite density from the combined exponent.
-        return density, _ion_partition(potential)
-    # Keep the unshifted partition, which enters H and βμ, but normalize the
-    # density after removing a common real offset. Even a representable Q
-    # such as exp(-710) can overflow the reciprocal in complex division,
-    # although the canonical density is independent of this offset.
-    partition = _ion_partition(potential)
+        return np.exp(ion["chemical_potential"] - u_min) * weight / n_segments, log_q, None
+    ratio = min(1.0, float(np.abs(mean) / np.mean(np.abs(weight))))   # 1 for a real u, up to rounding
     if ion["concentration"] == 0.0:
-        # An absent species contributes nothing even at Q = 0; keep Q for diagnostics.
-        return np.zeros_like(potential), partition
-    weight = np.exp(-(potential - np.min(np.real(potential))))
-    # Do not clip this mean: cancellation of the complex weights is a physical
-    # partition zero, where an occupied canonical species really has a pole.
-    return ion["concentration"] * (weight / np.mean(weight)), partition
+        return np.zeros_like(potential), log_q, ratio   # an absent species contributes nothing, also at Q = 0
+    # Do not clip the mean: Q = 0 is a pole of an occupied canonical species
+    return ion["concentration"] * (weight / mean), log_q, ratio
 
 
 def coulomb_coupling(params, n_segments, nbar):
@@ -300,16 +274,15 @@ class Electrostatics:
         return c
 
     def ion_densities(self):
-        """Densities c_s(r) of the point ions and their partition functions Q_s for the current ψ."""
+        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for the
+        current ψ."""
         if self._ion_state is None:
-            densities, partitions = [], []
-            for ion in self.ions:
-                potential = ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
-                density, partition = _point_ion_density(ion, potential, self.n_segments)
-                densities.append(density)
-                partitions.append(partition)
-            self._ion_state = (densities, partitions)
-        return self._ion_state
+            potentials = [ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
+                          for ion in self.ions]
+            ions = [_point_ion(ion, u, self.n_segments) for ion, u in zip(self.ions, potentials)]
+            # Densities, ln Q and partition ratios, one entry per ion
+            self._ion_state = tuple([values[i] for values in ions] for i in range(3))
+        return self._ion_state[0], self._ion_state[1]
 
     def ion_charge(self):
         """Smeared charge density of the point ions, Σ_s z_s (Γ_s * c_s), for the current ψ."""
@@ -319,12 +292,11 @@ class Electrostatics:
     def ion_chemical_potentials(self):
         """βμ_s = ln(N c_s) - ln Q_s of each point ion, per ion (the convention of the chains); the given
         value for grand-canonical ions."""
-        _, partitions = self.ion_densities()
-        with np.errstate(divide="ignore"):
-            return [complex(ion["chemical_potential"]) if ion["concentration"] is None
-                    else complex(-np.inf, 0.0) if ion["concentration"] == 0.0
-                    else np.log(self.n_segments * ion["concentration"]) - np.log(complex(q))
-                    for ion, q in zip(self.ions, partitions)]
+        _, log_partitions = self.ion_densities()
+        return [complex(ion["chemical_potential"]) if ion["concentration"] is None
+                else complex(-np.inf, 0.0) if ion["concentration"] == 0.0
+                else np.log(self.n_segments * ion["concentration"]) - log_q
+                for ion, log_q in zip(self.ions, log_partitions)]
 
     def ion_number_densities(self):
         """Ions per reference chain, N c_s, of each point ion: e^(βμ_s) Q_s for grand-canonical ions."""
@@ -392,12 +364,12 @@ class Electrostatics:
         """
         value = 0.0 if self.fixed_charge is None else np.mean(self._psi * self.fixed_charge)
         if self.ions:
-            densities, partitions = self.ion_densities()
-            for ion, density, q in zip(self.ions, densities, partitions):
+            densities, log_partitions = self.ion_densities()
+            for ion, density, log_q in zip(self.ions, densities, log_partitions):
                 if ion["concentration"] is None:
                     value -= self.n_segments * np.mean(density)
                 elif ion["concentration"] != 0.0:
-                    value -= self.n_segments * ion["concentration"] * np.log(complex(q))
+                    value -= self.n_segments * ion["concentration"] * log_q
         if self.coupling <= 0:
             return value
         if not self.periodic:
@@ -458,14 +430,8 @@ class Electrostatics:
     def ion_partition_ratios(self):
         """|Q_s| / <|e^(-z_s (Γ_s * ψ)/N)|> of every canonical point ion: 1 for a real ψ, and close to 0 where
         the average of the complex weights nearly cancels, a zero of Q_s at which -N c_s ln Q_s has a pole."""
-        ratios = []
-        for ion in self.ions:
-            if ion["concentration"] is None:
-                continue
-            u = ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
-            weight = np.exp(-(u - np.min(np.real(u))))   # the ratio does not change with a real shift of u
-            ratios.append(min(1.0, float(np.abs(np.mean(weight)) / np.mean(np.abs(weight)))))   # 1 up to rounding
-        return ratios
+        self.ion_densities()
+        return [ratio for ion, ratio in zip(self.ions, self._ion_state[2]) if ion["concentration"] is not None]
 
     def settings(self):
         """Settings that define a continuation (checkpoint hash)."""
@@ -576,16 +542,16 @@ class MeanFieldElectrostatics:
                 w_input[name] = w_input[name] + z * psi
 
     def ion_densities(self, psi):
-        """Densities c_s(r) of the point ions and their partition functions Q_s for ψ."""
-        densities, partitions = [], []
+        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for ψ."""
+        densities, log_partitions = [], []
         if self.ions:
             psi_k = self._fourier.forward(psi)
         for ion in self.ions:
             potential = ion["valence"] * self._fourier.backward(ion["gamma"] * psi_k) / self.n_segments
-            density, partition = _point_ion_density(ion, potential, self.n_segments)
+            density, log_q, _ = _point_ion(ion, potential, self.n_segments)
             densities.append(density)
-            partitions.append(float(partition))
-        return densities, partitions
+            log_partitions.append(float(log_q))
+        return densities, log_partitions
 
     def charge_density(self, phi_smeared, psi):
         """Smeared charge density Σ_i z_i (Γ_i * φ_i) + Σ_s z_s (Γ_s * c_s) for ψ, and the fixed charge."""
@@ -630,23 +596,22 @@ class MeanFieldElectrostatics:
             / self.coupling
         if self.fixed_charge is not None:
             value += float(np.mean(psi * self.fixed_charge))
-        densities, partitions = self.ion_densities(psi)
-        for ion, density, q in zip(self.ions, densities, partitions):
+        densities, log_partitions = self.ion_densities(psi)
+        for ion, density, log_q in zip(self.ions, densities, log_partitions):
             if ion["concentration"] is None:
                 value -= self.n_segments * np.mean(density)
             elif ion["concentration"] > 0:
                 number = self.n_segments * ion["concentration"]
-                value += number * (np.log(number) - 1.0) - number * np.log(q)
+                value += number * (np.log(number) - 1.0) - number * log_q
         return value
 
     def ion_chemical_potentials(self, psi):
         """βμ_s = ln(N c_s) - ln Q_s of each point ion; the given value for grand-canonical ions."""
-        _, partitions = self.ion_densities(psi)
-        with np.errstate(divide="ignore"):
-            return [ion["chemical_potential"] if ion["concentration"] is None
-                    else -np.inf if ion["concentration"] == 0.0
-                    else float(np.log(self.n_segments * ion["concentration"]) - np.log(q))
-                    for ion, q in zip(self.ions, partitions)]
+        _, log_partitions = self.ion_densities(psi)
+        return [ion["chemical_potential"] if ion["concentration"] is None
+                else -np.inf if ion["concentration"] == 0.0
+                else float(np.log(self.n_segments * ion["concentration"]) - log_q)
+                for ion, log_q in zip(self.ions, log_partitions)]
 
     def ion_number_densities(self, psi):
         """Ions per reference chain, N c_s (e^(βμ_s) Q_s for grand-canonical ions)."""

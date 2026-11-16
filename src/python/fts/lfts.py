@@ -1,7 +1,6 @@
 import os
 import time
 import pathlib
-import copy
 import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
@@ -18,14 +17,12 @@ from ..utils.common import (
 )
 from ..utils.checkpoint import (
     fields_data,
-    auxiliary_field_key,
     load_checkpoint,
     start_run_status,
     RunRecord,
     initialize_extensions,
     restore_extensions,
     pair_suffix,
-    checkpoint_pair_suffix,
 )
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
@@ -99,14 +96,8 @@ class LFTS:
 
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
 
-        # Validate input parameters
-        params = normalize_params(params)
-        validate_lfts_params(params)
-        for key in ("compressor", "saddle", "recording", "verbose_level"):
-            if key not in params:
-                raise ValidationError(f"Missing required parameter for LFTS: '{key}'")
-        if params["verbose_level"] not in (0, 1, 2):
-            raise ValidationError(f"'verbose_level' must be 0, 1 or 2, got {params['verbose_level']}")
+        # Validate input parameters (a copy with the current names)
+        params = validate_lfts_params(params)
 
         # Compressibility parameter (None: incompressible)
         self.zeta_n = params.get("zeta_n", None)
@@ -169,13 +160,10 @@ class LFTS:
                 self.dt_scaling[i] = np.abs(self.mpt.eigenvalues[i])/np.max(np.abs(self.mpt.eigenvalues[:M-1]))
         self.dt_scaling[self.mpt.aux_fields_dropped_idx] = 0.0
 
-        # Set random generator
-        if random_seed is None:         
-            self.random_bg = np.random.PCG64()  # Set random bit generator
-        else:
-            self.random_bg = np.random.PCG64(random_seed)
+        # Random bit generator of the noise (random_seed None: non-reproducible)
+        self.random_bg = np.random.PCG64(random_seed)
         self.random = np.random.Generator(self.random_bg)
-        
+
         display_system(self, params["chain_model"])
 
         print("Invariant Polymerization Index (N_Ref): %d" % (params["langevin"]["nbar"]))
@@ -186,7 +174,7 @@ class LFTS:
         self.prop_solver.display_statistics()
 
         #  Save internal variables
-        self.params = copy.deepcopy(params)
+        self.params = params
         self.chain_model = params["chain_model"]
         self.ds = params["ds"]
         self.langevin = params["langevin"].copy()
@@ -347,8 +335,10 @@ class LFTS:
             Path to checkpoint file (MATLAB .mat format created by save_simulation_data).
         """
 
-        # Load_data
+        # Load_data; a first run of this object remembers its WTMD state before the checkpoint replaces it
         load_data = load_checkpoint(self, file_name, allow_legacy)
+        if self.wtmd is not None:
+            self.wtmd.start_run(fresh=False)
 
         # Restore WTMD state if available: the arrays without the factor CV, or for an older
         # checkpoint the scaled ones divided by CV (as in deep-langevin-fts)
@@ -366,7 +356,7 @@ class LFTS:
             self.wtmd.I1 = {}
             self.wtmd.dH_history = {}
             for key in self.chi_n:
-                name = checkpoint_pair_suffix(load_data, key)
+                name = pair_suffix(key)
                 if "wtmd_I1_" + name in load_data:
                     self.wtmd.I1[key] = bias("I1_" + name)
                 if n_pending > 0 and "wtmd_dH_history_" + name in load_data:
@@ -403,8 +393,10 @@ class LFTS:
         try:
             if _restart_data is None:
                 restore_extensions(self)
-                if self.wtmd is not None and start_langevin_step in (None, 1):
-                    self.wtmd.reset()
+                # A fresh run starts from the WTMD bias of the first run of this object, a manual
+                # continuation (start_langevin_step > 1) from the current one
+                if self.wtmd is not None:
+                    self.wtmd.start_run(fresh=start_langevin_step in (None, 1))
             self._run(initial_fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
             self.run_status["status"] = "completed"
         except SaddlePointError as exc:
@@ -474,7 +466,7 @@ class LFTS:
         # Convert monomer potential fields into auxiliary potential fields
         w_aux = self.mpt.to_aux_fields(w)
         self.mpt.pin_dropped_fields(w_aux)
-        saved_aux = None if _restart_data is None else _restart_data.get(auxiliary_field_key(_restart_data))
+        saved_aux = None if _restart_data is None else _restart_data.get("w_aux")
         if saved_aux is not None:
             w_aux = np.asarray(saved_aux, dtype=np.float64).reshape(M, self.prop_solver.n_grid).copy()
         if not np.all(np.isfinite(w_aux)):
@@ -605,8 +597,6 @@ class LFTS:
             self.run_status["saddle_failures"] += 1
             if self.saddle.settings.get("failure_policy", "retry") == "abort":
                 break
-        else:
-            raise SaddlePointError(f"Intermediate saddle failed at step {step} (error={error})")
         if not np.isfinite(error) or error >= self.saddle.settings["tolerance"]:
             raise SaddlePointError(f"Intermediate saddle failed at step {step} (error={error})")
         force = self.mpt.compute_func_deriv(trial, self.smearing.apply_to_dict(phi), indices)

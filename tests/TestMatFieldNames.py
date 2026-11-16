@@ -22,8 +22,9 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
-from polymerfts.utils.checkpoint import recorded_pair_suffix
-from polymerfts.utils.common import atomic_savemat, decode_mat_fields, input_hash
+from polymerfts.utils.checkpoint import pair_suffix
+from polymerfts.utils.common import atomic_savemat, input_hash
+from polymerfts.utils.mat_fields import decode_mat_fields
 from cuda_part import cuda_part_missing
 
 
@@ -243,7 +244,7 @@ def check_fts(root, platform, name, cls):
             quiet(sims[label].wtmd.write_data, paths[label] / "wtmd_final.mat")
             saved = read_mat(paths[label] / "wtmd_final.mat")
             for pair in sims[label].chi_n:
-                suffix = recorded_pair_suffix(saved, pair)
+                suffix = pair_suffix(pair)
                 np.testing.assert_array_equal(saved["I1_" + suffix],
                                               sims[label].wtmd.I1[pair] * sims[label].wtmd.CV)
         compare_files(paths["full"], paths["continued"], "wtmd_final.mat", ("I0", "I1_", "dH_psi_", "u", "up"))

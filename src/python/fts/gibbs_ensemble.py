@@ -102,7 +102,7 @@ class GibbsEnsemble:
     MOBILITY_RIDGE = 0.03   # λ of the mobility: small enough for the tie line, large enough for equal boxes
 
     def __init__(self, params, random_seed=None):
-        params = normalize_params(copy.deepcopy(params))
+        params = normalize_params(params)
         validate_gibbs_params(params)
         if random_seed is not None and (isinstance(random_seed, (bool, np.bool_))
                                         or not isinstance(random_seed, (int, np.integer)) or random_seed < 0):
@@ -296,8 +296,7 @@ class GibbsEnsemble:
             raise ValidationError("The effective contour lengths differ from those of the Gibbs-ensemble history; "
                                   "start a fresh run().")
         self.history["settings"]["effective_block_lengths"] = effective_lengths
-        if self.history["cycles"]:
-            self.amounts = np.array(self.history["cycles"][-1]["amounts_after"], dtype=np.float64)
+        self.amounts = np.array(self.history["cycles"][-1]["amounts_after"], dtype=np.float64)
         return self._run_cycles(len(self.history["cycles"]), [None, None], [None, None])
 
     def _run_cycles(self, first_cycle, fields, psi):

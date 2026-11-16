@@ -454,10 +454,9 @@ series coefficients; the coefficients are complex, with the full spectrum on the
 axes, and real fields take the real part of `backward`. `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
-(osmotic pressure), the LR compressor of L-FTS in periodic boxes and in boxes with reflecting
-walls only (boxes that mix periodic and wall axes use `scipy.fft`; absorbing walls are refused)
-and, in periodic boxes, WTMD and the samples for the structure functions; boxes with walls
-record the Fourier coefficients of `numpy.fft`.
+(osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls
+(absorbing walls are refused) and, in periodic boxes, WTMD and the samples for the structure
+functions; boxes with walls record the Fourier coefficients of `numpy.fft`.
 
 ### 3.5 AndersonMixing Hierarchy
 

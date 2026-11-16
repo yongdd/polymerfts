@@ -9,22 +9,11 @@ import warnings
 import weakref
 
 import numpy as np
-import scipy.fft
 
 from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
 from ..utils.common import check_partition_functions
 from ..utils.validation import ValidationError, SaddlePointError
-
-
-def _axis_transform(field, axis_bc, inverse=False):
-    """Orthonormal transform of each axis: FFT ("periodic") or cosine series (DCT-II, "wall"), or its inverse."""
-    for axis, kind in enumerate(axis_bc):
-        if kind == "periodic":
-            field = (scipy.fft.ifft if inverse else scipy.fft.fft)(field, axis=axis, norm="ortho")
-        else:
-            field = (scipy.fft.idct if inverse else scipy.fft.dct)(field, type=2, axis=axis, norm="ortho")
-    return field
 
 
 class LR:
@@ -46,14 +35,10 @@ class LR:
         Box dimensions in units of a_Ref * N_Ref^(1/2).
     jk : ndarray
         Jacobian (Hessian) matrix in Fourier space. Precomputed from
-        finite difference of δH/δw. Shape: the coefficients of fourier, or nx with axis_bc.
-    fourier : FourierTransform, optional
-        PropagatorSolver.fourier of real fields (FFT in a periodic box, cosine series in
-        a box with reflecting walls), which applies 1/J(k) (on the GPU with CUDA).
-    axis_bc : list of str, optional
-        "periodic" or "wall" for each axis of a box that mixes periodic axes and
-        reflecting walls: FFT and cosine series (orthonormal) with scipy.fft.
-        Give either fourier or axis_bc.
+        finite difference of δH/δw. Shape: the coefficients of fourier.
+    fourier : FourierTransform
+        PropagatorSolver.fourier of real fields (FFT along periodic axes, cosine series
+        along reflecting walls), which applies 1/J(k) (on the GPU with CUDA).
 
     Attributes
     ----------
@@ -64,15 +49,12 @@ class LR:
     jk : ndarray
         Jacobian in Fourier space.
     """
-    def __init__(self, nx, lx, jk, fourier=None, axis_bc=None):
-        if (fourier is None) == (axis_bc is None):
-            raise ValidationError("LR needs either fourier or axis_bc.")
+    def __init__(self, nx, lx, jk, fourier):
         self.nx = nx
         self.lx = lx
         self.jk = jk.copy()
         self._fourier = fourier
-        self._inverse = None if fourier is None else fourier.set_multiplier(1.0 / self.jk)
-        self.axis_bc = axis_bc
+        self._inverse = fourier.set_multiplier(1.0 / self.jk)
 
     def reset_count(self,):
         """Reset compressor state (no-op for LR).
@@ -103,11 +85,7 @@ class LR:
         w_new : ndarray
             Updated field values, same shape as w_current.
         """
-        if self._fourier is not None:
-            w_diff = self._fourier.apply([(self._inverse, np.reshape(negative_h_deriv, -1))])
-        else:
-            w_diff_k = _axis_transform(np.reshape(negative_h_deriv, self.nx), self.axis_bc)/self.jk
-            w_diff = np.real(_axis_transform(w_diff_k, self.axis_bc, inverse=True))
+        w_diff = self._fourier.apply([(self._inverse, np.reshape(negative_h_deriv, -1))])
         return w_current + np.reshape(w_diff, np.shape(w_current))
 
 
@@ -204,8 +182,6 @@ class SaddlePointSearch:
         if not self.mpt.aux_fields_imag_idx:
             return None   # The ideal reference limit has no fields to compress.
         M = len(self.monomer_types)
-        periodic_sides = [b.lower() == "periodic" for b in self.prop_solver.bc]
-        mixed_box = any(periodic_sides) and not all(periodic_sides)
 
         # (C++ class) Fields Relaxation using Anderson Mixing
         if params["compressor"]["name"] == "am" or params["compressor"]["name"] == "lram":
@@ -221,11 +197,11 @@ class SaddlePointSearch:
         if params["compressor"]["name"] == "lr" or params["compressor"]["name"] == "lram":
             if len(self.mpt.aux_fields_imag_idx) != 1:
                 raise ValidationError("Currently, LR methods are not working for imaginary-valued auxiliary fields.")
-            # The response J to a kick at w = 0 is diagonal in the Fourier basis of the box:
-            # the FFT in a periodic box, the cosine series along reflecting walls (the box is
-            # half of a periodic box of twice its size, with the mirror image of the kick).
-            # Next to an absorbing wall the concentrations at w = 0 are depleted, and no
-            # Fourier basis makes J diagonal
+            # The response J to a kick at w = 0 is diagonal in the Fourier basis of the box
+            # (PropagatorSolver.fourier): the FFT along periodic axes, the cosine series along
+            # reflecting walls (the box is half of a periodic box of twice its size, with the
+            # mirror image of the kick). Next to an absorbing wall the concentrations at w = 0
+            # are depleted, and no Fourier basis makes J diagonal
             if any(b.lower() == "absorbing" for b in self.prop_solver.bc):
                 raise ValidationError("compressor 'lr' and 'lram' need periodic axes or reflecting walls; "
                                       "use 'am' in a box with absorbing walls")
@@ -244,32 +220,20 @@ class SaddlePointSearch:
 
             # jk = (h(w_pert) - h(0)) / w_pert  (correct finite difference)
             h_deriv_diff = h_deriv_perturbed - h_deriv_zero
-            nx = self.prop_solver.nx
-            fourier, axis_bc = None, None
-            if mixed_box:
-                # Periodic axes and reflecting walls: FFT and cosine series with scipy.fft
-                axis_bc = ["periodic" if periodic else "wall" for periodic in periodic_sides[::2]]
-                jk_numeric = np.real(_axis_transform(np.reshape(h_deriv_diff, nx), axis_bc)
-                                     /_axis_transform(np.reshape(w_aux_perturbed[M-1], nx), axis_bc))
-            else:
-                # The FFT or the cosine series of PropagatorSolver.fourier
-                fourier = self.prop_solver.fourier
-                jk_numeric = np.real(fourier.forward(np.reshape(h_deriv_diff, -1))/fourier.forward(w_aux_perturbed[M-1]))
+            fourier = self.prop_solver.fourier
+            jk_numeric = np.real(fourier.forward(np.reshape(h_deriv_diff, -1))/fourier.forward(w_aux_perturbed[M-1]))
             # Incompressible: a uniform shift of the pressure field changes no concentration, so
             # J(0) = 0 and the value above is rounding, exactly zero on some small grids. J(0) = 1
             # keeps 1/J finite, and the gauge fix of the saddle search removes the uniform mode
             if self.zeta_n is None:
                 jk_numeric.flat[0] = 1.0
-            lr = LR(nx, self.prop_solver.get_lx(), jk_numeric, fourier=fourier, axis_bc=axis_bc)
+            lr = LR(self.prop_solver.nx, self.prop_solver.get_lx(), jk_numeric, fourier=fourier)
 
         if params["compressor"]["name"] == "am":
             return am
         elif params["compressor"]["name"] == "lr":
             return lr
-        elif params["compressor"]["name"] == "lram":
-            return LRAM(lr, am)
-        else:
-            raise ValidationError(f"compressor['name'] must be 'am', 'lr' or 'lram', got '{params['compressor']['name']}'")
+        return LRAM(lr, am)   # "lram" (validation.py accepts these three)
 
     def first_point(self, w_aux):
         """Saddle point of the initial fields, found in place; returns their concentrations."""

@@ -58,8 +58,8 @@ def absent_observables(root, platform):
     es, control = absent.electrostatics, plain.electrostatics
     with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise"):
         warnings.simplefilter("error", RuntimeWarning)
-        densities, partitions = es.ion_densities()
-        assert partitions == [0j], "Keep the true zero partition for diagnostics"
+        densities, log_partitions = es.ion_densities()
+        np.testing.assert_array_equal(log_partitions, [complex(-np.inf, 0.0)])   # the true zero of Q
         np.testing.assert_array_equal(densities[0], np.zeros(4))
         np.testing.assert_array_equal(es.ion_charge(), np.zeros(4))
         np.testing.assert_array_equal(es.ion_number_densities(), [0j])
@@ -129,8 +129,8 @@ def occupied_controls(root, platform):
     weight = np.exp(-psi)
     q, density = np.mean(weight), 0.1 * weight / np.mean(weight)
     with np.errstate(divide="raise", invalid="raise", over="raise"):
-        densities, partitions = es.ion_densities()
-        np.testing.assert_allclose(partitions, [q], rtol=1e-14, atol=1e-14)
+        densities, log_partitions = es.ion_densities()
+        np.testing.assert_allclose(log_partitions, [np.log(q)], rtol=1e-14, atol=1e-14)
         np.testing.assert_allclose(densities[0], density, rtol=1e-14, atol=1e-14)
         np.testing.assert_allclose(es.ion_chemical_potentials(), [np.log(0.1) - np.log(q)], rtol=1e-14, atol=1e-14)
         np.testing.assert_allclose(es.hamiltonian() - plain.electrostatics.hamiltonian(), -0.1 * np.log(q),
@@ -140,8 +140,8 @@ def occupied_controls(root, platform):
     # An occupied canonical species really is singular at Q=0; the fix must not clamp its partition.
     es.psi = PSI_ZERO_Q
     with np.errstate(divide="ignore", invalid="ignore"):
-        densities, partitions = es.ion_densities()
-        assert partitions == [0j]
+        densities, log_partitions = es.ion_densities()
+        np.testing.assert_array_equal(log_partitions, [complex(-np.inf, 0.0)])
         assert not np.all(np.isfinite(densities[0]))
         assert not np.isfinite(es.hamiltonian())
         assert not np.isfinite(es.ion_chemical_potentials()[0])
@@ -160,11 +160,11 @@ def mean_field_underflow(root, platform):
         simulations.append(quiet(SCFT, params))
     absent, plain = simulations
     es, control = absent.electrostatics, plain.electrostatics
-    psi = np.full(4, 1000.0)   # finite real potential with exp(-psi) = Q = 0 in double precision
+    psi = np.full(4, 1000.0)   # finite real potential with exp(-psi) = Q = 0 in double precision, ln Q = -1000
     with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise", under="ignore"):
         warnings.simplefilter("error", RuntimeWarning)
-        densities, partitions = es.ion_densities(psi)
-        assert partitions == [0.0]
+        densities, log_partitions = es.ion_densities(psi)
+        np.testing.assert_allclose(log_partitions, [-1000.0], rtol=0, atol=1e-12)
         np.testing.assert_array_equal(densities[0], np.zeros(4))
         np.testing.assert_array_equal(es.ion_chemical_potentials(psi), [-np.inf])
         np.testing.assert_array_equal(es.ion_number_densities(psi), [0.0])

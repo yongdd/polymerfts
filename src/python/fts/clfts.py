@@ -42,7 +42,6 @@ from ..utils.common import (
 from ..utils.checkpoint import (
     RunRecord,
     fields_data,
-    auxiliary_field_key,
     load_checkpoint,
     start_run_status,
     initialize_extensions,
@@ -103,14 +102,8 @@ class CLFTS:
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
         """Initialize the Complex Langevin FTS simulation."""
 
-        # Validate input parameters (same checks as SCFT and LFTS)
-        params = normalize_params(params)
-        validate_lfts_params(params, complex_fields=True)
-        for key in ("langevin", "recording", "verbose_level"):
-            if key not in params:
-                raise ValidationError(f"Missing required parameter for CLFTS: '{key}'")
-        if params["verbose_level"] not in (0, 1, 2):
-            raise ValidationError(f"'verbose_level' must be 0, 1 or 2, got {params['verbose_level']}")
+        # Validate input parameters (a copy with the current names; same checks as SCFT and LFTS)
+        params = validate_lfts_params(params, complex_fields=True)
 
         # Compressibility parameter; complex Langevin needs a finite one (default: high compressibility)
         self.zeta_n = 100.0 if params.get("zeta_n", None) is None else params["zeta_n"]
@@ -183,11 +176,8 @@ class CLFTS:
                 self.dt_scaling[i] = np.abs(self.mpt.eigenvalues[i]) / np.max(np.abs(self.mpt.eigenvalues[:M-1]))
         self.dt_scaling[self.mpt.aux_fields_dropped_idx] = 0.0
 
-        # Set random generator
-        if random_seed is None:
-            self.random_bg = np.random.PCG64()
-        else:
-            self.random_bg = np.random.PCG64(random_seed)
+        # Random bit generator of the noise (random_seed None: non-reproducible)
+        self.random_bg = np.random.PCG64(random_seed)
         self.random = np.random.Generator(self.random_bg)
 
         display_system(self, params["chain_model"])
@@ -201,7 +191,7 @@ class CLFTS:
         self.prop_solver.display_statistics()
 
         # Save internal variables
-        self.params = copy.deepcopy(params)
+        self.params = params
         self.chain_model = params["chain_model"]
         self.ds = params["ds"]
         self.langevin = params["langevin"].copy()
@@ -209,11 +199,6 @@ class CLFTS:
 
         self.verbose_level = params["verbose_level"]
         self.recording = params["recording"].copy()
-
-        # Aliases of the C++ objects inside prop_solver (for scripts that use them directly)
-        self.solver = self.prop_solver.propagator_computation
-        self.molecules = self.prop_solver.molecules
-        self.propagator_computation_optimizer = self.prop_solver.propagator_optimizer
 
         # Initialize smearing (must be after self.cb is set)
         self.smearing = smearing_of(params, self.prop_solver)
@@ -513,7 +498,7 @@ class CLFTS:
         # Convert monomer chemical potential fields into auxiliary fields
         w_aux = self.mpt.to_aux_fields(w)
         self.mpt.pin_dropped_fields(w_aux)
-        saved_aux = None if _restart_data is None else _restart_data.get(auxiliary_field_key(_restart_data))
+        saved_aux = None if _restart_data is None else _restart_data.get("w_aux")
         if saved_aux is not None:
             w_aux = np.asarray(saved_aux, dtype=np.complex128).reshape(M, self.prop_solver.n_grid).copy()
         if not np.all(np.isfinite(w_aux)):
@@ -634,8 +619,7 @@ class CLFTS:
                 dH = self.mpt.compute_h_deriv_chin(w_aux=w_aux, phi=phi_for_force)
                 for key in self.chi_n:
                     record.add("dH " + key, dH[key])
-                if self.thermodynamics.record_chemical_potentials:
-                    record.add("chemical_potential_history", self.thermodynamics.chemical_potentials(total_partitions))
+                record.add("chemical_potential_history", self.thermodynamics.chemical_potentials(total_partitions))
                 if self.thermodynamics.record_number_densities:
                     record.add("number_density_history", self.thermodynamics.number_densities(total_partitions))
                 if self.thermodynamics.record_pressure:
@@ -771,8 +755,7 @@ class CLFTS:
             series |= {"psi_drift_history": 0, "psi_drift_step_history": 0}
         if self.thermodynamics.partition_ratio_species:
             series["partition_ratio_step_history"] = len(self.thermodynamics.partition_ratio_species)
-        if self.thermodynamics.record_chemical_potentials:
-            series["chemical_potential_history"] = self.thermodynamics.n_chemical_potentials
+        series["chemical_potential_history"] = self.thermodynamics.n_chemical_potentials
         if self.thermodynamics.record_number_densities:
             series["number_density_history"] = self.thermodynamics.n_chemical_potentials
         if self.thermodynamics.record_pressure:

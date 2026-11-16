@@ -5,6 +5,7 @@ the SCFT and LFTS simulation classes to reduce code duplication.
 """
 
 import itertools
+import inspect
 import json
 import hashlib
 import os
@@ -16,8 +17,8 @@ from types import MappingProxyType
 from pathlib import Path
 import numpy as np
 
-from .validation import ValidationError, parse_chi_n  # noqa: F401 (parse_chi_n: former utils API)
-from .mat_fields import _encode_mat_fields, decode_mat_fields  # noqa: F401 (public compatibility)
+from .validation import ValidationError
+from .mat_fields import _encode_mat_fields
 
 
 def numpy_scalar(value):
@@ -101,6 +102,19 @@ def _package_hashes():
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             native.update(chunk)
     return {"python_source_sha256": source.hexdigest(), "native_binary_sha256": native.hexdigest()}
+
+
+def _simulation_source(sim):
+    """The file that defines the class of sim and its hash when it lies outside the package: a modified
+    copy of scft.py (QuickStart) or a subclass in a script, which python_source_sha256 does not cover."""
+    from .. import _core
+    try:
+        path = Path(inspect.getsourcefile(type(sim))).resolve()
+        if path.is_relative_to(Path(_core.__file__).parent.resolve()):
+            return {}
+        return {"simulation_source": str(path), "simulation_source_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    except (TypeError, OSError):   # a class without a source file, such as one defined interactively
+        return {}
 
 
 def _new_file_next_to(path, mode):
@@ -197,7 +211,7 @@ def simulation_metadata(sim, random_seed=None):
                     ("OMP_NUM_THREADS", "OMP_MAX_ACTIVE_LEVELS", "OMP_WAIT_POLICY", "MKL_NUM_THREADS")},
         "random_seed": random_seed, "input_hash": input_hash(sim.params),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
-        **_package_hashes(),
+        **_package_hashes(), **_simulation_source(sim),
     }
     try:
         metadata["cpu"] = next(line.split(":", 1)[1].strip() for line in

@@ -13,7 +13,7 @@ import scipy.signal
 
 from .._core import _periodic_metric
 from ..utils.common import atomic_savemat
-from ..utils.checkpoint import pair_key_data, pair_suffix
+from ..utils.checkpoint import pair_suffix
 from ..utils.validation import ValidationError, _finite_number
 
 
@@ -104,13 +104,8 @@ class WTMD:
         if I1 is not None:
             self.I1 = {key: np.array(value, dtype=np.float64) / self.CV for key, value in I1.items()}
 
-        # A fresh run restores the state supplied to this constructor, including an
-        # imported bias. Keep its normalized values apart from the evolving arrays;
-        # converting through CV again would change some values in the last bit.
-        self._initial_state = {
-            "u": self.u.copy(), "up": self.up.copy(), "I0": self.I0.copy(),
-            "I1": {key: value.copy() for key, value in self.I1.items()},
-        }
+        # The bias and statistics that the first run of this object starts from (start_run)
+        self._start_state = None
 
         # The hills are Gaussians cut at 8σ, where they fall below 1e-13 of their peak. The
         # histogram of the samples extends by this margin (pad bins) on both sides of the
@@ -153,14 +148,22 @@ class WTMD:
         self.u_kernel = np.exp(-0.5 * X**2)
         self.up_kernel = -X / self.sigma_psi * np.exp(-0.5 * X**2)
 
-    def reset(self):
-        """Restore the constructor's bias and statistics for a fresh run."""
-        self.u = self._initial_state["u"].copy()
-        self.up = self._initial_state["up"].copy()
-        self.I0 = self._initial_state["I0"].copy()
-        self.I1 = {key: value.copy() for key, value in self._initial_state["I1"].items()}
-        self.order_parameter_history = []
-        self.dH_history = {}
+    def start_run(self, fresh):
+        """Called before every run of the simulation. The first run of this object keeps the bias and
+        statistics it finds, those of the constructor or set on the object before that run (an imported
+        bias), and remembers them; a later fresh run (from step 1) starts from them again instead of
+        from what an earlier run left. A fresh run has no pending samples."""
+        if self._start_state is None:
+            self._start_state = {"u": self.u.copy(), "up": self.up.copy(), "I0": self.I0.copy(),
+                                 "I1": {key: value.copy() for key, value in self.I1.items()}}
+        elif fresh:
+            self.u = self._start_state["u"].copy()
+            self.up = self._start_state["up"].copy()
+            self.I0 = self._start_state["I0"].copy()
+            self.I1 = {key: value.copy() for key, value in self._start_state["I1"].items()}
+        if fresh:
+            self.order_parameter_history = []
+            self.dH_history = {}
 
     # Compute order parameter Ψ
     def compute_order_parameter(self, langevin_step, w_aux):
@@ -173,9 +176,8 @@ class WTMD:
         # spectrum weights are at least one, so b/||b||_ell also stays in [0, 1].
         magnitude = np.absolute(self.w_aux_k) * self._fk_root
         scale = np.max(magnitude)
-        self._normalized_modes = np.zeros_like(magnitude)
         if scale == 0.0:
-            return 0.0
+            return 0.0   # add_bias_to_langevin needs no modes at Ψ = 0
         self._normalized_modes = magnitude / scale
         norm = np.power(np.sum(np.power(self._normalized_modes, self.l) * self.wt), 1.0 / self.l)
         self._normalized_modes /= norm
@@ -265,7 +267,6 @@ class WTMD:
 
     def write_data(self, file_name):
         mdic = {
-            **pair_key_data(self.I1),
             "l": self.l,
             "kc": self.kc,
             "sigma_psi": self.sigma_psi,

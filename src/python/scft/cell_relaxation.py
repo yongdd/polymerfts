@@ -172,8 +172,6 @@ class CellRelaxation:
         parameters to the solver and returns the new flattened fields. Length
         changes are limited to 10 % and angle changes to 5 degrees per step.
         """
-        dim = self.prop_solver.dim
-
         # -dH/dL for the independent box lengths; lengths tied by the crystal
         # system (a = b, or a = b = c) use the averaged derivative
         dlx_full = -stress_array[0:3]
@@ -187,13 +185,10 @@ class CellRelaxation:
         else:
             dlx_reduced = dlx_full[self.lx_reduced_indices]
 
-        # Stress array layout: 3D [dH/dL1, dH/dL2, dH/dL3, dH/dgamma, dH/dbeta, dH/dalpha],
-        # 2D [dH/dL1, dH/dL2, dH/dgamma, 0, 0, 0]. get_stress() returns +dH/d(parameter)
-        # for angles as well as lengths (the d(cos gamma)/d gamma = -sin gamma factor is
-        # already applied in the C++ compute_stress post-processing), so gradient
-        # descent uses the same negative sign as for the box lengths.
-        angle_stress_map = {0: 5, 1: 4, 2: 3} if dim == 3 else {2: 2}
-        dangle = -np.array([stress_array[angle_stress_map[i]] for i in self.angles_reduced_indices if i in angle_stress_map])
+        # get_stress() returns +dH/d(parameter) for angles as well as lengths (the
+        # d(cos gamma)/d gamma = -sin gamma factor is already applied in the C++ compute_stress
+        # post-processing), so gradient descent uses the same negative sign as for the box lengths.
+        dangle = -np.asarray(stress_array)[self.angle_stress_indices]
 
         current_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
         current_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices] if len(self.angles_reduced_indices) > 0 else np.array([])
@@ -255,8 +250,7 @@ class CellRelaxation:
                 smearing_stress += es.stress(self.sim.psi, self.smearing.coefficients, self.smearing.k_sq,
                                              self.smearing.lattice_derivatives_k_sq())
             # The angles of an orthogonal box do not vary unless the crystal system lets them
-            angle_stress_map = {0: 5, 1: 4, 2: 3} if dim == 3 else {2: 2}
-            if self.smearing.orthogonal and not any(i in angle_stress_map for i in self.angles_reduced_indices):
+            if self.smearing.orthogonal and not self.angle_stress_indices:
                 smearing_stress[dim:] = 0.0
             stress += smearing_stress[:len(stress)]
         return stress

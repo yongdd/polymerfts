@@ -203,14 +203,14 @@ def records(root):
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 5.0)
     assert np.max(np.abs(sim.thermodynamics.partition_ratios(w_aux) - 1.0)) < 1e-14
     es.psi = 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
-    expected = [abs(q) for q in es.ion_densities()[1]]
+    expected = [np.exp(np.real(log_q)) for log_q in es.ion_densities()[1]]
     assert max(expected) < 0.99 and np.allclose(sim.thermodynamics.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
     # A complex psi, whose real part varies over the grid, makes the ratio depend on the sign of the
     # exponent: |Q_s| / <e^(-Re u_s)> with u_s = z_s (Gamma_s * psi)/N, smeared here with numpy
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 20.0) + 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
-    for ion, q, ratio in zip(es.ions, es.ion_densities()[1], sim.thermodynamics.partition_ratios(w_aux)):
+    for ion, log_q, ratio in zip(es.ions, es.ion_densities()[1], sim.thermodynamics.partition_ratios(w_aux)):
         smeared = np.fft.ifftn(np.fft.fftn(np.reshape(es.psi, NX)) * np.exp(-ion["smearing_length"] ** 2 * es.k_sq / 2))
-        expected = abs(q) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
+        expected = np.exp(np.real(log_q)) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
         assert expected < 0.99 and abs(ratio - expected) < 1e-12 * expected, (ion["name"], ratio, expected)
 
 
@@ -259,12 +259,12 @@ def pressure(root):
             phi, _ = s.compute_concentrations(pinned)
             es = s.electrostatics
             log_q = np.log([s.prop_solver.get_partition_function(p) for p in range(len(s.thermodynamics.chain_densities))])
-            _, ion_q = es.ion_densities()
+            log_ion_q = np.asarray(es.ion_densities()[1], dtype=complex)
             h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                            for i in range(M)) + s.mpt.h_const
             # psi term alone: H_el without the ions, whose term is -N c_s ln Q_s at fixed numbers
-            h_psi = es.hamiltonian() + np.sum(ions * np.log(np.asarray(ion_q, dtype=complex)))
-            return log_q, np.log(np.asarray(ion_q, dtype=complex)), h_fields + h_psi, phi, pinned
+            h_psi = es.hamiltonian() + np.sum(ions * log_ion_q)
+            return log_q, log_ion_q, h_fields + h_psi, phi, pinned
 
         _, _, _, phi, pinned = state(sim)
         operator = sim.thermodynamics.pressure(pinned, phi) - np.sum(sim.thermodynamics.chain_densities) - np.sum(ions)

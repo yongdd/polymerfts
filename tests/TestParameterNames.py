@@ -13,7 +13,8 @@ from scipy.io import loadmat
 import yaml
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
-from polymerfts.utils.common import atomic_savemat, decode_mat_fields, input_hash, settings_json
+from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
+from polymerfts.utils.mat_fields import decode_mat_fields
 from polymerfts.utils.validation import normalize_params, validate_lfts_params
 from TestFtsReliability import parameters, fields, expect_error
 from TestParams import base_params

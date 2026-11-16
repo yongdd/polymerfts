@@ -284,8 +284,7 @@ def periodic(root):
         phi, _ = s.compute_concentrations(pinned)
         es = s.electrostatics
         log_q = np.log(s.prop_solver.get_partition_function(0))
-        _, ion_q = es.ion_densities()
-        log_ion_q = np.log(np.asarray(ion_q, dtype=complex))
+        log_ion_q = np.asarray(es.ion_densities()[1], dtype=complex)
         h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                        for i in range(M)) + s.mpt.h_const
         # psi and the fixed charge: H_el without the ions, whose term -N c_s ln Q_s has fixed numbers

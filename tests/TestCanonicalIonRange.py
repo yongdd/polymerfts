@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical ion densities at nonzero subnormal Q, physical poles, and exact restarts."""
+"""Canonical ion densities and ln Q in large uniform potentials, physical poles, and exact restarts."""
 
 import contextlib
 import copy
@@ -14,7 +14,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT, PlatformSelector
-from polymerfts.theory.electrostatics import _point_ion_density
+from polymerfts.theory.electrostatics import _point_ion
 from cuda_part import cuda_part_missing
 
 
@@ -48,9 +48,9 @@ def uniform_operators(root, platform):
         psi = np.full(4, shift)
         es.psi = psi
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            density, partition = es.ion_densities()
-            assert 0 < partition[0].real < np.inf and partition[0].imag == 0
-            np.testing.assert_allclose(partition[0].real, np.exp(-shift), rtol=2e-12, atol=0)
+            density, log_partition = es.ion_densities()
+            assert np.imag(log_partition[0]) == 0
+            np.testing.assert_allclose(np.real(log_partition[0]), -shift, rtol=0, atol=2e-12)
             np.testing.assert_allclose(density[0], 1.0, rtol=0, atol=2e-14)
             np.testing.assert_allclose(es.ion_number_densities(), [1.0], rtol=0, atol=0)
             np.testing.assert_allclose(es.ion_chemical_potentials(), [shift], rtol=0, atol=2e-10)
@@ -73,9 +73,9 @@ def uniform_operators(root, platform):
                                       "mix_min": 0.1, "mix_init": 0.1})
         mean = quiet(SCFT, mean_params)
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            density, partition = mean.electrostatics.ion_densities(psi)
+            density, log_partition = mean.electrostatics.ion_densities(psi)
             np.testing.assert_allclose(density[0], 1.0, rtol=0, atol=2e-14)
-            np.testing.assert_allclose(partition[0], np.exp(-shift), rtol=2e-12, atol=0)
+            np.testing.assert_allclose(log_partition[0], -shift, rtol=0, atol=2e-12)
             np.testing.assert_allclose(mean.electrostatics.free_energy(psi), expected_energy - 1.0,
                                        rtol=0, atol=2e-10)
 
@@ -84,28 +84,28 @@ def shifted_weights_and_poles():
     ion = {"concentration": 0.2, "chemical_potential": None}
     delta = np.array([0.3 + 0.1j, -0.2 - 0.2j, 0.15 + 0.05j, -0.25 + 0.05j])
     expected = 0.2 * np.exp(-delta) / np.mean(np.exp(-delta))
+    log_mean = np.log(np.mean(np.exp(-delta)))
     for shift in (0.0, 700.0, 710.0, 720.0, 1000.0, -710.0):
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            density, partition = _point_ion_density(ion, shift + delta, 1.0)
+            density, log_q, _ = _point_ion(ion, shift + delta, 1.0)
         np.testing.assert_allclose(density, expected, rtol=0, atol=2e-14)
-        if shift == 1000.0:
-            assert partition == 0.0, "Keep an underflowed diagnostic Q"
-        if shift == -710.0:
-            assert not np.isfinite(partition), "Keep an overflowing diagnostic Q"
+        np.testing.assert_allclose(log_q, log_mean - shift, rtol=0, atol=1e-12)
     pole = 1j * np.array([0.0, 0.0, np.pi, -np.pi])
     with np.errstate(divide="ignore", invalid="ignore"):
-        density, partition = _point_ion_density(ion, pole, 1.0)
-    assert partition == 0.0 and not np.all(np.isfinite(density)), "An occupied species retains its true pole"
+        density, log_q, ratio = _point_ion(ion, pole, 1.0)
+    assert np.real(log_q) == -np.inf and ratio == 0.0 and not np.all(np.isfinite(density)), \
+        "An occupied species retains its true pole"
     absent = {**ion, "concentration": 0.0}
     with np.errstate(over="raise", invalid="raise", divide="raise"):
-        density, partition = _point_ion_density(absent, pole, 1.0)
-    assert partition == 0.0
+        density, log_q, ratio = _point_ion(absent, pole, 1.0)
+    assert np.real(log_q) == -np.inf and ratio == 0.0
     np.testing.assert_array_equal(density, np.zeros(4))
     grand = {"concentration": None, "chemical_potential": 710.0}
     with np.errstate(over="raise", invalid="raise", divide="raise"):
-        density, partition = _point_ion_density(grand, 710.0 + delta, 1.0)
+        density, log_q, ratio = _point_ion(grand, 710.0 + delta, 1.0)
     np.testing.assert_allclose(density, np.exp(-delta), rtol=0, atol=1e-13)
-    assert np.isfinite(partition) and partition.real > 0
+    np.testing.assert_allclose(log_q, log_mean - 710.0, rtol=0, atol=1e-12)
+    assert ratio is None
 
 
 def trajectory_and_restart(root, platform):

@@ -15,7 +15,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 
 from ..utils.common import report_partition_consistency
-from ..utils.validation import ValidationError, parse_chi_n, validate_monomer_fractions
+from ..utils.validation import ValidationError, parse_chi_n
 
 DEFAULT_MONOMER_COLORS: List[str] = [
     "red", "blue", "green", "cyan", "magenta", "yellow"
@@ -36,37 +36,16 @@ def process_polymer_blocks(
     -------
     list
         Processed blocks_input list with [type, length, v, u] format, and the
-        multiplicity as a fifth entry for blocks that have one.
-
-    Raises
-    ------
-    ValidationError
-        If block vertex indices are inconsistent.
+        multiplicity as a fifth entry for blocks that have one. Blocks without
+        the vertices v and u (validation.py allows them in all blocks or in none)
+        form a linear chain in their order.
     """
     blocks_input = []
-    has_node_number = "v" not in polymer["blocks"][0]
-
     for block in polymer["blocks"]:
-        if has_node_number:
-            if "v" in block:
-                raise ValidationError(
-                    "Index v should exist in all blocks, or it should not exist in all blocks for each polymer."
-                )
-            if "u" in block:
-                raise ValidationError(
-                    "Index u should exist in all blocks, or it should not exist in all blocks for each polymer."
-                )
-            blocks_input.append([block["type"], block["length"], len(blocks_input), len(blocks_input) + 1])
-        else:
-            if "v" not in block:
-                raise ValidationError(
-                    "Index v should exist in all blocks, or it should not exist in all blocks for each polymer."
-                )
-            if "u" not in block:
-                raise ValidationError(
-                    "Index u should exist in all blocks, or it should not exist in all blocks for each polymer."
-                )
+        if "v" in block:
             blocks_input.append([block["type"], block["length"], block["v"], block["u"]])
+        else:
+            blocks_input.append([block["type"], block["length"], len(blocks_input), len(blocks_input) + 1])
         if "multiplicity" in block:
             blocks_input[-1].append(block["multiplicity"])
 
@@ -95,7 +74,7 @@ def process_random_copolymer(
     Raises
     ------
     ValidationError
-        If random copolymer definition is invalid.
+        If random copolymer definition is invalid (validation.py checks the fractions).
     """
     # Check if this is a random copolymer
     is_random = any("monomer_fractions" in block for block in polymer["blocks"])
@@ -106,7 +85,6 @@ def process_random_copolymer(
         raise ValidationError("Only single block random copolymer is allowed.")
 
     fractions = polymer["blocks"][0]["monomer_fractions"]
-    validate_monomer_fractions(fractions)
     statistical_segment_length = 0
     for monomer_type in fractions:
         statistical_segment_length += (

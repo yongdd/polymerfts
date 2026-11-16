@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Finite grand-canonical ion densities with large compensating Donnan offsets.
 
-Keep the unshifted diagnostic Q, including subnormal, zero and infinite values,
-while densities, thermodynamic operators and dynamics depend on exp(mu-u).
-SCFT must reject a genuinely non-finite state instead of reporting convergence.
-LM/Euler runs exercise both noise streams and pending records across a restart.
+Densities, thermodynamic operators and dynamics depend on exp(mu-u), and ln Q stays
+finite where Q itself would under- or overflow. SCFT must reject a genuinely
+non-finite state instead of reporting convergence. LM/Euler runs exercise both
+noise streams and pending records across a restart.
 """
 
 import contextlib
@@ -62,16 +62,10 @@ def scft_parameters(directory, platform, mu):
     return params
 
 
-def check_partition(q, mu):
-    if mu == 0.0:
-        np.testing.assert_allclose(q, 1.0, rtol=0, atol=2e-14)
-    elif mu in (700.0, 710.0):
-        assert np.isfinite(q) and np.real(q) > 0.0
-        np.testing.assert_allclose(np.real(q), np.exp(-mu), rtol=2e-12, atol=0)
-    elif mu == 1000.0:
-        assert q == 0.0, "Do not clamp the diagnostic partition"
-    elif mu == -710.0:
-        assert np.isinf(np.real(q)), "Keep a genuinely overflowing diagnostic partition"
+def check_log_partition(log_q, mu):
+    """ln Q = -mu in the uniform potential u = mu."""
+    assert np.imag(log_q) == 0
+    np.testing.assert_allclose(np.real(log_q), -mu, rtol=0, atol=2e-12)
 
 
 def uniform_operators(root, platform):
@@ -81,9 +75,9 @@ def uniform_operators(root, platform):
         psi = np.full(4, mu)
         es.psi = psi
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            densities, partitions = es.ion_densities()
+            densities, log_partitions = es.ion_densities()
             np.testing.assert_allclose(densities[0], 1.0, rtol=0, atol=2e-13)
-            check_partition(partitions[0], mu)
+            check_log_partition(log_partitions[0], mu)
             np.testing.assert_allclose(es.ion_number_densities(), [1.0], rtol=0, atol=2e-13)
             np.testing.assert_array_equal(es.ion_chemical_potentials(), [mu])
             np.testing.assert_allclose(es.hamiltonian(), -mu - 1.0, rtol=0, atol=3e-12)
@@ -102,9 +96,9 @@ def uniform_operators(root, platform):
 
         mean = quiet(SCFT, scft_parameters(root, platform, mu))
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            densities, partitions = mean.electrostatics.ion_densities(psi)
+            densities, log_partitions = mean.electrostatics.ion_densities(psi)
             np.testing.assert_allclose(densities[0], 1.0, rtol=0, atol=2e-13)
-            check_partition(partitions[0], mu)
+            check_log_partition(log_partitions[0], mu)
             np.testing.assert_allclose(mean.electrostatics.ion_number_densities(psi), [1.0], rtol=0, atol=2e-13)
             np.testing.assert_allclose(mean.electrostatics.free_energy(psi), -mu - 1.0, rtol=0, atol=3e-12)
         # The homogeneous root finder may visit overflowing brackets on its way

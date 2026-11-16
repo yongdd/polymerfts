@@ -19,7 +19,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
-from polymerfts.theory.chains import process_random_copolymer, read_chains
+from polymerfts.theory.chains import process_random_copolymer
 from polymerfts.utils.validation import validate_system_params
 from cuda_part import cuda_part_missing
 
@@ -68,8 +68,6 @@ def check_rejected(platform, directory):
         params = parameters(platform, fractions, directory)
         before = copy.deepcopy(params)
         expect_sum_error(lambda: validate_system_params(params))
-        expect_sum_error(lambda: process_random_copolymer(params["polymers"][0], params["segment_lengths"]))
-        expect_sum_error(lambda: read_chains(params))
         for cls in (SCFT, LFTS, CLFTS):
             expect_sum_error(lambda: cls(params))
         assert params == before, "Rejected input was modified"

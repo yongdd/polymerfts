@@ -70,26 +70,10 @@ def test_legacy_windows_keep_equal_file_weights(tmp_path, monkeypatch):
     np.testing.assert_allclose(mean[k2 > 0], 3.25)
 
 
-@pytest.mark.parametrize('pair, suffix', [(("A", "B_C"), "pair__first"),
-                                         (("A_B", "C"), "pair__second")])
-def test_pair_mapping_selects_distinct_underscore_names(tmp_path, monkeypatch, pair, suffix):
-    mapping = {"pair__first": ["A", "B_C"], "pair__second": ["A_B", "C"]}
+def test_pair_of_underscore_names(tmp_path, monkeypatch):
     spectra = [np.full((4, 4, 4), value) for value in (1., 1., 10., 1.)]
-    k2, mean = aggregate(tmp_path, monkeypatch, spectra, pair=pair, suffix=suffix,
-                         pair_key_format_version=1, pair_keys_json=json.dumps(mapping))
+    k2, mean = aggregate(tmp_path, monkeypatch, spectra, pair=("B_C", "A"), suffix="A_B_C")
     np.testing.assert_allclose(mean[k2 > 0], 3.25)
-
-
-@pytest.mark.parametrize('metadata', [
-    {"pair_key_format_version": 1},
-    {"pair_keys_json": '{"A_A":["A","A"]}'},
-    {"pair_key_format_version": 2, "pair_keys_json": '{"A_A":["A","A"]}'},
-    {"pair_key_format_version": 1, "pair_keys_json": '{}'},
-    {"pair_key_format_version": 1, "pair_keys_json": '{"one":["A","A"],"two":["A","A"]}'},
-])
-def test_invalid_pair_mapping_does_not_fall_back_to_legacy(tmp_path, monkeypatch, metadata):
-    with pytest.raises(ValueError, match='pair-name mapping|no unique entry'):
-        aggregate(tmp_path, monkeypatch, [np.ones((4, 4, 4))] * 4, **metadata)
 
 
 def test_legacy_and_counted_windows_cannot_be_mixed(tmp_path, monkeypatch):

@@ -384,6 +384,19 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - A grand-canonical polymer's `chemical_potential` must lie in [-700, 700] (2026-11-16); a larger
   value raises `ValidationError`. Within this bound the fugacity e^(βμ) is a normal double (it
   overflows above 709.78 and is subnormal below -708.40) (tests/TestClftsGrandCanonical.py).
+- L-FTS and CL-FTS refuse monomer names for which two pairs share their suffix, the sorted names
+  joined with `_` (A, B_C with A_B, C), since statistics, structure-function and WTMD files name a
+  pair by it; L-FTS also refuses a monomer type named `aux`, whose field key would be `w_aux`
+  (2026-11-16; tests/TestPairRecords.py). Checkpoints of format 3, written by development builds
+  since 2026-11-13, are refused.
+- `Electrostatics.ion_densities()` and `MeanFieldElectrostatics.ion_densities(psi)` return the
+  densities and ln Q of each ion (2026-11-16). One weight e^(-(u - u_min)) per ion gives the
+  density, ln Q = ln<w> - u_min and the partition ratio, so the partition function of an ion in a
+  potential beyond ±709 kT stays meaningful and each evaluation takes one exponential per ion
+  instead of two. Canonical densities are unchanged bit for bit; grand-canonical densities, H and
+  βμ change at round-off.
+- `CLFTS` no longer has the attributes `solver`, `molecules` and `propagator_computation_optimizer`
+  (2026-11-16), which nothing used; `prop_solver` gives the same objects.
 - `Polymer.get_n_segment_total()` counts every copy of a block (2026-11-08): it returns the
   segments of one whole chain as a float, which a real block multiplicity makes non-integer.
 - `ComputationBlock.n_repeated` and the repeat count in each `ComputationEdge.deps` entry are
@@ -401,9 +414,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `"rs"` is the new real-space one. A discrete chain with `"rqm4"`, `"rk2"` or `"cn-adi2"` raises an
   error instead of a note. Checkpoints of discrete chains written before record `"discrete"` and do not
   continue.
-- `LR` takes `fourier` or `axis_bc` (2026-11-02): the update without either, with NumPy, is gone.
-  `LFTS` measures J(k) of a periodic box with `PropagatorSolver.fourier`, as it did with
-  reflecting walls.
+- `LR` takes `fourier`, a `PropagatorSolver.fourier` (2026-11-02): the update with NumPy is gone,
+  and so is `axis_bc`, the `scipy.fft` update of boxes that mix periodic axes and walls
+  (2026-11-16), which `PropagatorSolver.fourier` transforms since 2026-11-09; the updates agree to
+  1e-14. `LFTS` measures J(k) of every box with `PropagatorSolver.fourier`.
 - `GibbsEnsemble` runs both boxes in the fixed cell `lx` (2026-11-01;
   docs/theory/ComplexLangevinSimulation.md, Section 8). The amounts and volumes count the material
   for the lever rule; `boxes[].lx` is gone, the top-level `lx` is required as for `CLFTS`, and the
@@ -615,6 +629,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - The FFTW Pmmm and ObliqueZ CrysFFT engines keep no stale size after a failed allocation of their
   thread-local buffers (2026-11-02). A later engine of the old size on that thread crashed on null
   buffers; the recursive 3m engine already had the guard.
+- WTMD keeps a bias set on `sim.wtmd` before the first run (2026-11-16); the reset at the start of
+  a fresh run dropped it. A later fresh `run()` starts again from the state the first run of the
+  object started from (tests/TestWtmdLifecycle.py).
+- Simulation metadata also hash the source file of the simulation class when it lies outside the
+  package (`simulation_source`, `simulation_source_sha256`; 2026-11-16), such as a modified copy of
+  `scft.py` as QuickStart describes or a subclass in a script; `python_source_sha256` covers the
+  package only (tests/TestPackageHashes.py).
 - `SCFT.run` stops when `on_iteration` returns the NumPy False of a comparison, as for
   `return info.error_level > 1e-3` (2026-11-02). It stopped only for the Python `False`, and such a
   callback let the run go on without a message. `None` still continues.

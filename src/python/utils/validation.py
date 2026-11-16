@@ -5,6 +5,7 @@ The checks raise ValidationError (never assert, which disappears under
 """
 
 import copy
+import itertools
 import math
 from typing import Any, Dict
 from os import PathLike
@@ -38,10 +39,7 @@ def _normalize_initial_conditions(conditions, path):
             index = int(node)
         elif (isinstance(node, str) and node.isascii() and node.isdecimal()
               and (node == "0" or not node.startswith("0"))):
-            try:
-                index = int(node)
-            except ValueError as error:
-                raise ValidationError(f"Invalid node index {node!r} in '{path}'") from error
+            index = int(node)
         else:
             raise ValidationError(f"Node index {node!r} in '{path}' must be a non-negative integer "
                                   "or its canonical decimal string")
@@ -176,6 +174,16 @@ def polymer_block_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) -> tu
     return tuple(lengths)
 
 
+def _check_block_numbering(polymer: Dict[str, Any]) -> None:
+    """The vertices v and u are given in all blocks of a chain or in none."""
+    numbered = "v" in polymer["blocks"][0]
+    for block in polymer["blocks"]:
+        for vertex in ("v", "u"):
+            if (vertex in block) != numbered:
+                raise ValidationError(f"Index {vertex} should exist in all blocks, "
+                                      "or it should not exist in all blocks for each polymer.")
+
+
 def polymer_block_copies(polymer: Dict[str, Any]) -> tuple:
     """Copies of each block in one chain, in input block order.
 
@@ -187,12 +195,8 @@ def polymer_block_copies(polymer: Dict[str, Any]) -> tuple:
     copies = [1.0] * len(blocks)
     if all(block.get("multiplicity", 1) == 1 for block in blocks):
         return tuple(copies)
+    _check_block_numbering(polymer)
     numbered = "v" in blocks[0]
-    for block in blocks:
-        for vertex in ("v", "u"):
-            if (vertex in block) != numbered:
-                raise ValidationError(f"Index {vertex} should exist in all blocks, "
-                                      "or it should not exist in all blocks for each polymer.")
     edges = [(block["v"], block["u"]) if numbered else (j, j + 1) for j, block in enumerate(blocks)]
     neighbors = {}
     for j, (v, u) in enumerate(edges):
@@ -225,12 +229,11 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
 
 
 def validate_system_params(params: Dict[str, Any]) -> None:
-    """Check the parameters shared by SCFT, L-FTS and CL-FTS.
+    """Check the parameters shared by SCFT, L-FTS and CL-FTS, with the names of normalize_params.
 
     Required: nx, lx, ds, chain_model, segment_lengths, chi_n, polymers.
     The first problem found raises ValidationError with a message naming the key.
     """
-    params = normalize_params(params)
     for key in ("nx", "lx", "ds", "chain_model", "segment_lengths", "chi_n", "polymers"):
         if key not in params:
             raise ValidationError(f"Missing required parameter: '{key}'")
@@ -312,6 +315,7 @@ def validate_system_params(params: Dict[str, Any]) -> None:
                 for monomer in fractions:
                     if monomer not in segment_lengths:
                         raise ValidationError(f"Unknown monomer '{monomer}' in '{name}.monomer_fractions'")
+        _check_block_numbering(polymer)
     if any("chemical_potential" in polymer for polymer in polymers):
         if total_volume_fraction > 1.0 + 1e-10:
             raise ValidationError(f"Sum of the volume fractions of the canonical polymers must not exceed 1.0, "
@@ -405,8 +409,9 @@ def _validate_smearing(params: Dict[str, Any], complex_fields: bool) -> None:
                            positive=key != "a_int", nonnegative=key == "a_int")
 
 
-def validate_scft_params(params: Dict[str, Any]) -> None:
-    """Validate the SCFT options before constructing numerical objects."""
+def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the SCFT options before constructing numerical objects; returns the copy with the
+    names of normalize_params that the simulation uses."""
     params = normalize_params(params)
     validate_system_params(params)
     group = params.get("space_group")
@@ -458,12 +463,26 @@ def validate_scft_params(params: Dict[str, Any]) -> None:
     # lengths before any solver is constructed (including uncharged systems).
     for polymer in params["polymers"]:
         polymer_block_lengths(params, polymer)
+    return params
 
 
-def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> None:
-    """Validate the shared Langevin options before constructing numerical objects."""
+def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dict[str, Any]:
+    """Validate the shared Langevin options before constructing numerical objects; returns the copy with
+    the names of normalize_params that the simulation uses."""
     params = normalize_params(params)
     validate_system_params(params)
+    # The files name the measurements of a monomer pair by the two names joined with '_'
+    # (structure_function_A_B, dH_history_A_B, I1_A_B), which must differ for distinct pairs
+    # (A,B_C and A_B,C do not); L-FTS writes the auxiliary fields as w_aux next to the fields w_<type>
+    pairs = {}
+    for pair in itertools.combinations_with_replacement(sorted(params["segment_lengths"]), 2):
+        pairs.setdefault("_".join(pair), []).append(",".join(pair))
+    for suffix, same in pairs.items():
+        if len(same) > 1:
+            raise ValidationError(f"The monomer pairs {same} would share the key suffix '{suffix}' of the "
+                                  "measurement files; rename a monomer type")
+    if not complex_fields and "aux" in params["segment_lengths"]:
+        raise ValidationError("L-FTS writes the auxiliary fields as 'w_aux': rename the monomer type 'aux'")
     langevin = params.get("langevin", None)
     if not isinstance(langevin, dict):
         raise ValidationError("Missing required parameter: 'langevin' (dict with 'nbar', 'dt', 'max_step')")
@@ -546,6 +565,7 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Non
             raise ValidationError("WTMD range must contain at least two bins")
     for polymer in params["polymers"]:
         polymer_block_lengths(params, polymer)
+    return params
 
 
 def _has_random_copolymer(params):

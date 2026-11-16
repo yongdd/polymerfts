@@ -101,9 +101,8 @@ class SCFT:
 
     def __init__(self, params):
 
-        # Validate input parameters
-        params = normalize_params(params)
-        validate_scft_params(params)
+        # Validate input parameters (a copy with the current names)
+        params = validate_scft_params(params)
 
         # Handle axis ordering (convert user ordering to standard [a, b, c]); this
         # rewrites nx/lx/bc/angles in `params`, so the key is dropped from the copy that
@@ -113,8 +112,6 @@ class SCFT:
 
         # Compressibility parameter (None: incompressible)
         self.zeta_n = params.get("zeta_n", None)
-        if self.zeta_n is not None and self.zeta_n < 0:
-            raise ValidationError(f"zeta_n must not be negative, got {self.zeta_n}.")
 
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
@@ -130,6 +127,8 @@ class SCFT:
         if bc is None:
             bc = ["periodic"] * (2 * len(params["nx"]))
         angles = params.get("angles", None)
+        if angles is not None and np.ndim(angles) != 1:
+            raise ValidationError("angles must be a list of angles in degrees.")
         if angles is not None and len(params["nx"]) == 3 and len(angles) != 3:
             raise ValidationError("angles must be [alpha, beta, gamma] (three entries) for a 3D box.")
         if angles is not None and len(params["nx"]) < 3:
@@ -213,8 +212,6 @@ class SCFT:
 
         # Anderson mixing (C++ class) for the saddle-point iteration
         optimizer = params["optimizer"]
-        if optimizer["name"] != "am":
-            raise ValueError(f"Invalid optimizer name: {optimizer['name']}. Only 'am' (Anderson mixing) is available.")
         self.field_optimizer = self.prop_solver.create_anderson_mixing(n_var,
             optimizer["max_hist"],     # maximum number of history
             optimizer["start_error"],  # when switch to AM from simple mixing
@@ -258,10 +255,7 @@ class SCFT:
         # missing angles means an orthogonal cell for classification, while
         # `angles` itself stays None so the computation box is not
         # needlessly recreated below.
-        try:
-            alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)
-        except Exception:
-            alpha, beta, gamma = 90.0, 90.0, 90.0
+        alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)   # a space group is 3D
         # The test of the native box and solvers (1e-10 rad): a looser one could enable a
         # basis whose CrysFFT the solver then refuses
         def right_angle(angle):
@@ -443,23 +437,23 @@ class SCFT:
         """Volume-averaged concentration of each monomer type from the chain compositions."""
         return mean_concentrations(self)
 
-    def _pin_field_means(self, w, chi_phi_mean, xi=0.0):
+    def _pin_field_means(self, w):
         """Normalize the field means in place (mean() works in the reduced basis
         when a space group is set).
 
         Compressible systems have no gauge freedom: the means are always pinned to the
         saddle point, mean(w_i) = sum_j chi_ij mean(phi_j) + xi with
-        xi = zeta (mean(sum_j phi_j) - 1) (the residual leaves the means out).
+        xi = zeta (sum_j mean(phi_j) - 1) and the mean concentrations of the chain compositions
+        (mean_concentrations; the residual leaves the means out).
         Incompressible fields are shifted to zero mean (the uniform modes do not change the
         concentrations, and the free energy does not depend on them).
         """
-        M = len(self.monomer_types)
+        target = np.zeros(len(self.monomer_types))
         if self.zeta_n is not None:
-            for i in range(M):
-                w[i] += chi_phi_mean[i] + xi - self.prop_solver.mean(w[i], basis="irreducible")
-        else:
-            for i in range(M):
-                w[i] -= self.prop_solver.mean(w[i], basis="irreducible")
+            phi_mean = self.mean_concentrations()
+            target = self.matrix_chi @ phi_mean + self.zeta_n * (np.sum(phi_mean) - 1.0)
+        for i in range(len(self.monomer_types)):
+            w[i] += target[i] - self.prop_solver.mean(w[i], basis="irreducible")
 
     def compute_chemical_potentials(self, w=None, partition_functions=None):
         """Restore the saddle-point field means and return beta mu per chain.
@@ -703,22 +697,13 @@ class SCFT:
                 break
 
             # New fields, ψ and cell
-            w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level, phi_array, phi_total)
-
-        if not np.isfinite(error_level):
-            raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
-        if not np.all(np.isfinite(w)) or not all(np.all(np.isfinite(value)) for value in phi.values()) \
-                or (es is not None and not np.all(np.isfinite(self.psi))):
-            raise ValidationError(f"Non-finite SCFT fields or concentrations at iteration {iter}")
+            w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level)
 
         self.cell.check_tied_lengths(stress_array, error_level)
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
+        # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
         check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
-        # Some discretizations have non-positive partitions at intermediate
-        # iterates. They may recover, but a returned state must have finite F.
-        if not np.isfinite(energy_absolute) or not np.isfinite(energy_total):
-            raise ValidationError(f"Non-finite SCFT free energy at iteration {iter}")
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start
@@ -778,25 +763,18 @@ class SCFT:
         for name in self.monomer_types:
             if name not in initial_fields:
                 raise ValidationError(f"initial_fields is missing monomer {name!r}")
-            try:
-                field = np.asarray(initial_fields[name])
-                valid = not np.iscomplexobj(field) and np.all(np.isfinite(field))
-            except (TypeError, ValueError) as error:
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values") from error
-            if not valid:
+            field = np.asarray(initial_fields[name])
+            if np.iscomplexobj(field):
                 raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values")
             if field.size != self.prop_solver.total_grid:
                 raise ValidationError(f"initial_fields[{name!r}] needs {self.prop_solver.total_grid} values, "
                                       f"got {field.size}")
             try:
-                with np.errstate(over="ignore", invalid="ignore"):
-                    field = np.array(field, dtype=np.float64).reshape(-1)
-            except (TypeError, ValueError, OverflowError) as error:
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values "
-                                      "at float64 precision") from error
+                field = field.astype(np.float64).reshape(-1)   # a copy: the caller's array stays as it is
+            except (TypeError, ValueError):
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values") from None
             if not np.all(np.isfinite(field)):
-                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values "
-                                      "at float64 precision")
+                raise ValidationError(f"initial_fields[{name!r}] must contain real, finite values")
             prepared[name] = field
         initial_fields = prepared
 
@@ -819,14 +797,7 @@ class SCFT:
             for i in range(M):
                 w[i,:] = np.reshape(initial_fields[self.monomer_types[i]], self.prop_solver.n_grid)
 
-        # Normalize the initial field means. In a compressible model the target is
-        # chi N . mean(phi) + xi from the chain compositions (see mean_concentrations)
-        if self.zeta_n is not None:
-            phi_mean = self.mean_concentrations()
-            xi = 0.0 if self.zeta_n is None else self.zeta_n * (np.sum(phi_mean) - 1.0)
-            self._pin_field_means(w, self.matrix_chi @ phi_mean, xi)
-        else:
-            self._pin_field_means(w, None)
+        self._pin_field_means(w)
         return w, q_init
 
     def _initial_propagators(self, q_init):
@@ -980,7 +951,7 @@ class SCFT:
         else:
             print("] %15.9f %15.7E " % (energy_total, error_level))
 
-    def _next_fields(self, w, w_diff, psi_diff, stress_array, old_error_level, error_level, phi_array, phi_total):
+    def _next_fields(self, w, w_diff, psi_diff, stress_array, old_error_level, error_level):
         """Simple and Anderson mixing of the fields (irreducible basis with a space group), ψ and the cell."""
         M, es = len(self.monomer_types), self.electrostatics
         # Calculate new fields using simple and Anderson mixing, ψ after the fields
@@ -999,11 +970,5 @@ class SCFT:
                 self.psi -= np.mean(self.psi)
 
         # Normalize field means
-        if self.zeta_n is not None:
-            # mean(φ_i) = f_i exactly by chain normalization, so the target is constant
-            chi_phi_mean = np.array([self.prop_solver.mean((self.matrix_chi @ phi_array)[i], basis="irreducible") for i in range(M)])
-            xi = 0.0 if self.zeta_n is None else self.zeta_n * (self.prop_solver.mean(phi_total, basis="irreducible") - 1.0)
-            self._pin_field_means(w, chi_phi_mean, xi)
-        else:
-            self._pin_field_means(w, None)
+        self._pin_field_means(w)
         return w
