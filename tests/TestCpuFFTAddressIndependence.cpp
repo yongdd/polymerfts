@@ -5,16 +5,20 @@
  * and the stress transforms write into arrays allocated per call), and they
  * must agree bit for bit on the same backend.
  *
- * Each transform runs from and into arrays placed 0, 16, 32 and 48 bytes after
- * a 64-byte boundary (the placements of heap arrays), for real and complex
- * fields, periodic and non-periodic grids. Every placement must give the
- * values of the first one. A failure prints which placements of the input
- * (rows) and the output (columns) give which result.
+ * Only the periodic MKL transforms run on the caller's arrays: MklFFT passes
+ * them to DftiCompute, and MKL may pick a code path by their alignment. FftwFFT
+ * copies into its own buffers, and the DCT/DST of the walls (MakhoulTransform)
+ * runs on per-thread scratch that starts on a 64-byte boundary, with either
+ * library.
  *
- * Periodic grids also check the complex-coefficient interface: the DCT/DST of
- * the walls (MakhoulTransform) runs through it on per-thread buffers, whose
- * placement differs from one thread to the next. MKL runs one thread inside
- * each transform, as MklFactory sets it for the solvers.
+ * Each periodic MKL transform runs from and into arrays placed 0, 16, 32 and
+ * 48 bytes after a 64-byte boundary (the placements of heap arrays), for real
+ * and complex fields, through the real-coefficient and the complex-coefficient
+ * interface (the mirror image of a mixed box runs through the latter on
+ * per-thread buffers). Every placement must give the values of the first one.
+ * A failure prints which placements of the input (rows) and the output
+ * (columns) give which result. MKL runs one thread inside each transform, as
+ * MklFactory sets it for the solvers. A build without MKL skips the test.
  ******************************************************************************/
 
 #include <array>
@@ -23,21 +27,14 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <memory>
 #include <random>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "ComputationBox.h"
-#include "FFT.h"
-#ifdef USE_CPU_FFTW
-#include "FftwFFT.h"
-#endif
 #ifdef USE_CPU_MKL
 #include "MklFFT.h"
-#endif
 
 namespace
 {
@@ -148,25 +145,11 @@ bool report(const std::string& label, const Placements& p)
 }
 
 template <typename T, int DIM>
-std::vector<std::pair<std::string, std::unique_ptr<FFT<T>>>> make_ffts(
-    std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc)
-{
-    std::vector<std::pair<std::string, std::unique_ptr<FFT<T>>>> ffts;
-#ifdef USE_CPU_FFTW
-    ffts.emplace_back("fftw", std::make_unique<FftwFFT<T, DIM>>(nx, bc));
-#endif
-#ifdef USE_CPU_MKL
-    ffts.emplace_back("mkl", std::make_unique<MklFFT<T, DIM>>(nx, bc));
-#endif
-    return ffts;
-}
-
-template <typename T, int DIM>
-bool check_grid(std::array<int, DIM> nx, BoundaryCondition boundary, const std::string& bc_name)
+bool check_grid(std::array<int, DIM> nx)
 {
     constexpr bool IS_COMPLEX = std::is_same<T, std::complex<double>>::value;
     std::array<BoundaryCondition, DIM> bc;
-    bc.fill(boundary);
+    bc.fill(BoundaryCondition::PERIODIC);
 
     int n_grid = 1;
     std::string grid_name;
@@ -175,15 +158,10 @@ bool check_grid(std::array<int, DIM> nx, BoundaryCondition boundary, const std::
         n_grid *= nx[d];
         grid_name += (d > 0 ? "x" : "") + std::to_string(nx[d]);
     }
-    // Doubles of the field and of its coefficients (FFT.h): a periodic real field
-    // has nx[0]...(nx[DIM-1]/2+1) complex coefficients, a complex field n_grid;
-    // a non-periodic field has as many coefficients as grid points.
+    // Doubles of the field and of its coefficients (FFT.h): a real field has
+    // nx[0]...(nx[DIM-1]/2+1) complex coefficients, a complex field n_grid
     const int n_field = IS_COMPLEX ? 2 * n_grid : n_grid;
-    int n_coeff;
-    if (boundary == BoundaryCondition::PERIODIC)
-        n_coeff = IS_COMPLEX ? 2 * n_grid : 2 * (n_grid / nx[DIM - 1]) * (nx[DIM - 1] / 2 + 1);
-    else
-        n_coeff = n_field;
+    const int n_coeff = IS_COMPLEX ? 2 * n_grid : 2 * (n_grid / nx[DIM - 1]) * (nx[DIM - 1] / 2 + 1);
 
     std::mt19937 rng(1234 + n_grid);
     std::normal_distribution<double> normal(0.0, 5.0);
@@ -191,30 +169,23 @@ bool check_grid(std::array<int, DIM> nx, BoundaryCondition boundary, const std::
     for (double& v : field)
         v = normal(rng);
 
+    MklFFT<T, DIM> fft(nx, bc);
+    const std::string label = std::string("mkl") + (IS_COMPLEX ? " complex " : " real ") + "periodic " + grid_name;
+
+    std::vector<double> coeff(n_coeff);
+    fft.forward(reinterpret_cast<T*>(field.data()), coeff.data());
+
     bool ok = true;
-    for (const auto& entry : make_ffts<T, DIM>(nx, bc))
-    {
-        const std::string& backend = entry.first;
-        FFT<T>* fft = entry.second.get();
-        const std::string label = backend + (IS_COMPLEX ? " complex " : " real ") + bc_name + " " + grid_name;
-
-        std::vector<double> coeff(n_coeff);
-        fft->forward(reinterpret_cast<T*>(field.data()), coeff.data());
-
-        ok &= report(label + " forward", run_placements(field, n_coeff,
-            [&](double* in, double* out) { fft->forward(reinterpret_cast<T*>(in), out); }));
-        ok &= report(label + " backward", run_placements(coeff, n_field,
-            [&](double* in, double* out) { fft->backward(in, reinterpret_cast<T*>(out)); }));
-        if (boundary == BoundaryCondition::PERIODIC)
-        {
-            ok &= report(label + " forward, complex interface", run_placements(field, n_coeff,
-                [&](double* in, double* out)
-                { fft->forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }));
-            ok &= report(label + " backward, complex interface", run_placements(coeff, n_field,
-                [&](double* in, double* out)
-                { fft->backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }));
-        }
-    }
+    ok &= report(label + " forward", run_placements(field, n_coeff,
+        [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); }));
+    ok &= report(label + " backward", run_placements(coeff, n_field,
+        [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); }));
+    ok &= report(label + " forward, complex interface", run_placements(field, n_coeff,
+        [&](double* in, double* out)
+        { fft.forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }));
+    ok &= report(label + " backward, complex interface", run_placements(coeff, n_field,
+        [&](double* in, double* out)
+        { fft.backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }));
     return ok;
 }
 
@@ -223,26 +194,24 @@ bool check_type()
 {
     bool ok = true;
     // The grid of TestBlockMultiplicity, then odd, larger and lower-dimensional grids
-    ok &= check_grid<T, 3>({12, 10, 8}, BoundaryCondition::PERIODIC, "periodic");
-    ok &= check_grid<T, 3>({12, 10, 8}, BoundaryCondition::REFLECTING, "reflecting");
-    ok &= check_grid<T, 3>({12, 10, 8}, BoundaryCondition::ABSORBING, "absorbing");
-    ok &= check_grid<T, 3>({15, 9, 7}, BoundaryCondition::PERIODIC, "periodic");
-    ok &= check_grid<T, 3>({32, 32, 32}, BoundaryCondition::PERIODIC, "periodic");
-    ok &= check_grid<T, 2>({24, 20}, BoundaryCondition::PERIODIC, "periodic");
-    ok &= check_grid<T, 1>({64}, BoundaryCondition::PERIODIC, "periodic");
+    ok &= check_grid<T, 3>({12, 10, 8});
+    ok &= check_grid<T, 3>({15, 9, 7});
+    ok &= check_grid<T, 3>({32, 32, 32});
+    ok &= check_grid<T, 2>({24, 20});
+    ok &= check_grid<T, 1>({64});
     return ok;
 }
 
 }  // namespace
+#endif
 
 int main()
 {
+#ifdef USE_CPU_MKL
     try
     {
-#ifdef USE_CPU_MKL
         mkl_set_num_threads(1);  // As MklFactory does: no threading inside a transform
-#endif
-        std::cout << "Transforms from and into arrays 0, 16, 32 and 48 bytes after a 64-byte boundary"
+        std::cout << "Periodic MKL transforms from and into arrays 0, 16, 32 and 48 bytes after a 64-byte boundary"
                   << std::endl;
         bool ok = check_type<double>();
         ok &= check_type<std::complex<double>>();
@@ -255,4 +224,8 @@ int main()
         std::cout << exc.what() << std::endl;
         return 1;
     }
+#else
+    std::cout << "This build has no MKL backend: skipped" << std::endl;
+    return 77;
+#endif
 }

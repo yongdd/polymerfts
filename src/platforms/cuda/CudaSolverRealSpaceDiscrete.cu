@@ -154,13 +154,12 @@ __global__ void ker_bond_pass(const D* __restrict__ in, D* __restrict__ out, con
     }
 }
 
-// Compact eigenfunction tables reconstruct a positive folded entry for each
-// source point. All allocations and trigonometric work happen during the box
-// update, not inside propagation; each output is summed in a fixed order.
+// A narrow absorbing axis: out_i = sum_j F_ij in_j with the folded matrix F of the
+// axis, built on the host once per box (RealSpaceBond); each output is summed in a
+// fixed order.
 template <typename D>
 __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ out,
-    const int n, const long inner, const long count, const double* __restrict__ weights,
-    const double* __restrict__ basis, const int modes,
+    const int n, const long inner, const long count, const double* __restrict__ folded,
     const D* __restrict__ factor, const double* __restrict__ mask)
 {
     for (long m = blockIdx.x * static_cast<long>(blockDim.x) + threadIdx.x;
@@ -168,15 +167,10 @@ __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ o
     {
         const int i = static_cast<int>((m / inner) % n);
         const long first = m - i * inner;
+        const double* row = folded + static_cast<long>(i) * n;
         D sum = zero_of(D{});
         for (int j = 0; j < n; ++j)
-        {
-            double weight = 0.0;
-            for (int mode = 0; mode < modes; ++mode)
-                weight += weights[mode] * basis[static_cast<long>(mode) * n + i]
-                                       * basis[static_cast<long>(mode) * n + j];
-            sum = added(sum, scaled(weight, in[first + j * inner]));
-        }
+            sum = added(sum, scaled(row[j], in[first + j * inner]));
         out[m] = finished(sum, m, factor, mask);
     }
 }
@@ -248,39 +242,31 @@ template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::upload(const RealSpaceBond::Kernels& kernels, DeviceKernels& device)
 {
     std::vector<double> weights;
-    std::vector<double> folded_weights, folded_basis;
+    std::vector<double> folded;
     for (int d = 0; d < 3; ++d)
     {
         device.offset[d] = static_cast<int>(weights.size());
-        const auto& folded = kernels.folded[d];
-        device.folded_modes[d] = static_cast<int>(folded.weights.size());
-        device.folded_weight_offset[d] = folded_weights.size();
-        device.folded_basis_offset[d] = folded_basis.size();
-        folded_weights.insert(folded_weights.end(), folded.weights.begin(), folded.weights.end());
-        folded_basis.insert(folded_basis.end(), folded.basis.begin(), folded.basis.end());
-        if (folded.weights.empty())
+        if (kernels.folded[d].empty())
         {
             device.half[d] = static_cast<int>(kernels[d].size()) - 1;
             weights.insert(weights.end(), kernels[d].begin(), kernels[d].end());
+            device.folded_offset[d] = -1;
         }
         else
         {
             device.half[d] = 0;
             weights.push_back(1.0);
+            device.folded_offset[d] = static_cast<long>(folded.size());
+            folded.insert(folded.end(), kernels.folded[d].begin(), kernels.folded[d].end());
         }
     }
     if (device.weights.size() != weights.size())
         device.weights.allocate(weights.size());
     CUDA_CHECK(cudaMemcpy(device.weights, weights.data(), sizeof(double) * weights.size(), cudaMemcpyHostToDevice));
-    if (device.folded_weights.size() != folded_weights.size())
-        device.folded_weights.allocate(folded_weights.size());
-    if (device.folded_basis.size() != folded_basis.size())
-        device.folded_basis.allocate(folded_basis.size());
-    if (!folded_weights.empty())
-    {
-        CUDA_CHECK(cudaMemcpy(device.folded_weights, folded_weights.data(), sizeof(double) * folded_weights.size(), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(device.folded_basis, folded_basis.data(), sizeof(double) * folded_basis.size(), cudaMemcpyHostToDevice));
-    }
+    if (device.folded.size() != folded.size())
+        device.folded.allocate(folded.size());
+    if (!folded.empty())
+        CUDA_CHECK(cudaMemcpy(device.folded, folded.data(), sizeof(double) * folded.size(), cudaMemcpyHostToDevice));
 }
 
 template <typename T>
@@ -470,12 +456,10 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
             factor = d_factor;
             mask = d_mask;
         }
-        if (kernels.folded_modes[axis] > 0)
+        if (kernels.folded_offset[axis] >= 0)
         {
             ker_folded_bond_pass<<<grid_blocks(M, 256), 256, 0, stream>>>(src, dst, n, inner, M,
-                kernels.folded_weights.get() + kernels.folded_weight_offset[axis],
-                kernels.folded_basis.get() + kernels.folded_basis_offset[axis],
-                kernels.folded_modes[axis], factor, mask);
+                kernels.folded.get() + kernels.folded_offset[axis], factor, mask);
         }
         else
         {

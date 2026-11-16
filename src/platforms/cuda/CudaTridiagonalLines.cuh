@@ -39,7 +39,8 @@ __device__ __forceinline__ void solve_line(
 /**
  * @brief CUDA kernel: REPEAT systems of size M, one per thread, starting at d_offset with stride INTERVAL.
  *
- * Solves d_x from the right-hand side d_d (which may be the same array) with the factors in table.
+ * Solves d_x from the right-hand side d_d with the factors in table. d_d and d_x are __restrict__:
+ * they must not overlap (tridiagonal_lines_shared() solves in place, in shared memory).
  */
 template <bool PERIODIC>
 __global__ void tridiagonal_lines(

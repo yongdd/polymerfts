@@ -35,10 +35,36 @@
 #include "MakhoulTransform.h"
 
 /**
+ * @class FftwRealFFT
+ * @brief FFTW's unnormalized real FFT of a grid, the FFT under MakhoulTransform.
+ *
+ * The plans run on the scratch of MakhoulTransform through FFTW's new-array
+ * execute functions, without copies; the arrays they were planned on are freed.
+ */
+class FftwRealFFT : public MakhoulTransform::RealFFT
+{
+private:
+    fftw_plan forward_ = nullptr;    ///< r2c; may overwrite its input
+    fftw_plan backward_ = nullptr;   ///< c2r; overwrites its input
+
+    void release();
+
+public:
+    /// Plans of the real FFT of a row-major grid nx (one to three axes)
+    explicit FftwRealFFT(const std::vector<int>& nx);
+    ~FftwRealFFT() override;
+    FftwRealFFT(const FftwRealFFT&) = delete;
+    FftwRealFFT& operator=(const FftwRealFFT&) = delete;
+
+    void forward(double* samples, std::complex<double>* modes) const override;
+    void backward(std::complex<double>* modes, double* samples) const override;
+};
+
+/**
  * @class FftwFFT
  * @brief FFTW3-based FFT with support for all boundary conditions.
  *
- * Uses FFTW3 for periodic FFT and MakhoulTransform over that FFT for non-periodic BC.
+ * Uses FFTW3 for periodic FFT and MakhoulTransform over FftwRealFFT for non-periodic BC.
  *
  * @tparam T   Input type for forward transform (typically double)
  * @tparam DIM Dimensionality of the transform (1, 2, or 3)

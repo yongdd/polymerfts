@@ -192,10 +192,13 @@ public:
      * angles; tetragonal: a = b and right angles; orthorhombic: right angles;
      * hexagonal and hexagonal-axes trigonal: a = b, alpha = beta = 90,
      * gamma = 120; rhombohedral-axes trigonal: a = b = c and
-     * alpha = beta = gamma. Lengths and angles agree to a relative 1e-6.
-     * Monoclinic and triclinic: every rotation preserves the cell metric
-     * (R^T G R = G to a relative 1e-6), which puts the monoclinic unique
-     * axis perpendicular to the other two.
+     * alpha = beta = gamma. Monoclinic and triclinic: every rotation preserves
+     * the cell metric (R^T G R = G to a relative 1e-6), which puts the
+     * monoclinic unique axis perpendicular to the other two. Lengths and the
+     * angles of a rhombohedral cell agree to a relative 1e-6; an angle the
+     * group fixes (90 or 120 degrees) is within 1e-10 rad of its value, the
+     * orthogonality test of ComputationBox, so that a cell change keeps the
+     * angles a solver chose its CrysFFT engine for.
      *
      * @param lx         Box lengths [a, b, c]
      * @param angles_deg Lattice angles [alpha, beta, gamma] in degrees

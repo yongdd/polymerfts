@@ -34,10 +34,36 @@
 #include "mkl_dfti.h"
 
 /**
+ * @class MklRealFFT
+ * @brief MKL's unnormalized real FFT of a grid, the FFT under MakhoulTransform.
+ *
+ * Out-of-place DFTI descriptors without a backward scale, run on the scratch of
+ * MakhoulTransform.
+ */
+class MklRealFFT : public MakhoulTransform::RealFFT
+{
+private:
+    DFTI_DESCRIPTOR_HANDLE forward_ = nullptr;
+    DFTI_DESCRIPTOR_HANDLE backward_ = nullptr;
+
+    void release();
+
+public:
+    /// Descriptors of the real FFT of a row-major grid nx (one to three axes)
+    explicit MklRealFFT(const std::vector<int>& nx);
+    ~MklRealFFT() override;
+    MklRealFFT(const MklRealFFT&) = delete;
+    MklRealFFT& operator=(const MklRealFFT&) = delete;
+
+    void forward(double* samples, std::complex<double>* modes) const override;
+    void backward(std::complex<double>* modes, double* samples) const override;
+};
+
+/**
  * @class MklFFT
  * @brief Intel MKL-based FFT with support for all boundary conditions.
  *
- * Uses Intel MKL's DFTI for periodic FFT and MakhoulTransform for non-periodic BC.
+ * Uses Intel MKL's DFTI for periodic FFT and MakhoulTransform over MklRealFFT for non-periodic BC.
  *
  * @tparam T   Input type for forward transform (typically double)
  * @tparam DIM Dimensionality of the transform (1, 2, or 3)

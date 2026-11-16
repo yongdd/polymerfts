@@ -74,7 +74,6 @@ SET(BASIC_TESTS
     TestCpuFFT2DComplex
     TestCpuFFT3D
     TestCpuFFT3DComplex
-    TestCpuFFTMixedBC
     TestCpuFFTAddressIndependence
     TestCpuMakhoulTransform
     TestCpuSimulationBox

@@ -138,8 +138,12 @@ std::pair<long double, long double> theta_sum(long double width_sq, long double 
     return {sum, moment / sum};
 }
 
-std::pair<RealSpaceBond::FoldedAxis, RealSpaceBond::FoldedAxis> folded_axis(
-    const Axis& axis, double dx, double length, int n, BoundaryCondition low, BoundaryCondition high)
+// The folded kernel of a narrow absorbing axis or, with `dlength`, its derivative with respect
+// to the box length: the n x n matrix whose entry (i, j) is sum_m weights[m] basis[m][i] basis[m][j]
+// over the retained eigenmodes, summed in the order of the modes. Empty where ghost points carry
+// the axis.
+RealSpaceBond::Folded folded_axis(const Axis& axis, double dx, double length, int n,
+                                  BoundaryCondition low, BoundaryCondition high, bool dlength)
 {
     using BC = BoundaryCondition;
     if (axis.width == 0.0 || (low != BC::ABSORBING && high != BC::ABSORBING))
@@ -158,8 +162,8 @@ std::pair<RealSpaceBond::FoldedAxis, RealSpaceBond::FoldedAxis> folded_axis(
     if (first_exponent < 1.0L)
         return {};
 
-    RealSpaceBond::FoldedAxis kernel, derivative;
-    kernel.n = derivative.n = n;
+    std::vector<double> weights;   // per mode
+    std::vector<double> basis;     // per mode, n values
     const auto [denominator, denominator_moment] = theta_sum(width_sq, 0.0L);
     // V = s^2 <u> stays fixed as L varies. This includes the sampled-width
     // correction even when an axis has only one or two grid points.
@@ -175,20 +179,30 @@ std::pair<RealSpaceBond::FoldedAxis, RealSpaceBond::FoldedAxis> folded_axis(
         const auto [numerator, numerator_moment] = theta_sum(width_sq, theta);
         const long double eigenvalue = std::exp(-exponent) * numerator / denominator;
         const long double norm = both && mode == n - 1 ? n : 0.5L * n;
-        kernel.weights.push_back(static_cast<double>(eigenvalue / norm));
-        derivative.weights.push_back(static_cast<double>(
-            -0.5L * dwidth_sq * (numerator_moment - denominator_moment) * eigenvalue / norm));
+        weights.push_back(static_cast<double>(dlength
+            ? -0.5L * dwidth_sq * (numerator_moment - denominator_moment) * eigenvalue / norm
+            : eigenvalue / norm));
         const long long denominator_phase = (both ? 2LL : 4LL) * n;
         for (int i = 0; i < n; ++i)
         {
             long long numerator_phase = (both ? mode + 1LL : 2LL * mode + 1) * (2LL * i + 1);
             if (low == BC::REFLECTING)
                 numerator_phase = denominator_phase / 2 - numerator_phase;
-            kernel.basis.push_back(sine_fraction(numerator_phase, denominator_phase));
+            basis.push_back(sine_fraction(numerator_phase, denominator_phase));
         }
     }
-    derivative.basis = kernel.basis;
-    return {std::move(kernel), std::move(derivative)};
+
+    // Each entry is formed whole, once per box, before it multiplies q
+    RealSpaceBond::Folded matrix(static_cast<std::size_t>(n) * n);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+        {
+            double entry = 0.0;
+            for (std::size_t mode = 0; mode < weights.size(); ++mode)
+                entry += weights[mode] * basis[mode * n + i] * basis[mode * n + j];
+            matrix[static_cast<std::size_t>(i) * n + j] = entry;
+        }
+    return matrix;
 }
 }  // namespace
 
@@ -200,7 +214,7 @@ RealSpaceBond::Kernels RealSpaceBond::gaussian(double variance, const std::vecto
     {
         Axis axis = gaussian_axis(variance, dx[d]);
         kernels[d] = axis.g;
-        kernels.folded[d] = folded_axis(axis, dx[d], dx[d] * nx[d], nx[d], bc[2*d], bc[2*d+1]).first;
+        kernels.folded[d] = folded_axis(axis, dx[d], dx[d] * nx[d], nx[d], bc[2*d], bc[2*d+1], false);
     }
     return kernels;
 }
@@ -216,7 +230,7 @@ std::array<RealSpaceBond::Kernels, 3> RealSpaceBond::length_derivatives(
         // The grid spacing is L/n, so d/dL = (dx/L) d/ddx
         Axis axis = gaussian_axis(variance, dx[d]);
         derivatives[d][d] = axis.dg_ddx;
-        derivatives[d].folded[d] = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1]).second;
+        derivatives[d].folded[d] = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1], true);
         for (double& v : derivatives[d][d])
             v *= dx[d] / lx[d];
     }
@@ -240,7 +254,7 @@ RealSpaceBond::Ghosts RealSpaceBond::ghosts(const std::vector<int>& nx, const st
 
         int halo = 0;
         for (const Kernels* k : kernels)
-            if (k->folded[d].weights.empty())
+            if (k->folded[d].empty())
                 halo = std::max(halo, static_cast<int>((*k)[d].size()) - 1);
         ghosts.halo[d] = halo;
         ghosts.index[d].resize(n + 2 * halo);

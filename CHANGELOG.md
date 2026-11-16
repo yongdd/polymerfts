@@ -604,11 +604,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - SCFT refuses `electrostatics` together with `space_group` with its own `ValidationError`
   (2026-11-06). The combination was refused only through the smearing it needs, with a message
   about `smearing`.
-- `set_lattice_parameters` refuses alpha or beta off 90 degrees while a solver of the box runs the
-  ObliqueZ CrysFFT, before the box changes (2026-11-02). A crystal system accepts angles within its
-  tolerance of 90 degrees, but the z fold of this engine needs them exact: it went on folding, with Q
-  up to 1e-5 (relative) off the full grid, on CPU and CUDA. `TestCrysFFTCellChange` checks the
-  refusal on every platform.
+- A space group fixes its angles to the orthogonality test of the computation box (2026-11-16). An
+  angle the crystal system fixes (90 or 120 degrees, or the right angles at the monoclinic unique
+  axis) must lie within 1e-10 rad of its value, where a relative 1e-6 (9e-5 degrees) was accepted.
+  A solver chooses its CrysFFT engine once, for the angles of its box. Inside the old tolerance a
+  cell change kept an engine that assumes exact angles while the box treated the cell as oblique:
+  the ObliqueZ engine went on folding with Q up to 1e-5 (relative) off the full grid, and the Pmmm
+  DCT and recursive 3m engines differed from a fresh solver by up to 3e-7. Such cells are refused
+  when the box is created and when it changes, for every engine (`TestCrysFFTCellChange`).
 - The FFTW Pmmm and ObliqueZ CrysFFT engines keep no stale size after a failed allocation of their
   thread-local buffers (2026-11-02). A later engine of the old size on that thread crashed on null
   buffers; the recursive 3m engine already had the guard.
@@ -801,6 +804,17 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   scratch buffer, and the per-point product state is gone, which took 40 (real fields) or 72
   (complex fields) bytes per grid point and stream: 2.5 GiB (real) and 4.5 GiB (complex) less device
   memory for a 3-arm star or a comb at 256³ with four streams. The propagators are bitwise unchanged.
+- The CPU DCT and DST run the real FFT of the grid directly on the scratch arrays of
+  `MakhoulTransform` (2026-11-16). With FFTW the transform went through `FftwFFT`, which copied the
+  reordered samples, copied the modes before the complex-to-real transform and divided by N, which
+  the transform then multiplied back; complex fields are transformed by `MakhoulTransform` itself
+  instead of a real/imaginary split in `FftwFFT` and in `MklFFT`. A round trip with walls through
+  `PropagatorSolver.fourier` (FFTW, one thread of an AMD EPYC 7543) takes 3.2 instead of 3.4 ms on
+  64³ and 11.9 instead of 14.5 ms on 96³; MKL is unchanged. Results change at round-off.
+- `rs` stores the folded kernel of a narrow absorbing axis as its dense matrix, built once per box
+  (2026-11-16), instead of forming every entry from the eigenfunction expansion at each point of
+  each bond; CPU and CUDA now use the same entries. A folded contiguous axis takes 2.4 times less
+  time (`compute_propagators` 62 → 26 ms on 32×32×16, FFTW, one thread of an AMD EPYC 7543).
 - On CUDA an integer power at a junction, a repeated branch such as `A10:5` or an integer block
   multiplicity, takes one kernel launch instead of one per factor (2026-11-08); the propagators
   are bitwise unchanged.
@@ -901,6 +915,12 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `TestJunctionProduct` computes the reference of the ordinary junction arithmetic at run time
   (2026-11-15). GCC 13 and later at `-O3` folded the constant complex reference with another
   rounding, one ulp off the run-time product, and the test failed although the junction was right.
+- `TestCpuFFTMixedBC` is removed (2026-11-16): `TestCpuMakhoulTransform` covers its round trips and
+  DCT/DST checks at 1e-13; its MKL part checked 1D DCT round trips to 1e-7 and printed a stale
+  "SKIPPED (known issue)" for the rest.
+  `TestCpuFFTAddressIndependence` checks only the periodic MKL transforms, the only ones that run on
+  the caller's arrays. `TestObliqueZStress` adds an odd z half-length (P6/mmm 12×12×6), the odd
+  branch of the MKL ObliqueZ z-DCT, which only a CUDA-built test reached before.
 - `TestCpuMakhoulTransform` compares the DCT and DST of `FftwFFT` and `MklFFT` with their O(N^2)
   definitions on grids of one to three axes with even, odd and unit lengths, every mix of cosine and
   sine axes, real and complex fields of standard deviation 5, and concurrent calls (2026-11-02).

@@ -17,8 +17,9 @@
  * The walls enter through ghost points: periodic axes wrap, reflecting walls mirror
  * the grid about the cell face (the symmetry of the DCT-II), absorbing walls mirror
  * it with the opposite sign (DST-II). Each end of an axis has its own condition.
- * Narrow absorbing axes instead reconstruct positive folded entries from a
- * compact eigenfunction expansion, avoiding cancellation between ghost images.
+ * Narrow absorbing axes instead multiply by the dense matrix of the folded kernel,
+ * whose entries come from a compact eigenfunction expansion once per box, avoiding
+ * cancellation between ghost images.
  *
  * The stress of a bond is sum_r q_1 (dG/dL_a q_2), with dG/dL_a the bond whose kernel along
  * axis a is differentiated with respect to the box length. With a space group the propagators

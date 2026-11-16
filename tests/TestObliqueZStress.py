@@ -21,8 +21,10 @@ relaxation of such a cell consumes:
 
 Cases: P6/mmm on a hexagonal 12x12x8 cell and P2/m with unique axis c (Hall
 58) on an 11x10x8 cell with gamma = 100 -> 104 -> 97 degrees (odd nx), for
-rqm4, rk2 and the discrete chain. Fields are strong (std 5) and symmetrized with the
-full group. Runtime: a few seconds. Exit code 0 on success, 1 on failure.
+rqm4, rk2 and the discrete chain; P6/mmm on a 12x12x6 cell (one lattice) has an
+odd z half-length Nz/2 = 3, the odd branch of the z DCT of the MKL engine. Fields
+are strong (std 5) and symmetrized with the full group. Runtime: a few seconds.
+Exit code 0 on success, 1 on failure.
 """
 
 import sys
@@ -51,6 +53,8 @@ CASES = [
      [([1.5, 1.3, 1.2], [90.0, 90.0, 100.0]),
       ([1.55, 1.28, 1.22], [90.0, 90.0, 104.0]),
       ([1.55, 1.28, 1.22], [90.0, 90.0, 97.0])]),    # gamma only
+    ("P6/mmm, Nz/2 odd", "P6/mmm", None, [12, 12, 6],  # the odd branch of the z DCT of MKL
+     [([2.0, 2.0, 1.5], [90.0, 90.0, 120.0])]),
 ]
 METHODS = [("continuous", "rqm4"), ("continuous", "rk2"), ("discrete", None)]
 BASES = ["none", "irreducible", "z-mirror"]

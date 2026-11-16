@@ -26,26 +26,40 @@
 
 namespace
 {
-// The narrow absorbing kernel has a dominant positive ground mode. Reconstruct
-// each folded entry before applying it, so a small positive input never has to
-// be recovered by cancellation between transformed fields.
+// A narrow absorbing axis: out_i = sum_j F_ij in_j with the folded matrix F of the
+// axis, summed in the order of j. Its entries are formed whole once per box
+// (RealSpaceBond), so a small positive input never has to be recovered by
+// cancellation between ghost images.
 template <typename T>
-void pass_folded(const T* in, T* out, int n, long inner, long outer,
-                 const RealSpaceBond::FoldedAxis& kernel)
+void pass_folded(const T* in, T* out, int n, long inner, long outer, const RealSpaceBond::Folded& folded)
 {
+    if (inner == 1)
+    {
+        // Along the contiguous axis: a dot product per point
+        for (long o = 0; o < outer; ++o)
+            for (int i = 0; i < n; ++i)
+            {
+                const double* row = folded.data() + static_cast<long>(i) * n;
+                const T* a = in + o * n;
+                T sum = 0.0;
+                for (int j = 0; j < n; ++j)
+                    sum += row[j] * a[j];
+                out[o * n + i] = sum;
+            }
+        return;
+    }
     for (long o = 0; o < outer; ++o)
     {
         const T* a = in + o * n * inner;
         T* b = out + o * n * inner;
         for (int i = 0; i < n; ++i)
         {
+            const double* row = folded.data() + static_cast<long>(i) * n;
             T* bi = b + i * inner;
             std::fill_n(bi, inner, T(0.0));
             for (int j = 0; j < n; ++j)
             {
-                double weight = 0.0;
-                for (std::size_t mode = 0; mode < kernel.weights.size(); ++mode)
-                    weight += kernel.weights[mode] * kernel.basis[mode * n + i] * kernel.basis[mode * n + j];
+                const double weight = row[j];
                 const T* aj = a + j * inner;
                 for (long k = 0; k < inner; ++k)
                     bi[k] += weight * aj[k];
@@ -255,7 +269,7 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
             dst = q_out;
         const int* index = ghosts.index[axis].data() + ghosts.halo[axis];
         const double* sign = ghosts.sign[axis].data() + ghosts.halo[axis];
-        if (!kernels.folded[axis].weights.empty())
+        if (!kernels.folded[axis].empty())
             pass_folded(src, dst, n, inner, outer, kernels.folded[axis]);
         else if (inner == 1)
             pass_contiguous(src, dst, n, outer, kernels[axis], index, sign, line);

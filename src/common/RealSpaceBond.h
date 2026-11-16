@@ -17,7 +17,8 @@
  * kernel to avoid cancellation between images. Its eigenvalues come from the
  * Poisson sum of the same variance-corrected sampled Gaussian without the tail
  * cutoff; the absorbing folded rows need not sum to one. Their box-length
- * derivatives include the width correction as well.
+ * derivatives include the width correction as well. The expansion is summed
+ * into the dense n x n matrix of the folded kernel once per box.
  */
 
 #ifndef REAL_SPACE_BOND_H_
@@ -32,20 +33,15 @@ namespace RealSpaceBond
 {
     /// Weights g_0..g_H of one axis; g_{-d} = g_d
     using Kernel = std::vector<double>;
-    /// A folded absorbing kernel, stored as a short eigenfunction expansion.
-    /// Its entry (i,j) is sum_m weights[m] basis[m*n+i] basis[m*n+j].
-    struct FoldedAxis
-    {
-        int n = 0;
-        std::vector<double> basis;
-        std::vector<double> weights;
-    };
+    /// The folded kernel of a narrow absorbing axis of n points: the n x n matrix of its
+    /// entries, (i, j) at i*n + j; empty on the other axes
+    using Folded = std::vector<double>;
 
-    /// Stencils on ordinary axes; a stable folded representation on narrow absorbing axes.
+    /// Stencils on ordinary axes; the folded matrix on narrow absorbing axes.
     struct Kernels
     {
         std::array<Kernel, 3> stencil{Kernel{1.0}, Kernel{1.0}, Kernel{1.0}};
-        std::array<FoldedAxis, 3> folded;
+        std::array<Folded, 3> folded;
         Kernel& operator[](std::size_t d) { return stencil[d]; }
         const Kernel& operator[](std::size_t d) const { return stencil[d]; }
     };

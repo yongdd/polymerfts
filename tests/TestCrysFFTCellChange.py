@@ -15,9 +15,14 @@ rescaled to a standard deviation of 5, continuous and discrete chains):
   alone, then Lz alone;
 - Im-3m 16^3, m3 physical basis: the recursive 3m CrysFFT on a cubic cell.
 
-The ObliqueZ CrysFFT folds z, which needs alpha = beta = 90 degrees exactly. An
-angle just off 90 degrees, inside the tolerance of the crystal system, is refused
-before the box changes, and the solver then follows a valid change.
+A solver chooses its CrysFFT engine once, for the angles of its box: the Pmmm DCT
+and the recursive 3m CrysFFT need an orthogonal cell, the ObliqueZ CrysFFT alpha =
+beta = 90 degrees. The space group fixes these angles to the orthogonality test of
+the box (1e-10 rad). For the ObliqueZ (P6/mmm 12x12x16) and the Pmmm DCT (Pmmm
+16x12x8), irreducible basis, each fixed angle is moved by 1e-9 degrees (inside the
+test: the changed solver gives the Q of a fresh one), by 1e-8 and by 9e-5 degrees
+(outside it, 9e-5 within a relative 1e-6 of 90: refused before the box changes, and
+refused for a fresh solver). The solver then follows a valid change.
 """
 
 import contextlib
@@ -69,36 +74,70 @@ def results(platform, chain, case, lattices, fields):
     return out
 
 
-def oblique_z_keeps_its_axis(platform):
-    """A cell the ObliqueZ CrysFFT cannot represent is refused, the box stays as it was, and the
-    solver then follows a valid change like a fresh solver, on a field of standard deviation 5."""
-    nx, lx, moved, angles = [12, 12, 16], [4.0, 4.0, 3.0], [4.1, 4.1, 3.1], [90.0, 90.0, 120.0]
-    f = _core.SpaceGroup(nx, 485).symmetrize(np.random.default_rng(7).normal(0.0, 1.0, int(np.prod(nx))))
+# (engine, Hall number or symbol, nx, lx, a valid change of lx, angles); irreducible basis
+ANGLE_CASES = [
+    ("ObliqueZ", 485, [12, 12, 16], [4.0, 4.0, 3.0], [4.1, 4.1, 3.1], [90.0, 90.0, 120.0]),
+    ("Pmmm DCT", "Pmmm", [16, 12, 8], [2.0, 1.8, 1.6], [2.1, 1.95, 1.5], [90.0, 90.0, 90.0]),
+]
+# A fixed angle moved by these degrees, and whether the group accepts it (1e-10 rad is 5.7e-9 degrees)
+ANGLE_OFFSETS = [(1e-9, True), (1e-8, False), (9e-5, False)]
 
-    def solver(box):
-        sg = _core.SpaceGroup(nx, 485)
+
+def fixed_angles(platform, case):
+    """(ok, line) for each angle the group fixes, moved by each offset: an accepted change gives the Q of a
+    solver created at the new cell; a refused one leaves the box as it was, and a solver created at that cell
+    is refused too. Then a valid change of lx against a fresh solver. Fields of standard deviation 5."""
+    engine, group, nx, lx, moved, angles = case
+    f = _core.SpaceGroup(nx, group).symmetrize(np.random.default_rng(7).normal(0.0, 1.0, int(np.prod(nx))))
+
+    def solver(box, cell_angles):
+        sg = _core.SpaceGroup(nx, group)
         s = PropagatorSolver(nx=nx, lx=box, ds=0.05, bond_lengths={"A": 1.0}, bc=["periodic"] * 6,
                              chain_model="continuous", numerical_method="rqm4", platform=platform,
-                             space_group=sg, angles=angles)
+                             space_group=sg, angles=cell_angles)
         s.add_polymer(1.0, [["A", 1.0, 0, 1]])
         return s, {"A": sg.to_reduced_basis(5.0 * f / np.std(f))}
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        s, w = solver(lx)
-        for off in ([90.00008, 90.0, 120.0], [90.0, 90.00008, 120.0]):
-            try:
-                s.set_lattice_parameters(lx, off)
-                return False
-            except RuntimeError as error:
-                if "ObliqueZ" not in str(error):
-                    return False
-            if not np.allclose(s.get_angles_degrees(), angles, rtol=0.0, atol=1e-12):
-                return False
-        s.set_lattice_parameters(moved, angles)
+    def against_fresh(s, w, box, cell_angles):
+        """|Q / Q_fresh - 1| of s against a solver created at the cell"""
         s.compute_propagators(w)
-        fresh, w_fresh = solver(moved)
+        fresh, w_fresh = solver(box, cell_angles)
         fresh.compute_propagators(w_fresh)
-        return abs(s.get_partition_function(0) / fresh.get_partition_function(0) - 1.0) < 1e-12
+        return abs(s.get_partition_function(0) / fresh.get_partition_function(0) - 1.0)
+
+    def fresh_solver(box, cell_angles):
+        s, w = solver(box, cell_angles)
+        s.compute_propagators(w)   # the first computation attaches the group to the box
+
+    def refused(call):
+        try:
+            call()
+        except Exception as error:   # the native RuntimeError, or an error raised from it
+            return "crystal system" in str(error)
+        return False
+
+    lines = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        for i in range(3):
+            for offset, accepted in ANGLE_OFFSETS:
+                off = list(angles)
+                off[i] += offset
+                s, w = solver(lx, angles)
+                if accepted:
+                    s.set_lattice_parameters(lx, off)
+                    d = against_fresh(s, w, lx, off)
+                    ok, result = d < 1e-12, f"accepted, Q against a fresh solver {d:.1e}"
+                else:
+                    ok = (refused(lambda: s.set_lattice_parameters(lx, off))
+                          and np.allclose(s.get_angles_degrees(), angles, rtol=0.0, atol=1e-12)
+                          and refused(lambda: fresh_solver(lx, off)))
+                    result = "refused, also for a fresh solver"
+                lines.append((ok, f"{platform} {engine}: angle {i} moved by {offset:g} degrees {result}"))
+        s, w = solver(lx, angles)
+        s.set_lattice_parameters(moved, angles)
+        d = against_fresh(s, w, moved, angles)
+        lines.append((d < 1e-12, f"{platform} {engine}: lx {moved}, Q against a fresh solver {d:.1e}"))
+    return lines
 
 
 def max_rel(a, b):
@@ -138,10 +177,11 @@ def main():
                 failures += not ok
                 print(f"[{'PASS' if ok else 'FAIL'}] cuda vs {cpu[0]} {symbol} {basis} {nx} {chain}: stress {d:.1e}")
     for platform in platforms:
-        ok = oblique_z_keeps_its_axis(platform)
-        checks += 1
-        failures += not ok
-        print(f"[{'PASS' if ok else 'FAIL'}] {platform} ObliqueZ refuses alpha off 90 degrees")
+        for case in ANGLE_CASES:
+            for ok, line in fixed_angles(platform, case):
+                checks += 1
+                failures += not ok
+                print(f"[{'PASS' if ok else 'FAIL'}] {line}")
     print(f"\n{checks - failures} passed, {failures} failed")
     return 1 if cuda_part_missing() or failures else 0
 

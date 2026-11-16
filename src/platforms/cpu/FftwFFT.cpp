@@ -26,6 +26,61 @@
 #include "FftwFFT.h"
 
 //------------------------------------------------------------------------------
+// The real FFT under MakhoulTransform
+//------------------------------------------------------------------------------
+FftwRealFFT::FftwRealFFT(const std::vector<int>& nx)
+{
+    int total = 1;
+    for (int n : nx)
+        total *= n;
+    const int modes = total / nx.back() * (nx.back() / 2 + 1);
+
+    // Planning arrays only: the plans run on other arrays of the same alignment
+    double* samples = fftw_alloc_real(total);
+    fftw_complex* spectrum = fftw_alloc_complex(modes);
+    if (samples != nullptr && spectrum != nullptr)
+    {
+        const int rank = static_cast<int>(nx.size());
+        forward_ = fftw_plan_dft_r2c(rank, nx.data(), samples, spectrum, FFTW_MEASURE | FFTW_DESTROY_INPUT);
+        backward_ = fftw_plan_dft_c2r(rank, nx.data(), spectrum, samples, FFTW_MEASURE);
+    }
+    if (samples != nullptr)
+        fftw_free(samples);
+    if (spectrum != nullptr)
+        fftw_free(spectrum);
+    if (forward_ == nullptr || backward_ == nullptr)
+    {
+        release();
+        throw_with_line_number("FFTW plan creation failed");
+    }
+}
+
+FftwRealFFT::~FftwRealFFT()
+{
+    release();
+}
+
+void FftwRealFFT::release()
+{
+    if (forward_ != nullptr)
+        fftw_destroy_plan(forward_);
+    if (backward_ != nullptr)
+        fftw_destroy_plan(backward_);
+    forward_ = nullptr;
+    backward_ = nullptr;
+}
+
+void FftwRealFFT::forward(double* samples, std::complex<double>* modes) const
+{
+    fftw_execute_dft_r2c(forward_, samples, reinterpret_cast<fftw_complex*>(modes));
+}
+
+void FftwRealFFT::backward(std::complex<double>* modes, double* samples) const
+{
+    fftw_execute_dft_c2r(backward_, reinterpret_cast<fftw_complex*>(modes), samples);
+}
+
+//------------------------------------------------------------------------------
 // Compute complex grid size based on periodicity and input type
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
@@ -241,8 +296,8 @@ void FftwFFT<T, DIM>::initNonPeriodicFFT()
     std::vector<bool> sine(DIM);
     for (int d = 0; d < DIM; ++d)
         sine[d] = bc_[d] == BoundaryCondition::ABSORBING;
-    makhoul_ = std::make_unique<MakhoulTransform>(std::vector<int>(nx_.begin(), nx_.end()), sine,
-                                                  std::make_unique<FftwFFT<double, DIM>>(nx_));
+    const std::vector<int> nx(nx_.begin(), nx_.end());
+    makhoul_ = std::make_unique<MakhoulTransform>(nx, sine, std::make_unique<FftwRealFFT>(nx));
 }
 
 //------------------------------------------------------------------------------
@@ -376,33 +431,10 @@ void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
     }
     else
     {
-        // FFTW's DCT-II/DST-II are 2x the standard definition per dimension
-        const double scale = 1.0 / (1 << DIM);
-
-        if constexpr (std::is_same<T, double>::value)
-        {
-            makhoul_->forward(rdata, cdata, scale);
-        }
-        else
-        {
-            // Real-linear transforms: for complex fields (CL-FTS) transform
-            // the real and imaginary parts independently and store the
-            // coefficients interleaved as complex pairs (matching the
-            // periodic complex layout used by the solvers).
-            // Thread-local buffer for thread safety in OpenMP parallel regions
-            thread_local std::vector<double> work;
-            if (static_cast<int>(work.size()) < total_grid_)
-                work.resize(total_grid_);
-
-            for (int part = 0; part < 2; ++part)
-            {
-                for (int i = 0; i < total_grid_; ++i)
-                    work[i] = (part == 0) ? std::real(rdata[i]) : std::imag(rdata[i]);
-                makhoul_->forward(work.data(), work.data(), scale);
-                for (int i = 0; i < total_complex_grid_; ++i)
-                    cdata[2 * i + part] = work[i];
-            }
-        }
+        // FFTW's DCT-II/DST-II are 2x the standard definition per dimension. A complex
+        // field (CL-FTS) gets the coefficients of its real and imaginary parts as
+        // (re, im) pairs, the periodic complex layout used by the solvers.
+        makhoul_->forward(rdata, cdata, 1.0 / (1 << DIM));
     }
 }
 
@@ -456,30 +488,8 @@ void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
     }
     else
     {
-        const double scale = 1.0 / static_cast<double>(total_grid_);
-
-        if constexpr (std::is_same<T, double>::value)
-        {
-            makhoul_->backward(cdata, rdata, scale);
-        }
-        else
-        {
-            // Complex fields: coefficients arrive interleaved (see forward);
-            // inverse-transform the real and imaginary parts independently.
-            thread_local std::vector<double> work;
-            if (static_cast<int>(work.size()) < total_grid_)
-                work.resize(total_grid_);
-
-            double* out = reinterpret_cast<double*>(rdata);
-            for (int part = 0; part < 2; ++part)
-            {
-                for (int i = 0; i < total_complex_grid_; ++i)
-                    work[i] = cdata[2 * i + part];
-                makhoul_->backward(work.data(), work.data(), scale);
-                for (int i = 0; i < total_grid_; ++i)
-                    out[2 * i + part] = work[i];
-            }
-        }
+        // A complex field takes its coefficients as (re, im) pairs (see forward)
+        makhoul_->backward(cdata, rdata, 1.0 / static_cast<double>(total_grid_));
     }
 }
 

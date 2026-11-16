@@ -416,11 +416,6 @@ void CudaSolverPseudoBase<T>::fft_backward(int stream, cuDoubleComplex* d_in, Cu
 template <typename T>
 void CudaSolverPseudoBase<T>::cleanup_crysfft()
 {
-    if (holds_z_axis_)
-    {
-        cb->release_z_axis();
-        holds_z_axis_ = false;
-    }
     use_crysfft_ = false;
     crysfft_mode_ = CudaCrysFFTMode::None;
     crysfft_identity_map_ = false;
@@ -628,11 +623,7 @@ void CudaSolverPseudoBase<T>::init_crysfft()
     else if (plan.mode == CrysFFTChoice::PmmmDct)
         setup_crysfft(CudaCrysFFTMode::PmmmDct, plan.map, plan.m3_translations);
     else if (plan.mode == CrysFFTChoice::ObliqueZ)
-    {
         setup_crysfft(CudaCrysFFTMode::ObliqueZ, plan.map, plan.m3_translations);
-        cb->hold_z_axis();
-        holds_z_axis_ = true;
-    }
 }
 
 template <typename T>

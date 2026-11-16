@@ -12,7 +12,6 @@ FftwCrysFFTPmmm::FftwCrysFFTPmmm(
     std::array<double, 9> /* trans_part */)
     : CrysFFTPmmmBase(nx_logical, cell_para)
 {
-    dct_ = std::make_unique<MakhoulTransform>(std::vector<int>(nx_physical_.begin(), nx_physical_.end()),
-                                              std::vector<bool>(3, false),
-                                              std::make_unique<FftwFFT<double, 3>>(nx_physical_));
+    const std::vector<int> nx(nx_physical_.begin(), nx_physical_.end());
+    dct_ = std::make_unique<MakhoulTransform>(nx, std::vector<bool>(3, false), std::make_unique<FftwRealFFT>(nx));
 }

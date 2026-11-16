@@ -26,6 +26,105 @@
 #include "MklDftiLayout.h"
 #include "MklStatusCheck.h"
 
+namespace
+{
+/**
+ * @brief Out-of-place DFTI descriptors of a row-major grid nx (one to three axes).
+ *
+ * A real FFT stores the half spectrum of the last axis as complex values
+ * (Nx x ... x (Nz/2+1)); a complex FFT stores the whole grid. The backward
+ * transform is multiplied by backward_scale. The caller frees the handles,
+ * also after a failure.
+ */
+void create_descriptors(const std::vector<int>& nx, bool real, double backward_scale,
+                        DFTI_DESCRIPTOR_HANDLE& forward, DFTI_DESCRIPTOR_HANDLE& backward)
+{
+    const int rank = static_cast<int>(nx.size());
+    std::vector<MKL_LONG> lengths(nx.begin(), nx.end());
+
+    // Strides of the real and of the complex domain
+    std::vector<MKL_LONG> rs(rank + 1, 0);
+    std::vector<MKL_LONG> cs(rank + 1, 0);
+    rs[rank] = 1;
+    cs[rank] = 1;
+    for (int i = rank - 1; i > 0; i--)
+    {
+        rs[i] = rs[i + 1] * nx[i];
+        cs[i] = cs[i + 1] * (real && i == rank - 1 ? nx[i] / 2 + 1 : nx[i]);
+    }
+
+    const DFTI_CONFIG_VALUE domain = real ? DFTI_REAL : DFTI_COMPLEX;
+    if (rank == 1)
+    {
+        mkl_dfti_check(DftiCreateDescriptor(&forward, DFTI_DOUBLE, domain, 1, lengths[0]), "DftiCreateDescriptor (forward)");
+        mkl_dfti_check(DftiCreateDescriptor(&backward, DFTI_DOUBLE, domain, 1, lengths[0]), "DftiCreateDescriptor (backward)");
+    }
+    else
+    {
+        mkl_dfti_check(DftiCreateDescriptor(&forward, DFTI_DOUBLE, domain, rank, lengths.data()), "DftiCreateDescriptor (forward)");
+        mkl_dfti_check(DftiSetValue(forward, mkl_dfti::forward_input_strides, rs.data()), "DftiSetValue (forward input strides)");
+        mkl_dfti_check(DftiSetValue(forward, mkl_dfti::forward_output_strides, cs.data()), "DftiSetValue (forward output strides)");
+
+        mkl_dfti_check(DftiCreateDescriptor(&backward, DFTI_DOUBLE, domain, rank, lengths.data()), "DftiCreateDescriptor (backward)");
+        mkl_dfti_check(DftiSetValue(backward, mkl_dfti::backward_input_strides, cs.data()), "DftiSetValue (backward input strides)");
+        mkl_dfti_check(DftiSetValue(backward, mkl_dfti::backward_output_strides, rs.data()), "DftiSetValue (backward output strides)");
+    }
+
+    mkl_dfti_check(DftiSetValue(forward, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, forward)");
+    mkl_dfti_check(DftiSetValue(backward, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, backward)");
+    if (real)
+    {
+        mkl_dfti_check(DftiSetValue(forward, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, forward)");
+        mkl_dfti_check(DftiSetValue(backward, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, backward)");
+    }
+
+    mkl_dfti_check(DftiCommitDescriptor(forward), "DftiCommitDescriptor (forward)");
+    mkl_dfti_check(DftiSetValue(backward, DFTI_BACKWARD_SCALE, backward_scale), "DftiSetValue(DFTI_BACKWARD_SCALE, backward)");
+    mkl_dfti_check(DftiCommitDescriptor(backward), "DftiCommitDescriptor (backward)");
+}
+}  // namespace
+
+//------------------------------------------------------------------------------
+// The real FFT under MakhoulTransform
+//------------------------------------------------------------------------------
+MklRealFFT::MklRealFFT(const std::vector<int>& nx)
+{
+    try
+    {
+        create_descriptors(nx, true, 1.0, forward_, backward_);
+    }
+    catch (...)
+    {
+        release();
+        throw;
+    }
+}
+
+MklRealFFT::~MklRealFFT()
+{
+    release();
+}
+
+void MklRealFFT::release()
+{
+    if (forward_ != nullptr)
+        DftiFreeDescriptor(&forward_);
+    if (backward_ != nullptr)
+        DftiFreeDescriptor(&backward_);
+    forward_ = nullptr;
+    backward_ = nullptr;
+}
+
+void MklRealFFT::forward(double* samples, std::complex<double>* modes) const
+{
+    mkl_dfti_check(DftiComputeForward(forward_, samples, modes), "DftiComputeForward (DCT/DST)");
+}
+
+void MklRealFFT::backward(std::complex<double>* modes, double* samples) const
+{
+    mkl_dfti_check(DftiComputeBackward(backward_, modes, samples), "DftiComputeBackward (DCT/DST)");
+}
+
 //------------------------------------------------------------------------------
 // Constructor (periodic BC, backward compatible)
 //------------------------------------------------------------------------------
@@ -168,64 +267,9 @@ void MklFFT<T, DIM>::initPeriodicFFT()
 {
     try
     {
-        MKL_LONG NX[DIM];
-        for (int i = 0; i < DIM; i++)
-            NX[i] = nx_[i];
-
-        // Strides describe data layout in real and conjugate-even domain
-        MKL_LONG rs[DIM + 1] = {0};
-        MKL_LONG cs[DIM + 1] = {0};
-        rs[DIM] = 1;
-        cs[DIM] = 1;
-
-        // Determine if we're using real or complex data type
-        constexpr bool is_real = std::is_same<T, double>::value;
-        constexpr DFTI_CONFIG_VALUE dtype = is_real ? DFTI_REAL : DFTI_COMPLEX;
-
-        // Calculate strides for real domain
-        for (int i = DIM - 1; i > 0; i--)
-            rs[i] = rs[i + 1] * nx_[i];
-
-        // Calculate strides for complex domain
-        if constexpr (std::is_same<T, double>::value)
-        {
-            for (int i = DIM - 1; i > 0; i--)
-                cs[i] = cs[i + 1] * (i == DIM - 1 ? nx_[i] / 2 + 1 : nx_[i]);
-        }
-        else
-        {
-            for (int i = DIM - 1; i > 0; i--)
-                cs[i] = cs[i + 1] * nx_[i];
-        }
-
-        if (DIM == 1)
-        {
-            mkl_dfti_check(DftiCreateDescriptor(&hand_forward_, DFTI_DOUBLE, dtype, 1, NX[0]), "DftiCreateDescriptor (forward)");
-            mkl_dfti_check(DftiCreateDescriptor(&hand_backward_, DFTI_DOUBLE, dtype, 1, NX[0]), "DftiCreateDescriptor (backward)");
-        }
-        else
-        {
-            mkl_dfti_check(DftiCreateDescriptor(&hand_forward_, DFTI_DOUBLE, dtype, DIM, NX), "DftiCreateDescriptor (forward)");
-            mkl_dfti_check(DftiSetValue(hand_forward_, mkl_dfti::forward_input_strides, rs), "DftiSetValue (forward input strides)");
-            mkl_dfti_check(DftiSetValue(hand_forward_, mkl_dfti::forward_output_strides, cs), "DftiSetValue (forward output strides)");
-
-            mkl_dfti_check(DftiCreateDescriptor(&hand_backward_, DFTI_DOUBLE, dtype, DIM, NX), "DftiCreateDescriptor (backward)");
-            mkl_dfti_check(DftiSetValue(hand_backward_, mkl_dfti::backward_input_strides, cs), "DftiSetValue (backward input strides)");
-            mkl_dfti_check(DftiSetValue(hand_backward_, mkl_dfti::backward_output_strides, rs), "DftiSetValue (backward output strides)");
-        }
-
-        mkl_dfti_check(DftiSetValue(hand_forward_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, forward)");
-        mkl_dfti_check(DftiSetValue(hand_backward_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, backward)");
-
-        if (is_real)
-        {
-            mkl_dfti_check(DftiSetValue(hand_forward_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, forward)");
-            mkl_dfti_check(DftiSetValue(hand_backward_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, backward)");
-        }
-
-        mkl_dfti_check(DftiCommitDescriptor(hand_forward_), "DftiCommitDescriptor (forward)");
-        mkl_dfti_check(DftiSetValue(hand_backward_, DFTI_BACKWARD_SCALE, 1.0 / static_cast<double>(total_grid_)), "DftiSetValue(DFTI_BACKWARD_SCALE, backward)");
-        mkl_dfti_check(DftiCommitDescriptor(hand_backward_), "DftiCommitDescriptor (backward)");
+        // The backward transform includes the 1/N of the FFT<T> interface
+        create_descriptors(std::vector<int>(nx_.begin(), nx_.end()), std::is_same<T, double>::value,
+                           1.0 / static_cast<double>(total_grid_), hand_forward_, hand_backward_);
     }
     catch (std::exception& exc)
     {
@@ -242,8 +286,8 @@ void MklFFT<T, DIM>::initNonPeriodicFFT()
     std::vector<bool> sine(DIM);
     for (int d = 0; d < DIM; ++d)
         sine[d] = bc_[d] == BoundaryCondition::ABSORBING;
-    makhoul_ = std::make_unique<MakhoulTransform>(std::vector<int>(nx_.begin(), nx_.end()), sine,
-                                                  std::make_unique<MklFFT<double, DIM>>(nx_));
+    const std::vector<int> nx(nx_.begin(), nx_.end());
+    makhoul_ = std::make_unique<MakhoulTransform>(nx, sine, std::make_unique<MklRealFFT>(nx));
 }
 
 //------------------------------------------------------------------------------
@@ -292,33 +336,10 @@ void MklFFT<T, DIM>::forward(T *rdata, double *cdata)
         }
         else
         {
-            // FFTW's DCT-II/DST-II are 2x the standard definition per dimension
-            const double scale = 1.0 / (1 << DIM);
-
-            if constexpr (std::is_same<T, double>::value)
-            {
-                makhoul_->forward(rdata, cdata, scale);
-            }
-            else
-            {
-                // The DCT/DST is a real-linear operator: for complex fields
-                // (CL-FTS) transform the real and imaginary parts independently
-                // and store the coefficients interleaved as complex pairs
-                // (cdata must then hold 2*total_complex_grid_ doubles, matching
-                // the periodic complex layout used by the solvers).
-                thread_local std::vector<double> work;
-                if (static_cast<int>(work.size()) < total_grid_)
-                    work.resize(total_grid_);
-
-                for (int part = 0; part < 2; ++part)
-                {
-                    for (int i = 0; i < total_grid_; ++i)
-                        work[i] = (part == 0) ? std::real(rdata[i]) : std::imag(rdata[i]);
-                    makhoul_->forward(work.data(), work.data(), scale);
-                    for (int i = 0; i < total_complex_grid_; ++i)
-                        cdata[2 * i + part] = work[i];
-                }
-            }
+            // FFTW's DCT-II/DST-II are 2x the standard definition per dimension. A complex
+            // field (CL-FTS) gets the coefficients of its real and imaginary parts as
+            // (re, im) pairs, the periodic complex layout used by the solvers.
+            makhoul_->forward(rdata, cdata, 1.0 / (1 << DIM));
         }
     }
     catch (std::exception& exc)
@@ -343,30 +364,8 @@ void MklFFT<T, DIM>::backward(double *cdata, T *rdata)
         }
         else
         {
-            const double scale = 1.0 / static_cast<double>(total_grid_);
-
-            if constexpr (std::is_same<T, double>::value)
-            {
-                makhoul_->backward(cdata, rdata, scale);
-            }
-            else
-            {
-                // Complex fields: coefficients arrive interleaved (see forward);
-                // inverse-transform the real and imaginary parts independently.
-                thread_local std::vector<double> work;
-                if (static_cast<int>(work.size()) < total_grid_)
-                    work.resize(total_grid_);
-
-                double* out = reinterpret_cast<double*>(rdata);
-                for (int part = 0; part < 2; ++part)
-                {
-                    for (int i = 0; i < total_complex_grid_; ++i)
-                        work[i] = cdata[2 * i + part];
-                    makhoul_->backward(work.data(), work.data(), scale);
-                    for (int i = 0; i < total_grid_; ++i)
-                        out[2 * i + part] = work[i];
-                }
-            }
+            // A complex field takes its coefficients as (re, im) pairs (see forward)
+            makhoul_->backward(cdata, rdata, 1.0 / static_cast<double>(total_grid_));
         }
     }
     catch (std::exception& exc)

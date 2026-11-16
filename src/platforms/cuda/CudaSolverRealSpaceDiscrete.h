@@ -7,8 +7,8 @@
  * (RealSpaceBond). A block copies a tile of the grid with its halos into shared memory
  * once, signed by the ghost tables, and each thread sums the stencil of one output point
  * from there; the last pass also multiplies by exp(-w ds) and the mask.
- * Narrow absorbing axes reconstruct folded entries from compact eigenfunction
- * tables, shared with the CPU implementation, to avoid cancellation of images.
+ * Narrow absorbing axes multiply by the dense matrix of the folded kernel, built on
+ * the host for both implementations (RealSpaceBond), to avoid cancellation of images.
  *
  * The stress of a bond is sum_r q_1 (dG/dL_a q_2), with dG/dL_a the bond whose kernel along
  * axis a is differentiated with respect to the box length; the sum is reduced in a fixed order.
@@ -40,11 +40,10 @@ private:
     struct DeviceKernels
     {
         CudaDeviceBuffer<double> weights;
-        CudaDeviceBuffer<double> folded_weights, folded_basis;
+        CudaDeviceBuffer<double> folded;              ///< the n x n folded matrices of the narrow absorbing axes
         std::array<int, 3> offset{};
         std::array<int, 3> half{};
-        std::array<int, 3> folded_modes{};
-        std::array<std::size_t, 3> folded_weight_offset{}, folded_basis_offset{};
+        std::array<long, 3> folded_offset{-1, -1, -1};   ///< start of an axis's folded matrix; -1 for a stencil
     };
 
     ComputationBox<T>* cb;

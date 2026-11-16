@@ -784,9 +784,6 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
     if (orthogonal_cell_holders_ > 0 && !orthogonal)
         throw_with_line_number("A computation of this box uses a numerical method that requires an "
             "orthogonal cell (all angles 90 degrees).");
-    if (z_axis_holders_ > 0 && !(right_angle(full_angles[0]) && right_angle(full_angles[1])))
-        throw_with_line_number("A solver of this box uses the ObliqueZ CrysFFT, which requires "
-            "alpha = beta = 90 degrees.");
     if (space_group_ != nullptr)
         space_group_->check_cell(new_lx, full_angles);
 

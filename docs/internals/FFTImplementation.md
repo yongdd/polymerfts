@@ -76,7 +76,7 @@ so the N-point saving of the type-1 rows applies to 1D transforms only.
 
 ### 2.4 DCT and DST of a Whole Grid (CPU)
 
-`MakhoulTransform` runs the DCT-2/3 and DST-2/3 of a grid of one to three axes, with any mix of cosine and sine axes, through one periodic real FFT of the grid. Both CPU libraries share this code over their own real FFT, the transform they run fastest, and `FftwCrysFFTPmmm` and `MklCrysFFTPmmm` use it as well.
+`MakhoulTransform` runs the DCT-2/3 and DST-2/3 of a grid of one to three axes, with any mix of cosine and sine axes, through one periodic real FFT of the grid. Both CPU libraries share this code over their own real FFT (`FftwRealFFT`, `MklRealFFT`), the transform they run fastest, and `FftwCrysFFTPmmm` and `MklCrysFFTPmmm` use it as well.
 
 Makhoul's reordering [1] stores the even samples of every axis forward and the odd samples backward. With $`V`$ the real FFT of the reordered grid and $`W_N^k = e^{-i\pi k/(2N)}`$ on an axis of $`N`$ points, one axis gives
 
@@ -96,7 +96,7 @@ where mode 0 gains 2 and mode $`N/2`$ gains $`\sqrt{2}`$. The last axis, which h
 \mathrm{DST2}[x]_k = \mathrm{DCT2}\left[(-1)^j x_j\right]_{N-1-k},
 ```
 
-so it changes only the tables that place the samples and the coefficients. Complex fields transform their real and imaginary parts in turn.
+so it changes only the tables that place the samples and the coefficients. The real FFT runs unnormalized on per-thread scratch of `MakhoulTransform`, which starts on a 64-byte boundary and which it may overwrite, so the transform adds no copy and no 1/N pass. Complex fields transform their real and imaginary parts in turn, read from and written to every second value.
 
 ---
 
