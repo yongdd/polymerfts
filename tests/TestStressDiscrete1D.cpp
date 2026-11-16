@@ -30,14 +30,12 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestCudaPart.h"
 
 int main()
 {
     try
     {
-        // Input fields
-        double *w;
-
         // String to output file and print stream
         std::streamsize default_precision = std::cout.precision();
         std::ofstream print_stream;
@@ -45,7 +43,6 @@ int main()
         std::string print_file_name;
 
         // -------------- Initialize ------------
-        // Platform type, [cuda, cpu-fftw]
         std::vector<int> nx = {10};
         std::vector<double> lx = {1.0};
         double ds = 1.0/10.0;
@@ -71,8 +68,8 @@ int main()
         };
 
         const int M = nx[0];
-        //-------------- Allocate array ------------
-        w = new double[2*M];
+        // Input fields
+        std::vector<double> w(2*M);
 
         // Use the random number generation to fill the array with random floats
         std::mt19937 engine(static_cast<unsigned int>(0)); 
@@ -82,28 +79,15 @@ int main()
             // w[i] = 0.0;
         }
 
-        bool reduce_memory=false;
-        std::vector<double> stress_list{};
-
-        // Choose platform
-        std::vector<std::string> avail_platforms = PlatformSelector::avail_platforms();
-        // This test runs on cuda only, which is listed only when a device is visible.
-        // Without one it fails, like the TestCuda* tests: a skip would read as a pass.
-        bool has_cuda = false;
-        for(const std::string& name : avail_platforms)
-            has_cuda = has_cuda || (name == "cuda");
-        if(!has_cuda)
-        {
-            std::cout << "FAILED: no visible CUDA device." << std::endl;
-            return 1;
-        }
+        // On each platform, the stress may not depend on the aggregation or the memory mode
         std::string chain_model = "Discrete";
         std::vector<bool> aggregate_propagator_computations = {false, true};
-        for(std::string platform : avail_platforms)
+        std::vector<bool> reduce_memorys = {false, true};
+        for(std::string platform : PlatformSelector::avail_platforms())
         {
-            if(platform != "cuda")
-                continue;
-
+            std::vector<double> stress_list{};
+            for(bool reduce_memory : reduce_memorys)
+            {
             for(bool aggregate_propagator_computation : aggregate_propagator_computations)
             {
                 std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
@@ -123,6 +107,7 @@ int main()
                 // std::cout<< "---------- Simulation Parameters ----------" << std::endl;
                 // std::cout << "Box Dimension: " << cb->get_dim() << std::endl;
                 std::cout << "Chain Model: " << molecules->get_model_name() << std::endl;
+                std::cout << "Reduce Memory Usage: " << reduce_memory << std::endl;
                 std::cout << "Using Aggregation: " << aggregate_propagator_computation << std::endl;
 
                 // Display polymer architecture and propagator info
@@ -139,17 +124,16 @@ int main()
                 std:: cout << "Stress : " << stress[0] << std::endl;
                 stress_list.push_back(stress[0]);
             }
+            }
+
+            double mean = std::accumulate(stress_list.begin(), stress_list.end(), 0.0)/stress_list.size();
+            double sq_sum = std::inner_product(stress_list.begin(), stress_list.end(), stress_list.begin(), 0.0);
+            double stddev = std::sqrt(std::abs(sq_sum / stress_list.size() - mean * mean));
+            std::cout << platform << " Std. of Stress: " << stddev << std::endl;
+            if (!(stddev <= 1e-7))
+                return -1;
         }
-        delete[] w;
-
-        double mean = std::accumulate(stress_list.begin(), stress_list.end(), 0.0)/stress_list.size();
-        double sq_sum = std::inner_product(stress_list.begin(), stress_list.end(), stress_list.begin(), 0.0);
-        double stddev = std::sqrt(std::abs(sq_sum / stress_list.size() - mean * mean));
-        std::cout << "Std. of Stress: " << stddev << std::endl;
-        if (!(stddev <= 1e-7))
-            return -1;
-
-        return 0;
+        return cuda_part_missing() ? 1 : 0;
     }
     catch(std::exception& exc)
     {

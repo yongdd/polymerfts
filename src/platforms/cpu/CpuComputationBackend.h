@@ -37,7 +37,6 @@ private:
     std::unique_ptr<CpuSolver<T>> solver;
     int n_streams;
     int n_basis;
-    std::vector<T> absolute_product;  ///< Reused partition-diagnostic integrand
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis
     std::map<std::string, std::vector<T>> exp_dw_reduced;
@@ -45,8 +44,11 @@ private:
     static T* raw(BackendArray<T>* a) { return reinterpret_cast<T*>(a); }
     static T* raw(CheckpointArray<T>* a) { return reinterpret_cast<T*>(a); }
 
-    void sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
-    void multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
+    /// q = Σ_i n_i q_i and q = Π_i q_i^{n_i} over sources or checkpoints (junction_sum/product())
+    template <typename Source>
+    void sum_sources(T* q, const std::vector<std::pair<Source*, double>>& sources);
+    template <typename Source>
+    void multiply_sources(T* q, const std::vector<std::pair<Source*, double>>& sources);
 
 public:
     /**

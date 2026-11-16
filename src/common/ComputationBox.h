@@ -580,6 +580,21 @@ public:
     T inner_product_inverse_weight(const T *g, const T *h, const T *w);
 
     /**
+     * @brief Integral of an absolute product.
+     *
+     * Computes: sum_i |g[i] * h[i] / d[i]| * dV[i] with the weights of integral()
+     * (no division without a divisor); a masked point adds zero whatever its
+     * values. The scale of a partition integral that need not vanish when a
+     * complex partition cancels.
+     *
+     * @param g       First field array (length: get_n_basis())
+     * @param h       Second field array (length: get_n_basis())
+     * @param divisor Divisor array, or nullptr
+     * @return Integral value
+     */
+    double absolute_inner_product(const T *g, const T *h, const T *divisor = nullptr);
+
+    /**
      * @brief Compute inner product for multiple field components.
      *
      * When space group is NOT set:

@@ -77,7 +77,7 @@ SET(BASIC_TESTS
     TestCpuFFT3DComplex
     TestCpuFFTAddressIndependence
     TestCpuMakhoulTransform
-    TestCpuSimulationBox
+    TestSimulationBox
     TestCpuTridiagonal
     # Fourier multipliers of whole fields on every platform (Python)
     TestFourierTransform
@@ -88,7 +88,6 @@ SET(BASIC_TESTS
     TestCudaMakhoulTransform
     TestCudaDCT
     TestCudaDST
-    TestCudaSimulationBox
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
@@ -133,8 +132,7 @@ SET(BASIC_TESTS
     TestScft2D
     TestStress1D
     TestStress1DComplex
-    TestStressDiscreteCpu1D
-    TestStressDiscreteCuda1D
+    TestStressDiscrete1D
 
     # Space Group
     TestSpaceGroupReducedBasis

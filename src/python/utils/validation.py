@@ -241,7 +241,8 @@ def _check_angles(angles, dim: int) -> None:
         if len(angles) not in (0, 1, 3):
             raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
         fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
-        if not np.all(np.isclose(fixed, 90.0, rtol=0.0, atol=1e-10)):
+        # Within 1e-10 rad of 90 degrees, as the native box (FIXED_ANGLE_TOLERANCE in ComputationBox.h)
+        if not np.all(np.abs(np.asarray(fixed, dtype=float) * (np.pi / 180.0) - np.pi / 2.0) < 1e-10):
             raise ValidationError("A 1D box requires all angles to be 90 degrees; "
                                   "a 2D box requires alpha and beta to be 90 degrees.")
 

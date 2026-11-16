@@ -48,6 +48,14 @@ namespace {
     /// Minimum sin(gamma) value to avoid division by zero in lattice calculations
     constexpr double SIN_GAMMA_MIN = 1e-10;
 
+    /// An angle in degrees lies within FIXED_ANGLE_TOLERANCE radians of 90 degrees, in the
+    /// arithmetic of is_orthogonal() (false if it is not finite)
+    bool is_right_angle(double degrees)
+    {
+        const double deg_to_rad = std::numbers::pi / 180.0;
+        return std::abs(degrees * deg_to_rad - std::numbers::pi / 2.0) < FIXED_ANGLE_TOLERANCE;
+    }
+
     /**
      * @brief Expand dimension-appropriate angles to full 3-element array.
      *
@@ -71,7 +79,7 @@ namespace {
         }
         else if (angles.size() == 1)
         {
-            if (dim == 1 && std::isfinite(angles[0]) && std::abs(angles[0] - 90.0) <= FIXED_ANGLE_TOLERANCE)
+            if (dim == 1 && is_right_angle(angles[0]))
                 return full_angles;
             // Single angle: gamma only (for 2D)
             if (dim != 2)
@@ -83,7 +91,7 @@ namespace {
         {
             // Angles involving absent axes must not enter the reciprocal metric.
             for (int i = 0; i < (dim == 1 ? 3 : dim == 2 ? 2 : 0); ++i)
-                if (!std::isfinite(angles[i]) || std::abs(angles[i] - 90.0) > FIXED_ANGLE_TOLERANCE)
+                if (!is_right_angle(angles[i]))
                     throw_with_line_number("A 1D box requires all angles to be 90 degrees; "
                         "a 2D box requires alpha and beta to be 90 degrees.");
             return angles;
@@ -775,8 +783,7 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
         validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
             "angles[" + std::to_string(i) + "]");
     }
-    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), [](double a) {
-        return std::abs(a * std::numbers::pi / 180.0 - std::numbers::pi / 2.0) < FIXED_ANGLE_TOLERANCE; });
+    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
     require_orthogonal_with_walls(bc, orthogonal);
     if (orthogonal_cell_holders_ > 0 && !orthogonal)
         throw_with_line_number("A computation of this box uses a numerical method that requires an "
@@ -1074,6 +1081,29 @@ T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const 
         // Full grid mode
         return sum(total_grid, [&](int i) { return dv[i] * g[i] * h[i] / w[i]; });
     }
+}
+
+/**
+ * @brief Integral of |g h / divisor| with the weights of integral().
+ */
+template <typename T>
+double ComputationBox<T>::absolute_inner_product(const T *g, const T *h, const T *divisor)
+{
+    const double* active_mask = get_mask();
+    const bool reduced = space_group_ != nullptr;
+    const int n = reduced ? n_basis_ : total_grid;
+    const double* weight = reduced ? basis_weights_.data() : dv.data();
+    double sum = 0.0;
+    for (int i = 0; i < n; i++)
+    {
+        if (active_mask != nullptr && active_mask[i] == 0.0)
+            continue;
+        T product = g[i] * h[i];
+        if (divisor != nullptr)
+            product /= divisor[i];
+        sum += weight[i] * std::abs(product);
+    }
+    return reduced ? sum * (volume / total_grid) : sum;
 }
 
 /**

@@ -478,30 +478,9 @@ __global__ void ker_multi_exp_dw_two(
     cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
     double a, const int M);
 
-__global__ void ker_multi_exp_dw_four(
-    double* dst1, const double* src1, const double* exp_dw1,
-    double* dst2, const double* src2, const double* exp_dw2,
-    double* dst3, const double* src3, const double* exp_dw3,
-    double* dst4, const double* src4, const double* exp_dw4,
-    double a, const int M);
-
-__global__ void ker_multi_exp_dw_four(
-    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
-    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
-    cuDoubleComplex* dst3, const cuDoubleComplex* src3, const cuDoubleComplex* exp_dw3,
-    cuDoubleComplex* dst4, const cuDoubleComplex* src4, const cuDoubleComplex* exp_dw4,
-    double a, const int M);
-
 __global__ void ker_complex_real_multi_bond_two(
     cuDoubleComplex* dst1, const double* boltz_bond1,
     cuDoubleComplex* dst2, const double* boltz_bond2,
-    const int M);
-
-__global__ void ker_complex_real_multi_bond_four(
-    cuDoubleComplex* dst1, const double* boltz_bond1,
-    cuDoubleComplex* dst2, const double* boltz_bond2,
-    cuDoubleComplex* dst3, const double* boltz_bond3,
-    cuDoubleComplex* dst4, const double* boltz_bond4,
     const int M);
 
 // ============================================================
@@ -566,24 +545,6 @@ __global__ void ker_reduce_to_basis(
  */
 __global__ void ker_multi_map(
     double* dst, const double* reduced_multiplier, const int* phys_to_reduced_map, const int n_phys);
-
-/**
- * @brief Gather from full grid and compute product: dst[i] = src[indices[i]]^2 * norm
- *
- * Used for solvent concentration computation in reduced basis.
- * More efficient than computing on full grid then reducing (O(N) vs O(M+N)).
- *
- * @param dst Output reduced basis array (size: n_basis)
- * @param src Input full grid array (size: total_grid)
- * @param reduced_basis_indices Flat indices of reduced-basis points
- * @param norm Normalization factor
- * @param n_basis Number of reduced-basis points
- */
-__global__ void ker_multi_gather(
-    double* dst, const double* src, const int* reduced_basis_indices, double norm, const int n_basis);
-
-__global__ void ker_multi_gather(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* reduced_basis_indices, cuDoubleComplex norm, const int n_basis);
 
 /**
  * @brief Multiply array by integer weights: dst[i] = src[i] * weights[i]
