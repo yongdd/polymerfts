@@ -157,7 +157,7 @@ validation needs error estimates and effective sample size. Same-backend restart
 checks can require bitwise equality; comparisons across backends need suitable
 numerical or statistical tolerances.
 
-See [Numerical Validation](docs/internals/NumericalValidation.md) for regression
+See [Numerical Validation](docs/validation/NumericalValidation.md) for regression
 coverage and sampling studies. Relevant tests include `TestParameterNames`,
 `TestFtsReliability`, `TestCheckpointValidation`, `TestExtensions`,
 `TestPropagatorAnalytic`, `TestConvergenceOrderLite` and `TestSamplingStatistics`.
@@ -189,19 +189,38 @@ Measure performance separately from correctness tests.
 Researchers should be able to follow and modify the physical sequence directly.
 Keep each simulation class readable from top to bottom:
 
+- The run loop reads as the physical sequence, and each step is a few lines or a
+  call to an object that owns the topic. An object takes the simulation in its
+  constructor, keeps the fixed parts it uses as attributes and reads what changes
+  during a run through `self.sim`, a `weakref.proxy`: a strong reference would make
+  a cycle that keeps a dropped simulation's solver and device memory alive. Keep one
+  flow per method: do not merge them into a generic driver or a class hierarchy.
 - Read options directly from the `params` dictionary in the constructor, with
   defaults next to their use. Avoid introducing parameter dataclass/spec layers.
-- Keep one topic per file. Duplication among `scft.py`, `lfts.py` and `clfts.py`
-  is acceptable when it keeps the loops self-contained.
+- Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
+  `clfts.py` through plain functions; a little duplication is fine where sharing
+  would hide a difference between the methods.
 - Put shared parameter validation and legacy-name normalization in `validation.py`;
-  keep common mechanical helpers in `utils.py`.
-- `scft.py` owns SCFT iteration and optional cell relaxation; `lfts.py` owns
-  saddle-constrained Langevin sampling and its field compressors; `clfts.py`
-  evolves complex auxiliary fields.
+  keep common mechanical helpers in `utils/common.py`, what a run saves and restores in
+  `checkpoint.py`, the polymer chains in `chains.py` and parameter and VTK files in
+  `file_formats.py`. `RunRecord` in `checkpoint.py` holds the measurements of a run:
+  a new quantity needs an entry in its series and an `add()`. `chains.py` holds what
+  the three `compute_concentrations` share; change the concentrations there, and
+  keep in each method only what is its own.
+- `src/python` has four folders: `scft/`, `fts/` (L-FTS, CL-FTS and what their loops
+  use), `theory/` (the polymer field theory all methods share) and `utils/` (checks,
+  checkpoints, files). `from polymerfts import scft, lfts, clfts` stays the entry of user scripts;
+  submodules are imported with their folder, as `polymerfts.utils.checkpoint`.
+- `scft.py`, `lfts.py` and `clfts.py` hold the flow of each method. The details live
+  in objects with one topic each, as the loop's own words say: `self.saddle`
+  (`saddle.py`: compressors, saddle search and retries), `self.structure_functions`
+  (`structure_functions.py`), `self.thermodynamics` (`thermodynamics.py`),
+  `self.cell` (`cell_relaxation.py`), and likewise `self.smearing`, `self.wtmd` and
+  `self.electrostatics`. `scft_results.py` holds what SCFT returns and writes.
 - `integrators.py` implements built-in LM and Euler steps. Use the existing
   `integrator=` interface for additional methods and named `callbacks=` for
   observables. Preserve accepted-step ordering and checkpoint contracts.
-- `propagator_solver.py` wraps the native solver API; `polymer_field_theory.py`
+- `propagator_solver.py` wraps the native solver API; `symmetric_formulation.py`
   handles monomer/auxiliary-field transformations. `smearing.py`, `wtmd.py`,
   `electrostatics.py` and `phase_equilibrium.py` contain their respective physical
   operations.
@@ -223,11 +242,12 @@ keep its algorithm in the solver classes.
 | `rqm4` | Continuous | Fourth-order contour integration using Richardson extrapolation |
 | `rk2` | Continuous | Second-order Rasmussen-Kalosakas splitting; RK does not mean Runge-Kutta here |
 | `cn-adi2` | Continuous | Second-order finite differences; real fields and orthogonal cells; mixed boundary types supported; stress unavailable |
-| `discrete` | Discrete | Bond convolution for the Chapman-Kolmogorov equation, not continuum MDE integration |
+| `ps` | Discrete | Bond convolution of the Chapman-Kolmogorov equation through FFTs, not continuum MDE integration |
+| `rs` | Discrete | The same bond summed on the grid; positive in strong fields; orthogonal cells; mixed boundary types supported |
 
 Pseudo-spectral solvers require all directions to be periodic or all directions
 to be non-periodic. Reflecting and absorbing directions can coexist. Mixing
-periodic and non-periodic directions requires `cn-adi2`. Consult the registry and
+periodic and non-periodic directions requires `cn-adi2` or `rs`. Consult the registry and
 [Parameter Reference](docs/references/Parameters.md) for further restrictions.
 
 Cell-centered grids are the default. Hexagonal-axis space-group calculations use
@@ -237,8 +257,8 @@ alias handling. See [Space Group Theory](docs/theory/SpaceGroup.md).
 Current input names include `polymers`, `relax_cell`, `stress_scale`,
 `blocks[].monomer_fractions`, `space_group.hall_number` and the three `recording`
 intervals: `checkpoint_interval`, `sample_interval`, `statistics_save_interval`.
-`numerical_method` selects the continuous-chain propagator method; discrete
-chains always select their dedicated solver. `langevin.integrator` selects the
+`numerical_method` selects the propagator method of the chain model (`rqm4` and
+`ps` by default). `langevin.integrator` selects the
 stochastic integrator. `langevin.max_step` is the final global step number,
 including restored steps. WTMD retains its separate `recording_period` option.
 
@@ -293,7 +313,7 @@ Guide for detailed transform dispatch, ownership and computation hierarchies.
 - Use [Parameter Reference](docs/references/Parameters.md) for complete input formats
   and compatibility rules; avoid copying a second parameter reference into this file.
 - Examples live in `examples/`, grouped by physical system (`block_copolymer/`, `blend/`,
-  `charged/`) and then by method (`scft/`, `lfts/`, `clfts/`); `tools/` holds API examples.
+  `charged/`) and then by method (`scft/`, `ecscft/`, `lfts/`, `clfts/`); `tools/` holds API examples.
   [Tutorials](tutorials/README.md) provides a learning sequence.
 - Explain physical conventions and derivations under `docs/theory/`. Keep measured
   performance results with their problem size, backend, hardware and precision.
@@ -301,10 +321,15 @@ Guide for detailed transform dispatch, ownership and computation hierarchies.
   configuration out of these two agent guides.
 
 For GitHub math, use protected inline syntax (`` $`...`$ ``) and unindented fenced
-blocks with the `math` language. Put display blocks outside list indentation.
-Within table math use `\vert` instead of a literal vertical bar. Write `\lt` for a
-`<` directly before a letter; GitHub can take it as an HTML tag and break the
-formula. Escape literal dollar signs. Check documentation edits with:
+blocks with the `math` language. Put display blocks outside list indentation. Within
+table math use `\vert` instead of a literal vertical bar. In inline math write `\lt`
+and `\gt`, never `<` or `>`, and keep `&` (matrices, alignments) to display blocks:
+GitHub escapes these characters twice in inline math and MathJax fails. In display
+blocks write `\lt` for a `<` directly before a letter; GitHub can take it as an HTML
+tag and break the formula. GitHub renders math as MathML, where a `\tag` equation
+falls apart into one symbol per line: number equations with `\qquad\text{(1)}` and
+write operators as `\mathrm{erf}`, not `\operatorname`. Escape literal dollar signs.
+Check documentation edits with:
 
 ```bash
 python .github/scripts/check_latex.py AGENTS.md CLAUDE.md

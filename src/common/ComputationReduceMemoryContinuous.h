@@ -32,10 +32,8 @@ template <typename T>
 class ComputationReduceMemoryContinuous : public ComputationReduceMemoryBase<T>
 {
 private:
-    std::string method;  ///< "pseudospectral" or "realspace"
-
     /// One segment per polymer for its partition function: (polymer, key, n, key†, n_aggregated)
-    std::vector<std::tuple<int, std::string, int, std::string, int>> single_partition_segment;
+    std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 
 protected:
     int propagator_ds_index(const std::string& key) const override;
@@ -43,7 +41,7 @@ protected:
 public:
     ComputationReduceMemoryContinuous(ComputationBox<T>* cb, Molecules* molecules,
                                       PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                      std::string method, SpaceGroup* space_group,
+                                      const NumericalMethodInfo& method, SpaceGroup* space_group,
                                       const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     void compute_propagators(std::map<std::string, const T*> w_input,

@@ -64,6 +64,8 @@
 #include "Exception.h"
 #include "GridLimits.h"
 
+template <typename T> class CircularBuffer;
+
 /// Throw unless 1 <= n_var <= MAX_GRID_ARRAY: the variables are indexed with 32-bit
 /// integers (GridLimits.h). Takes a wide integer so that callers can check sizes
 /// before narrowing them.
@@ -120,17 +122,26 @@ protected:
     double mix_init;     ///< Initial mixing parameter
 
     /**
+     * @brief Assemble the residual least-squares normal equations from cached products.
+     *
+     * History age 0 is the newest residual. dots.get(p, q) stores
+     * <r_p, r_(p+q)>, with conjugation of the first argument for complex fields.
+     * For D_i = r_0 - r_(i+1), form u = D^H D and v = D^H r_0.
+     * Complex fields retain complex mixing coefficients.
+     */
+    void build_normal_equations(CircularBuffer<T>& dots, T** u, T* v, int n);
+
+    /**
      * @brief Solve the least-squares problem for Anderson coefficients.
      *
-     * Finds coefficients a that minimize ||U*a - v||^2 where U is the matrix
-     * of residual differences and v is the current residual.
+     * Solve the normal equations assembled by build_normal_equations().
      *
-     * @param u Matrix of residual differences, size (n x n_var), stored as u[i][j]
-     * @param v Current residual vector, length n_var
+     * @param u Gram matrix of residual differences, size (n x n), stored as u[i][j]
+     * @param v Products of residual differences with the current residual, length n
      * @param a Output: optimal coefficients, length n
      * @param n Number of history vectors to use
      *
-     * @note Uses normal equations: (U^T U) a = U^T v
+     * @note The complex normal equations use the conjugate transpose.
      */
     void find_an(T **u, T *v, T *a, int n);
 

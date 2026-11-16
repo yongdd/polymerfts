@@ -125,6 +125,7 @@ FftwCrysFFTObliqueZ::ThreadBuffers& FftwCrysFFTObliqueZ::get_thread_buffers() co
     thread_local ThreadBuffers buffers;
     if (buffers.size_real != M_physical_ || buffers.size_complex != M_complex_)
     {
+        buffers.size_real = buffers.size_complex = 0;
         buffers.real_in.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
         buffers.real_tmp.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
         buffers.complex.reset(static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_complex_)));

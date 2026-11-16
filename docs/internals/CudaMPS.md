@@ -95,7 +95,7 @@ def worker(seed, q_out):
     os.environ["CUDA_MPS_PIPE_DIRECTORY"] = MPS_PIPE
 
     import numpy as np
-    from polymerfts.propagator_solver import PropagatorSolver
+    from polymerfts.theory.propagator_solver import PropagatorSolver
 
     np.random.seed(seed)
     solver = PropagatorSolver(

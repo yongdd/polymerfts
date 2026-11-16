@@ -3,8 +3,10 @@
 
 Writes fields and reads the files back: values in VTK point order (x fastest),
 cell-centred grid points, several fields in one file, 1D/2D grids, flat arrays
-with nx, a hexagonal cell as a structured grid, and errors for complex or
-wrongly sized fields.
+with nx, a hexagonal cell as a structured grid, the nodes along a and b with a
+hexagonal-axes space group (cell centres with other groups), and errors for
+complex or wrongly sized fields and for a space_group that is not the group of
+the grid.
 """
 
 import os
@@ -13,7 +15,7 @@ import tempfile
 
 import numpy as np
 
-from polymerfts import save_vtk
+from polymerfts import _core, save_vtk
 
 
 def read_vtk(path):
@@ -81,6 +83,38 @@ def main():
                                 for j in range(3) for i in range(4)])
         if header["DATASET"] != ["STRUCTURED_GRID"] or points is None or not np.allclose(points, expected_2d, atol=1e-9):
             failed.append("2D hexagonal grid with angles=[gamma]")
+
+        # A hexagonal-axes space group samples x and y at the nodes (as get_grid_points),
+        # other groups at the cell centres
+        hcp = _core.SpaceGroup([4, 4, 2], "P6_3/mmc", 488)
+        save_vtk(path, rng.normal(size=(4, 4, 2)), [1.0, 1.0, 2.0], angles=[90.0, 90.0, 120.0], space_group=hcp)
+        header, points, _ = read_vtk(path)
+        expected = np.array([i/4*a_vec + j/4*b_vec + (k + 0.5)/2*c_vec
+                             for k in range(2) for j in range(4) for i in range(4)])
+        if points is None or points.shape != expected.shape or not np.allclose(points, expected, atol=1e-9):
+            failed.append("hexagonal-axes space group: x and y not at the nodes")
+        bcc = _core.SpaceGroup([4, 4, 4], "Im-3m", 529)
+        save_vtk(path, rng.normal(size=(4, 4, 4)), [2.0, 2.0, 2.0], space_group=bcc)
+        header, _, _ = read_vtk(path)
+        if not np.allclose([float(v) for v in header["ORIGIN"]], [0.25, 0.25, 0.25]):
+            failed.append(f"cubic space group: origin {header['ORIGIN']}")
+        # The orthogonal branch (no angles), and a rhombohedral-axes R setting at the cell centres
+        save_vtk(path, rng.normal(size=(4, 4, 2)), [1.0, 1.0, 2.0], space_group=hcp)
+        header, _, _ = read_vtk(path)
+        if not np.allclose([float(v) for v in header["ORIGIN"]], [0.0, 0.0, 0.5]):
+            failed.append(f"hexagonal-axes space group without angles: origin {header['ORIGIN']}")
+        rhombohedral = _core.SpaceGroup([4, 4, 4], "R-3m", 459)
+        save_vtk(path, rng.normal(size=(4, 4, 4)), [2.0, 2.0, 2.0], space_group=rhombohedral)
+        header, _, _ = read_vtk(path)
+        if not np.allclose([float(v) for v in header["ORIGIN"]], [0.25, 0.25, 0.25]):
+            failed.append(f"rhombohedral-axes space group: origin {header['ORIGIN']}")
+        # The input option instead of the group, and a group of another grid
+        for bad_group, error in (({"symbol": "P6_3/mmc"}, TypeError), (hcp, ValueError)):
+            try:
+                save_vtk(path, np.zeros((4, 4, 4)), [1.0, 1.0, 1.0], space_group=bad_group)
+                failed.append(f"space_group {bad_group!r} accepted")
+            except error:
+                pass
 
         # Errors
         for bad, kwargs in ((np.ones((2, 2, 2)) + 1j, {}), (np.ones(7), {"nx": [2, 2, 2]})):

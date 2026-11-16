@@ -78,10 +78,13 @@ Where N is the block's `length_index` for both chain models (the keys are genera
 | `(A3)B2` | B-type propagator depending on A3 |
 | `(A3B2)C4` | C-type propagator at junction of A3 and B2 |
 | `(A3B2:2)C4` | C-type with two identical B2 branches |
+| `(A3:4.6B3:5.6)A3` | A-type entering one of 5.6 copies of an A3 arm, with 5.6 copies of a B3 arm (block multiplicities) |
 
 **Dependency Notation:**
 - **Parentheses `()`**: Junction point merging multiple branches
-- **Colon `:`**: Repetition count (e.g., `B2:3` = three identical B2 branches)
+- **Colon `:`**: Repetition count (e.g., `B2:3` = three identical B2 branches). Block
+  multiplicities make it a real number, written as the shortest decimal that reads back
+  to the same double (`PropagatorCode::format_count`); integer counts keep their integer form
 - **Curly braces `{}`**: Custom initial condition (e.g., `{wall}A3`)
 
 ### 2.4 Key Format: DK+M
@@ -104,6 +107,9 @@ The key format is derived from the code format and includes the ds_index for com
 ### 2.5 Aggregated Key Format
 
 When identical propagator branches are detected, they are merged to reduce redundancy.
+A polymer with block multiplicities is computed without aggregation: the re-keying of the
+blocks downstream of an aggregated sum (`substitute_right_keys`) assumes one copy of each
+branch at a junction. Its blocks still share propagators with the other polymers by key.
 
 **Structure:**
 ```
@@ -166,7 +172,24 @@ For a propagator at a junction (e.g., `(A3B2)C+0`):
 q(\mathbf{r}, 0) = \prod_{i} \left[ q_i(\mathbf{r}, N_i) \right]^{n_i}
 ```
 
-where $`n_i`$ is the repetition count (from `:n` notation, default 1).
+where $`n_i`$ is the repetition count (from `:n` notation, default 1). Identical arms and the
+copies of a block with a multiplicity enter as one factor with this power, so an integer block
+multiplicity gives the same junction products and partition functions as explicit arms on the
+same backend; concentrations and stress agree to round-off. For real fields, while the partial
+product stays between $`2^{-64}`$ and $`2^{64}`$ and each factor either lies in that range with a
+power of at most 4 or has a power between $`2^{-256}`$ and $`2^{256}`$, the product uses the
+ordinary arithmetic: `pow(q, n)` on the CPU; on CUDA n successive multiplications for an integer
+power of at most 4 and `pow` for every other power. For complex fields the ordinary arithmetic
+needs both parts of the product and of the factor between $`2^{-64}`$ and $`2^{64}`$ and an integer
+power of at most 4 (`std::pow` on the CPU, successive multiplications on CUDA). A non-integer power
+(block multiplicity) needs real propagators, so the backends refuse it for complex fields. Outside that range the product
+continues as a mantissa and one binary exponent (one for both parts of a complex number,
+`JunctionProduct.h`): in a star with $`n`$ arms in a strong field $`q_A^{n-1}`$ can overflow
+while the whole product is finite. Block
+multiplicities are at most $`10^6`$, so these exponents stay exact in a double. On CUDA one
+kernel launch multiplies up to 32 device-resident sources with the product in registers; the
+reduced-memory mode stages two checkpoints per launch and keeps the partial product between
+launches in the stress scratch buffers, so a junction needs no memory of its own.
 
 ### Aggregated Computation (D with Square Brackets)
 
@@ -252,7 +275,7 @@ Time 20-30: F+0 (stream 0)
 struct ComputationEdge {
     int max_n_segment;  // Number of contour steps
     std::string monomer_type;
-    std::vector<std::tuple<std::string, int, int>> deps;  // (key, n_segment, n_repeated)
+    std::vector<std::tuple<std::string, int, double>> deps;  // (key, n_segment, n_repeated)
     int height;         // Height of the propagator in the dependency tree (used by the scheduler)
     std::set<int> junction_ends;  // Indices where additional half-bond-step computation
                                   // is required (discrete chains)

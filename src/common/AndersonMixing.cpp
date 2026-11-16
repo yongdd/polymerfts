@@ -22,6 +22,7 @@
  */
 
 #include <complex>
+#include <algorithm>
 #include <vector>
 #include <type_traits>
 #include <cmath>
@@ -47,6 +48,7 @@
 #endif
 
 #include "AndersonMixing.h"
+#include "CircularBuffer.h"
 #include "GridLimits.h"
 
 /**
@@ -75,6 +77,46 @@ AndersonMixing<T>::AndersonMixing(int n_var, int max_hist,
     // Initialize mixing parameter
     this->mix = mix_init;
     this->mix_init = mix_init;
+}
+
+template <typename T>
+void AndersonMixing<T>::build_normal_equations(CircularBuffer<T>& dots, T** u, T* v, int n)
+{
+    if constexpr (std::is_same_v<T, double>)
+    {
+        // Preserve the arithmetic order of the real-field implementation.
+        for (int i = 0; i < n; ++i)
+        {
+            v[i] = dots.get(0, 0) - dots.get(0, i + 1);
+            for (int j = 0; j < n; ++j)
+                u[i][j] = dots.get(0, 0)
+                          - dots.get(0, i + 1)
+                          - dots.get(0, j + 1)
+                          + dots.get(std::min(i + 1, j + 1), std::abs(i - j));
+        }
+    }
+    else
+    {
+        // dots(p,q) = <r_p, r_(p+q)> only stores the upper triangle of the
+        // residual products. The lower triangle is its conjugate, not a copy.
+        const T norm(std::real(dots.get(0, 0)), 0.0);
+        for (int i = 0; i < n; ++i)
+        {
+            const T past_current = std::conj(dots.get(0, i + 1));
+            v[i] = norm - past_current;
+            for (int j = i; j < n; ++j)
+            {
+                T past_product = dots.get(i + 1, j - i);
+                if (i == j)
+                    past_product = T(std::real(past_product), 0.0);
+                u[i][j] = norm - past_current - dots.get(0, j + 1) + past_product;
+                if (i == j)
+                    u[i][j] = T(std::real(u[i][j]), 0.0);
+                else
+                    u[j][i] = std::conj(u[i][j]);
+            }
+        }
+    }
 }
 
 /**

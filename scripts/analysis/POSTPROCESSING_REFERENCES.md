@@ -6,5 +6,5 @@
 + M. W. Matsen, J. Ramírez, J. D. Willis, and P. D. Pina, Accessing the universal phase behavior of block copolymer melts with complex-Langevin field-theoretic simulations, *J. Chem. Phys.* **2026**, 164, 014905
 
 #### Multi-Species Exchange Mapping
-(convert_into_auxiliary_fields.m)
+(convert_into_auxiliary_fields.py)
 + D. Düchs, K. T. Delaney, and G. H. Fredrickson, A multi-species exchange model for fully fluctuating polymer field theory simulations. *J. Chem. Phys.* **2014**, 141, 174103

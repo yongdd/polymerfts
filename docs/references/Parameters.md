@@ -36,16 +36,18 @@ This document provides a complete reference for all simulation parameters.
 - `"reflecting"`: Zero flux / Neumann (uses DCT)
 - `"absorbing"`: Zero value / Dirichlet (uses DST)
 
-Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implements these boundary conditions using ghost cells.
+Boundary condition names are case-insensitive, including with pressure recording and Gibbs ensembles.
+
+Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real-space methods CN-ADI2 and RS implement these boundary conditions with ghost cells.
 
 **Restrictions:**
-- Pseudo-spectral methods (RQM4, RK2, and the discrete-chain solver) require every direction to be periodic or every direction to be non-periodic; each non-periodic direction may be reflecting or absorbing independently of the others (e.g. reflecting in x and z, absorbing in y). Mixing periodic with non-periodic directions raises an error on all platforms.
-- Mixing periodic and non-periodic directions (e.g., periodic in x/y, reflecting in z) requires `"numerical_method": "cn-adi2"`, which is available for **continuous chains only**. Discrete chains cannot mix periodic and non-periodic directions.
-- Stress computation (and therefore `relax_cell`) supports periodic, reflecting, and absorbing boundary conditions (pseudo-spectral methods, real fields).
+- Pseudo-spectral methods (RQM4, RK2 and PS) require every direction to be periodic or every direction to be non-periodic; each non-periodic direction may be reflecting or absorbing independently of the others (e.g. reflecting in x and z, absorbing in y). Mixing periodic with non-periodic directions raises an error on all platforms.
+- Mixing periodic and non-periodic directions (e.g., periodic in x/y, reflecting in z) requires a real-space method: `"numerical_method": "cn-adi2"` for continuous chains or `"rs"` for discrete chains. These also take a different wall at each end of an axis (e.g., absorbing at z = 0 and reflecting at z = L).
+- Stress computation (and therefore `relax_cell`) supports periodic, reflecting, and absorbing boundary conditions (real fields; every method except `"cn-adi2"`).
 - Reflecting or absorbing walls need an orthogonal cell (all angles 90°), and a `space_group` needs periodic boundaries in every direction; both combinations are rejected.
 - Impenetrable regions (a `mask`) are available through `PropagatorSolver(mask=...)` only; `SCFT`, `LFTS` and `CLFTS` reject a `mask` parameter.
 
-**Example (reflecting in z, periodic in x/y — requires `"numerical_method": "cn-adi2"`):**
+**Example (reflecting in z, periodic in x/y — requires `"numerical_method": "cn-adi2"` or `"rs"`):**
 ```python
 "bc": ["periodic", "periodic",      # x: low, high
        "periodic", "periodic",      # y: low, high
@@ -67,7 +69,7 @@ Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implemen
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `segment_lengths` | dict | Relative statistical segment lengths $`b/b_{ref}`$ (linear ratio; the code squares this internally) | `{"A": 1.0, "B": 1.0}` |
+| `segment_lengths` | dict | Relative statistical segment lengths $`b/b_{ref}`$ (linear ratio; the code squares this internally). The keys are the monomer names: non-empty strings without `,`, which separates the two names of a `chi_n` pair | `{"A": 1.0, "B": 1.0}` |
 | `chi_n` | dict | Flory-Huggins parameters × $`N_{ref}`$; pairs that are omitted do not interact (χN = 0). A singular χN matrix (e.g. a zero pair in a three-monomer system, or chemically identical monomers) is accepted. Incompressible SCFT rejects a single monomer type | `{"A,B": 20.0}` |
 | `zeta_n` | float | (Optional) Compressibility parameter $`\zeta N \geq 0`$ of the compressible model. Omitted: incompressible ($`\sum_i \phi_i = 1`$) in SCFT and L-FTS; CL-FTS needs a finite value and defaults to `100.0` | `100.0` |
 
@@ -82,9 +84,11 @@ Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implemen
 | Key | Type | Description |
 |-----|------|-------------|
 | `volume_fraction` | float | Volume fraction in system |
-| `chemical_potential` | float | (CL-FTS) In place of `volume_fraction`: a grand-canonical species with the chemical potential $`\beta\mu_p`$ per chain, in the convention $`\beta\mu_p = \ln(\phi_p/\alpha_p) - \ln Q_p`$ of the recorded chemical potentials; the number of chains per reference chain is $`e^{\beta\mu_p} Q_p`$. Not for grafted chains or random copolymers |
+| `chemical_potential` | float | (CL-FTS) In place of `volume_fraction`: a grand-canonical species with the chemical potential $`\beta\mu_p`$ per chain, in the convention $`\beta\mu_p = \ln(\phi_p/\alpha_p) - \ln Q_p`$ of the recorded chemical potentials; the number of chains per reference chain is $`e^{\beta\mu_p} Q_p`$. $`\vert\beta\mu_p\vert`$ may not exceed 700, so that the fugacity $`e^{\beta\mu_p}`$ is a normal double (it overflows above 709.78). Not for grafted chains or random copolymers |
 | `blocks` | list | Block specifications |
 | `initial_conditions` | dict | (Optional) Custom propagator initial conditions per node, e.g. `{0: "G"}` maps node 0 to the initial condition labeled `"G"` in `q_init` (used for grafted chains). Labels may contain letters, digits and underscores only. Only SCFT takes `q_init`: L-FTS and CL-FTS reject grafted chains |
+
+`SCFT.run(..., q_init={"G": profile})` accepts real, finite full-grid graft profiles in the input axis order. With a space group, a full profile must have the group's symmetry and is converted to the solver's active reduced basis; an incompatible profile raises `ValidationError` rather than changing the graft distribution. Profiles with `prop_solver.n_grid` values in that reduced basis are also accepted and already use standard axes, regardless of `axis_ordering`. They must have the full space group's symmetry too: a physical reduced basis can represent profiles with less symmetry than the selected group. If the full and reduced sizes coincide, the full-grid axis convention applies.
 
 **Block format:** Each block is a dictionary with:
 - `"type"`: Monomer type (string)
@@ -92,6 +96,13 @@ Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implemen
 - `"v"`: Start vertex (optional for linear chains)
 - `"u"`: End vertex (optional for linear chains)
 - `"monomer_fractions"`: (Optional) Random copolymer, see below
+- `"multiplicity"`: (Optional) Number of copies $`1 \le m \le 10^6`$ of the block and of everything on its `u` side, attached at `v` (default 1); a real number continues an integer number of identical arms, see below
+
+Discrete block lengths must be integer multiples of `ds`. Lengths within the absolute
+acceptance tolerance of `1e-9` are snapped to the selected multiple. Composition means,
+electroneutrality checks, counterion concentrations, thermodynamic corrections and Gibbs
+ensemble amounts all use these same native block lengths. The original input lengths
+remain in the saved parameters.
 
 ```python
 "polymers": [{
@@ -105,7 +116,9 @@ Note: FFT/DCT/DST apply to pseudo-spectral methods (RQM4, RK2). CN-ADI2 implemen
 
 The volume fractions sum to 1. With grand-canonical polymers (`chemical_potential`) those of the canonical polymers sum to at most 1, and the grand-canonical chains fill the rest on average ([model](../theory/PolymerFieldTheory.md#6-grand-canonical-species)).
 
-**Random copolymer:** a polymer with a single block that has a `"monomer_fractions"` dictionary, e.g. `{"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.5, "B": 0.5}}`, is a random copolymer of the listed monomer types. `"type"` is a new name that is not in `segment_lengths`, the fractions must sum to 1, and the chain uses the field $`\sum_i f_i w_i`$ and the segment length $`(\sum_i f_i b_i^2)^{1/2}`$; its concentration is split among the monomer types by the fractions (see `examples/blend/lfts/MixtureBlockRandom.py`).
+**Random copolymer:** a polymer with a single block that has a `"monomer_fractions"` dictionary, e.g. `{"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.5, "B": 0.5}}`, is a random copolymer of the listed monomer types. `"type"` is a new name that is not in `segment_lengths`, the fractions must sum to 1 within an absolute tolerance of `1e-10` and are used without normalization, and the chain uses the field $`\sum_i f_i w_i`$ and the segment length $`(\sum_i f_i b_i^2)^{1/2}`$; its concentration is split among the monomer types by the fractions (see `examples/blend/lfts/MixtureBlockRandom.py`).
+
+**Block multiplicity:** a block with `"multiplicity": m` stands for `m` copies of itself and of all blocks on its `u` side, attached at its `v` vertex, so a star with `n` identical arms is one arm with multiplicity `n`. `m` may be any real number from 1 to 10⁶: the junction at `v` takes the propagator of that branch to the power `m` (`m - 1` for the propagator that enters one of the copies), and the copies count `m` times in the concentrations and in the chain length $`\alpha`$ ([theory](../theory/ChainPropagators.md#43-real-number-of-arms-block-multiplicity)). Two blocks with multiplicities must not lie each on the `u` side of the other, and `v` must not be a grafted chain end. SCFT and L-FTS take real multiplicities; CL-FTS (complex fields) takes integers only. A real power needs positive propagators: where a numerical propagator turns negative (Crank-Nicolson next to absorbing walls, a pseudo-spectral method in a strong field), the computation stops with an error. A polymer with multiplicities is computed without propagator aggregation, and `get_block_concentration` gives the concentration of all copies of a block.
 
 ### Polymer Architectures
 
@@ -136,6 +149,15 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 #         ------0------
 ```
 
+**Star with a real number of arms (A<sub>n</sub>B<sub>n</sub>, n = 5.6):**
+```python
+"blocks": [
+    {"type": "A", "length": 0.5, "v": 0, "u": 1, "multiplicity": 5.6},
+    {"type": "B", "length": 0.5, "v": 0, "u": 2, "multiplicity": 5.6}
+]
+#   1 --A-- 0 --B-- 2, each arm 5.6 times
+```
+
 **ABC triblock:**
 ```python
 "blocks": [
@@ -152,7 +174,7 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `numerical_method` | str | Algorithm for propagator computation | `"rqm4"` |
+| `numerical_method` | str | Algorithm for propagator computation | `"rqm4"` (continuous), `"ps"` (discrete) |
 
 **Available methods:**
 
@@ -160,11 +182,14 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 |-------|-------|------|-------------|
 | `"rqm4"` | 4th | Pseudo-spectral | Richardson extrapolation (default) |
 | `"rk2"` | 2nd | Pseudo-spectral | Rasmussen-Kalosakas operator splitting |
-| `"cn-adi2"` | 2nd | Real-space | Crank-Nicolson ADI (continuous chains only) |
+| `"cn-adi2"` | 2nd | Real-space | Crank-Nicolson ADI (continuous chains) |
+| `"ps"` | – | Pseudo-spectral | Bond convolution through FFTs (discrete chains, default) |
+| `"rs"` | – | Real-space | The same bond summed on the grid (discrete chains) |
 
 **Restrictions:**
-- `numerical_method` applies to the **continuous** chain model only. For `"chain_model": "discrete"`, the parameter is ignored (a note is printed) and the dedicated discrete-chain pseudo-spectral solver is always used.
-- `"cn-adi2"` is the only method that supports mixing periodic and non-periodic boundary conditions; the pseudo-spectral methods require every direction to be periodic or every direction to be non-periodic (see [Boundary Conditions](#boundary-conditions)).
+- `"rqm4"`, `"rk2"` and `"cn-adi2"` are for continuous chains, `"ps"` and `"rs"` for discrete chains; a method of the other chain model raises an error.
+- The real-space methods `"cn-adi2"` and `"rs"` are the only ones that mix periodic and non-periodic boundary conditions; the pseudo-spectral methods require every direction to be periodic or every direction to be non-periodic (see [Boundary Conditions](#boundary-conditions)). The real-space methods need an orthogonal cell; `"cn-adi2"` computes no stress (no `relax_cell`).
+- `"rs"` keeps every concentration positive in fields that change by more than about 30 kT per chain where the chains hardly reach, such as grafted and charged brushes; there the FFT round-off of `"ps"` turns them negative. See [NumericalMethods.md](../theory/NumericalMethods.md#43-rs-real-space-bond-convolution).
 
 See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
@@ -223,7 +248,7 @@ All keys are **required**: omitting one, a name other than `"am"`, a `max_hist` 
 | `stress_scale` | float | Scaling of the stress entries in the optimizer vector | `1` |
 | `stress_interval` | int or `"adaptive"` | Compute the stress every N iterations; `"adaptive"` uses 1, 2 or 4 as the error drops below 1e-2 and 1e-4 | `1` |
 
-Box relaxation needs a pseudo-spectral method with real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
+Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
 
 ### Crystal System
 
@@ -240,13 +265,15 @@ Box relaxation needs a pseudo-spectral method with real fields (see [Box Optimiz
 | `"Monoclinic"` | a, b, c (3D only) | β |
 | `"Triclinic"` | a, b, c (3D only) | α, β, γ |
 
-Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free). Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` at the top of `scft.py`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic.
+Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free). Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` at the top of `cell_relaxation.py`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic.
 
 ### Axis Ordering
 
+`SCFT.run(initial_fields=...)` requires one real, finite value per full-grid point for each monomer type. Complex arrays and values that become non-finite at double precision raise `ValidationError` before the optimizer is reset or the fields are symmetrized.
+
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
+| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and full-grid `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
 
 ### Output
 
@@ -292,9 +319,13 @@ SCFT accepts `electrostatics` as described under [Electrostatics](#electrostatic
 
 The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. Other numerical errors propagate and are recorded as `failed`.
 
-The optional `"resample"` policy reproduces the earlier noise-selection behavior. Each redraw emits a warning and increments `noise_resamples`; convergence-dependent selection can alter the sampled distribution. Initial-saddle retries never draw noise, regardless of the policy.
+When no imaginary auxiliary fields remain (for example, the ideal reference limit with `zeta_n=0` and zero interactions), L-FTS evaluates concentrations and energy directly, with zero saddle iterations and error. Checkpointing and recording still run at the requested intervals.
+
+The optional `"resample"` policy draws fresh noise after a failed solve instead. Each redraw emits a warning and increments `noise_resamples`; convergence-dependent selection can alter the sampled distribution. Initial-saddle retries never draw noise, regardless of the policy.
 
 ### Recording
+
+NumPy floating-point parameters, including `longdouble`, are converted to Python double precision in portable metadata and result files. Finite extended-precision scalars that would overflow or become zero during conversion are rejected; the input dictionary is not modified.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -306,13 +337,29 @@ The optional `"resample"` policy reproduces the earlier noise-selection behavior
 | `checkpoint_interval` | int | Interval for saving complete restart checkpoints |
 | `sample_interval` | int | Collect H, dH/dχN, drift and structure-function samples every N Langevin steps |
 | `statistics_save_interval` | int | Save the collected histories and averaged structure functions, then reset the accumulators, every N Langevin steps |
-| `pressure` | bool | (CL-FTS, optional) Also record the osmotic pressure at every sample; needs a periodic box and free chains. Default `False` |
+| `pressure` | bool | (CL-FTS, optional) Also record the osmotic pressure at every sample; needs a periodic box, free chains and a method with the stress (not `cn-adi2`). Default `False` |
+| `concentrations` | bool | (CL-FTS, optional) Also record the mean concentration of every monomer type and point ion on the grid, over all steps. Default `False` |
 
-All intervals are positive integer counts of Langevin steps. Structure functions are normalized by the actual sample count, including when `statistics_save_interval` is not a multiple of `sample_interval`. Measurement files include `sample_count` and a JSON string `simulation_metadata_json`. Hamiltonian files also record `drift_max_history`: the maximum absolute scaled force used for each sampled transition, including dynamical stabilization in CL-FTS. CL-FTS also records `drift_max_step_history`, the maximum of every step for each auxiliary field (one column per field), and with electrostatics `psi_drift_max_step_history`. With canonical single-site species (discrete chains of one segment, point ions) it records `partition_ratio_step_history`, the ratio $`\vert Q_s \vert / \langle \vert e^{-u_s} \vert \rangle`$ of every step for each species (columns named by `partition_ratio_species_json`), which approaches zero near a zero of $`Q_s`$. Checkpoints keep the steps since the last statistics file. See [ComplexLangevinSimulation.md](../theory/ComplexLangevinSimulation.md#3-correct-convergence) for their use. At every sample CL-FTS records the chemical potentials βμ_p of all species (`chemical_potential_history_real`/`_imag`, one row per sample), with `pressure` the osmotic pressure βΠR₀³/C in its virial form (`pressure_history_real`/`_imag`) and, with grand-canonical species, the numbers of chains and ions per reference chain of all species (`number_density_history_real`/`_imag`, the columns of the chemical potentials) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)). Custom callbacks use their own `interval` independently of these built-in measurements.
+All intervals are positive integer counts of Langevin steps. Structure functions are normalized by the actual sample count, including when `statistics_save_interval` is not a multiple of `sample_interval`. Measurement files include `sample_count` and a JSON string `simulation_metadata_json`. Hamiltonian files also record `drift_max_history`: the maximum absolute scaled force used for each sampled transition, including dynamical stabilization in CL-FTS. CL-FTS also records `drift_max_step_history`, the maximum of every step for each auxiliary field (one column per field), and with electrostatics `psi_drift_max_step_history`. With canonical single-site species (discrete chains of one segment, point ions) it records `partition_ratio_step_history`, the ratio $`\vert Q_s \vert / \langle \vert e^{-u_s} \vert \rangle`$ of every step for each species (columns named by `partition_ratio_species_json`), which approaches zero near a zero of $`Q_s`$. Checkpoints keep the steps since the last statistics file. See [ComplexLangevinSimulation.md](../theory/ComplexLangevinSimulation.md#3-correct-convergence) for their use. At every sample CL-FTS records the chemical potentials βμ_p of all species (`chemical_potential_history_real`/`_imag`, one row per sample), with `pressure` the osmotic pressure βΠR₀³/C in its virial form (`pressure_history_real`/`_imag`) and, with grand-canonical species, the numbers of chains and ions per reference chain of all species (`number_density_history_real`/`_imag`, the columns of the chemical potentials) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)). With `concentrations`, the files `structure_function_NNNNNN.mat` hold the mean of every monomer type and point ion over all steps of the interval, whatever `sample_interval`, shaped like `nx` (`concentration_<name>_real`/`_imag`), with the number of steps `concentration_step_count`; a run continued from a checkpoint without the sums averages from the restart on. Custom callbacks use their own `interval` independently of these built-in measurements.
 
 Field checkpoints use format version 2 and are replaced atomically. They store the full PCG64 state, previous noise, auxiliary fields, concentrations, pending measurement sums/histories, WTMD state, and custom integrator/callback settings and states. Version-1 files continue with default LM and no callbacks. `continue_run(path)` validates the effective physical and numerical settings before restoring the RNG. The output directory, checkpoint interval, maximum final step, verbosity and backend may change; sampling periods, model, integrator settings, named callbacks and WTMD bias settings must match. On a different backend only numerical/statistical equivalence is expected. With `cpu-fftw` a continuation in a new process, like a second run with the same seed, can also differ from the uninterrupted run by rounding (about $`10^{-15}`$ at first, growing as the trajectories separate): FFTW chooses its transform plans by timing candidates, and another process can choose another plan. `cpu-mkl` and `cuda` on the same machine, and continuations within one process, reproduce the run bit for bit. Old unversioned files require `continue_run(path, allow_legacy=True)` and emit a warning because compatibility and pending measurements cannot be verified.
 
-See [Numerical Validation](../internals/NumericalValidation.md) for regression coverage, provenance and statistical validation jobs. Both `LFTS` and `CLFTS` accept keyword arguments `integrator=` and `callbacks=`; see [Extensions](../internals/Extensions.md) for their contracts and a runnable example.
+Statistics, structure-function and WTMD files and checkpoints name the measurements of a monomer pair by its two names in sorted order joined with `_`, such as `dH_history_A_B`. L-FTS and CL-FTS therefore refuse monomer names for which two pairs would share this suffix (`A`, `B_C` together with `A_B`, `C`: both pairs give `A_B_C`), and L-FTS refuses a monomer type named `aux`, whose field would take the key `w_aux` of the auxiliary fields.
+
+MAT files also preserve names that cannot be stored directly as nested structure fields, such as monomer names starting with an underscore or exceeding the MAT field-name limit. Each affected structure stores reversible field identifiers and their original names in `polymerfts_mat_keys_json`. To read these names back, use `decode_mat_fields` on SciPy's simplified output:
+
+```python
+from scipy.io import loadmat
+from polymerfts.utils.mat_fields import decode_mat_fields
+
+data = decode_mat_fields(loadmat("fields_000100.mat", simplify_cells=True))
+```
+
+This applies to SCFT result files as well as FTS output. Ordinary nested names and top-level checkpoint variables keep their existing names; `continue_run()` reads checkpoints directly as before.
+
+See [Numerical Validation](../validation/NumericalValidation.md) for regression coverage, provenance and statistical validation jobs. Both `LFTS` and `CLFTS` accept keyword arguments `integrator=` and `callbacks=`; see [Extensions](../internals/Extensions.md) for their contracts and a runnable example.
+
+With WTMD, a run starts from the bias and statistics that `sim.wtmd` holds: those of WTMD construction, those an earlier run of the object left, or a bias set on `sim.wtmd` before the run. A fresh `run()` starting at step 1 drops the samples that an earlier run left pending (they are not yet in a hill) and keeps the bias and statistics. `continue_run()` restores the bias, statistics and pending samples from the checkpoint; a manual run starting after step 1 keeps them all. A fresh run does not reset the random-number stream; for an independent run, construct a new simulation.
 
 ### Compressor
 
@@ -338,7 +385,7 @@ For `"am"` and `"lram"`, the keys `max_hist`, `start_error`, `mix_min`, and `mix
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `ell` | int | $`\ell`$-norm for order parameter | `4` |
+| `ell` | float | Finite norm exponent $`\ell \geq 1`$; noninteger values are supported | `4` |
 | `kc` | float | Cutoff wavenumber | `6.02` |
 | `delta_t` | float | Well-tempering factor $`\Delta T/T`$ | `5.0` |
 | `sigma_psi` | float | Gaussian width $`\sigma_\Psi`$ | `0.16` |
@@ -349,6 +396,10 @@ For `"am"` and `"lram"`, the keys `max_hist`, `start_error`, `mix_min`, and `mix
 | `recording_period` | int | Data recording frequency | `100000` |
 
 WTMD requires a 3D grid (`nx` with three entries) and a real auxiliary (exchange) field, that is a negative value among the `Eigenvalues` the constructor prints (of the projected interaction matrix, see [Polymer Field Theory](../theory/PolymerFieldTheory.md#2-incompressible-model); for two monomer types, a positive `chi_n`).
+
+At a zero Fourier coefficient the order-parameter derivative is zero for `ell > 1`;
+`ell = 1` uses the zero subgradient. Exponents below one are rejected because their
+derivative diverges at zero coefficients. A zero bias derivative adds no force.
 
 ### Other L-FTS Options
 
@@ -374,7 +425,7 @@ WTMD requires a 3D grid (`nx` with three entries) and a real auxiliary (exchange
 
 ### Electrostatics
 
-CL-FTS samples the electrostatic potential; SCFT takes its saddle point ([Electrostatics (Mean Field)](#electrostatics-mean-field)). Charged monomer types interact through the smeared charge density $`c = \sum_i z_i\,(\Gamma_i * \phi_i)`$ with the Coulomb kernel $`E/k^2`$, or the screened kernel $`E/(k^2 + \kappa^2)`$ with `screening_length` ([model](../theory/PolymerFieldTheory.md#5-electrostatic-interactions)). CL-FTS decouples the interaction with a fluctuating electrostatic potential $`\psi`$ ([sampling](../theory/ComplexLangevinSimulation.md#6-charged-systems)). Small ions are either molecules of one segment in `polymers`, which take volume like the other species, or point ions (`ions`), which have no volume and no $`\chi`$ ([model](../theory/PolymerFieldTheory.md#55-point-ions)).
+CL-FTS samples the electrostatic potential; SCFT takes its saddle point ([Electrostatics (Mean Field)](#electrostatics-mean-field)). Charged monomer types interact through the smeared charge density $`c = \sum_i z_i\,(\Gamma_i * \phi_i)`$ with the Coulomb kernel $`E/k^2`$, or the screened kernel $`E/(k^2 + \kappa^2)`$ with `screening_length` ([model](../theory/PolymerFieldTheory.md#5-electrostatic-interactions)). CL-FTS decouples the interaction with a fluctuating electrostatic potential $`\psi`$ ([sampling](../theory/ComplexLangevinSimulation.md#6-charged-systems)). Small ions are either molecules of one segment in `polymers`, which take volume like the other species, or point ions (`ions`), which have no volume and no $`\chi`$ ([model](../theory/PolymerFieldTheory.md#55-point-ions)). Ions that interact with the monomers through $`\chi`$, for example a salt that one block solvates, are therefore molecules of one segment: with discrete chains, a polymer of one block of length `ds` whose monomer type has a valence in `charges` and its pairs in `chi_n` (example below).
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -385,13 +436,13 @@ CL-FTS samples the electrostatic potential; SCFT takes its saddle point ([Electr
 | `ions` | dict | (Optional) Point ions, `{"Na": {"valence": 1, "concentration": 0.02, "smearing_length": 0.1}, ...}`: valence, concentration of added salt in ions per segment of the reference density $`\rho_0`$, and Gaussian smearing length in units of $`R_0`$ (positive). In place of `concentration`, `chemical_potential` $`\beta\mu_s`$ makes the species grand canonical, in the convention $`\beta\mu_s = \ln(N c_s) - \ln Q_s`$. Names must differ from the monomer types | none |
 | `counterion` | str or None | The canonical point ion that neutralizes the canonical polymers and the given canonical ions: its concentration grows by the net charge divided by its valence. Default: the only canonical ion species whose valence has the opposite sign of the net charge (an error if there are several, none if there is no such species). `None` adds no counterions | automatic |
 | `psi_dt_scaling` | float | (CL-FTS) Mobility of $`\psi`$ relative to the auxiliary fields | `1.0` |
-| `fixed_charge` | array | (Optional) Fixed charge density $`c_f(\mathbf{r})`$ in charges per segment of the reference density, one value per grid point (as `nx`), for example charged surfaces or particles. It adds to the charge density as given (not smeared) and to the electroneutrality through its mean | none |
+| `fixed_charge` | array | (Optional) Fixed charge density $`c_f(\mathbf{r})`$ in charges per segment of the reference density, one value per grid point (as `nx`), for example charged surfaces or particles. It adds to the charge density as given (not smeared) and to the electroneutrality through its mean. `GibbsEnsemble` rejects it | none |
 | `screening_length` | float | (Optional) Screening length $`1/\kappa`$ in units of $`R_0`$ of a background electrolyte that is not simulated explicitly: the kernel becomes $`E/(k^2 + \kappa^2)`$. It is the Debye length of the background alone; explicit ions screen in addition ([model](../theory/PolymerFieldTheory.md#54-screened-coulomb-interaction)). Omit it for unscreened charges | none |
 
 **Requirements:**
 - Without `screening_length` the system must be electroneutral: $`\sum_i z_i \phi_i + \sum_s z_s c_s = 0`$ with the overall segment fraction $`\phi_i`$ of each type and the point-ion concentrations $`c_s`$, counterions included (to $`10^{-10}`$), plus the mean of `fixed_charge`. With counterions in `polymers`, their fraction follows from the polymer charge; point ions take it automatically (`counterion`). With `screening_length` the background electrolyte screens a net charge. A charged grand-canonical species (polymer or point ion) also lifts the condition: the uniform mode of $`\psi`$ then evolves as the Donnan potential that makes the system neutral ([model](../theory/PolymerFieldTheory.md#6-grand-canonical-species)).
 - `smearing` must be given; with per-type Gaussian lengths $`a_i`$ (Born radii) each type has its own $`\Gamma_i(k)`$. Charged types need a positive Gaussian length, since $`a_i = 0`$ leaves point charges.
-- A periodic box, or a closed box with walls on every side (`bc` reflecting or absorbing; not both kinds of axes). With walls the transforms are cosine series, so $`\psi`$ has no normal derivative at the walls; the charge structure function, the osmotic pressure and the `etd` integrator need a periodic box. No random copolymers.
+- Any combination of periodic axes and walls (`bc` reflecting or absorbing; a box that mixes them needs `cn-adi2` or `rs`, and CL-FTS, whose fields are complex, `rs`). Along wall axes the transforms are cosine series, so $`\psi`$ has no normal derivative at the walls, which act as walls of vanishing dielectric constant ([walls](../theory/PolymerFieldTheory.md#53-electrostatic-potential)); the charge structure function, the osmotic pressure and the `etd` integrator need a periodic box. No random copolymers.
 - `zeta_n` is finite, as always in CL-FTS.
 
 ```python
@@ -413,21 +464,40 @@ params["electrostatics"] = {"charges": {"A": 0.2}, "bjerrum_length": 0.01,
                                      "Cl": {"valence": -1, "chemical_potential": mu, "smearing_length": 0.1}}}
 ```
 
+An absent canonical point ion has zero density and energy contribution and chemical potential `-inf`, including when its partition function vanishes. The partition remains available for diagnostics.
+
 The point ions add one chemical potential each to `chemical_potential_history`, after the polymers. [SaltReservoir.py](../../examples/charged/clfts/SaltReservoir.py) runs a charged melt in contact with a salt reservoir.
+
+A salt that the B block of an AB diblock solvates (discrete chains with $`N = 50`$): the cation `P` and the anion `M` are molecules of one segment with their own $`\chi`$, and the diblock takes the remaining volume.
+
+```python
+params["segment_lengths"].update({"P": 1.0, "M": 1.0})
+params["chi_n"].update({"A,P": 100.0, "A,M": 25.0})   # both prefer B, the cation more
+params["polymers"] = [{"volume_fraction": 0.96, "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]},
+                      {"volume_fraction": 0.02, "blocks": [{"type": "P", "length": 1 / 50}]},
+                      {"volume_fraction": 0.02, "blocks": [{"type": "M", "length": 1 / 50}]}]
+params["electrostatics"] = {"charges": {"P": 1.0, "M": -1.0}, "coupling": 1e5}
+```
+
+[SaltDopedLamella.py](../../examples/charged/scft/SaltDopedLamella.py) relaxes such a lamella in SCFT.
 
 ### Gibbs Ensemble
 
-`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` and the top-level `lx` are not used, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it. Both return `summary()`, the averages of the second half of the cycles.
+`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it. Both return `summary()`, the averages of the second half of the cycles.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `boxes` | list | Two dicts with `lx` (the lengths at the starting composition), `volume_fractions` (one per polymer, summing to 1) and optionally `ion_concentrations` of the canonical point ions (by default those of `electrostatics` with the counterions of the box) | required |
+| `boxes` | list | Two dicts with `volume_fractions` (one per polymer, summing to 1), optionally `volume` (of the phase at the start, which fixes the amounts for the lever rule; by default the volume of `lx`) and optionally `ion_concentrations` of the canonical point ions (by default those of `electrostatics` with the counterions of the box) | required |
 | `cycles` | int | Number of exchanges | required |
 | `cycle_steps` | int | Langevin steps of each box per exchange, a multiple of `recording.sample_interval` | required |
 | `exchange_rate` | float | Rate $`r`$ of the exchange | `0.2` |
 | `skip_steps` | int | Steps at the start of each cycle left out of the averages (smaller than `cycle_steps`) | `0` |
 
 The polymers must be canonical free chains and the boxes periodic, and every polymer and canonical point ion needs a positive amount in both boxes (leave ions that are absent out of `electrostatics.ions`). Without screening, charged boxes with only canonical point ions must be neutral; charged grand-canonical point ions keep their chemical potential in both boxes and set the Donnan potential of each box, which then need not be neutral by itself. `random_seed` is a non-negative integer.
+
+Gibbs histories record the effective block lengths used for their chain amounts and
+exchange potentials, and a continuation needs the same lengths. A history with `lx` in
+its boxes does not continue: start a fresh `run()`.
 
 The checkpoints store $`\psi`$ and its random-number stream, and a continuation must use the same electrostatic settings. A run continued by hand with `run(..., start_langevin_step=...)` takes $`\psi`$ through `initial_psi`, for example `psi_real + 1j * psi_imag` of a fields file, and the previous noise of its Leimkuhler-Matthews step through `psi_noise_prev` (zero if omitted); without `initial_psi` $`\psi`$ restarts at zero with a warning. Such a run does not restore the random-number streams; `continue_run()` continues a checkpoint exactly (with `cpu-fftw` in a new process up to rounding, see [Recording](#recording)). [ChargedDiblock.py](../../examples/charged/clfts/ChargedDiblock.py) is a complete script.
 
@@ -487,7 +557,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 `relax_cell`, `stress_scale`, `stress_interval` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
-**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for pseudo-spectral methods with real fields (complex fields with non-periodic boundaries are rejected), but is not implemented for the real-space `"cn-adi2"` method. Therefore `relax_cell=True` requires a pseudo-spectral method. With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
+**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"` (on CUDA, `"rqm4"` and `"rk2"` take no complex fields with walls, which `"auto"` runs on the CPU); `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
 ### Lattice Angles (Non-orthogonal)
 
@@ -613,7 +683,7 @@ params = {
 
 ### Non-Periodic Boundaries (Confined Film)
 
-All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4 and RK2 use DCT/DST transforms, while CN-ADI2 uses ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by `"cn-adi2"` (continuous chains only) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 4096 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, with which `"cn-adi2"` runs apply smearing and the `lr`/`lram` compressors in a box with walls on every axis, uses the cosine series along every wall, absorbing ones included (a box that mixes periodic axes and walls transforms them with NumPy/SciPy instead); on CUDA its 1D transform takes at most 4096 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
+All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, which applies smearing and the `lr`/`lram` compressors in every box, uses the cosine series along every wall, absorbing ones included; on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
 
 ```python
 params = {

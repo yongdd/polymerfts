@@ -114,7 +114,7 @@ public:
      * Computes and uploads Fourier basis to GPU. Boltzmann factors are
      * allocated and computed when finalize_ds_values() is called.
      *
-     * @param bond_lengths Statistical segment lengths squared by monomer type
+     * @param bond_lengths Relative statistical segment lengths by monomer type (not squared)
      * @param bc           Boundary conditions
      * @param nx           Grid dimensions
      * @param dx           Grid spacing [dx, dy, dz]

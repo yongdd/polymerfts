@@ -37,6 +37,7 @@ private:
     std::unique_ptr<CpuSolver<T>> solver;
     int n_streams;
     int n_basis;
+    std::vector<T> absolute_product;  ///< Reused partition-diagnostic integrand
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis
     std::map<std::string, std::vector<T>> exp_dw_reduced;
@@ -44,8 +45,8 @@ private:
     static T* raw(BackendArray<T>* a) { return reinterpret_cast<T*>(a); }
     static T* raw(CheckpointArray<T>* a) { return reinterpret_cast<T*>(a); }
 
-    void sum_sources(T* q, const std::vector<std::pair<const T*, int>>& sources);
-    void multiply_sources(T* q, const std::vector<std::pair<const T*, int>>& sources);
+    void sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
+    void multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
 
 public:
     /**
@@ -84,18 +85,20 @@ public:
     void set_zero(int stream, BackendArray<T>* a) override;
     void copy(int stream, BackendArray<T>* dst, BackendArray<T>* src) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void apply_mask(int stream, BackendArray<T>* q) override;
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 
     T inner_product(BackendArray<T>* a, BackendArray<T>* b) override;
     T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) override;
+    double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
+                                  BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,

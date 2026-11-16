@@ -58,7 +58,7 @@ def apply_space_group(params, selection, relax_cell):
         need = "a = b = c and angles [90, 90, 90]"
     elif system == "Tetragonal":
         valid = same(lx[0], lx[1]) and orthogonal
-        need = "a = b and angles [90, 90, 90] (use an Orthorhombic box with a = b)"
+        need = "a = b and angles [90, 90, 90] (choose Tetragonal in Box)"
     elif system == "Orthorhombic":
         valid, need = orthogonal, "angles [90, 90, 90]"
     elif system == "Monoclinic":
@@ -66,8 +66,9 @@ def apply_space_group(params, selection, relax_cell):
         unique = group["unique_axis"]
         names = ("alpha", "beta", "gamma")
         valid = all(abs(angles[i] - 90) < 1e-8 for i in range(3) if i != unique)
+        shape = "Monoclinic" if unique == 1 else "Triclinic"
         need = (f"the unique axis {'abc'[unique]} perpendicular to the other two, "
-                + " = ".join(names[i] for i in range(3) if i != unique) + " = 90 (use a Triclinic box)")
+                + " = ".join(names[i] for i in range(3) if i != unique) + f" = 90 (use a {shape} box)")
     elif system == "Triclinic":
         valid, need = True, "any cell"
     elif group["hexagonal_axes"]:
@@ -186,8 +187,8 @@ def model_parameters(model):
     box = model["box"]
     row(box, "dimension shape nx lx angles", "Box")
     dim = box["dimension"]
-    shapes = {1: ("line",), 2: ("square", "rectangle"),
-              3: ("cubic", "orthorhombic", "hexagonal", "triclinic")}
+    shapes = {1: ("line",), 2: ("square", "rectangle", "hexagonal", "oblique"),
+              3: ("cubic", "tetragonal", "orthorhombic", "hexagonal", "monoclinic", "triclinic")}
     if type(dim) is not int or dim not in shapes or box["shape"] not in shapes[dim]:
         raise ValueError("Choose a box shape matching the dimension.")
     for key in ("nx", "lx"):
@@ -201,12 +202,14 @@ def model_parameters(model):
     if any(a >= 180 for a in angles):
         raise ValueError("Box angles must be between 0 and 180 degrees.")
     shape = box["shape"]
-    equal = lx if shape in ("square", "cubic") else lx[:2] if shape == "hexagonal" else []
+    equal = lx if shape in ("square", "cubic") else lx[:2] if shape in ("tetragonal", "hexagonal") else []
     if equal and not all(math.isclose(a, equal[0], rel_tol=1e-10) for a in equal):
-        raise ValueError(f"{shape.title()} boxes require equal {'first two ' if shape == 'hexagonal' else ''}lengths.")
-    expected = [90, 90, 120] if shape == "hexagonal" else [90, 90, 90]
-    if shape != "triclinic" and angles != expected:
-        raise ValueError(f"{shape.title()} box angles must be {expected} degrees.")
+        raise ValueError(f"{shape.title()} boxes require equal {'first two ' if shape in ('tetragonal', 'hexagonal') else ''}lengths.")
+    expected = {"hexagonal": [90, 90, 120], "monoclinic": [90, None, 90],
+                "oblique": [90, 90, None], "triclinic": [None, None, None]}.get(shape, [90, 90, 90])
+    if any(fixed is not None and angle != fixed for angle, fixed in zip(angles, expected)):
+        required = ", ".join("free" if a is None else str(a) for a in expected)
+        raise ValueError(f"{shape.title()} box angles must be [{required}] degrees.")
     ca, cb, cg = [math.cos(math.radians(a)) for a in angles]
     # The solver rejects cells flatter than V = 0.1 abc; the small margin keeps
     # rounding from letting through a cell that it rejects
@@ -291,7 +294,7 @@ def imaginary_exchange_fields(types, chi_n):
     """Number of imaginary auxiliary fields besides the pressure field of an incompressible
     model: the positive eigenvalues of chi N on compositions with zero sum. By Sylvester's law
     of inertia the basis e_i - e_last gives the same count as the orthonormal one of
-    polymer_field_theory; the eigenvalues come from cyclic Jacobi rotations."""
+    symmetric_formulation; the eigenvalues come from cyclic Jacobi rotations."""
     chi = lambda a, b: 0.0 if a == b else chi_n.get(f"{a},{b}", chi_n.get(f"{b},{a}", 0.0))
     last, rest = types[-1], types[:-1]
     m = [[chi(a, b) - chi(a, last) - chi(last, b) for b in rest] for a in rest]
@@ -380,12 +383,14 @@ def build_script(values):
     platform = choice("platform", ("auto", "cuda", "cpu-mkl", "cpu-fftw"))
     if platform != "auto":
         params["platform"] = platform
-    method = choice("numerical_method", ("auto", "rqm4", "rk2", "cn-adi2"))
+    method = choice("numerical_method", ("auto", "rqm4", "rk2", "cn-adi2", "ps", "rs"))
     if method != "auto":
-        if params["chain_model"] == "discrete":
-            raise ValueError("Choose numerical method 'auto' for discrete chains.")
+        if (params["chain_model"] == "discrete") != (method in ("ps", "rs")):
+            raise ValueError(f"Numerical method '{method}' is not for {params['chain_model']} chains: continuous "
+                             "chains take rqm4, rk2 or cn-adi2, discrete chains ps or rs.")
         params["numerical_method"] = method
-    if method == "cn-adi2" and "angles" in params:
+    real_space = method in ("cn-adi2", "rs")
+    if real_space and "angles" in params:
         raise ValueError("For non-orthogonal boxes choose a pseudo-spectral method.")
     if mode == "CL-FTS" and method == "cn-adi2":
         raise ValueError("CN-ADI2 does not support complex fields. For CL-FTS choose auto, rqm4 or rk2.")
@@ -398,17 +403,28 @@ def build_script(values):
         params.update(relax_cell=bool(values["relax_cell"]), stress_interval=1,
                       optimizer=mixing, max_iter=num("max_iter", integer=True),
                       tolerance=num("tolerance"))
+        # Box relaxation needs the stress, which cn-adi2 does not compute
+        if method == "cn-adi2" and params["relax_cell"]:
+            raise ValueError(f"{method.upper()} computes no stress. Disable cell relaxation or choose a pseudo-spectral method.")
         if values.get("space_group", "none") != "none":
             apply_space_group(params, values["space_group"], params["relax_cell"])
+            # rs keeps the cell orthogonal, so the angles of a monoclinic or triclinic group cannot relax
+            system = space_groups()[values["space_group"]]["crystal_system"]
+            if method == "rs" and params["relax_cell"] and system in ("Monoclinic", "Triclinic"):
+                raise ValueError("RS keeps the cell angles at 90 degrees. Disable cell relaxation or choose an "
+                                 "orthogonal space group.")
         elif structured is not None:
             shape = values["model"]["box"]["shape"]
             if shape == "square" and params["relax_cell"]:
                 raise ValueError("2D Square cells require fixed-cell SCFT. Disable cell relaxation or choose Rectangle.")
             # A space group determines its own crystal system. Otherwise preserve
             # the cell constraints selected in the editor during SCFT relaxation.
-            params["crystal_system"] = (shape.title() if len(nx) == 3 else "Orthorhombic")
-            if method == "cn-adi2" and shape == "triclinic" and params["relax_cell"]:
-                raise ValueError("CN-ADI2 requires orthogonal cells. Choose a pseudo-spectral method to relax triclinic angles.")
+            params["crystal_system"] = (shape.title() if len(nx) == 3 else
+                                        {"hexagonal": "Hexagonal2D", "oblique": "Oblique2D"}.get(shape, "Orthorhombic"))
+            # rs keeps the cell orthogonal, so its angles cannot relax
+            if method == "rs" and params["relax_cell"] and params["crystal_system"] in ("Monoclinic", "Triclinic", "Oblique2D"):
+                raise ValueError("RS keeps the cell angles at 90 degrees. Disable cell relaxation or choose an "
+                                 "orthogonal cell shape.")
     else:
         params.update(
             langevin=dict(max_step=num("max_step", integer=True), dt=num("dt"), nbar=num("nbar")),
@@ -423,7 +439,7 @@ def build_script(values):
             if len(params["segment_lengths"]) == 2 and next(iter(params["chi_n"].values())) <= 0:
                 raise ValueError("This A/B L-FTS setup requires positive chi N.")
             mixing["name"] = choice("compressor", ("am", "lr", "lram"))
-            # The library's rule (lfts.py): LR needs the pressure field as the only imaginary one
+            # The library's rule (saddle.py): LR needs the pressure field as the only imaginary one
             if mixing["name"] != "am" and imaginary_exchange_fields(list(params["segment_lengths"]), params["chi_n"]):
                 raise ValueError("Compressors lr and lram need the pressure field as the only imaginary field; "
                                  "these chi N values give another one. Choose am.")
@@ -448,35 +464,22 @@ def build_script(values):
         raise ValueError("Lamella and gyroid seeds require two monomer types. Choose random or mat for larger systems.")
     if initial == "mat":
         if mode == "CL-FTS":
-            read_field = dedent('''\
-                if key in field_data:
-                    field = np.asarray(field_data[key], dtype=np.complex128)
-                elif key + "_real" in field_data and key + "_imag" in field_data:
-                    real = np.asarray(field_data[key + "_real"])
-                    imag = np.asarray(field_data[key + "_imag"])
-                    if real.shape != imag.shape or np.iscomplexobj(real) or np.iscomplexobj(imag):
-                        raise ValueError(f"{key}_real and {key}_imag must be real arrays of the same shape.")
-                    if not np.all(np.isfinite(real)) or not np.all(np.isfinite(imag)):
-                        raise ValueError(f"{key} must contain one finite value per grid point.")
-                    field = real.astype(np.float64) + 1j * imag.astype(np.float64)
-                else:
-                    raise ValueError(f"Initial .mat file needs {key} or both {key}_real and {key}_imag.")
-                ''')
+            read_field = 'field = np.asarray(monomer_fields[monomer], dtype=np.complex128)\n'
         else:
             read_field = dedent('''\
-                if key not in field_data:
-                    raise ValueError(f"Initial .mat file is missing {key}.")
-                if np.iscomplexobj(field_data[key]):
+                if np.iscomplexobj(monomer_fields[monomer]):
                     raise ValueError(f"{key} must be real-valued for SCFT/L-FTS.")
-                field = np.asarray(field_data[key], dtype=np.float64)
+                field = np.asarray(monomer_fields[monomer], dtype=np.float64)
                 ''')
         field_code = dedent(f"""\
             # Relative input paths are resolved next to this script.
             from scipy.io import loadmat
+            from polymerfts.utils.mat_fields import read_monomer_fields
 
             field_data = loadmat(script_dir / {mat_file!r}, squeeze_me=True)
             if "nx" in field_data and not np.array_equal(np.atleast_1d(field_data["nx"]), params["nx"]):
                 raise ValueError("The .mat grid (nx) does not match params['nx'].")
+            monomer_fields = read_monomer_fields(field_data, list(params["segment_lengths"]))
             initial_fields = {{}}
             for monomer in params["segment_lengths"]:
                 key = "w_" + monomer

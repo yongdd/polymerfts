@@ -48,6 +48,12 @@
 #include <utility>
 #include <vector>
 
+/// Error text for a junction that would raise complex propagators to a power that is not an
+/// integer of at most 10^6 (junction_product::integer_power). The power is that of one branch:
+/// the multiplicity of its block, or one less for the propagator that enters a copy, summed
+/// over identical branches. Defined in ComputationCommon.cpp.
+std::string complex_real_power_message(double power);
+
 /// One field in backend memory. Intentionally incomplete (see the file comment).
 template <typename T>
 struct BackendArray;
@@ -159,19 +165,21 @@ public:
 
     /// q = Σ_i n_i q_i over sources (q_i, n_i): aggregated propagators.
     virtual void junction_sum(int stream, BackendArray<T>* q,
-                              const std::vector<std::pair<BackendArray<T>*, int>>& sources) = 0;
+                              const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 
-    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction.
+    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction, which has at
+    /// least one branch, so sources is never empty. A block multiplicity makes n_i real; a real
+    /// power needs real propagators and throws for complex ones.
     virtual void junction_product(int stream, BackendArray<T>* q,
-                                  const std::vector<std::pair<BackendArray<T>*, int>>& sources) = 0;
+                                  const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 
     /// junction_sum() with checkpoints as sources.
     virtual void junction_sum(int stream, BackendArray<T>* q,
-                              const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) = 0;
+                              const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
     /// junction_product() with checkpoints as sources.
     virtual void junction_product(int stream, BackendArray<T>* q,
-                                  const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) = 0;
+                                  const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
     /// q = q * mask (impenetrable regions); does nothing without a mask.
     virtual void apply_mask(int stream, BackendArray<T>* q) = 0;
@@ -186,6 +194,12 @@ public:
 
     /// ∫ a b / w dr over the grid.
     virtual T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) = 0;
+
+    /// Integral of |a b / divisor| with the same volume/orbit weights as the
+    /// partition integral; omit divisor for continuous chains. This scale does
+    /// not vanish solely because a complex partition cancels to zero.
+    virtual double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
+                                          BackendArray<T>* divisor = nullptr) = 0;
 
     /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i.
     virtual void add_segment_products(int stream, BackendArray<T>* phi,

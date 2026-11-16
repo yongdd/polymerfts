@@ -183,8 +183,8 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     const auto angles = cb->get_angles();
     const bool z_axis_orthogonal =
         (angles.size() >= 3 &&
-         std::abs(angles[0] - M_PI / 2.0) < 1e-10 &&
-         std::abs(angles[1] - M_PI / 2.0) < 1e-10);
+         std::abs(angles[0] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE &&
+         std::abs(angles[1] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE);
     // Engine choice and its basis map, shared with the CUDA solver
     const CrysFFTPlan plan = plan_crysfft(
         space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), z_axis_orthogonal);
@@ -867,22 +867,29 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
     const double* kk_xz = pseudo->get_fourier_basis_xz();
     const double* kk_yz = pseudo->get_fourier_basis_yz();
 
-    // Real coefficients from DCT/DST. The per-mode Parseval weights (2 for
+    // Real coefficients from DCT/DST; for complex fields those of the real and
+    // imaginary parts as complex pairs, whose product needs no conjugate (the
+    // basis functions are real). The per-mode Parseval weights (2 for
     // interior modes, 1 for the DCT m=0 / DST k=n special modes, composed
     // across dimensions) are folded into the fourier_basis tables by
     // Pseudo::update_weighted_fourier_basis_mixed, mirroring the periodic
     // path, so no flat factor is applied here.
-    auto kernel = [&](int i) -> double
+    const std::complex<double>* qk_1_complex = reinterpret_cast<const std::complex<double>*>(qk_1);
+    const std::complex<double>* qk_2_complex = reinterpret_cast<const std::complex<double>*>(qk_2);
+    auto kernel = [&](int i) -> T
     {
         const double boltz_factor = (boltz_bond != nullptr) ? boltz_bond[i] : 1.0;
-        return bond_length_sq * boltz_factor * qk_1[i] * qk_2[i];
+        if constexpr (std::is_same<T, double>::value)
+            return bond_length_sq * boltz_factor * qk_1[i] * qk_2[i];
+        else
+            return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[i];
     };
 
     if (DIM == 3)
     {
         for (int i = 0; i < M_COMPLEX; ++i)
         {
-            const double coeff = kernel(i);
+            const T coeff = kernel(i);
             stress[0] += coeff * kk_xx[i];  // V₁₁
             stress[1] += coeff * kk_yy[i];  // V₂₂
             stress[2] += coeff * kk_zz[i];  // V₃₃
@@ -892,7 +899,7 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
         {
             for (int i = 0; i < M_COMPLEX; ++i)
             {
-                const double coeff = kernel(i);
+                const T coeff = kernel(i);
                 stress[3] += coeff * kk_xy[i];  // V₁₂ (→ dH/dγ)
                 stress[4] += coeff * kk_xz[i];  // V₁₃ (→ dH/dβ)
                 stress[5] += coeff * kk_yz[i];  // V₂₃ (→ dH/dα)
@@ -905,7 +912,7 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
         // so the stress data live in fourier_basis_y and fourier_basis_z
         for (int i = 0; i < M_COMPLEX; ++i)
         {
-            const double coeff = kernel(i);
+            const T coeff = kernel(i);
             stress[0] += coeff * kk_yy[i];  // V₁₁
             stress[1] += coeff * kk_zz[i];  // V₂₂
         }
@@ -957,13 +964,6 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         if (compute_stress_crysfft(q_1, q_2, bond_length_sq, _boltz_bond, stress))
             return stress;
 
-        if constexpr (std::is_same<T, std::complex<double>>::value)
-        {
-            if (!is_periodic_)
-                throw_with_line_number(
-                    "Stress computation for complex fields with non-periodic "
-                    "boundary conditions is not implemented.");
-        }
         const int coeff_size = complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
         std::vector<double> qk_1(coeff_size);
         std::vector<double> qk_2(coeff_size);

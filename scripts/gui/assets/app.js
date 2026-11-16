@@ -11,7 +11,7 @@ const sections = [
     ["platform", "Platform", ["auto", "cuda", "cpu-mkl", "cpu-fftw"]],
     ["ds", "Contour step · ds", null, "Fractions such as 1/100 are accepted."],
     ["chain_model", "Chain model", ["continuous", "discrete"]],
-    ["numerical_method", "Numerical method", ["auto", "rqm4", "rk2", "cn-adi2"], "CN-ADI2 supports real fields in orthogonal cells; it is unavailable for CL-FTS."],
+    ["numerical_method", "Numerical method", ["auto", "rqm4", "rk2", "cn-adi2", "ps", "rs"], "Continuous chains take rqm4, rk2 or cn-adi2, discrete chains ps or rs. The real-space methods cn-adi2 and rs need orthogonal cells; cn-adi2 computes no stress and is unavailable for CL-FTS."],
     ["threads", "OpenMP threads", null, "1–4"],
     ["reduce_memory", "Reduce memory usage", "checkbox", "Enable only when memory is insufficient. This reduces memory usage but slows down the simulation."],
     ["space_group", "Space group (SCFT only)", [], "Choose None to use the full grid. Hall numbers distinguish settings of the same space group.", true]
@@ -21,7 +21,7 @@ const sections = [
   {id: "scft", title: "SCFT", help: "Set the stopping criteria for the self-consistent field calculation.", fields: [
     ["max_iter", "Maximum iterations"],
     ["tolerance", "Convergence tolerance"],
-    ["relax_cell", "Relax cell lengths and allowed angles", "checkbox", "Uses the selected cell shape, or the space group's crystal system. 2D Square cells require a fixed cell; choose Rectangle for 2D relaxation."]
+    ["relax_cell", "Relax cell lengths and allowed angles", "checkbox", "Uses the selected cell shape, or the space group's crystal system. 2D Square cells require a fixed cell."]
   ]},
   {id: "lfts", title: "Dynamics", help: "Set Langevin dynamics and recording intervals for L-FTS or CL-FTS. Results are saved under data/ in the output directory.", fields: [
     ["max_step", "Final Langevin step · max_step", null, "Final step number, including resumed steps. Loading initial fields starts a new run."], ["dt", "Langevin time step · dt"],
@@ -172,10 +172,10 @@ function updateConditionalFields() {
     groupHint.textContent = "Choose None to use the full grid. Hall numbers distinguish settings of the same space group.";
   } else {
     const cell = group.crystal_system === "Cubic" ? "a = b = c; angles 90°" :
-      group.crystal_system === "Tetragonal" ? "a = b; angles 90° (use Orthorhombic with a = b)" :
+      group.crystal_system === "Tetragonal" ? "a = b; angles 90° (choose Tetragonal)" :
       group.crystal_system === "Orthorhombic" ? "angles 90°" :
       group.crystal_system === "Monoclinic" ? `${["α", "β", "γ"].filter((_, i) => i !== group.unique_axis).join(" = ")} = 90°, ` +
-        `${["α", "β", "γ"][group.unique_axis]} free (unique axis ${"abc"[group.unique_axis]}; use Triclinic)` :
+        `${["α", "β", "γ"][group.unique_axis]} free (unique axis ${"abc"[group.unique_axis]}; use ${group.unique_axis === 1 ? "Monoclinic" : "Triclinic"})` :
       group.crystal_system === "Triclinic" ? "any cell (use Triclinic)" :
       group.hexagonal_axes ? "a = b; angles 90°, 90°, 120° (choose Hexagonal)" :
       "a = b = c; equal angles; disable box relaxation (use Triclinic)";
@@ -196,9 +196,11 @@ function updateConditionalFields() {
   if (tabButtons.get(activeTab).hidden) activateTab(mode === "SCFT" ? "scft" : "lfts");
   const discrete = inputs.get("chain_model").value === "discrete";
   const method = inputs.get("numerical_method");
-  method.disabled = discrete;
-  for (const option of method.options) option.disabled = mode === "CL-FTS" && option.value === "cn-adi2";
-  if (discrete || mode === "CL-FTS" && method.value === "cn-adi2") method.value = "auto";
+  for (const option of method.options) {
+    const forDiscrete = option.value === "ps" || option.value === "rs";
+    option.disabled = option.value !== "auto" && (forDiscrete !== discrete || mode === "CL-FTS" && option.value === "cn-adi2");
+  }
+  if (method.selectedOptions[0].disabled) method.value = "auto";
   const box = ModelEditor.serialize().box;
   const fixedSquare = mode === "SCFT" && box.dimension === 2 && box.shape === "square";
   inputs.get("relax_cell").disabled = fixedSquare;

@@ -86,6 +86,10 @@ jobs:
       shell: bash -l {0}
       run: |
         set -euo pipefail
+        lscpu
+        c++ --version | sed -n 1p
+        c++ -Q --help=target | grep -E '^\s+-m(arch=|fma\s)' || true
+        ldd --version | sed -n 1p
         python --version
         conda list --show-channel-urls
         python -m pip check
@@ -203,7 +207,7 @@ jobs:
           -DPOLYMERFTS_USE_MKL=ON -DPOLYMERFTS_USE_FFTW=ON -DPOLYMERFTS_USE_CUDA=OFF ^
           -DPOLYMERFTS_BUILD_TESTS=ON -DPOLYMERFTS_WERROR=ON || exit /b 1
         "%BIN%\cmake.exe" --build build-tests --parallel || exit /b 1
-        "%BIN%\ctest.exe" --test-dir build-tests -L basic --output-on-failure --timeout 900 || exit /b 1
+        "%BIN%\ctest.exe" --test-dir build-tests -L basic -j 4 --output-on-failure --timeout 900 || exit /b 1
 
   lint:
     name: Code Quality Checks

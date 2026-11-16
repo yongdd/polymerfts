@@ -53,6 +53,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <numbers>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -73,6 +74,7 @@
 #endif
 
 #include "GridLimits.h"
+#include "MinimalFormAlias.h"
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "ComputationBox.h"
@@ -97,6 +99,85 @@ using array_in = py::array_t<T, py::array::c_style | py::array::forcecast>;
  */
 template <typename... Args>
 using overload_cast_ = py::detail::overload_cast_impl<Args...>;
+
+/**
+ * Exact periodic metric for Python kernels, without creating a platform or FFT.
+ * The optional moments <(Gm)_a (Gm)_b> average all tied minimal aliases, so
+ * derivatives of the metric use the same representatives as the propagators.
+ * The callers (Smearing, WTMD) pass a validated grid and the inverse metric of a
+ * validated cell; only the shapes are checked here, so that no read leaves the arrays.
+ */
+py::tuple periodic_metric(const std::vector<int>& nx, array_in<double> reciprocal_metric,
+                          bool with_moments)
+{
+    const int dim = static_cast<int>(nx.size());
+    const auto metric = reciprocal_metric.request();
+    if (dim < 1 || dim > 3 || metric.ndim != 2 || metric.shape[0] != dim || metric.shape[1] != dim)
+        throw py::value_error("A periodic metric needs 1 to 3 grid sizes and a matching square reciprocal metric.");
+    long long n_grid = 1;
+    std::array<int, 3> grid = {1, 1, 1};
+    for (int d = 0; d < dim; ++d)
+    {
+        n_grid *= nx[d];
+        grid[d] = nx[d];
+    }
+    const auto* values = static_cast<const double*>(metric.ptr);
+    double G[3][3] = {};
+    for (int a = 0; a < dim; ++a)
+        for (int b = 0; b < dim; ++b)
+            G[a][b] = values[a * dim + b];
+
+    py::array_t<double> k_squared(nx);
+    py::array_t<double> moments;
+    double* moment_data = nullptr;
+    if (with_moments)
+    {
+        std::vector<py::ssize_t> shape = {dim, dim};
+        shape.insert(shape.end(), nx.begin(), nx.end());
+        moments = py::array_t<double>(shape);
+        moment_data = moments.mutable_data();
+    }
+    auto* k_data = k_squared.mutable_data();
+    const IndexMetric index_metric{G[0][0], G[1][1], G[2][2], G[0][1], G[0][2], G[1][2]};
+    const double four_pi_squared = 4.0 * std::numbers::pi * std::numbers::pi;
+    auto form = [&](int a, int b, int c) {
+        return G[0][0] * a * a + G[1][1] * b * b + G[2][2] * c * c
+             + 2.0 * (G[0][1] * a * b + G[0][2] * a * c + G[1][2] * b * c);
+    };
+    auto signed_index = [](int i, int n) { return i > n / 2 ? i - n : i; };
+    {
+        py::gil_scoped_release release;
+        for (int i = 0; i < grid[0]; ++i)
+            for (int j = 0; j < grid[1]; ++j)
+                for (int k = 0; k < grid[2]; ++k)
+                {
+                    const long long index = (static_cast<long long>(i) * grid[1] + j) * grid[2] + k;
+                    const std::array<int, 3> m = {signed_index(i, grid[0]), signed_index(j, grid[1]), signed_index(k, grid[2])};
+                    auto representative = m;
+                    min_form_alias_rep(representative, grid, index_metric, form);
+                    k_data[index] = four_pi_squared * form(representative[0], representative[1], representative[2]);
+                    if (with_moments)
+                    {
+                        double products[3][3] = {};
+                        const int count = for_each_min_form_alias(m, grid, index_metric, form, 1e-10,
+                            [&](int a, int b, int c) {
+                                double u[3] = {};
+                                for (int d = 0; d < dim; ++d)
+                                    u[d] = G[d][0] * a + G[d][1] * b + G[d][2] * c;
+                                for (int row = 0; row < dim; ++row)
+                                    for (int col = 0; col < dim; ++col)
+                                        products[row][col] += u[row] * u[col];
+                            });
+                        for (int row = 0; row < dim; ++row)
+                            for (int col = 0; col < dim; ++col)
+                                moment_data[(row * dim + col) * n_grid + index] = products[row][col] / count;
+                    }
+                }
+    }
+    if (with_moments)
+        return py::make_tuple(k_squared, moments);
+    return py::make_tuple(k_squared, py::none());
+}
 
 
 /**
@@ -514,7 +595,8 @@ void bind_anderson_mixing(py::module &m, const std::string &type_name) {
  * Creates the Python classes "FourierTransform_{Real|Complex}" and
  * "FourierMultiplier_{Real|Complex}":
  * - coefficient_shape, complex_coefficients: Layout of the coefficients of a field
- * - field_type: "real" or "complex", the fields the transform takes; periodic: FFT (or wall series)
+ * - field_type: "real" or "complex", the fields the transform takes; periodic: every axis periodic
+ *   (FFT); mixed: periodic and wall axes (transformed through the mirror image)
  * - k_squared(): |k|² in the coefficient shape, from the current box
  * - set_multiplier(values): Store a multiplier of shape coefficient_shape
  *   (diagonal: applied to each field) or (n_out, n_in) + coefficient_shape
@@ -577,10 +659,8 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
         })
         .def_property_readonly("complex_coefficients", &FourierTransform<T>::has_complex_coefficients)
         .def_property_readonly("field_type", [](FourierTransform<T>&) { return real_fields ? "real" : "complex"; })
-        .def_property_readonly("periodic", [](FourierTransform<T>& obj)
-        {
-            return obj.get_boundary_conditions()[0] == BoundaryCondition::PERIODIC;   // all axes alike
-        })
+        .def_property_readonly("periodic", &FourierTransform<T>::is_periodic)   // every axis periodic
+        .def_property_readonly("mixed", &FourierTransform<T>::is_mixed)         // periodic and wall axes
         .def("k_squared", [](FourierTransform<T>& obj)
         {
             const std::vector<double> k_sq = obj.get_k_squared();
@@ -710,9 +790,7 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
             py::object mask)
         {
             try {
-                long long M = 1;   // 64 bits; ComputationBox rejects grids beyond MAX_GRID_POINTS
-                for(size_t d=0; d<nx.size(); d++)
-                    M *= nx[d];
+                const int M = checked_grid_points(nx);
 
                 py::buffer_info buf_mask;
 
@@ -758,6 +836,7 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
         // keep_alive: the C++ objects hold raw pointers to their arguments, so the
         // Python wrappers of those arguments must outlive the created object
         .def("create_propagator_computation_optimizer", &AbstractFactory<T>::create_propagator_computation_optimizer,
+            py::arg("molecules").none(false), py::arg("aggregate_propagator_computation"),
             py::keep_alive<0, 2>())
         .def("create_propagator_computation", &AbstractFactory<T>::create_propagator_computation,
             py::arg("cb"), py::arg("molecules"), py::arg("propagator_computation_optimizer"),
@@ -850,7 +929,7 @@ static py::array_t<double> sg_output_like(const py::buffer_info& in, int n_field
     return py::array_t<double>({static_cast<py::ssize_t>(n_fields), static_cast<py::ssize_t>(n_out)});
 }
 
-// Converts the Python block list [[monomer_type, contour_length, v, u], ...]
+// Converts the Python block list [[monomer_type, contour_length, v, u(, multiplicity)], ...]
 static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py::object>>& block_list)
 {
     if (block_list.empty())
@@ -859,14 +938,16 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
     for (size_t b = 0; b < block_list.size(); b++)
     {
         const auto& py_block = block_list[b];
-        if (py_block.size() != 4)
+        if (py_block.size() != 4 && py_block.size() != 5)
             throw_with_line_number("Block " + std::to_string(b) + " has " + std::to_string(py_block.size()) +
-                " entries; a block is [monomer_type, contour_length, v, u].");
+                " entries; a block is [monomer_type, contour_length, v, u] or [monomer_type, contour_length, v, u, multiplicity].");
         BlockInput block;
         block.monomer_type = py::cast<std::string>(py_block[0]);
         block.contour_length = py::cast<double>(py_block[1]);
         block.v = py::cast<int>(py_block[2]);
         block.u = py::cast<int>(py_block[3]);
+        if (py_block.size() == 5)
+            block.multiplicity = py::cast<double>(py_block[4]);
         block_inputs.push_back(block);
     }
     return block_inputs;
@@ -874,6 +955,9 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
 
 PYBIND11_MODULE(_core, m)
 {
+    m.def("_periodic_metric", &periodic_metric, py::arg("nx"), py::arg("reciprocal_metric"),
+          py::arg("with_moments") = false,
+          "Exact full-grid periodic k squared and optional tied-alias metric moments.");
     m.attr("build_info") = polymerfts_build_info();
     m.def("numerical_methods", []() {
         py::dict result;
@@ -886,6 +970,7 @@ PYBIND11_MODULE(_core, m)
             entry["supports_complex"] = info.supports_complex;
             entry["requires_orthogonal_cell"] = info.requires_orthogonal_cell;
             entry["supports_mixed_boundaries"] = info.supports_mixed_boundaries;
+            entry["supports_stress"] = info.supports_stress;
             py::list backends;
 #ifdef USE_CPU_MKL
             backends.append("cpu-mkl");
@@ -904,7 +989,7 @@ PYBIND11_MODULE(_core, m)
     m.def("resolve_numerical_method", [](const std::string& chain_model, const std::string& numerical_method) {
         return std::string(resolve_numerical_method(chain_model, numerical_method).name);
     }, py::arg("chain_model"), py::arg("numerical_method") = "",
-       "The method the factories use: 'discrete' for discrete chains, rqm4 for an empty name.");
+       "The method the factories use; an empty name gives rqm4 (continuous) or ps (discrete).");
     m.def("runtime_info", [](bool include_cuda) {
         py::dict info;
 #ifdef USE_CPU_FFTW
@@ -958,7 +1043,8 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("n_segment", &Block::n_segment)
         .def_readonly("contour_length", &Block::contour_length)
         .def_readonly("v", &Block::v)
-        .def_readonly("u", &Block::u);
+        .def_readonly("u", &Block::u)
+        .def_readonly("n_copies", &Block::n_copies);
 
     py::class_<ComputationEdge>(m, "ComputationEdge")
         .def_readonly("max_n_segment", &ComputationEdge::max_n_segment)

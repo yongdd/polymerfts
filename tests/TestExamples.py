@@ -7,8 +7,10 @@ neighbouring directory, and writes nothing into the source tree). The SCFT, LFTS
 and CLFTS classes are wrapped: a platform the build lacks
 is replaced by a CPU platform, and the first run() or continue_run() stops the
 script, so the example is checked up to the start of its simulation (inputs,
-parameter validation, construction), not run. The examples of tools that build no
-simulation (WITHOUT_SIMULATION) run to the end instead and check their own results.
+parameter validation, construction), not run. An example that iterates a
+PropagatorSolver itself stops the same way at its first compute_propagators(). The
+examples of tools that build no simulation (WITHOUT_SIMULATION) run to the end
+instead and check their own results.
 """
 
 import os
@@ -59,6 +61,14 @@ def wrap(cls):
 
 for cls in (polymerfts.SCFT, polymerfts.LFTS, polymerfts.CLFTS):
     wrap(cls)
+
+
+def stop_chains(self, *args, **kwargs):
+    os.write(output, b"EXAMPLE CONSTRUCTED PropagatorSolver.compute_propagators\n")
+    os._exit(0)
+
+
+polymerfts.PropagatorSolver.compute_propagators = stop_chains
 sys.argv = [sys.argv[1]]
 runpy.run_path(sys.argv[0], run_name="__main__")
 print("EXAMPLE FINISHED WITHOUT A SIMULATION", flush=True)

@@ -47,9 +47,7 @@ that go with them.
 """
 
 import os
-import io
 import sys
-import contextlib
 import tempfile
 import shutil
 
@@ -59,9 +57,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import _core, scft, LFTS, CLFTS
-from polymerfts.smearing import Smearing
-from polymerfts.utils import calculate_sigma
-from polymerfts.propagator_solver import PropagatorSolver
+from polymerfts.theory.smearing import Smearing
+from polymerfts.utils.common import calculate_sigma
+from polymerfts.theory.propagator_solver import PropagatorSolver
+from fts_checks import quiet
 
 n_pass = 0
 n_fail = 0
@@ -75,11 +74,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def quiet(fn, *args, **kwargs):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return fn(*args, **kwargs)
 
 
 def cpu_platform():

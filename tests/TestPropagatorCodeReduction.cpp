@@ -48,7 +48,7 @@ int main()
 
         // Test get_deps_from_key
         std::string key;
-        std::vector<std::tuple<std::string, int, int>> sub_deps;
+        std::vector<std::tuple<std::string, int, double>> sub_deps;
 
         std::cout << "-------test---------------------------" << std::endl;
         // sub_deps[
@@ -85,6 +85,17 @@ int main()
 
         for (const auto& item: sub_deps)
             std::cout << std::get<0>(item) + ", " + std::to_string(std::get<1>(item)) + ", " + std::to_string(std::get<2>(item)) << std::endl;
+
+        // Real counts of block multiplicities: the branch powers of a junction
+        key = "((B4)A2:4.6B4:5.6)A";
+        sub_deps = PropagatorCode::get_deps_from_key(key);
+        if(sub_deps.size() != 2
+            || std::get<0>(sub_deps[0]) != "(B4)A" || std::get<1>(sub_deps[0]) != 2 || std::get<2>(sub_deps[0]) != 4.6
+            || std::get<0>(sub_deps[1]) != "B" || std::get<1>(sub_deps[1]) != 4 || std::get<2>(sub_deps[1]) != 5.6)
+            return -1;
+        if(PropagatorCode::format_count(5.6) != "5.6" || PropagatorCode::format_count(3.0) != "3"
+            || PropagatorCode::format_count(5.6 - 1.0) != "4.6")
+            return -1;
 
         key = "([(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7A8)B";
         sub_deps = PropagatorCode::get_deps_from_key(key);

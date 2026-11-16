@@ -30,7 +30,7 @@ import tempfile
 
 import numpy as np
 from polymerfts import SCFT, LFTS, PropagatorSolver, PlatformSelector, ValidationError
-from polymerfts.utils import check_partition_functions
+from polymerfts.utils.common import check_partition_functions
 from TestFtsReliability import parameters, fields
 from cuda_part import cuda_part_missing
 

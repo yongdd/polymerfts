@@ -4,22 +4,33 @@
  */
 
 #include <cmath>
+#include <algorithm>
 #include <memory>
 #include <complex>
 
 #include "ComputationCommon.h"
+#include "JunctionProduct.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
+
+std::string complex_real_power_message(double power)
+{
+    return "A junction raises complex propagators to the power " + validation::shortest_text(power)
+        + ". Complex fields take only integer powers up to 10^6: a non-integer power, which comes from "
+        "a non-integer block multiplicity, has no unique value for complex numbers. With complex fields "
+        "use integer multiplicities and at most 10^6 identical branches at one junction.";
+}
 
 template <typename T>
 ComputationCommon<T>::ComputationCommon(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
+    const NumericalMethodInfo& numerical_method,
     SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
     : PropagatorComputation<T>(cb, molecules, propagator_computation_optimizer),
-      n_streams(0)
+      numerical_method(numerical_method), n_streams(0)
 {
     try
     {
@@ -113,6 +124,29 @@ void ComputationCommon<T>::set_fields(
 }
 
 template <typename T>
+void ComputationCommon<T>::check_real_power_partitions() const
+{
+    for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
+    {
+        const T q = this->single_polymer_partitions[p];
+        if (!std::isnan(std::real(q)) && !std::isnan(std::imag(q)))
+            continue;
+        for (const Block& block : this->molecules->get_polymer(p).get_blocks())
+        {
+            if (junction_product::integer_power(block.multiplicity))
+                continue;
+            throw_with_line_number("The partition function of polymer " + std::to_string(p) + " is NaN. "
+                "If the fields are finite, the cause is its block multiplicity of "
+                + validation::shortest_text(block.multiplicity) + ": it raises propagators to a "
+                "non-integer power, which is undefined where a numerical propagator is negative (for "
+                "example with Crank-Nicolson next to absorbing walls, or with a pseudo-spectral method "
+                "in a strong field). Use an integer multiplicity, or a method and resolution that keep "
+                "the propagators positive.");
+        }
+    }
+}
+
+template <typename T>
 void ComputationCommon<T>::compute_solvent_concentrations()
 {
     const double ds = this->molecules->get_contour_length_mapping().get_global_ds();
@@ -146,6 +180,24 @@ T ComputationCommon<T>::concentration_norm(const std::tuple<int, std::string, st
 }
 
 template <typename T>
+std::vector<double> ComputationCommon<T>::partition_errors_from_contours(
+    const std::vector<std::vector<T>>& values,
+    const std::vector<std::vector<double>>& absolute_integrals) const
+{
+    std::vector<double> errors;
+    errors.reserve(this->single_polymer_partitions.size());
+    for (size_t p = 0; p < this->single_polymer_partitions.size(); ++p)
+    {
+        if (this->molecules->get_polymer(static_cast<int>(p)).get_volume_fraction() == 0.0)
+            errors.push_back(absolute_integrand_partition_error(values[p], this->single_polymer_partitions[p],
+                                                               absolute_integrals[p]));
+        else
+            errors.push_back(relative_partition_error(values[p], this->single_polymer_partitions[p]));
+    }
+    return errors;
+}
+
+template <typename T>
 void ComputationCommon<T>::scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const
 {
     const double ds = contour_step(key_right);
@@ -170,23 +222,10 @@ void ComputationCommon<T>::set_stress_from_blocks(const std::vector<std::array<T
 }
 
 template <typename T>
-void ComputationCommon<T>::check_stress_supported(const std::string& method) const
+void ComputationCommon<T>::check_stress_supported() const
 {
-    if (method == "realspace")
-        throw_with_line_number("Currently, the real-space method does not support stress computation.");
-
-    // Non-periodic (DCT/DST) stress is supported for real fields; the
-    // per-mode Parseval weights are folded into the fourier_basis tables
-    // (Pseudo::update_weighted_fourier_basis_mixed). The real-coefficient
-    // transform path drops the imaginary part, so complex fields with
-    // non-periodic boundaries are rejected explicitly.
-    if constexpr (std::is_same_v<T, std::complex<double>>)
-    {
-        for (const auto& bc : this->cb->get_boundary_conditions())
-            if (bc != BoundaryCondition::PERIODIC)
-                throw_with_line_number("Stress computation with non-periodic boundary "
-                    "conditions is not supported for complex fields.");
-    }
+    if (!numerical_method.supports_stress)
+        throw_with_line_number("The " + std::string(numerical_method.name) + " method does not support stress computation.");
 }
 
 template <typename T>
@@ -329,7 +368,10 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-            if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
+            // An absent species adds nothing, also when its unused propagators are not
+            // finite; an occupied one whose Q overflows keeps its non-finite density
+            if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
+                && this->molecules->get_polymer(std::get<0>(key)).get_volume_fraction() != 0.0)
             {
                 arrays.push_back(phi_b);
                 weights.push_back(concentration_norm(key));
@@ -370,7 +412,9 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-            if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
+            // An absent species adds nothing (see the overload above)
+            if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
+                && this->molecules->get_polymer(p).get_volume_fraction() != 0.0)
             {
                 arrays.push_back(phi_b);
                 weights.push_back(concentration_norm(key));
@@ -397,6 +441,14 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
         const int P = this->molecules->get_n_polymer_types();
         if (p < 0 || p > P-1)
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
+
+        // An absent GCE species contributes exactly zero even if an unused
+        // propagator integral is nonfinite. Validate its arguments first.
+        if (fugacity == 0.0)
+        {
+            std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
+            return;
+        }
 
         std::vector<BackendArray<T>*> arrays;
         std::vector<T> weights;
@@ -447,17 +499,24 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
             auto block_it = phi_block.find(block_key);
             if (block_it == phi_block.end())
                 throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
-            backend->copy_to_host(&phi[b*N], block_it->second);
+            // An absent species has zero density, also when its unused propagators are not finite
+            if (pc.get_volume_fraction() == 0.0)
+            {
+                std::fill_n(&phi[b*N], N, T(0.0));
+                continue;
+            }
             const T norm = concentration_norm(block_key);
+            backend->copy_to_host(&phi[b*N], block_it->second);
             for (int i = 0; i < N; i++)
                 phi[b*N + i] *= norm;
 
             // Identical blocks (e.g. the equal arms of a star) share one entry, which
-            // holds all n_repeated of them; each block gets its share
-            const int n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
-            if (n_repeated > 1)
+            // holds the copies of all of them; each block gets the share of its copies
+            const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
+            const double n_copies = blocks[b].n_copies;
+            if (n_repeated != n_copies)
                 for (int i = 0; i < N; i++)
-                    phi[b*N + i] /= static_cast<double>(n_repeated);
+                    phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
         }
     }
     catch (std::exception& exc)

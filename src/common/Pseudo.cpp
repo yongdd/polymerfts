@@ -345,12 +345,10 @@ void update_weighted_fourier_basis_periodic_impl(
     // representative, consistent with the diffusion Boltzmann factors;
     // see MinimalFormAlias.h. The search runs in loop-index space
     // (i,j,k with padded leading dims), before mapping to Miller indices.
-    // Relative-tolerance gate: exact 90-degree angles produce cos(pi/2)
-    // ~ 6e-17, which must not flip orthogonal cells onto this path.
-    const double G_diag_max2 = std::max({std::abs(G11), std::abs(G22), std::abs(G33)});
-    const bool oblique = (std::abs(G12) > 1e-12 * G_diag_max2 ||
-                          std::abs(G13) > 1e-12 * G_diag_max2 ||
-                          std::abs(G23) > 1e-12 * G_diag_max2);
+    // Normalize each coupling by its own pair of axes: a thin orthogonal
+    // third direction must not hide an oblique plane. The shared predicate
+    // also excludes cos(pi/2) roundoff on rectangular cells.
+    const bool oblique = index_metric_has_coupling({G11, G22, G33, G12, G13, G23});
 
     // Recip metric in loop-index space: for DIM==3 (i,j,k)=(m1,m2,m3);
     // DIM==2 (j,k)=(m1,m2); DIM==1 k=m1
@@ -748,15 +746,11 @@ void Pseudo<T>::update_boltz_bond_periodic_for_ds_index(int ds_idx)
 
     // Oblique cells need the group-invariant (minimal-form) alias
     // representative; see MinimalFormAlias.h.
-    // Treat the cell as oblique only when the off-diagonal metric is
-    // significant relative to the diagonal: angles of exactly 90 degrees
-    // produce cos(pi/2) ~ 6e-17, which must not flip orthogonal cells
-    // onto the minimal-form alias path (bit-identical behavior there).
-    const double G_diag_max = std::max({std::abs(Gd[0]), std::abs(Gd[1]), std::abs(Gd[2])});
-    const bool oblique = (std::abs(Gij) > 1e-12 * G_diag_max ||
-                          std::abs(Gik) > 1e-12 * G_diag_max ||
-                          std::abs(Gjk) > 1e-12 * G_diag_max);
     const IndexMetric index_metric{Gd[0], Gd[1], Gd[2], Gij, Gik, Gjk};
+    // The same pair-normalized decision as the stress and ObliqueZ tables.
+    // MinimalFormAlias searches independent components separately, so the
+    // third direction cannot enlarge the search bound of an oblique plane.
+    const bool oblique = index_metric_has_coupling(index_metric);
     auto form = [&](double a, double b, double c) {
         return Gd[0] * a * a + Gd[1] * b * b + Gd[2] * c * c +
                2.0 * (Gij * a * b + Gik * a * c + Gjk * b * c);

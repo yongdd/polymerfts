@@ -12,24 +12,50 @@
 #include <iostream>
 #include <cmath>
 #include <numbers>
+#include <complex>
 #include "CpuComputationBox.h"
+#include "GridLimits.h"
+
+template <typename T>
+void check_overflow_grid()
+{
+    // Exercise the C++ constructors directly, without the Python size guard.
+    for (const bool angles : {false, true})
+    {
+        try
+        {
+            if (angles)
+                CpuComputationBox<T> box({1 << 30, 1 << 30, 16}, {1.0, 1.0, 1.0}, {}, {90.0, 90.0, 90.0});
+            else
+                CpuComputationBox<T> box({1 << 30, 1 << 30, 16}, {1.0, 1.0, 1.0}, {});
+        }
+        catch (const Exception& exc)
+        {
+            if (std::string(exc.what()).find("32-bit") == std::string::npos)
+                throw;
+            continue;
+        }
+        throw std::runtime_error("A grid whose product overflows 64 bits was accepted");
+    }
+}
 
 int main()
 {
     try
     {
+        check_overflow_grid<double>();
+        check_overflow_grid<std::complex<double>>();
+        // The count itself accepts the boundary, without allocating a huge box.
+        if (checked_grid_points({static_cast<int>(MAX_GRID_POINTS)}) != MAX_GRID_POINTS)
+            return -1;
         CpuComputationBox<double> cb({1,2,2}, {4.5,3.5,2.5}, {});
-        double sum_w, volume;
+        double sum_w;
         double w[] {-0.81747, -2.02147, -3.52469, 1.43482};
         double g[] {2.82006, -0.944886, -1.37078, -2.47236};
         double h[] {4.40394, 1.71801, 2.73214, -0.499087};
         double gm[] {1.21997, 0.130716, -4.524, -1.09946, 1.79612, 0.367613, -0.670658, 1.53048};
         double hm[] {0.443984, 1.55078, 3.26028, -1.07704, 1.37609, -2.33879, -4.88014, 4.23021};
 
-        volume = 0.0;
-        for(int i=0; i<cb.get_total_grid(); i++)
-            volume += cb.get_dv(i);
-        
         cb.zero_mean(w);
         sum_w = 0.0;
         for(int i=0; i<cb.get_total_grid(); i++)
@@ -39,7 +65,6 @@ int main()
         std::cout<< "lx: " << cb.get_lx(0) <<" "<< cb.get_lx(1) <<" "<< cb.get_lx(2) << std::endl;
         std::cout<< "dx: " << cb.get_dx(0) <<" "<< cb.get_dx(1) <<" "<< cb.get_dx(2) << std::endl;
 
-        //std::cout<< "sum(dV), Volume: " << volume <<" "<< cb.volume << std::endl;
         std::cout<< "inner product: "<< cb.inner_product(g,h) << std::endl;
         std::cout<< "multi inner product: "<< cb.multi_inner_product(2, gm,hm) << std::endl;
         std::cout<< "sum(w): " << sum_w << std::endl;

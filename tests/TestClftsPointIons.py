@@ -17,6 +17,11 @@ An AB diblock with charged A blocks (discrete chains, N = 20) in a salt of point
 5. Debye-Hueckel statistics: with neutral chains and weak coupling psi is Gaussian with the screening
    operator (k^2 + kappa^2)/E + sum_s z_s^2 c_s Gamma_s^2/N: V Nbar^(1/2) times this operator times
    <|psi(k)/n|^2> is 1 and the holomorphic <psi(k) psi(-k)> -1, mode by mode on average (etd steps).
+6. recording.concentrations: the means in the statistics files equal the means over every accepted
+   step that a callback sees, bit for bit, for monomer types and point ions, with and without
+   electrostatics, whatever sample_interval; they keep the amounts; a continued run reproduces them bit
+   for bit, a checkpoint without the sums averages from the restart on, a checkpoint with corrupt sums
+   is refused, and the option is checked (a bool, CL-FTS only).
 """
 
 import contextlib
@@ -30,6 +35,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, PlatformSelector, ValidationError
+from polymerfts.utils.checkpoint import _measurement_key
+from polymerfts.utils.common import atomic_savemat
+from polymerfts.utils.validation import validate_lfts_params
+from fts_checks import exact_restart, quiet
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -60,11 +69,6 @@ def parameters(directory, steps=2, screening_length=None, ions=None, **electrost
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def expect_validation_error(make, message):
@@ -189,45 +193,36 @@ def records(root):
     assert np.allclose(recorded[-1, 1:], es.ion_chemical_potentials(), rtol=0, atol=1e-12), "recorded ion mu"
     ratios = np.atleast_2d(data["partition_ratio_step_history"])
     assert ratios.shape == (2, len(es.ions)) and np.all(ratios > 0) and np.all(ratios <= 1), ratios
-    assert sim.partition_ratio_species == ["ion Na", "ion Cl"], sim.partition_ratio_species
+    assert sim.thermodynamics.partition_ratio_species == ["ion Na", "ion Cl"], sim.thermodynamics.partition_ratio_species
     # 1 for a real psi; |Q_s| for an imaginary psi, whose weights all have the modulus 1
     w_aux = np.zeros((2, n_grid), dtype=complex)
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 5.0)
-    assert np.max(np.abs(sim.partition_ratios(w_aux) - 1.0)) < 1e-14
+    assert np.max(np.abs(sim.thermodynamics.partition_ratios(w_aux) - 1.0)) < 1e-14
     es.psi = 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
-    expected = [abs(q) for q in es.ion_densities()[1]]
-    assert max(expected) < 0.99 and np.allclose(sim.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
+    expected = [np.exp(np.real(log_q)) for log_q in es.ion_densities()[1]]
+    assert max(expected) < 0.99 and np.allclose(sim.thermodynamics.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
     # A complex psi, whose real part varies over the grid, makes the ratio depend on the sign of the
     # exponent: |Q_s| / <e^(-Re u_s)> with u_s = z_s (Gamma_s * psi)/N, smeared here with numpy
     es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 20.0) + 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
-    for ion, q, ratio in zip(es.ions, es.ion_densities()[1], sim.partition_ratios(w_aux)):
+    for ion, log_q, ratio in zip(es.ions, es.ion_densities()[1], sim.thermodynamics.partition_ratios(w_aux)):
         smeared = np.fft.ifftn(np.fft.fftn(np.reshape(es.psi, NX)) * np.exp(-ion["smearing_length"] ** 2 * es.k_sq / 2))
-        expected = abs(q) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
+        expected = np.exp(np.real(log_q)) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
         assert expected < 0.99 and abs(ratio - expected) < 1e-12 * expected, (ion["name"], ratio, expected)
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        sim = quiet(lambda: CLFTS(parameters(directory, steps=steps), random_seed=7))
-        rng = np.random.default_rng(3)
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 4)
-    run(root / "part", 2)
-    run(root / "part", 4, continue_from=root / "part" / "fields_000002.mat")
-    for name in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        a, b = loadmat(root / "full" / name, squeeze_me=True), loadmat(root / "part" / name, squeeze_me=True)
-        keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"
-                and a[k].size]
-        assert keys and max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run with point ions, {name}"
+    rng = np.random.default_rng(3)
+    initial = {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+    exact_restart(
+        lambda name, steps, seed: quiet(CLFTS, parameters(root / name, steps=steps), random_seed=seed),
+        lambda sim: sim.run(initial_fields=initial), 4, 2,
+        dict.fromkeys(("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"), ""),
+        exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
     # The record columns follow the order of the ions, which a continuation must keep
-    params = parameters(root / "part", steps=4)
+    params = parameters(root / "partial", steps=4)
     params["electrostatics"]["ions"] = dict(reversed(list(params["electrostatics"]["ions"].items())))
     sim = quiet(lambda: CLFTS(params, random_seed=7))
-    expect_validation_error(lambda: sim.continue_run(root / "part" / "fields_000002.mat"), "another order")
+    expect_validation_error(lambda: sim.continue_run(root / "partial" / "fields_000002.mat"), "another order")
 
 
 def pressure(root):
@@ -250,16 +245,16 @@ def pressure(root):
             s.electrostatics.psi = psi
             phi, _ = s.compute_concentrations(pinned)
             es = s.electrostatics
-            log_q = np.log([s.prop_solver.get_partition_function(p) for p in range(len(s.chain_densities))])
-            _, ion_q = es.ion_densities()
+            log_q = np.log([s.prop_solver.get_partition_function(p) for p in range(len(s.thermodynamics.chain_densities))])
+            log_ion_q = np.asarray(es.ion_densities()[1], dtype=complex)
             h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                            for i in range(M)) + s.mpt.h_const
             # psi term alone: H_el without the ions, whose term is -N c_s ln Q_s at fixed numbers
-            h_psi = es.hamiltonian() + np.sum(ions * np.log(np.asarray(ion_q, dtype=complex)))
-            return log_q, np.log(np.asarray(ion_q, dtype=complex)), h_fields + h_psi, phi, pinned
+            h_psi = es.hamiltonian() + np.sum(ions * log_ion_q)
+            return log_q, log_ion_q, h_fields + h_psi, phi, pinned
 
         _, _, _, phi, pinned = state(sim)
-        operator = sim.pressure(pinned, phi) - np.sum(sim.chain_densities) - np.sum(ions)
+        operator = sim.thermodynamics.pressure(pinned, phi) - np.sum(sim.thermodynamics.chain_densities) - np.sum(ions)
 
         def dilated(scale):
             p = parameters(root / "pressure", screening_length=screening_length)
@@ -267,7 +262,7 @@ def pressure(root):
             s = quiet(lambda: CLFTS(p))
             log_q, log_ion_q, h_fields, _, _ = state(s)
             v = s.prop_solver.get_volume()
-            h = C * (volume * (-np.sum(s.chain_densities * log_q) - np.sum(ions * log_ion_q)) + v * h_fields)
+            h = C * (volume * (-np.sum(s.thermodynamics.chain_densities * log_q) - np.sum(ions * log_ion_q)) + v * h_fields)
             # ln N: n_grid/2 ln V per kept auxiliary field and 1/2 ln(V (k^2 + kappa^2)) per psi mode
             es = s.electrostatics
             modes = es.screened_k_sq > 0
@@ -311,6 +306,88 @@ def debye_hueckel(root):
             f"Debye-Hueckel (screening {screening_length}): <|psi|^2> {variance:.4f}, <psi psi> {holomorphic:.4f}"
 
 
+def concentrations(root):
+    """Mean concentrations of the statistics files (recording.concentrations)."""
+    def options(directory, steps, **recording):
+        params = parameters(directory, steps=steps)
+        params["recording"].update({"concentrations": True, "sample_interval": 3, "statistics_save_interval": 4,
+                                    "checkpoint_interval": 2} | recording)
+        return params
+
+    def fields():
+        rng = np.random.default_rng(3)
+        return {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+
+    def run(directory, steps, continue_from=None, **recording):
+        sim = quiet(lambda: CLFTS(options(directory, steps, **recording), random_seed=7))
+        with contextlib.redirect_stdout(io.StringIO()):
+            if continue_from is None:
+                sim.run(initial_fields=fields())
+            else:
+                sim.continue_run(continue_from)
+
+    def stored(directory, step):
+        return loadmat(directory / f"structure_function_{step:06d}.mat", squeeze_me=True)
+
+    # The means equal those of the accepted states, with the amounts of the species
+    for charged in (True, False):
+        directory = root / f"concentrations_{charged}"
+        params = options(directory, 4)
+        if not charged:
+            params.pop("electrostatics")
+        totals = {}
+
+        def collect(sample):
+            parts = dict(sample["phi"])
+            if charged:
+                parts.update({ion["name"]: density for ion, density in zip(sim.electrostatics.ions, sim.electrostatics.ion_densities()[0])})
+            for name, value in parts.items():
+                totals[name] = totals.get(name, 0.0) + value
+        sim = quiet(lambda: CLFTS(params, random_seed=7, callbacks={"collect": collect}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            sim.run(initial_fields=fields())
+        data = stored(directory, 4)
+        assert sorted(totals) == (["A", "B", "Cl", "Na"] if charged else ["A", "B"]), sorted(totals)
+        assert data["concentration_step_count"] == 4, data["concentration_step_count"]
+        for name, total in totals.items():
+            mean = data[f"concentration_{name}_real"] + 1j * data[f"concentration_{name}_imag"]
+            assert mean.shape == tuple(NX), mean.shape
+            assert np.all(mean.ravel() == total / 4), f"mean concentration of {name}"
+        assert abs(np.mean(data["concentration_A_real"]) - 0.5) < 1e-10, "amount of A"
+        if charged:
+            for ion in sim.electrostatics.ions:
+                assert abs(np.mean(data[f"concentration_{ion['name']}_real"]) - ion["concentration"]) < 1e-12, ion["name"]
+
+    # A continued run reproduces the pending sums bit for bit
+    exact_restart(lambda name, steps, seed: quiet(CLFTS, options(root / ("c_" + name), steps), random_seed=seed),
+                  lambda sim: sim.run(initial_fields=fields()), 4, 2,
+                  {"structure_function_000004.mat": ("concentration_",)}, same_directory=True)
+    assert len([k for k in stored(root / "c_full", 4) if k.startswith("concentration_")]) == 9
+
+    # A checkpoint without the sums averages from the restart on
+    run(root / "c_old", 2, concentrations=False)
+    run(root / "c_old", 8, continue_from=root / "c_old" / "fields_000002.mat")
+    counts = [int(stored(root / "c_old", step)["concentration_step_count"]) for step in (4, 8)]
+    assert counts == [2, 4], counts
+    assert np.all(np.isfinite(stored(root / "c_old", 4)["concentration_A_real"])), "interval after the restart"
+
+    # A checkpoint with corrupt sums is refused
+    checkpoint = {k: v for k, v in loadmat(root / "c_partial" / "fields_000002.mat", squeeze_me=True).items()
+                  if not k.startswith("__")}
+    key, steps = (_measurement_key("sf", name) for name in ("concentration_A", "concentration steps"))
+    for name, change in (("nan", {key: np.full(int(np.prod(NX)), np.nan)}), ("size", {key: np.zeros(3)}), ("steps", {steps: -1.0})):
+        path = root / f"c_{name}.mat"
+        atomic_savemat(path, checkpoint | change)
+        sim = quiet(lambda: CLFTS(options(root / "c_corrupt", 4), random_seed=7))
+        expect_validation_error(lambda: sim.continue_run(path), "concentration")
+
+    # Input checks
+    params = options(root / "c_input", 2, concentrations="yes")
+    expect_validation_error(lambda: CLFTS(params), "'recording.concentrations' must be True or False")
+    params = options(root / "c_input", 2, pressure=False)
+    expect_validation_error(lambda: validate_lfts_params(params), "'recording.concentrations' is supported in CL-FTS only")
+
+
 def main():
     if not any(p.startswith("cpu") for p in PlatformSelector.avail_platforms()):
         return 77
@@ -318,7 +395,7 @@ def main():
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("forces", forces), ("linear response", linear_response),
                             ("records", records), ("restart", restart), ("pressure", pressure),
-                            ("Debye-Hueckel statistics", debye_hueckel)):
+                            ("Debye-Hueckel statistics", debye_hueckel), ("concentrations", concentrations)):
             check(root)
             print(f"[PASS] {name}")
     return 0

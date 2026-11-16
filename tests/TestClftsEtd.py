@@ -15,7 +15,8 @@
    fields, psi included, for a charged diblock with counterions (with and without screening)
    and for a diblock on a 67-point grid, whose FFTs leave imaginary rounding errors; continuous
    chains with unequal segment lengths, whose measured Jacobian is asymmetric by the contour
-   error, run with its symmetric part.
+   error, run with its symmetric part, and a far too coarse contour step is rejected with and
+   without charges.
 3. Runs: a continued run reproduces the uninterrupted one bit for bit (fields, psi, noise
    streams, measurements); psi keeps a zero uniform mode without screening; with zero
    valences psi has the Gaussian statistics of exp(-H) in a run at a time step beyond the LM
@@ -41,7 +42,8 @@ import numpy as np
 import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
-from polymerfts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
+from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
+from fts_checks import exact_restart, quiet
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -76,11 +78,6 @@ def parameters(directory, steps=6, screening_length=None):
 def initial_fields():
     rng = np.random.default_rng(11)
     return {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in ("A", "B", "C")}
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def transform(shape):
@@ -209,7 +206,7 @@ def linear():
 def jacobian(root):
     for screening_length in (None, 0.3):
         sim = quiet(lambda: CLFTS(parameters(root / "jacobian", screening_length=screening_length), random_seed=5))
-        J = sim._force_jacobian()
+        J = force_jacobian(sim)
         M, n_grid, eps = 3, int(np.prod(NX)), 1e-6
         assert J.shape == (M + 1, M + 1) + tuple(NX)
         scale, worst = np.max(np.abs(J)), 0.0
@@ -230,7 +227,7 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.0}, smearing=None,
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.3}, {"type": "B", "length": 0.7}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J, eps = sim._force_jacobian(), 1e-6
+    J, eps = force_jacobian(sim), 1e-6
     worst = 0.0
     for j in range(2):
         kick = np.zeros((2, 67), dtype=complex)
@@ -247,36 +244,40 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.2},
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J = sim._force_jacobian()
+    J = force_jacobian(sim)
     ratio = (sim._integrated_noise_direction()[None, :] / sim._integrated_noise_direction()[:, None])[:, :, None]
-    K, K_symmetric = J * ratio, sim._symmetric_jacobian(J) * ratio
+    K, K_symmetric = J * ratio, symmetric_jacobian(sim, J) * ratio
     asymmetry = np.max(np.abs(K - np.swapaxes(K, 0, 1))) / np.max(np.abs(K))
     assert 1e-5 < asymmetry < 1e-3, f"asymmetry of the measured Jacobian {asymmetry:.1e}"
     assert np.max(np.abs(K_symmetric - 0.5 * (K + np.swapaxes(K, 0, 1)))) < 1e-14 * np.max(np.abs(K)), \
         "symmetric part of the Jacobian"
 
+    # A far too coarse contour step (relative asymmetry 3.5e-2 of the auxiliary block) is rejected
+    # with charges too: the large diagonal of the jointly advanced psi does not dilute the measure
+    coarse = parameters(root / "coarse")
+    coarse.update(nx=[16, 16], lx=[2.0, 2.0], chain_model="continuous", ds=1 / 4, chi_n={"A,B": 8.0},
+                  zeta_n=20.0, segment_lengths={"A": 1.0, "B": 2.5}, smearing={"type": "gaussian", "a_int": 0.1},
+                  polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}])
+    for electrostatics in (None, {"charges": {"A": 0.1, "B": -0.1}, "coupling": 100.0}):
+        coarse["electrostatics"] = electrostatics
+        expect_validation_error(lambda: CLFTS(coarse, random_seed=5), "not symmetric")
+    # With one moving auxiliary field (chi N = 0) only the coupling to psi can show the asymmetry; it is
+    # measured on the charge response of psi, not on the analytic (k^2 + kappa^2)/E of its diagonal
+    coarse.update(chi_n={}, electrostatics={"charges": {"A": 1.0, "B": -1.0}, "coupling": 100.0})
+    expect_validation_error(lambda: CLFTS(coarse, random_seed=5), "not symmetric")
+
 
 def runs(root):
-    def run(params, continue_from=None):
-        sim = quiet(lambda: CLFTS(params, random_seed=5))
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields=initial_fields())
-            else:
-                sim.continue_run(continue_from)
-        return sim
-
     for screening_length in (None, 0.4):
-        full, part = root / f"full_{screening_length}", root / f"part_{screening_length}"
-        sim = run(parameters(full, steps=8, screening_length=screening_length))
-        uniform = sim.electrostatics.psi_k[(0,) * len(NX)]
+        sims = exact_restart(
+            lambda name, steps, seed: quiet(CLFTS, parameters(root / f"{name}_{screening_length}", steps=steps,
+                                                              screening_length=screening_length), random_seed=seed),
+            lambda sim: sim.run(initial_fields=initial_fields()), 8, 3,
+            dict.fromkeys(("fields_000006.mat", "dH_000004.mat", "dH_000008.mat", "structure_function_000004.mat",
+                           "structure_function_000008.mat"), ""),
+            exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
+        uniform = sims["full"].electrostatics.psi_k[(0,) * len(NX)]
         assert (uniform == 0.0) == (screening_length is None), "uniform mode of psi"
-        run(parameters(part, steps=3, screening_length=screening_length))
-        run(parameters(part, steps=8, screening_length=screening_length), continue_from=part / "fields_000003.mat")
-        for name in ("fields_000006.mat", "dH_000008.mat", "structure_function_000008.mat"):
-            a, b = loadmat(full / name, squeeze_me=True), loadmat(part / name, squeeze_me=True)
-            keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"]
-            assert max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run, {name}"
 
     # Zero valences: psi is decoupled and Gaussian. At dt = 20 the fastest psi mode has
     # s (k^2 + kappa^2)/E dt = 5.3, beyond the LM limit of 2; chi N = 2 keeps the auxiliary fields

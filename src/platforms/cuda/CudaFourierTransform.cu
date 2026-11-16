@@ -46,6 +46,81 @@ __global__ void ker_fourier_multiply(C* out, const C* m, const C* in, int n_out,
     }
 }
 
+__device__ inline cuDoubleComplex mirror_complex(double a) { return make_cuDoubleComplex(a, 0.0); }
+__device__ inline cuDoubleComplex mirror_complex(cuDoubleComplex a) { return a; }
+__device__ inline void mirror_store(double& out, cuDoubleComplex a) { out = cuCreal(a); }
+__device__ inline void mirror_store(cuDoubleComplex& out, cuDoubleComplex a) { out = a; }
+
+/// Mirror image of a field: image(i, j, k) = ± field(extend_source...) (FourierTransform::MirrorAxis)
+template <typename D>
+__global__ void ker_mirror_extend(const D* field, cuDoubleComplex* image, CudaMirrorTables t, long long n_image)
+{
+    for (long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; idx < n_image;
+         idx += static_cast<long long>(blockDim.x) * gridDim.x)
+    {
+        const int k = static_cast<int>(idx % t.n_extended[2]);
+        const int j = static_cast<int>((idx / t.n_extended[2]) % t.n_extended[1]);
+        const int i = static_cast<int>(idx / (static_cast<long long>(t.n_extended[1]) * t.n_extended[2]));
+        const long long source = (static_cast<long long>(t.extend_source[0][i]) * t.n[1] + t.extend_source[1][j]) * t.n[2]
+                                 + t.extend_source[2][k];
+        const double sign = t.extend_sign[0][i] * t.extend_sign[1][j] * t.extend_sign[2][k];
+        const cuDoubleComplex value = mirror_complex(field[source]);
+        image[idx] = make_cuDoubleComplex(sign * cuCreal(value), sign * cuCimag(value));
+    }
+}
+
+/// Coefficients from the modes of the mirror image
+__global__ void ker_mirror_extract(const cuDoubleComplex* modes, cuDoubleComplex* coefficients, CudaMirrorTables t,
+                                   long long n)
+{
+    for (long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; idx < n;
+         idx += static_cast<long long>(blockDim.x) * gridDim.x)
+    {
+        const int k = static_cast<int>(idx % t.n[2]);
+        const int j = static_cast<int>((idx / t.n[2]) % t.n[1]);
+        const int i = static_cast<int>(idx / (static_cast<long long>(t.n[1]) * t.n[2]));
+        const long long mode = (static_cast<long long>(t.extract_source[0][i]) * t.n_extended[1] + t.extract_source[1][j])
+                               * t.n_extended[2] + t.extract_source[2][k];
+        const cuDoubleComplex factor = cuCmul(cuCmul(t.extract_factor[0][i], t.extract_factor[1][j]), t.extract_factor[2][k]);
+        coefficients[idx] = cuCmul(factor, modes[mode]);
+    }
+}
+
+/// Modes of the mirror image from the coefficients (zero where a fill source is negative)
+__global__ void ker_mirror_fill(const cuDoubleComplex* coefficients, cuDoubleComplex* modes, CudaMirrorTables t,
+                                long long n_image)
+{
+    for (long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; idx < n_image;
+         idx += static_cast<long long>(blockDim.x) * gridDim.x)
+    {
+        const int k = static_cast<int>(idx % t.n_extended[2]);
+        const int j = static_cast<int>((idx / t.n_extended[2]) % t.n_extended[1]);
+        const int i = static_cast<int>(idx / (static_cast<long long>(t.n_extended[1]) * t.n_extended[2]));
+        const int si = t.fill_source[0][i], sj = t.fill_source[1][j], sk = t.fill_source[2][k];
+        if (si < 0 || sj < 0 || sk < 0)
+        {
+            modes[idx] = make_cuDoubleComplex(0.0, 0.0);
+            continue;
+        }
+        const cuDoubleComplex factor = cuCmul(cuCmul(t.fill_factor[0][i], t.fill_factor[1][j]), t.fill_factor[2][k]);
+        modes[idx] = cuCmul(factor, coefficients[(static_cast<long long>(si) * t.n[1] + sj) * t.n[2] + sk]);
+    }
+}
+
+/// The field is the first N points of every extended axis (real fields take the real part)
+template <typename D>
+__global__ void ker_mirror_crop(const cuDoubleComplex* image, D* field, CudaMirrorTables t, long long n)
+{
+    for (long long idx = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; idx < n;
+         idx += static_cast<long long>(blockDim.x) * gridDim.x)
+    {
+        const int k = static_cast<int>(idx % t.n[2]);
+        const int j = static_cast<int>((idx / t.n[2]) % t.n[1]);
+        const int i = static_cast<int>(idx / (static_cast<long long>(t.n[1]) * t.n[2]));
+        mirror_store(field[idx], image[(static_cast<long long>(i) * t.n_extended[1] + j) * t.n_extended[2] + k]);
+    }
+}
+
 /// Allocate at least `count` elements, keeping a large enough buffer
 template <typename X>
 void reserve(CudaDeviceBuffer<X>& buffer, long long count)
@@ -60,7 +135,20 @@ CudaFourierTransform<T>::CudaFourierTransform(ComputationBox<T>* cb, std::vector
     : FourierTransform<T>(cb, bc)
 {
     const std::vector<int> nx = cb->get_nx();
-    if (this->dim_ == 3)
+    const auto& m = this->mirror_axes_;
+    constexpr BoundaryCondition P = BoundaryCondition::PERIODIC;
+    if (this->mixed_)
+    {
+        // Complex FFT of the periodic mirror image (a mixed box has at least two axes)
+        if (this->dim_ == 3)
+            mirror_fft_ = std::make_unique<CudaFFT<std::complex<double>, 3>>(
+                std::array<int, 3>{m[0].n_extended, m[1].n_extended, m[2].n_extended}, std::array<BoundaryCondition, 3>{P, P, P});
+        else
+            mirror_fft_ = std::make_unique<CudaFFT<std::complex<double>, 2>>(
+                std::array<int, 2>{m[1].n_extended, m[2].n_extended}, std::array<BoundaryCondition, 2>{P, P});
+        set_mirror_image();
+    }
+    else if (this->dim_ == 3)
         fft_ = std::make_unique<CudaFFT<T, 3>>(std::array<int, 3>{nx[0], nx[1], nx[2]},
                                                 std::array<BoundaryCondition, 3>{bc[0], bc[1], bc[2]});
     else if (this->dim_ == 2)
@@ -85,6 +173,53 @@ template <typename T>
 CudaFourierTransform<T>::~CudaFourierTransform()
 {
     release_cuda_stream(stream_);
+}
+
+template <typename T>
+void CudaFourierTransform<T>::set_mirror_image()
+{
+    // Pack the tables of the three axes; the offsets become the pointers of mirror_tables_
+    std::vector<int> indices;
+    std::vector<double> signs;
+    std::vector<std::complex<double>> factors;
+    std::array<std::array<size_t, 3>, 3> index_offset{}, factor_offset{};
+    std::array<size_t, 3> sign_offset{};
+    for (int d = 0; d < 3; ++d)
+    {
+        const auto& axis = this->mirror_axes_[d];
+        index_offset[d] = {indices.size(), 0, 0};
+        indices.insert(indices.end(), axis.extend_source.begin(), axis.extend_source.end());
+        index_offset[d][1] = indices.size();
+        indices.insert(indices.end(), axis.extract_source.begin(), axis.extract_source.end());
+        index_offset[d][2] = indices.size();
+        indices.insert(indices.end(), axis.fill_source.begin(), axis.fill_source.end());
+        sign_offset[d] = signs.size();
+        signs.insert(signs.end(), axis.extend_sign.begin(), axis.extend_sign.end());
+        factor_offset[d] = {factors.size(), 0, 0};
+        factors.insert(factors.end(), axis.extract_factor.begin(), axis.extract_factor.end());
+        factor_offset[d][1] = factors.size();
+        factors.insert(factors.end(), axis.fill_factor.begin(), axis.fill_factor.end());
+    }
+    d_mirror_indices_.allocate(indices.size());
+    d_mirror_signs_.allocate(signs.size());
+    d_mirror_factors_.allocate(factors.size());
+    CUDA_CHECK(cudaMemcpy(d_mirror_indices_, indices.data(), sizeof(int) * indices.size(), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_mirror_signs_, signs.data(), sizeof(double) * signs.size(), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_mirror_factors_, factors.data(), sizeof(cuDoubleComplex) * factors.size(),
+                          cudaMemcpyHostToDevice));
+    for (int d = 0; d < 3; ++d)
+    {
+        mirror_tables_.n[d] = this->mirror_axes_[d].n;
+        mirror_tables_.n_extended[d] = this->mirror_axes_[d].n_extended;
+        mirror_tables_.extend_source[d] = d_mirror_indices_.get() + index_offset[d][0];
+        mirror_tables_.extract_source[d] = d_mirror_indices_.get() + index_offset[d][1];
+        mirror_tables_.fill_source[d] = d_mirror_indices_.get() + index_offset[d][2];
+        mirror_tables_.extend_sign[d] = d_mirror_signs_.get() + sign_offset[d];
+        mirror_tables_.extract_factor[d] = d_mirror_factors_.get() + factor_offset[d][0];
+        mirror_tables_.fill_factor[d] = d_mirror_factors_.get() + factor_offset[d][1];
+    }
+    d_image_.allocate(this->n_extended_);
+    d_modes_.allocate(this->n_extended_);
 }
 
 template <typename T>
@@ -152,9 +287,24 @@ template <typename T>
 void CudaFourierTransform<T>::transform_forward(int n_fields, double* d_coefficients)
 {
     T* d_fields = reinterpret_cast<T*>(d_fields_.get());
+    const int n_threads = CudaCommon::get_instance().get_n_threads();
     for (int f = 0; f < n_fields; ++f)
     {
-        if (this->periodic_)
+        if (this->mixed_)
+        {
+            // The coefficients of a field start an even number of doubles apart: 16-byte aligned
+            ker_mirror_extend<<<grid_blocks(this->n_extended_, n_threads), n_threads, 0, stream_>>>(
+                reinterpret_cast<const DeviceT*>(d_fields + f * field_pitch_), d_image_.get(), mirror_tables_,
+                this->n_extended_);
+            CUDA_CHECK_LAUNCH();
+            mirror_fft_->forward_stream(reinterpret_cast<std::complex<double>*>(d_image_.get()),
+                                        reinterpret_cast<std::complex<double>*>(d_modes_.get()), stream_);
+            ker_mirror_extract<<<grid_blocks(this->n_coefficients_, n_threads), n_threads, 0, stream_>>>(
+                d_modes_.get(), reinterpret_cast<cuDoubleComplex*>(d_coefficients + f * coefficient_pitch_),
+                mirror_tables_, this->n_coefficients_);
+            CUDA_CHECK_LAUNCH();
+        }
+        else if (this->periodic_)
             fft_->forward_stream(d_fields + f * field_pitch_,
                                  reinterpret_cast<std::complex<double>*>(d_coefficients + f * coefficient_pitch_), stream_);
         else
@@ -166,9 +316,23 @@ template <typename T>
 void CudaFourierTransform<T>::transform_backward(double* d_coefficients, int n_fields)
 {
     T* d_fields = reinterpret_cast<T*>(d_fields_.get());
+    const int n_threads = CudaCommon::get_instance().get_n_threads();
     for (int f = 0; f < n_fields; ++f)
     {
-        if (this->periodic_)
+        if (this->mixed_)
+        {
+            ker_mirror_fill<<<grid_blocks(this->n_extended_, n_threads), n_threads, 0, stream_>>>(
+                reinterpret_cast<const cuDoubleComplex*>(d_coefficients + f * coefficient_pitch_), d_modes_.get(),
+                mirror_tables_, this->n_extended_);
+            CUDA_CHECK_LAUNCH();
+            mirror_fft_->backward_stream(reinterpret_cast<std::complex<double>*>(d_modes_.get()),
+                                         reinterpret_cast<std::complex<double>*>(d_image_.get()), stream_);
+            ker_mirror_crop<<<grid_blocks(this->n_grid_, n_threads), n_threads, 0, stream_>>>(
+                d_image_.get(), reinterpret_cast<DeviceT*>(d_fields + f * field_pitch_), mirror_tables_,
+                static_cast<long long>(this->n_grid_));
+            CUDA_CHECK_LAUNCH();
+        }
+        else if (this->periodic_)
             fft_->backward_stream(reinterpret_cast<std::complex<double>*>(d_coefficients + f * coefficient_pitch_),
                                   d_fields + f * field_pitch_, stream_);
         else
@@ -198,7 +362,7 @@ void CudaFourierTransform<T>::forward_impl(const T* fields, int n_fields, double
     reserve(d_coefficients_in_, n_fields * coefficient_pitch_);
     upload_fields(fields, n_fields);
     transform_forward(n_fields, d_coefficients_in_);
-    if (!this->periodic_)
+    if (!this->periodic_ && !this->mixed_)   // the CUDA cosine and sine series
         scale_wall_coefficients(d_coefficients_in_, n_fields, std::ldexp(1.0, -this->dim_));
     copy_coefficients(coefficients, d_coefficients_in_, n_fields, false);
     CUDA_CHECK(cudaStreamSynchronize(stream_));
@@ -210,7 +374,7 @@ void CudaFourierTransform<T>::backward_impl(const double* coefficients, int n_fi
     reserve(d_coefficients_out_, n_fields * coefficient_pitch_);
     reserve(d_fields_, n_fields * field_pitch_);
     copy_coefficients(d_coefficients_out_, coefficients, n_fields, true);
-    if (!this->periodic_)
+    if (!this->periodic_ && !this->mixed_)
         scale_wall_coefficients(d_coefficients_out_, n_fields, std::ldexp(1.0, this->dim_));
     transform_backward(d_coefficients_out_, n_fields);
     download_fields(fields, n_fields);

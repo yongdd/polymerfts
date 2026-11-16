@@ -112,7 +112,6 @@ int main()
                                                    //output, p, v ,u, n
                         solver->get_chain_propagator(q_out.data(), 0, 0, 1, n);
 
-                        double sum = 0.0;
                         double x_square = 0.0;
                         double xx, yy, zz;
                         int idx;
@@ -127,7 +126,6 @@ int main()
                                     zz = cb->get_dx(2)*std::min(k, nx[2]-k);
                                     idx = i*nx[1]*nx[2] + j*nx[2] + k;
                                     x_square += q_out[idx]*cb->get_dv(idx)*(xx*xx + yy*yy + zz*zz);
-                                    sum += q_out[idx]*cb->get_dv(idx);
                                 }
                             }
                         }

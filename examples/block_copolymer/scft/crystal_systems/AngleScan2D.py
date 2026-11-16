@@ -1,7 +1,7 @@
 """Free energy of AB diblock cylinders against the angle of a fixed 2D cell.
 
 SCFT runs in fixed cells (relax_cell false) at a series of angles gamma. The angle entry of the
-stress (SCFT.compute_stress, the derivative of the free energy with respect to gamma in radians)
+stress (SCFT.cell.stress, the derivative of the free energy with respect to gamma in radians)
 changes sign at the optimal angle, where the script finds its root. With the lengths of the
 relaxed hexagonal cell (a = b = 1.7019 R0, from ObliqueCylinder2D.py) the optimum is
 gamma = 120 degrees. In fixed cells with other lengths the angle also sets the area of the cell,
@@ -54,7 +54,7 @@ def free_energy(a, b, gamma):
         result = calculation.run(initial_fields={"A": w_A, "B": -w_A}, return_result=True)
         w = np.array([result.w[m] for m in calculation.monomer_types])
         calculation.compute_concentrations(w)
-        stress = calculation.compute_stress(w, result.phi)
+        stress = calculation.cell.stress(w, result.phi)
     assert result.converged, (a, b, gamma)
     return result.free_energy, stress[2]
 

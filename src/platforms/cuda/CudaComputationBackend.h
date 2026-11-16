@@ -40,7 +40,8 @@ private:
     CudaComputationBox<T>* cb;
     SpaceGroup* space_group;
     std::unique_ptr<CudaSolver<T>> solver;
-    CudaSolverPseudoDiscrete<T>* solver_discrete;  ///< solver, when the chains are discrete (not owning)
+    CudaSolverPseudoDiscrete<T>* solver_discrete;  ///< the pseudo-spectral solver of discrete chains (not owning)
+    bool discrete_chains;                          ///< the chains are discrete (exp(-w ds) also in the reduced basis)
     int n_streams;
     int n_basis;
     bool force_off_diagonal_stress;
@@ -51,19 +52,24 @@ private:
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
     CudaDeviceBuffer<int> d_reduced_basis_indices;                   ///< Space group: reduced -> full index (lent to the solver)
     CudaDeviceBuffer<int> d_full_to_reduced_map;                     ///< Space group: full -> reduced index (lent to the solver)
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_pair[MAX_STREAMS][2];      ///< Stress: [q_1 | q_2] double buffer per stream
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_pair[MAX_STREAMS][2];      ///< Stress: [q_1 | q_2] double buffer per stream;
+                                                                     ///< junction products: staged checkpoints and accumulator
     CudaDeviceBuffer<CuDeviceData<T>> d_segment_stress[MAX_STREAMS]; ///< Stress: six sums of one segment per stream
     CudaDeviceBuffer<CuDeviceData<T>> d_block_stress[MAX_STREAMS];   ///< Stress: weighted sum over the segments of a block
     CudaPinnedBuffer<T> h_block_stress[MAX_STREAMS];                 ///< Stress: pinned host copy of d_block_stress
     cudaEvent_t kernel_done[MAX_STREAMS];           ///< Stress: kernel stream reached this point
     cudaEvent_t copy_done[MAX_STREAMS];             ///< Stress: copy stream reached this point
-    CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Scratch of sum_to_host()
+    CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis
     std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_exp_dw_reduced;
 
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
+
+    /// q = Π_i q_i^{n_i} over device-resident sources or checkpoints (junction_product())
+    template <typename Source>
+    void multiply_sources(int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
 
     /// Destroy the solver, then the streams and events it runs on (the device
@@ -106,18 +112,20 @@ public:
     void set_zero(int stream, BackendArray<T>* a) override;
     void copy(int stream, BackendArray<T>* dst, BackendArray<T>* src) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<BackendArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_sum(int stream, BackendArray<T>* q,
-                      const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                      const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
-                          const std::vector<std::pair<CheckpointArray<T>*, int>>& sources) override;
+                          const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void apply_mask(int stream, BackendArray<T>* q) override;
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 
     T inner_product(BackendArray<T>* a, BackendArray<T>* b) override;
     T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) override;
+    double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
+                                  BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
     void prepare_stress() override;

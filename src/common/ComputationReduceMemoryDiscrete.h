@@ -33,7 +33,7 @@ private:
     std::map<std::tuple<std::string, int>, CheckpointArray<T>*> half_checkpoint;
 
     /// One segment per polymer for its partition function: (polymer, key, n, key†, monomer type, n_aggregated)
-    std::vector<std::tuple<int, std::string, int, std::string, std::string, int>> single_partition_segment;
+    std::vector<std::tuple<int, std::string, int, std::string, std::string, double>> single_partition_segment;
 
     void add_half_checkpoint(const std::string& key, int n);
     void free_half_checkpoints();
@@ -45,7 +45,7 @@ protected:
 public:
     ComputationReduceMemoryDiscrete(ComputationBox<T>* cb, Molecules* molecules,
                                     PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                    SpaceGroup* space_group,
+                                    const NumericalMethodInfo& method, SpaceGroup* space_group,
                                     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
     ~ComputationReduceMemoryDiscrete();
 

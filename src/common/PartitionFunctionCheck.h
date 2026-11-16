@@ -30,17 +30,37 @@ double relative_partition_error(const std::vector<T>& values, T reference)
     return error;
 }
 
-// The error of every polymer: its contour values against the Q that normalizes
-// its concentrations. A uniform field shift can make Q arbitrarily small, hence
-// the relative (complex) error.
+// A grand-canonical chain does not divide by Q, so cancellation in its spatial
+// integral is regular. Compare contour cuts on the scale of their absolute
+// integrands, before that cancellation, with the same quadrature normalization.
 template <typename T>
-std::vector<double> relative_partition_errors(const std::vector<std::vector<T>>& values, const std::vector<T>& references)
+double absolute_integrand_partition_error(const std::vector<T>& values, T reference,
+                                         const std::vector<double>& integrals)
 {
-    std::vector<double> errors;
-    errors.reserve(references.size());
-    for (std::size_t p = 0; p < references.size(); p++)
-        errors.push_back(relative_partition_error(values[p], references[p]));
-    return errors;
+    const double invalid = std::numeric_limits<double>::infinity();
+    if (values.empty() || values.size() != integrals.size() || !std::isfinite(std::abs(reference)))
+        return invalid;
+    double scale = 0.0;
+    double largest_partition = std::abs(reference);
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        const double magnitude = std::abs(values[i]);
+        if (!std::isfinite(magnitude) || !std::isfinite(integrals[i]) || integrals[i] < 0.0)
+            return invalid;
+        largest_partition = std::max(largest_partition, magnitude);
+        scale = std::max(scale, integrals[i]);
+    }
+    if (scale == 0.0)
+        return largest_partition == 0.0 ? 0.0 : invalid;
+    double error = 0.0;
+    for (const auto& value : values)
+    {
+        const double residual = std::abs(value / scale - reference / scale);
+        if (!std::isfinite(residual))
+            return invalid;
+        error = std::max(error, residual);
+    }
+    return error;
 }
 
 #endif

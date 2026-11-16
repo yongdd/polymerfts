@@ -137,7 +137,7 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
   described in docs/references/Tools.md (section 5), YAML/JSON parameter files in
   docs/references/Parameters.md.
 - 28. Examples guide: `examples/README.md` lists every example by physical system and method
-  (2026-10-28); docs/internals/ExampleValidation.md gives what is validated, with the compared
+  (2026-10-28); docs/validation/ExampleValidation.md gives what is validated, with the compared
   numbers and figures.
 - 30. Charged CL discrepancies against exact finite-lattice particles: moved to the
   charged-polymer research notes (2026-10-26). The user-facing caveat is the "Checked

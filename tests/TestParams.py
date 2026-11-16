@@ -9,6 +9,8 @@ and ValidationError for invalid input.
 
 import sys
 import copy
+import os
+import tempfile
 import io
 import contextlib
 import numpy as np
@@ -73,7 +75,7 @@ def main():
         return 77  # ctest SKIP_RETURN_CODE
     ok = True
 
-    from polymerfts.validation import parse_chi_n
+    from polymerfts.utils.validation import parse_chi_n
     for bad in ("A,B,C", "A", "A,,B"):
         try:
             parse_chi_n({bad: 10.0}, {"A": 1.0, "B": 1.0, "C": 1.0})
@@ -93,7 +95,7 @@ def main():
         ok &= expect_error(SCFT, p, "angles involving absent dimensions")
     for angles in (None, []):
         p = base_params(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
-        assert build(SCFT, p).crystal_system == "Orthorhombic"
+        assert build(SCFT, p).cell.crystal_system == "Orthorhombic"
 
     # NaN mass errors must raise, rather than pass the comparison to tolerance.
     for cls in (LFTS, CLFTS):
@@ -114,7 +116,7 @@ def main():
     assert not any(line.startswith("Langevin step:") for line in output.getvalue().splitlines())
 
     p = base_params(); p["chain_model"] = "discrete"
-    assert build(SCFT, p).prop_solver.numerical_method == "discrete"
+    assert build(SCFT, p).prop_solver.numerical_method == "ps"
 
     # A fully absent composition mode must have a finite zero step size and
     # remain fixed through CL-FTS, including when initial fields contain that mode.
@@ -146,7 +148,7 @@ def main():
         "max_iter": calc.max_iter == 2000,
         "tolerance": calc.tolerance == 1e-8,
         "stress_interval": calc.stress_interval == 1,
-        "stress_scale": calc.stress_scale == 1,
+        "stress_scale": calc.cell.stress_scale == 1,
         "zeta_n": calc.zeta_n is None,
         "space_group": calc.sg is None,
         "monomer_types": calc.monomer_types == ["A", "B"],
@@ -154,7 +156,7 @@ def main():
         "blocks_input": calc.polymers[0]["blocks_input"] == [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]],
         "platform": calc.prop_solver.platform == cpu_platform(),
         "numerical_method": calc.prop_solver.numerical_method == "rqm4",
-        "crystal_system": calc.crystal_system == "Orthorhombic" and calc.lx_reduced_indices == [0, 1, 2],
+        "crystal_system": calc.cell.crystal_system == "Orthorhombic" and calc.cell.lx_reduced_indices == [0, 1, 2],
     }
     for name, passed in checks.items():
         if not passed:
@@ -168,9 +170,9 @@ def main():
                    "crystal_system": "Cubic", "relax_cell": True})
     calc = build(SCFT, params)
     if not (calc.max_iter == 10 and calc.tolerance == 1e-5 and calc.stress_interval == "adaptive"
-            and calc.stress_scale == 2.0 and calc.zeta_n == 100.0
+            and calc.cell.stress_scale == 2.0 and calc.zeta_n == 100.0
             and calc.prop_solver.numerical_method == "rk2"
-            and calc.lx_reduced_indices == [0] and calc.lx_full_indices == [0, 0, 0]):
+            and calc.cell.lx_reduced_indices == [0] and calc.cell.lx_full_indices == [0, 0, 0]):
         print("FAILED: SCFT explicit options")
         ok = False
 
@@ -208,7 +210,7 @@ def main():
 
     # ---- LFTS and CLFTS read their own options
     sim = build(LFTS, lfts_params())
-    if not (sim.langevin["nbar"] == 10000 and "sigma" in sim.langevin and sim.saddle["max_iter"] == 100
+    if not (sim.langevin["nbar"] == 10000 and "sigma" in sim.langevin and sim.saddle.settings["max_iter"] == 100
             and sim.recording["dir"] == "data" and sim.verbose_level == 1 and sim.wtmd is None
             and sim.zeta_n is None):
         print("FAILED: LFTS options")
@@ -283,9 +285,27 @@ def main():
         ok = False
     params = base_params(); params["space_group"] = {"symbol": "Im-3m"}
     calc = build(SCFT, params)
-    if not (calc.sg is not None and calc.crystal_system == "Cubic" and calc.lx_reduced_indices == [0]):
+    if not (calc.sg is not None and calc.cell.crystal_system == "Cubic" and calc.cell.lx_reduced_indices == [0]):
         print("FAILED: SCFT space group")
         ok = False
+
+    # ---- hall_number None means no Hall number (the symbol alone)
+    params = base_params(); params["space_group"] = {"symbol": "Im-3m", "hall_number": None}
+    if build(SCFT, params).sg.get_hall_number() != 529:
+        print("FAILED: space_group with hall_number None")
+        ok = False
+
+    # ---- malformed space_group inputs raise ValidationError
+    for group, what in (({"hall_number": 529}, "space_group without a symbol"), ("Im-3m", "space_group as a string"),
+                        ({"symbol": "Im-3m", "hall_number": 529.0}, "a float hall_number"),
+                        ({"symbol": "Im-3m", "hall_number": True}, "a boolean hall_number"),
+                        ({"symbol": "Im-3m", "hall_number": 531}, "hall_number 531")):
+        params = base_params(); params["space_group"] = group
+        ok &= expect_error(SCFT, params, what)
+
+    # ---- box relaxation needs the stress, which the real-space method does not compute
+    params = base_params(); params.update(numerical_method="cn-adi2", relax_cell=True)
+    ok &= expect_error(SCFT, params, "relax_cell with cn-adi2")
 
     # ---- the cell must match the crystal system of the space group
     params = base_params(); params["space_group"] = {"symbol": "Im-3m"}; params["lx"] = [4.0, 4.0, 3.0]
@@ -296,7 +316,7 @@ def main():
     ok &= expect_error(SCFT, params, "hexagonal space group without a 120-degree angle")
     params = base_params(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}
     params["angles"] = [90.0, 90.0, 120.0]
-    if build(SCFT, params).crystal_system != "Hexagonal":
+    if build(SCFT, params).cell.crystal_system != "Hexagonal":
         print("FAILED: SCFT hexagonal space group with a hexagonal cell")
         ok = False
     params = base_params(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}; params["angles"] = [120.0]
@@ -305,13 +325,13 @@ def main():
     params = base_params(); params["space_group"] = {"symbol": "P-3m1"}
     ok &= expect_error(SCFT, params, "hexagonal-axes trigonal group on a cube")
     params = base_params(); params["space_group"] = {"symbol": "P-3m1"}; params["angles"] = [90.0, 90.0, 120.0]
-    if build(SCFT, params).crystal_system != "Trigonal":
+    if build(SCFT, params).cell.crystal_system != "Trigonal":
         print("FAILED: SCFT hexagonal-axes trigonal group with a hexagonal cell")
         ok = False
     params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [90.0, 90.0, 120.0]
     ok &= expect_error(SCFT, params, "rhombohedral-axes group on a hexagonal cell")
     params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
-    if build(SCFT, params).crystal_system != "Trigonal":
+    if build(SCFT, params).cell.crystal_system != "Trigonal":
         print("FAILED: SCFT rhombohedral-axes group on a rhombohedral cell")
         ok = False
     params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
@@ -393,7 +413,7 @@ def main():
         params = base_params(); params.update(nx=[8, 8, 8], lx=lx, relax_cell=True, crystal_system=system)
         if angles is not None:
             params["angles"] = angles
-        if build(SCFT, params).crystal_system != system:
+        if build(SCFT, params).cell.crystal_system != system:
             print(f"FAILED: crystal system {system} for lx {lx}, angles {angles}")
             ok = False
     # A fixed cell is not checked: the crystal system only matters for relaxation
@@ -408,8 +428,8 @@ def main():
     params = base_params(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["angles"] = [90.0, 90.0, 120.0]
     params["relax_cell"] = True
     calc = build(SCFT, params)
-    if not (calc.crystal_system == "Hexagonal2D" and calc.lx_reduced_indices == [0]):
-        print("FAILED: Hexagonal2D classification", calc.crystal_system, calc.lx_reduced_indices)
+    if not (calc.cell.crystal_system == "Hexagonal2D" and calc.cell.lx_reduced_indices == [0]):
+        print("FAILED: Hexagonal2D classification", calc.cell.crystal_system, calc.cell.lx_reduced_indices)
         ok = False
 
     # ---- LFTS / CLFTS options
@@ -464,4 +484,13 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The L-FTS and CL-FTS runs record into the relative directory "data"; keep it out of the
+    # directory the test is started from
+    previous = os.getcwd()
+    with tempfile.TemporaryDirectory() as directory:
+        os.chdir(directory)
+        try:
+            status = main()
+        finally:
+            os.chdir(previous)   # Windows cannot remove the current directory
+    sys.exit(status)

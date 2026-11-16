@@ -16,10 +16,11 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import (LFTS, CLFTS, PropagatorSolver, PlatformSelector,
                         LeimkuhlerMatthews, EulerMaruyama, ValidationError, SaddlePointError)
-from polymerfts.utils import atomic_savemat, settings_json, input_hash
-from polymerfts.integrators import checked_fields
+from polymerfts.utils.common import atomic_savemat, settings_json, input_hash
+from polymerfts.fts.integrators import checked_fields
 from TestFtsReliability import parameters, fields, expect_error, FailingLFTS
 from cuda_part import cuda_part_missing
+from fts_checks import compare_files, exact_restart, recording_dir
 
 example_path = Path(__file__).resolve().parents[1] / "examples/tools/CustomExtensions.py"
 spec = importlib.util.spec_from_file_location("custom_fts_extensions", example_path)
@@ -68,10 +69,7 @@ def check_stochastic_moments():
         np.testing.assert_allclose(np.mean(x * x), expected, rtol=1e-13)
 
 
-def compare_fields(a, b):
-    for key in a:
-        if key.startswith(("w_", "phi_", "normal_noise", "record_", "rng_state")):
-            assert np.array_equal(a[key], b[key]), key
+FIELD_KEYS = ("w_", "phi_", "normal_noise", "record_", "rng_state")
 
 
 def check_observers_and_restart(root):
@@ -102,34 +100,26 @@ def check_observers_and_restart(root):
         assert seen == [1, 2, 3, 4]
         assert sparse_steps == [3]
         assert baseline.random_bg.state == monitored.random_bg.state
-        compare_fields(loadmat(root / (prefix + "baseline") / "fields_000004.mat"),
-                       loadmat(root / (prefix + "monitored") / "fields_000004.mat"))
+        compare_files(root / (prefix + "baseline"), root / (prefix + "monitored"), "fields_000004.mat", FIELD_KEYS)
 
         for method in ("euler", "heun"):
-            def create(directory, steps, seed):
-                integral = example.PredictorCorrector() if method == "heun" else "euler"
-                observable = example.CompositionVariance(every=2)
-                sim = cls(parameters(directory, steps), random_seed=seed, integrator=integral,
-                           callbacks={"variance": observable})
-                return sim, observable
+            observables = {}
 
-            full_dir = root / (prefix + method + "full")
-            first_dir = root / (prefix + method + "first")
-            next_dir = root / (prefix + method + "next")
-            full, full_obs = create(full_dir, 4, 11)
-            full.run(fields())
-            first, _ = create(first_dir, 1, 11)
-            first.run(fields())
-            continued, continued_obs = create(next_dir, 4, 99)
-            checkpoint = first_dir / "fields_000001.mat"
-            continued.continue_run(checkpoint)
-            assert full_obs.state_dict() == continued_obs.state_dict()
-            assert continued_obs.count == 2
-            assert full.random_bg.state == continued.random_bg.state
-            compare_fields(loadmat(full_dir / "fields_000004.mat"), loadmat(next_dir / "fields_000004.mat"))
+            def create(name, steps, seed):
+                integral = example.PredictorCorrector() if method == "heun" else "euler"
+                observables[name] = example.CompositionVariance(every=2)
+                return cls(parameters(root / (prefix + method + name), steps), random_seed=seed,
+                           integrator=integral, callbacks={"variance": observables[name]})
+
+            sims = exact_restart(create, lambda sim: sim.run(fields()), 4, 1, {"fields_000004.mat": FIELD_KEYS})
+            full, continued = sims["full"], sims["continued"]
+            checkpoint = recording_dir(sims["partial"]) / "fields_000001.mat"
+            assert observables["full"].state_dict() == observables["continued"].state_dict()
+            assert observables["continued"].count == 2
             if method == "heun":
                 assert continued.integrator.force_evaluations == full.integrator.force_evaluations == 4
-                bad, obs = create(root / "bad-state", 4, 99)
+                bad = create("bad-state", 4, 99)
+                obs = observables["bad-state"]
                 data = loadmat(checkpoint, squeeze_me=True)
                 state = json.loads(str(data["extension_state_json"]))
                 state["integrator"]["force_evaluations"] = "invalid"
@@ -154,8 +144,7 @@ def check_observers_and_restart(root):
         atomic_savemat(root / "version1.mat", {k: v for k, v in old.items() if not k.startswith("__")})
         legacy = cls(parameters(root / (prefix + "version1")), random_seed=99)
         legacy.continue_run(root / "version1.mat")
-        compare_fields(loadmat(root / (prefix + "baseline") / "fields_000004.mat"),
-                       loadmat(root / (prefix + "version1") / "fields_000004.mat"))
+        compare_files(root / (prefix + "baseline"), root / (prefix + "version1"), "fields_000004.mat", FIELD_KEYS)
 
     # Failed proposals never reach observers; resampling rolls method state back.
     seen = []
@@ -180,7 +169,7 @@ def check_method_registry():
             assert platform in info["compiled_backends"]
             solver = PropagatorSolver(nx=[16], lx=[3.0], ds=0.05, bond_lengths={"A": 1.0},
                                       bc=["periodic"] * 2, chain_model=info["chain_model"],
-                                      numerical_method=None if name == "discrete" else name, platform=platform)
+                                      numerical_method=name, platform=platform)
             solver.add_polymer(1.0, [["A", 1.0, 0, 1]])
             w = np.random.default_rng(3).normal(0, 5, 16)
             solver.compute_propagators({"A": w})
@@ -194,6 +183,61 @@ def check_method_registry():
                     platform=platform, field_type="complex"), ValueError)
 
 
+class ResponseScaledEuler:
+    """A stateful custom method whose persistent scale comes from linear response."""
+    name = "test-response-scaled-euler"
+    settings = {"version": 1}
+    linear_response = True
+    averaged_noise = False
+
+    def __init__(self):
+        self.response_scale = None
+        self.steps = 0
+
+    def set_linear_response(self, jacobian, *, dt, mobility, noise_direction, fourier):
+        self.response_scale = 1.0 / (1.0 + dt * float(np.max(np.abs(jacobian))))
+
+    def state_dict(self):
+        assert self.response_scale is not None, "State was captured before preparing the response"
+        return {"response_scale": self.response_scale, "steps": self.steps}
+
+    def load_state_dict(self, state):
+        scale, steps = state["response_scale"], state["steps"]
+        if scale is not None and (not np.isfinite(scale) or scale <= 0):
+            raise ValueError("Invalid response scale")
+        if type(steps) is not int or steps < 0:
+            raise ValueError("Invalid step count")
+        self.response_scale, self.steps = scale, steps
+
+    def step(self, fields, force, *, dt, mobility, noise, previous_noise,
+             noise_direction, evaluate_force):
+        assert self.response_scale is not None, "Prepared response was lost before the first step"
+        effective = self.response_scale * mobility[:, None]
+        self.steps += 1
+        return fields - dt * effective * force + np.sqrt(effective) * noise_direction[:, None] * noise
+
+
+def check_prepared_method_state(root):
+    def create(name, steps, seed):
+        params = parameters(root / name, steps)
+        params["langevin"]["dt"] = 0.001
+        original = ResponseScaledEuler()
+        sim = CLFTS(params, random_seed=seed, integrator=original)
+        sim.draw_architectures = False
+        assert original.response_scale is None   # preparation belongs to the simulation's copy
+        assert sim.integrator.response_scale is not None
+        return sim
+
+    sims = exact_restart(lambda name, steps, seed: create("prepared-" + name, steps, seed),
+                         lambda sim: sim.run(fields()), 4, 2, {"fields_000004.mat": FIELD_KEYS})
+    full, continued = sims["full"], sims["continued"]
+    assert full.integrator.state_dict() == continued.integrator.state_dict()
+    assert full.integrator.steps == 4
+    # A new run resets evolving state but retains the prepared response.
+    full.run(fields())
+    assert full.integrator.steps == 4
+
+
 def main():
     check_stochastic_moments()
     if not any(p.startswith("cpu") for p in PlatformSelector.avail_platforms()):
@@ -205,6 +249,7 @@ def main():
             with contextlib.redirect_stdout(io.StringIO()):
                 check_observers_and_restart(Path(directory))
                 check_method_registry()
+                check_prepared_method_state(Path(directory))
         finally:
             os.chdir(previous)
     if cuda_part_missing():

@@ -82,11 +82,19 @@ class ContourLengthMapping;
  * BlockInput block_B = {"B", 0.5, 1, 2};
  * @endcode
  */
+/// Largest block multiplicity. The extended-range junction products (JunctionProduct.h)
+/// then keep exact binary exponents in a double, and complex fields take every integer
+/// multiplicity (junction_product::integer_power).
+constexpr double MAX_BLOCK_MULTIPLICITY = 1.0e6;
+
 struct BlockInput{
     std::string monomer_type;   ///< Monomer type label, e.g., "A", "B", "C"
     double contour_length;      ///< Relative contour length (fraction of reference chain)
     int v;                      ///< Starting vertex (node) index
     int u;                      ///< Ending vertex (node) index
+    /// Number of copies of the block and of everything on its u side, all attached at v
+    /// (a real number in [1, MAX_BLOCK_MULTIPLICITY]; e.g. the arm number of a star given by one arm)
+    double multiplicity = 1.0;
 };
 
 /**
@@ -106,6 +114,10 @@ struct Block{
     double contour_length;      ///< Relative contour length (N_block / N_Ref)
     int v;                      ///< Starting vertex (node) index
     int u;                      ///< Ending vertex (node) index
+    double multiplicity;        ///< Copies of this block and its u side attached at v (BlockInput)
+    /// Copies of this block in one chain: the product of its own multiplicity and of the
+    /// multiplicities of the blocks whose u side contains it
+    double n_copies;
 };
 
 /**
@@ -124,6 +136,13 @@ struct Block{
  * - **Edges (Blocks)**: Polymer segments connecting two vertices
  * - **Contour Length (alpha)**: Total chain length in units of N_Ref
  * - **Volume Fraction**: Fraction of system volume occupied by this polymer type
+ * - **Multiplicity**: A block (v,u) with multiplicity m stands for m copies of the
+ *   block and of everything on its u side, all attached at v. m may be any real
+ *   number in [1, 10^6]: the junction product at v contains that branch to the power m
+ *   (m - 1 for the propagator that enters one of the copies), which continues an
+ *   integer number of identical arms to real values (e.g. an A_n B_n star with
+ *   real n is two blocks of multiplicity n). Two blocks with multiplicities may
+ *   not lie each in the part the other replicates.
  *
  * **Propagator Computation:**
  *
@@ -197,7 +216,7 @@ public:
      * @brief Construct a Polymer from block specifications.
      *
      * @param ds              Contour step size (typically 1/N_Ref)
-     * @param bond_lengths    Statistical segment lengths squared: {type: (a/a_Ref)^2}
+     * @param bond_lengths    Relative statistical segment lengths: {type: a/a_Ref} (not squared)
      * @param volume_fraction Volume fraction of this polymer type
      * @param block_inputs    Vector of BlockInput defining topology
      * @param chain_end_to_q_init Optional: map chain ends to initial condition labels
@@ -227,9 +246,21 @@ public:
 
     /**
      * @brief Get total contour length.
-     * @return Sum of all block contour lengths (alpha = N/N_Ref)
+     * @return Sum of the contour lengths of all block copies (alpha = N/N_Ref)
      */
     double get_alpha() const;
+
+    /**
+     * @brief Copies of the branch reached from a node through one of its blocks.
+     *
+     * The branch on the neighbor side of block (node, neighbor) hangs at the node
+     * multiplicity times if the block has its v at the node, and once otherwise.
+     *
+     * @param node     Junction or chain-end vertex
+     * @param neighbor Adjacent vertex
+     * @return Number of copies of that branch at the node
+     */
+    double get_branch_multiplicity(const int node, const int neighbor) const;
 
     /**
      * @brief Get volume fraction of this polymer type.
@@ -259,10 +290,10 @@ public:
     struct Block& get_block(const int v, const int u);
 
     /**
-     * @brief Get total number of contour segments.
-     * @return Sum of n_segment over all blocks
+     * @brief Get total number of contour segments of one chain, block copies included.
+     * @return Sum of n_copies*n_segment over all blocks; not an integer for a real multiplicity
      */
-    int get_n_segment_total() const;
+    double get_n_segment_total() const;
 
     /**
      * @brief Get number of segments in a specific block.
@@ -331,22 +362,28 @@ public:
      * vertices (junction points and chain ends) connected by blocks
      * with their monomer types and contour lengths.
      *
-     * For linear chains, outputs a single-line format:
+     * For linear chains of at most 10 blocks, outputs a single-line format:
      * ```
      * === Polymer ===
      * (0)--A[0.30]--(1)--B[0.70]--(2)
      * Legend: (n)=vertex, Type[length]=block
      * ```
      *
-     * For branched polymers, uses tree format:
+     * For branched polymers, uses tree format. The root is the chain end with
+     * the smallest index, children follow in increasing order, and the last
+     * child of a vertex is drawn with `\--`:
      * ```
      * === Polymer ===
-     * (0)
-     *  +--A[0.33]--(1)
-     *  +--B[0.33]--(2)
-     *  +--C[0.34]--(3)
+     * (1)
+     *  \--A[0.33]--(0)
+     *             +--B[0.33]--(2)
+     *             \--C[0.34]--(3)
      * Legend: (n)=vertex, Type[length]=block
      * ```
+     *
+     * Above 100 blocks the tree is printed without indentation, one line
+     * `(parent)--Type[length]--(child)` per block in the same depth-first
+     * order, where the parent is the vertex nearer the root.
      */
     void display_architecture() const;
 

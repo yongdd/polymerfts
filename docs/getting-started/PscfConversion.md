@@ -71,18 +71,55 @@ The parameter dictionary must include `nx`, `lx`, `ds`, `chain_model`,
 Monomer identifiers must be nonempty and contain no whitespace.
 The canonical names `polymers`, `relax_cell`, `stress_scale` and
 `space_group.hall_number` are supported alongside the legacy input aliases.
-Supplying both an alias and its canonical name is an error.
+Supplying both an alias and its canonical name is an error. As in SCFT, a space-group
+symbol with several Hall settings (for example `P2/m`) needs `space_group.hall_number`,
+which must be a setting of that symbol.
 
-A Python parameter file can also be used with `--fields`. The converter reads a
-module-level `params` dictionary and simple numerical expressions such as
-`f = 0.36` and `1-f` statically. It never executes the Python file. Runtime
-configuration loading, recognized parameter mutations (including through
-container aliases), and constants changed by unsupported assignments or control
-flow are rejected. Literal helper containers and indexing are supported;
-container method calls are rejected. Other runtime code, including Python
-initial-field generation and calls to external functions, is not executed or
-extracted. Use a saved result or JSON/YAML configuration for a model assembled
-or changed at runtime.
+A Python parameter file can also be used with `--fields`. The converter reads it
+without running it and accepts only a script whose `params` it can follow:
+
+- `params` is a module-level dictionary literal built from numbers, strings, earlier
+  literal constants, `+ - * / **`, `np.sqrt`, `math.sqrt`, `np.pi`, `math.pi`,
+  `[n] * 3` and `dict(base, key=value)`.
+- The script reads `params` only by indexing it down to a number, a string or a list
+  of numbers. An index that is not a literal, or that is read or computed from a list or
+  dictionary the script could change, stands for every item. Such a list may be given to
+  arithmetic, to builtins such as `len`, `complex` and `bool`, to functions of NumPy,
+  SciPy, `math` and polymerfts, also under a name assigned one of them once at module level
+  (`zeros = np.zeros`), and to the `.reshape` of `np.asarray(...)` or `np.array(...)`
+  called with at most `dtype=`. The other arguments of such a call, and the object of any
+  other `.reshape`, must be values that cannot run code of the script: literals, constants,
+  lists of `params`, these functions and builtins (as in `dtype=complex` or `key=sum`), and
+  calls and arithmetic of such values written out in the call. A list, dictionary or array
+  that a name holds is not such a value, also given with `*` or `**`, since the script could
+  fill it with a function: write the computation in the call
+  (`np.cos(2 * np.pi * np.arange(n) / n)`, not a module-level `z`). The script may also
+  print `params`, compare it (`in`, `is`, `==`) and loop over the keys of its dictionaries.
+- `SCFT`, `LFTS`, `CLFTS` and `GibbsEnsemble`, imported from polymerfts at module
+  level under their own names, are only called, with `params` or
+  `dict(params, key=value)`. All simulations of the script must receive the same
+  dictionary; the export describes it, or `params` when the script constructs no
+  simulation.
+
+Everything else is refused, in particular a change of `params` or of a list or dictionary
+that the exported dictionary is read from (assignment, `del`, augmented assignment,
+method call, `np.random.shuffle`), handing such a container to a function of the script
+or to other code, also through a call that receives a function of the script with it (a
+lambda, function, method, `functools.partial`, a function imported from another module or
+a container holding one, for example as `key=` of `max` or as the function that
+`scipy.optimize.minimize` calls with `args=`), the `.reshape` of any other object (a class
+of the script, or an object a builtin or library returns, such as `max([grid])`), an
+assignment to an attribute named `reshape` or to an attribute of NumPy, SciPy, `math` or
+polymerfts (also through a name assigned one of them), a second binding of `params`, of a
+name holding such a container or of a simulation class, any other use of a simulation
+class (annotations, `isinstance`, `from polymerfts import SCFT as Solver`), `from_file`,
+star imports, reflection
+(`getattr`, `exec`, `sys.modules`, `__main__`, `importlib`, `builtins`, `copy`) and
+constants changed by control flow, `global` or `match`. The reader does not resolve
+scopes, so a local variable named like one of these also refuses the script.
+Code written to hide what it does, such as operators of objects the script defines or a
+library that keeps a list and hands it back, stays out of scope. Use a saved result or a
+JSON/YAML configuration for a model assembled or changed at run time.
 
 To try a complete conversion without running a simulation:
 
@@ -237,6 +274,7 @@ The converter rejects the following rather than producing a partial script:
 | Partially flexible cells; flexible 2D square/rhombic or 3D rhombohedral cells | Their relaxation constraints cannot be represented by this translation; fixed cells are supported |
 | Cells with a volume below 0.1 abc, e.g. an oblique cell with γ under 5.74° | polymerfts rejects such nearly flat cells ([Parameters](../references/Parameters.md#lattice-angles-non-orthogonal)); convert the reduced (Niggli) cell of the lattice. Field import and export keep them |
 | Bead chains, solvents, grand-canonical `mu`, nonunit `vMonomer` | The translator supports the continuous incompressible canonical polymer model only |
+| A single monomer type (`nMonomer 1`) | Incompressible polymerfts SCFT requires at least two monomer types; field-only import remains available |
 | External potentials, masks, environments, FTS settings and other unrecognized blocks or labels | These require model-specific implementation |
 | Iterator controls such as `errorType`, `verbose`, `lambda`, `useLambdaRamp`, `r`; other implementation-specific options | No direct setting translation is implemented; remove them only after reviewing how the solver settings should change |
 
@@ -285,7 +323,9 @@ corresponding relaxation constraints.
 
 Grid values are transferred without interpolation. Polymerfts normally samples
 at cell centers and PSCF at nodes, so assigning the same values changes the
-physical origin by a constant half-grid translation. This is compatible with the
+physical origin by a constant half-grid translation (along c only for fields of
+a hexagonal-axes space group, which polymerfts samples at the nodes along a and
+b). This is compatible with the
 periodic full-grid workflow; the converter does not translate symmetry origins
 or create a PSCF symmetry-adapted basis.
 
@@ -303,16 +343,11 @@ for cross-code comparisons. A PSCF calculation still needs its own convergence
 checks; conversion does not establish thermodynamic equivalence of different
 models or solver stopping criteria.
 
-## Migration and checks
+## Checks
 
-The old `tools/conversion_to_pscf/to_pscf.py --file_name ...` exporter and
-`tools/read_pscf_output/to_matlab.py` importer are replaced by `export` and
-`import`; `import-script` additionally translates supported PSCF calculations.
-Other MATLAB scripts and analysis notebooks have moved from `tools/` to
-`scripts/analysis/`. The historical PSCF sample fields are preserved in
+Run the format, coordinate, model-validation and command-line checks with the
+command below; the import check reads the PSCF sample fields in
 [`tests/data/pscf/`](../../tests/data/pscf/).
-
-Run the format, coordinate, model-validation and command-line checks with:
 
 ```bash
 python -m pytest tests/scripts/TestPscfConverter.py tests/scripts/TestPscfScript.py -q

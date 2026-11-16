@@ -102,6 +102,20 @@ IF(MSVC)
     ENDIF()
 ELSE()
     ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-Wall>)
+    # No fused multiply-add from a*b + c: the full- and reduced-memory computations
+    # add the same terms in different groupings and agree bit for bit only when every
+    # product is rounded on its own. Without FMA in the target (-march=x86-64, the
+    # default) this changes nothing; with it (-march=x86-64-v3, native) the host
+    # loops keep separate multiplies and adds, while the FFT libraries are unaffected.
+    # MSVC's default /fp:precise does not contract. A floating-point model chosen in
+    # the flags is kept: Clang and icpx reject a later -ffp-contract under -Werror.
+    STRING(TOUPPER "${CMAKE_BUILD_TYPE}" _fp_config)
+    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|fast-math|-Ofast")
+        MESSAGE(STATUS "Floating-point contraction is left to the -fp-model, -ffp-contract, -ffast-math "
+                       "or -Ofast flags given; full and reduced memory may then differ in the last bits")
+    ELSE()
+        ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+    ENDIF()
     IF(POLYMERFTS_WERROR)
         ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
     ENDIF()
@@ -253,6 +267,7 @@ ADD_LIBRARY(common
     src/common/CircularBuffer.cpp
     src/common/Pseudo.cpp
     src/common/FiniteDifference.cpp
+    src/common/RealSpaceBond.cpp
     src/common/PropagatorComputation.cpp
     src/common/ComputationCommon.cpp
     src/common/ComputationContinuous.cpp
@@ -281,9 +296,11 @@ SET(POLYMERFTS_CPU_COMMON_SOURCES
     src/platforms/cpu/CpuSolverPseudoRK2.cpp
     src/platforms/cpu/CpuSolverPseudoDiscrete.cpp
     src/platforms/cpu/CpuSolverCNADI.cpp
+    src/platforms/cpu/CpuSolverRealSpaceDiscrete.cpp
     src/platforms/cpu/CpuComputationBackend.cpp
     src/platforms/cpu/CpuAndersonMixing.cpp
     src/platforms/cpu/CpuFourierTransform.cpp
+    src/platforms/cpu/MakhoulTransform.cpp
 )
 
 # ---- FFTW3 ----
@@ -615,6 +632,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaSolverPseudoRK2.cu
         src/platforms/cuda/CudaSolverPseudoDiscrete.cu
         src/platforms/cuda/CudaSolverCNADI.cu
+        src/platforms/cuda/CudaSolverRealSpaceDiscrete.cu
         src/platforms/cuda/CudaComputationBackend.cu
         src/platforms/cuda/CudaCircularBuffer.cu
         src/platforms/cuda/PinnedCircularBuffer.cu
@@ -708,7 +726,7 @@ TARGET_INCLUDE_DIRECTORIES(_core PRIVATE ${CMAKE_BINARY_DIR}/generated)
 # Stage an importable 'polymerfts' package inside the build tree on every
 # build. The Python tests put this directory on PYTHONPATH so they always
 # exercise the code that was just built, never a stale site-packages install.
-# (cmake/stage_python.cmake also removes modules that no longer exist in src/python.)
+# (cmake/stage_python.cmake keeps the folders of src/python and removes modules that no longer exist there.)
 SET(POLYMERFTS_STAGE_DIR "${CMAKE_BINARY_DIR}/python/polymerfts")
 ADD_CUSTOM_TARGET(polymerfts_stage ALL
     COMMAND ${CMAKE_COMMAND}
@@ -748,7 +766,7 @@ IF(POLYMERFTS_INSTALL_PYTHON)
             LIBRARY DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             ARCHIVE DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             COMPONENT python)
-    # Pure-Python files (__init__.py, scft.py, lfts.py, ...)
+    # Pure-Python files (__init__.py and the folders scft, fts, theory and utils)
     INSTALL(DIRECTORY src/python/
             DESTINATION ${POLYMERFTS_PY_INSTALL_DIR}
             COMPONENT python

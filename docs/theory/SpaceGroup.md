@@ -58,12 +58,12 @@ where each component is wrapped to the range $`[0, 1)`$ using periodic boundary 
 
 The BCC space group has 96 symmetry operations (48 point group operations × 2 for body centering). Some examples:
 
-| Operation | $`\mathbf{R}`$ | $`\mathbf{t}`$ | Description |
+| Operation | $`\mathbf{R} \cdot (x, y, z)`$ | $`\mathbf{t}`$ | Description |
 |-----------|--------------|--------------|-------------|
-| Identity | $`\begin{pmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | No change |
-| Inversion | $`\begin{pmatrix} -1 & 0 & 0 \\ 0 & -1 & 0 \\ 0 & 0 & -1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | Point reflection |
-| Body-center | $`\begin{pmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(\frac{1}{2}, \frac{1}{2}, \frac{1}{2})`$ | Translation to body center |
-| 4-fold rotation | $`\begin{pmatrix} 0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & 1 \end{pmatrix}`$ | $`(0, 0, 0)`$ | 90° rotation about z-axis |
+| Identity | $`(x, y, z)`$ | $`(0, 0, 0)`$ | No change |
+| Inversion | $`(-x, -y, -z)`$ | $`(0, 0, 0)`$ | Point reflection |
+| Body-center | $`(x, y, z)`$ | $`(\frac{1}{2}, \frac{1}{2}, \frac{1}{2})`$ | Translation to body center |
+| 4-fold rotation | $`(-y, x, z)`$ | $`(0, 0, 0)`$ | 90° rotation about z-axis |
 
 ### Orbit of a Point
 
@@ -269,14 +269,22 @@ translation requires the grid to be divisible by 4).
 
 | Method | Description |
 |--------|-------------|
-| `to_reduced_basis(fields)` | Convert full fields to irreducible representation |
-| `from_reduced_basis(reduced)` | Reconstruct full fields from reduced |
-| `symmetrize(fields)` | Average fields over the classes of the active basis: the full space-group orbits on the irreducible basis, only the physical-basis classes once a physical basis is enabled |
+| `to_reduced_basis(fields)` | Convert full fields to the active reduced basis: the irreducible orbits, or the physical sub-grid once a physical basis is enabled |
+| `from_reduced_basis(reduced)` | Reconstruct full fields from the active reduced basis |
+| `symmetrize(fields)` | Average full-grid fields over the full space-group orbits, whichever basis is active |
 | `symmetrize_reduced_basis(reduced)` | Average a reduced-basis field in place over the full space-group orbits (a physical basis can hold several representatives of one orbit) |
 | `reduced_to_irreducible(reduced)` | Map a reduced-basis (physical sub-grid) field to the irreducible-orbit representation |
 | `irreducible_to_reduced(irreducible)` | Map an irreducible-orbit field back to the reduced (physical) basis |
 
 The conversions accept one field (1-D) or several (`(n_fields, n_in)`) and keep that layout: a 1-D input gives a 1-D output, a 2-D input an `(n_fields, n_out)` array; `symmetrize` returns the shape of its input and `symmetrize_reduced_basis` works in place (C-contiguous float64 array).
+
+`PropagatorSolver.integral`, `mean`, `inner_product`, `multi_inner_product` and
+`zero_mean` take fields in the active reduced basis by default, matching
+`get_concentration()` and `to_reduced_basis()`. Pass `basis="irreducible"` for
+irreducible-orbit arrays; SCFT uses this explicitly for its working fields.
+The two representations can have the same size and different ordering, so size
+alone does not identify the basis. With no space group, both names refer to the
+full grid. A mask is included in the integration weights in either representation.
 
 ## Accessor Methods
 
@@ -393,8 +401,10 @@ representative). This choice is group-invariant by construction — rotations
 permute alias classes and preserve the minimal value — so the discretized
 diffusion and stress operators recover exact point-group symmetry. The
 minimal-form search runs only when the cell is actually oblique, detected by
-a *relative* tolerance on the off-diagonal metric elements
-($`|G^{*}_{ij}| > 10^{-12} \cdot \max_d G^{*}_{dd}`$); orthogonal cells use the
+a *relative* tolerance on each off-diagonal metric element against the lengths
+of its own pair of axes
+($`|G^{*}_{ij}| / \sqrt{G^{*}_{ii} G^{*}_{jj}} \gt 10^{-12}`$, so a short third axis
+cannot hide an oblique plane); orthogonal cells use the
 principal-zone representative unchanged (both conventions coincide there).
 The same representative is used in the k-space Boltzmann tables, the stress
 tables, and the CrysFFT ObliqueZ generators (`src/common/MinimalFormAlias.h`).
@@ -489,6 +499,6 @@ Note: The reduction factor (32x) is less than the number of symmetry operations 
 
 - `src/common/SpaceGroup.h` / `src/common/SpaceGroup.cpp`: SpaceGroup implementation
 - `src/pybind11/polymerfts_core.cpp`: Python bindings
-- `src/python/scft.py`: Integration with SCFT simulations
+- `src/python/scft/scft.py`: Integration with SCFT simulations
 - International Tables for Crystallography, Vol. A (2016)
 - spglib documentation: https://spglib.github.io/spglib/

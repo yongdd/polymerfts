@@ -1,0 +1,16 @@
+# Validation of the complex coacervate
+
+What the validation runs check for [ComplexCoacervate.py](../../examples/charged/clfts/ComplexCoacervate.py) (Lee, Popov and Fredrickson 2008, complex coacervation; implicit good solvent, discrete chains, point charges on the grid, mapped like McCarty's model). The labels are those of [Validation of the Examples](ExampleValidation.md).
+
+- Checked: the structure factors of Figs. 4 and 5 (B = 1, C = 12, N = 1024, 32³ points in (4R_g)³), against the paper's CL-FTS read from its figures:
+
+| E | u0 S_nn at kR_g = π/2: polymerfts | Lee 2008 | S_cc at its peak / RPA: polymerfts | Lee 2008 |
+|--:|------:|------:|------:|------:|
+| 900 | 0.976 ± 0.003 | 0.95 | — | — |
+| 3600 | 1.070 ± 0.022 | 1.11 | 0.982 | ≈ 0.99 |
+| 14400 | 1.90 ± 0.07 | 1.92 | 0.963 | 0.968 |
+| 19600 | 2.32 ± 0.13 | 2.48 | 0.957 | 0.955 |
+
+The RPA gives u0 S_nn = 0.860 at every E; the rise of S_nn at low k and the depression of S_cc below the RPA are fluctuation effects that both codes show.
+- Not reproduced: the phase diagram of Fig. 6 (E = 14400, N = 384). The CL-FTS chemical potentials and pressures give the dense binodal at C = 17.3 ± 0.1 for B = 1, close to the one-loop binodal on the same lattice (17.7) and to the paper's one-loop line (18.4); the paper's superheating and supercooling points (C ≈ 10.7 and 8.6) lie at about half of it. In a box of (4R_g)³ these are limits of metastability, not the binodal: a slab imposed by hand at B = 0.8 dissolves within 20 steps, and phase-separated states diverge at δτN = 1 or carry heavy drift tails at 0.2. The binodal of this lattice model also depends strongly on the grid spacing (one loop at B = 1: C = 10.6 to 24.2 for Δx = R_g/4 to R_g/16), and its pressure has to be taken at fixed grid spacing ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)).
+- Not reproduced with converged contour integration: the dense branch of the block-polyampholyte binodals of Danielsen et al. (*Proc. Natl. Acad. Sci. USA* **2019**, 116, 8224, Fig. 1, A50C50, B = 1). With the virial pressure, `rqm4`, a box of 4 R_g on 32³ points and δτN = 1 it lies at C = 1.241 ± 0.003 for E = 2000 and 1.942 ± 0.004 for E = 4000, including the pressure of the dilute branch (about 0.004 at E = 2000), 5 % and 3.4 % below the paper's 1.31 and 2.01; the continuum one-loop binodals (1.328 and 2.029) match the paper's RPA lines. A box of 6 R_g shifts it by −0.015 ± 0.005 and 0.000 ± 0.006; 24³ and 48³ points, δτN = 0.25 to 2 and Δs = 0.005 shift it by less than 0.017. The chemical potentials satisfy Gibbs-Duhem with the pressures, the Schwinger-Dyson terms average to zero and the drift has no tail. The paper integrated the contour by second-order operator splitting at Δs = 0.01 (its SI, Section 2). With `rk2` at that step the binodal is 1.284 ± 0.007 and 2.025 ± 0.011, which closes the gap at E = 4000 and leaves 2 % at E = 2000, about the scatter of the paper's markers: the `rk2` pressure is 0.05 to 0.07 lower on the same states, an error of order Δs² that is large here because one contour step (0.1 R₀) is longer than the smearing length (0.082 R₀) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)).

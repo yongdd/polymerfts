@@ -14,9 +14,10 @@ ComputationReduceMemoryDiscrete<T>::ComputationReduceMemoryDiscrete(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
+    const NumericalMethodInfo& method,
     SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, space_group,
+    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, method, space_group,
                                      /*first_segment=*/1, create_backend)
 {
     try
@@ -51,7 +52,7 @@ ComputationReduceMemoryDiscrete<T>::ComputationReduceMemoryDiscrete(
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
             if (block.n_segment_left == 0)
                 continue;
-            const int n_aggregated = block.v_u.size()/block.n_repeated;
+            const double n_aggregated = block.n_copies/block.n_repeated;
             this->add_checkpoint(std::get<1>(key), block.n_segment_left);
             this->add_checkpoint(std::get<2>(key), 1);
             single_partition_segment.push_back(std::make_tuple(
@@ -132,7 +133,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
                     {
                         // Propagators aggregated at a junction (n = 0) are half-bond
                         // states; the others are segments
-                        std::vector<std::pair<CheckpointArray<T>*, int>> sources;
+                        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
                         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                         {
                             CheckpointArray<T>* src = (sub_n_segment == 0) ? half_checkpoint_at(sub_key, 0)
@@ -157,7 +158,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
                     else if (key[0] == '(')     // junction of branches
                     {
                         // Junction value: product of the half-bond states of the branches
-                        std::vector<std::pair<CheckpointArray<T>*, int>> sources;
+                        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
                         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                             sources.push_back({half_checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
                         this->backend->junction_product(0, q[0], sources);
@@ -220,6 +221,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
                 this->q_work[0], this->q_work[1], this->backend->boltzmann_factor(monomer_type))
                 /(n_aggregated*this->cb->get_volume());
         }
+        this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
     }
@@ -297,7 +299,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
     this->require_propagators();
     try
     {
-        this->check_stress_supported("pseudospectral");
+        this->check_stress_supported();
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds (see ComputationDiscrete)
@@ -308,7 +310,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
             const int N_LEFT  = block.n_segment_left;
             const int N_RIGHT = block.n_segment_right;
-            const double weight = static_cast<double>(block.n_repeated);
+            const double weight = block.n_repeated;
             const bool left_is_leaf  = this->propagator_computation_optimizer->get_computation_propagator(key_left).deps.size() == 0;
             const bool right_is_leaf = this->propagator_computation_optimizer->get_computation_propagator(key_right).deps.size() == 0;
 
@@ -396,12 +398,13 @@ std::vector<double> ComputationReduceMemoryDiscrete<T>::compute_partition_errors
     // Q must be the same at every segment of every block
     const int n_polymer_types = this->molecules->get_n_polymer_types();
     std::vector<std::vector<T>> total_partitions(n_polymer_types);
+    std::vector<std::vector<double>> absolute_integrals(n_polymer_types);
 
     for (const auto& [key, phi] : this->phi_block)
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const int n_propagators = block.v_u.size();
+        const double n_propagators = block.n_copies;
         BackendArray<T>* exp_dw = this->backend->boltzmann_factor(block.monomer_type);
 
         if (block.n_segment_right > 0)
@@ -412,10 +415,17 @@ std::vector<double> ComputationReduceMemoryDiscrete<T>::compute_partition_errors
                                         *(block.n_repeated/this->cb->get_volume());
                     total_partition /= n_propagators;
                     total_partitions[p].push_back(total_partition);
+                    if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
+                    {
+                        double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
+                                          *(block.n_repeated/this->cb->get_volume());
+                        integral /= n_propagators;
+                        absolute_integrals[p].push_back(integral);
+                    }
                 });
     }
 
-    return relative_partition_errors(total_partitions, this->single_polymer_partitions);
+    return this->partition_errors_from_contours(total_partitions, absolute_integrals);
 }
 
 // Explicit template instantiation

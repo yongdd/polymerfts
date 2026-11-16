@@ -264,7 +264,7 @@ CudaCrysFFTObliqueZ::Table CudaCrysFFTObliqueZ::generateBoltzmann(double ds, con
     // Relative-tolerance gate: gamma of exactly 90 degrees gives
     // cos(pi/2) ~ 6e-17; do not flip rectangular cells onto the
     // minimal-form alias path.
-    const bool oblique_xy = (std::abs(G12) > 1e-12 * std::max(std::abs(G11), std::abs(G22)));
+    const bool oblique_xy = reciprocal_axes_coupled(G11, G22, G12);
     const std::array<int, 3> grid_xy = {Nx, Ny, 1};
     const IndexMetric metric_xy{G11, G22, 0.0, G12, 0.0, 0.0};
     auto form_xy = [&](double a, double b, double) {

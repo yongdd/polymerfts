@@ -14,9 +14,9 @@ The book's observables follow exactly from ours:
     beta mu_ex          = -ln Q + zeta_n                 (recorded chemical potential + zeta_n)
     beta P_ex Rg^3      = C (Pi - 1) + B C^2/2           (Pi = beta Pi R0^3/C as recorded)
 
-The recorded pressure is the virial form of the operator (CLFTS.pressure_virial), the scaled-field
+The recorded pressure is the virial form of the operator (CLFTS.thermodynamics.pressure_virial), the scaled-field
 operator of the book (its eq. B.26). The dilation of the box at fixed grid values of the fields
-(CLFTS.pressure) has the same average, but its field term and the Gaussian normalization
+(CLFTS.thermodynamics.pressure) has the same average, but its field term and the Gaussian normalization
 n_g/(2 C V/R0^3) fluctuate by about sqrt(n_g/2)/(C V/R0^3) per sample (about 4 here); the virial
 form adds the Schwinger-Dyson zero (1/2)[mean(Omega dH/dOmega) - n_g/(C V/R0^3)], which removes
 that fluctuation: its standard deviation is several hundred times smaller here.
@@ -76,7 +76,7 @@ params = {
     # Gaussian smearing a = 0.1 Rg (the range of the excluded-volume repulsion)
     "smearing":{"type":"gaussian", "a_int":0.1*rg},
 
-    "platform":"cuda",
+    "platform": "auto",        # "auto" (CUDA for 2D/3D if available), "cuda", "cpu-mkl" or "cpu-fftw"
     "verbose_level":0,
 }
 

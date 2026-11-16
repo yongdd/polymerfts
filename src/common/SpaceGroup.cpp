@@ -4,6 +4,7 @@
  */
 
 #include "SpaceGroup.h"
+#include "ComputationBox.h"
 #include "GridLimits.h"
 #include "Exception.h"
 #include "CrysFFTSelector.h"
@@ -11,9 +12,12 @@
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <algorithm>
+#include <numbers>
 #include <numeric>
+#include <sstream>
 #include <unordered_map>
 #include <limits>
 
@@ -1337,9 +1341,18 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
 {
     if (lx.size() != 3 || angles_deg.size() != 3)
         return;
+    // Lengths and free angles agree to a relative 1e-6. An angle the group fixes
+    // passes the orthogonality test of ComputationBox, |angle - exact| <
+    // FIXED_ANGLE_TOLERANCE (1e-10 rad), in the same arithmetic: a solver chooses its
+    // CrysFFT engine for the angles of its box once, and every cell accepted later
+    // keeps the angles that engine needs.
     auto same = [](double a, double b) { return std::abs(a - b) <= 1e-6 * std::max({std::abs(a), std::abs(b), 1.0}); };
-    const bool right_angles = same(angles_deg[0], 90.0) && same(angles_deg[1], 90.0) && same(angles_deg[2], 90.0);
-    const bool z_right = same(angles_deg[0], 90.0) && same(angles_deg[1], 90.0);
+    auto fixed = [](double degrees, double radians) {
+        const double deg_to_rad = std::numbers::pi / 180.0;
+        return std::abs(degrees * deg_to_rad - radians) < FIXED_ANGLE_TOLERANCE; };
+    const double right = std::numbers::pi / 2.0;
+    const bool right_angles = fixed(angles_deg[0], right) && fixed(angles_deg[1], right) && fixed(angles_deg[2], right);
+    const bool z_right = fixed(angles_deg[0], right) && fixed(angles_deg[1], right);
 
     bool ok = true;
     std::string need;
@@ -1360,7 +1373,7 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
     }
     else if (crystal_system_ == "Hexagonal" || (crystal_system_ == "Trigonal" && uses_hexagonal_axes()))
     {
-        ok = same(lx[0], lx[1]) && z_right && same(angles_deg[2], 120.0);
+        ok = same(lx[0], lx[1]) && z_right && fixed(angles_deg[2], 2.0 * std::numbers::pi / 3.0);
         need = "lx[0] = lx[1] and angles [90, 90, 120]";
     }
     else if (crystal_system_ == "Trigonal")
@@ -1374,33 +1387,50 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
         // Monoclinic and triclinic: every rotation R (lattice coordinates) must
         // preserve the metric G of the cell, R^T G R = G; for a monoclinic group
         // this puts the unique axis perpendicular to the other two
-        const double deg = std::acos(-1.0) / 180.0;
-        const double ca = std::cos(angles_deg[0] * deg), cb = std::cos(angles_deg[1] * deg), cg = std::cos(angles_deg[2] * deg);
-        const double G[3][3] = {{lx[0] * lx[0],      lx[0] * lx[1] * cg, lx[0] * lx[2] * cb},
-                                {lx[0] * lx[1] * cg, lx[1] * lx[1],      lx[1] * lx[2] * ca},
-                                {lx[0] * lx[2] * cb, lx[1] * lx[2] * ca, lx[2] * lx[2]}};
-        double g_max = 0.0;
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                g_max = std::max(g_max, std::abs(G[i][j]));
-        for (const auto& Rot : rotations_)
+        auto metric_preserved = [&](const std::vector<double>& angles) {
+            const double deg = std::acos(-1.0) / 180.0;
+            const double ca = std::cos(angles[0] * deg), cb = std::cos(angles[1] * deg), cg = std::cos(angles[2] * deg);
+            const double G[3][3] = {{lx[0] * lx[0],      lx[0] * lx[1] * cg, lx[0] * lx[2] * cb},
+                                    {lx[0] * lx[1] * cg, lx[1] * lx[1],      lx[1] * lx[2] * ca},
+                                    {lx[0] * lx[2] * cb, lx[1] * lx[2] * ca, lx[2] * lx[2]}};
+            double g_max = 0.0;
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)
-                {
-                    double g = 0.0;
-                    for (int k = 0; k < 3; ++k)
-                        for (int l = 0; l < 3; ++l)
-                            g += Rot[k][i] * G[k][l] * Rot[l][j];
-                    if (std::abs(g - G[i][j]) > 1e-6 * g_max)
-                        ok = false;
-                }
+                    g_max = std::max(g_max, std::abs(G[i][j]));
+            for (const auto& Rot : rotations_)
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                    {
+                        double g = 0.0;
+                        for (int k = 0; k < 3; ++k)
+                            for (int l = 0; l < 3; ++l)
+                                g += Rot[k][i] * G[k][l] * Rot[l][j];
+                        if (std::abs(g - G[i][j]) > 1e-6 * g_max)
+                            return false;
+                    }
+            return true;
+        };
+        ok = metric_preserved(angles_deg);
+        // The angles the group fixes, those whose change by a degree breaks the
+        // metric, are the right angles at the unique axis: they pass the box's test
+        for (int i = 0; i < 3 && ok; ++i)
+        {
+            std::vector<double> trial = angles_deg;
+            trial[i] += 1.0;
+            if (!metric_preserved(trial) && !fixed(angles_deg[i], right))
+                ok = false;
+        }
         need = "the unique axis perpendicular to the other two (every symmetry operation must preserve the cell metric)";
     }
     if (!ok)
+    {
+        std::ostringstream got;
+        got << std::setprecision(15) << "lx = [" << lx[0] << ", " << lx[1] << ", " << lx[2] << "], angles = ["
+            << angles_deg[0] << ", " << angles_deg[1] << ", " << angles_deg[2] << "]";
         throw_with_line_number("The cell does not match the " + crystal_system_ + " crystal system of space group " +
-            spacegroup_symbol_ + ": it needs " + need + ". Got lx = [" + std::to_string(lx[0]) + ", " +
-            std::to_string(lx[1]) + ", " + std::to_string(lx[2]) + "], angles = [" + std::to_string(angles_deg[0]) +
-            ", " + std::to_string(angles_deg[1]) + ", " + std::to_string(angles_deg[2]) + "].");
+            spacegroup_symbol_ + ": it needs " + need + " (the angles the group fixes to 1e-10 rad, lengths to "
+            "a relative 1e-6). Got " + got.str() + ".");
+    }
 }
 
 bool SpaceGroup::uses_hexagonal_axes() const

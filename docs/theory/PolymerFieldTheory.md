@@ -152,7 +152,7 @@ Field residuals (Section 1.3 with $`\kappa = \chi N / 2`$ for $`\chi N \geq 1`$)
 
 ## 2. Incompressible Model
 
-The incompressible model uses auxiliary fields to decouple the interaction terms. This formulation is implemented in `polymer_field_theory.py` and used by both `scft.py` and `lfts.py`.
+The incompressible model uses auxiliary fields to decouple the interaction terms. This formulation is implemented in `symmetric_formulation.py` and used by both `scft.py` and `lfts.py`.
 
 ### 2.1 Partition Function
 
@@ -240,7 +240,7 @@ so that $`\Phi_- = \phi_A - \phi_B`$ and $`\Phi_+ = \phi_A + \phi_B`$, consisten
 
 ## 3. Compressible Model
 
-The compressible model includes a finite compressibility parameter $`\zeta`$. This formulation is implemented in `polymer_field_theory.py` and may be used for complex Langevin FTS.
+The compressible model includes a finite compressibility parameter $`\zeta`$. This formulation is implemented in `symmetric_formulation.py` and may be used for complex Langevin FTS.
 
 ### 3.1 Interaction Energy
 
@@ -325,7 +325,7 @@ Smearing also enters the structure functions, whose recorded values are divided 
 
 ## 5. Electrostatic Interactions
 
-Monomer type $`i`$ may carry the valence $`z_i`$ per segment (`electrostatics`). Small ions are molecules of one segment, which count in the total density like the other species, or point ions without volume (Section 5.5). The charges add a Coulomb interaction to the interactions of Sections 2 and 3. `electrostatics.py` implements it; CL-FTS samples the electrostatic potential ([CL-FTS, Section 6](ComplexLangevinSimulation.md#6-charged-systems)), and SCFT takes its saddle point ([SCFT, Section 2.5](SelfConsistentFieldTheory.md#25-charged-systems)).
+Monomer type $`i`$ may carry the valence $`z_i`$ per segment (`electrostatics`). Small ions are molecules of one segment, which count in the total density and interact through $`\chi`$ like the other species, or point ions without volume and without $`\chi`$ (Section 5.5). The charges add a Coulomb interaction to the interactions of Sections 2 and 3. `electrostatics.py` implements it; CL-FTS samples the electrostatic potential ([CL-FTS, Section 6](ComplexLangevinSimulation.md#6-charged-systems)), and SCFT takes its saddle point ([SCFT, Section 2.5](SelfConsistentFieldTheory.md#25-charged-systems)).
 
 ### 5.1 Coulomb Interaction
 
@@ -367,7 +367,7 @@ The saddle point is the Poisson equation $`-\nabla^2 \psi = E c`$. The uniform m
 
 **Fixed charges.** A fixed charge density $`c_f(\mathbf{r})`$ (`fixed_charge`, charges per segment of $`\rho_0`$), for example of charged surfaces or particles, has no partition function through which it could couple to $`\psi`$; it adds $`\langle \psi \, c_f \rangle`$ to $`\beta H/(C V/R_0^3)`$, so that $`c`$ in $`\delta H/\delta \psi`$ includes $`c_f`$. Its mean counts in the electroneutrality.
 
-**Closed boxes.** In a box with walls on every side the transforms are cosine series, which diagonalize $`\nabla^2`$ with no normal derivative at the walls: $`\psi`$ then describes a box with no field through its walls. This is the boundary to a medium of vanishing dielectric constant: behind each wall every charge has an image of the same sign, so the fluctuations of $`\psi`$ deplete ions next to the walls (Onsager–Samaras). In mean-field theory a laterally uniform neutral system has the same field as without the walls. The uniform mode is the $`m = 0`$ term of the series.
+**Walls.** Along a wall axis the transforms are cosine series, which diagonalize $`\nabla^2`$ with no normal derivative at the walls: no field passes through them. This is the boundary to a medium of vanishing dielectric constant: behind each wall every charge has an image of the same sign, so the fluctuations of $`\psi`$ deplete ions next to the walls (Onsager–Samaras), over a few Debye lengths and more strongly for multivalent ions. A box may mix walls with periodic axes, along which the transforms are the FFT. A laterally unbounded system, such as a brush on a substrate, takes periodic lateral axes: lateral walls a few Debye lengths apart deplete the ions across the whole box. In mean-field theory a laterally uniform neutral system has the same field as without the walls. The uniform mode is the $`m = 0`$ term of the series.
 
 ### 5.4 Screened Coulomb Interaction
 
@@ -520,7 +520,7 @@ h_deriv = mpt.compute_func_deriv(omega, phi, [0, 1])
 K_{jk} = \frac{\mathbf{o}_j^T \, dU \, \mathbf{o}_k}{M (\lambda_k - \lambda_j)}
 ```
 
-if $`j`$ and $`k`$ have different roles (real fields $`\lambda < 0`$, imaginary fields $`\lambda > 0`$, dropped fields $`\lambda = 0`$), and $`K_{jk} = 0`$ otherwise (two fields of the same role, or the pressure field $`\Omega_M`$, for which $`P_\perp \mathbf{o}_M = 0`$). Between roles $`K`$ is the first-order motion of the eigenvectors: it moves the subspaces on which the real and the imaginary fields live, and its denominators never vanish. Within a role the frame is free: a rotation of the real fields among themselves (orthogonal, unit Jacobian) or of the imaginary fields among themselves (the saddle point does not depend on how it is parametrized) changes single values of the derivative but not their average, and $`K = 0`$ there needs no difference of nearly equal eigenvalues. With `wtmd=True` (used for the WTMD statistics) the leading real field (`aux_fields_real_idx[0]`) also follows its own eigenvector, the formula above applying to its pairs with the other real fields, so that an order parameter built from it stays fixed at fixed $`\Omega`$; single values of the derivative then grow as the inverse gap when its eigenvalue nears another real one (the average does not change), and $`K = 0`$ for a degenerate pair, whose eigenvectors are undefined.
+if $`j`$ and $`k`$ have different roles (real fields $`\lambda \lt 0`$, imaginary fields $`\lambda \gt 0`$, dropped fields $`\lambda = 0`$), and $`K_{jk} = 0`$ otherwise (two fields of the same role, or the pressure field $`\Omega_M`$, for which $`P_\perp \mathbf{o}_M = 0`$). Between roles $`K`$ is the first-order motion of the eigenvectors: it moves the subspaces on which the real and the imaginary fields live, and its denominators never vanish. Within a role the frame is free: a rotation of the real fields among themselves (orthogonal, unit Jacobian) or of the imaginary fields among themselves (the saddle point does not depend on how it is parametrized) changes single values of the derivative but not their average, and $`K = 0`$ there needs no difference of nearly equal eigenvalues. With `wtmd=True` (used for the WTMD statistics) the leading real field (`aux_fields_real_idx[0]`) also follows its own eigenvector, the formula above applying to its pairs with the other real fields, so that an order parameter built from it stays fixed at fixed $`\Omega`$; single values of the derivative then grow as the inverse gap when its eigenvalue nears another real one (the average does not change), and $`K = 0`$ for a degenerate pair, whose eigenvectors are undefined.
 
 **Coefficients.** In this frame $`\Lambda = \tilde{O}^T U \tilde{O} / M`$ stays block diagonal between the roles, $`\Lambda = \mathrm{diag}(\lambda)`$ at the given $`\chi`$, and with $`\mathbf{S} = \tilde{O}^T \mathbf{s}`$ ($`\mathbf{s} = -\zeta \mathbf{e}`$ for the compressible model)
 

@@ -394,7 +394,7 @@ protected:
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
-    /// Accumulate Σ_k kernel(k) v_i v_j from real DCT/DST coefficients (non-periodic BC).
+    /// Accumulate Σ_k kernel(k) v_i v_j from DCT/DST coefficients (non-periodic BC; complex pairs for complex fields).
     void accumulate_stress_nonperiodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                        const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
 
@@ -413,7 +413,7 @@ public:
      *
      * @param sg Space group pointer (nullptr to disable reduced basis)
      */
-    void set_space_group(SpaceGroup* sg);
+    void set_space_group(SpaceGroup* sg) override;
 
     /// Register contour step size for a ds index.
     void register_ds_value(int ds_index, double ds) { ds_values_[ds_index] = ds; }

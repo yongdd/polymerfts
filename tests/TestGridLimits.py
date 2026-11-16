@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 
+import numpy as np
 from polymerfts import _core, PlatformSelector
 from cuda_part import cuda_part_missing
 
@@ -40,6 +41,21 @@ def main():
             except Exception as e:
                 if "32-bit" not in str(e):
                     failed.append(f"{platform}: box {nx}: unexpected error {e}")
+
+        # These products wrap to zero in 64 bits. Check both constructors and
+        # the mask size path, before a zero-sized box or any array can be created.
+        for field_type in ("real", "complex"):
+            checked_factory = PlatformSelector.create_factory(platform, False, field_type)
+            for nx in ([2**30, 2**30, 16], [2**29, 2**29, 64]):
+                for angles in (None, [90.0, 90.0, 90.0]):
+                    for mask in (None, np.empty(0)):
+                        try:
+                            checked_factory.create_computation_box(nx, [1.0]*3, angles=angles, mask=mask)
+                        except RuntimeError as exc:
+                            if "32-bit" not in str(exc):
+                                failed.append(f"{platform} {field_type}: overflow grid: {exc}")
+                        else:
+                            failed.append(f"{platform} {field_type}: overflow grid {nx} accepted")
 
         # Anderson mixing just above the limit (rejected before allocating)
         try:

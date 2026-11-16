@@ -65,7 +65,7 @@
  *
  * - **model_name**: "continuous" or "discrete" chain model
  * - **ds**: Contour step size for propagator integration
- * - **bond_lengths**: Map of monomer types to squared segment lengths
+ * - **bond_lengths**: Map of monomer types to relative segment lengths
  *
  * **Volume Fractions:**
  *
@@ -102,10 +102,10 @@ private:
     double ds;
 
     /**
-     * @brief Statistical segment lengths squared for each monomer type.
+     * @brief Relative statistical segment length of each monomer type.
      *
-     * Maps monomer type label (e.g., "A", "B") to (a_i/a_Ref)^2 where
-     * a_i is the statistical segment length and a_Ref is the reference.
+     * Maps monomer type label (e.g., "A", "B") to a_i/a_Ref where a_i is the
+     * statistical segment length and a_Ref is the reference (not squared).
      *
      * @example
      * @code
@@ -113,7 +113,7 @@ private:
      * bond_lengths = {{"A", 1.0}, {"B", 1.0}};
      *
      * // Asymmetric: B segments are 1.2x longer
-     * bond_lengths = {{"A", 1.0}, {"B", 1.44}};  // (1.2)^2 = 1.44
+     * bond_lengths = {{"A", 1.0}, {"B", 1.2}};
      * @endcode
      */
     std::map<std::string, double> bond_lengths;
@@ -149,7 +149,7 @@ public:
      *
      * @param model_name   Chain model: "continuous" or "discrete"
      * @param ds           Contour step size (typically 1/N_Ref)
-     * @param bond_lengths Map of monomer types to (a/a_Ref)^2 values
+     * @param bond_lengths Map of monomer types to a/a_Ref values (not squared)
      *
      * @throws Exception if model_name is invalid
      *

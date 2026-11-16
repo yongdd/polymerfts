@@ -187,6 +187,17 @@ defaults are those of a plain CMake configuration; `pyproject.toml` turns
 CMake defaults to a Release build. For the full configuration, see
 [CMakeLists.txt](../../CMakeLists.txt).
 
+Outside MSVC the host C++ sources are compiled with `-ffp-contract=off`: the
+compiler does not fuse `a*b + c` into one multiply-add. Full- and reduced-memory
+computations add the same terms in different groupings and agree bit for bit
+only when every product is rounded on its own. This matters when the target has
+FMA instructions (`-march=x86-64-v3`, `-march=native`, or a compiler whose default
+target has them); plain x86-64 has none. MKL, FFTW and the nvcc-compiled `.cu`
+files are not affected, and MSVC's default `/fp:precise` does not contract. A
+floating-point model given in `CMAKE_CXX_FLAGS` or the flags of the build type
+(`-ffp-model`, `-fp-model`, `-ffp-contract`, `-ffast-math`) is kept instead, with a
+configuration message; full and reduced memory may then differ in the last bits.
+
 </details>
 
 <details>
@@ -205,7 +216,8 @@ source /path/to/venvs/polymerfts-0.10.0/bin/activate
 ```
 
 Keep the Conda environment available: `--system-site-packages` shares its
-dependencies. Releases before 0.10.0 use their own CMake installation instructions.
+dependencies. A checkout without a `pyproject.toml` has no wheel build; install it as the
+README.md of that checkout describes.
 
 </details>
 
@@ -219,7 +231,7 @@ dependencies. Releases before 0.10.0 use their own CMake installation instructio
 The native build below stages its package in `build-tests/python` for CTest.
 Available tests depend on the enabled backends. In a build with the CUDA backend,
 the tests with a CUDA part fail when no GPU is visible.
-See [Numerical Validation](../internals/NumericalValidation.md) for coverage.
+See [Numerical Validation](../validation/NumericalValidation.md) for coverage.
 
 <details>
 <summary>Development: test MKL and FFTW together</summary>
@@ -286,5 +298,7 @@ python -m pip uninstall polymerfts
 ```
 
 This removes the Python package while keeping the Conda environment and its
-dependencies. Old direct CMake installs have no pip file record; use a fresh
-environment when migrating one to wheel installation.
+dependencies. pip keeps no record of the files that `cmake --install` copies
+(`POLYMERFTS_INSTALL_PYTHON`, on by default, into the site-packages of the Python that
+CMake found): remove them with the `install_manifest.txt` of the build directory, or
+use a fresh environment, and install wheels into an environment without them.

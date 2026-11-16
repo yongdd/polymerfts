@@ -251,7 +251,7 @@ The partial derivative is computed during simulation:
 The WTMD class is initialized automatically by LFTS when the `wtmd` parameter is provided. The class requires `nbar`, `eigenvalues`, and `real_fields_idx` from the simulation context.
 
 ```python
-from polymerfts.wtmd import WTMD
+from polymerfts.fts.wtmd import WTMD
 
 wtmd = WTMD(
     nx=[32, 32, 32],           # Grid dimensions

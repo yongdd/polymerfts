@@ -16,12 +16,11 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
     ComputationBox<T>* cb,
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
-    std::string method,
+    const NumericalMethodInfo& method,
     SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, space_group,
-                                     /*first_segment=*/0, create_backend),
-      method(method)
+    : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, method, space_group,
+                                     /*first_segment=*/0, create_backend)
 {
     try
     {
@@ -42,7 +41,7 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
             if (p != current_p)
                 continue;
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int n_aggregated = block.v_u.size()/block.n_repeated;
+            const double n_aggregated = block.n_copies/block.n_repeated;
             this->add_checkpoint(std::get<1>(key), block.n_segment_left);
             this->add_checkpoint(std::get<2>(key), 0);
             single_partition_segment.push_back(std::make_tuple(
@@ -90,7 +89,7 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
                     }
                     else
                     {
-                        std::vector<std::pair<CheckpointArray<T>*, int>> sources;
+                        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
                         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                             sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
                         if (key[0] == '[')       // aggregated propagators
@@ -128,6 +127,7 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
             this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
                                                  /(n_aggregated*this->cb->get_volume());
         }
+        this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
     }
@@ -205,7 +205,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
     this->require_propagators();
     try
     {
-        this->check_stress_supported(method);
+        this->check_stress_supported();
         this->backend->prepare_stress();
 
         // Stress of each block: Simpson's rule over the segment stresses
@@ -281,12 +281,13 @@ std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_erro
     // Q must be the same at every segment of every block
     const int n_polymer_types = this->molecules->get_n_polymer_types();
     std::vector<std::vector<T>> total_partitions(n_polymer_types);
+    std::vector<std::vector<double>> absolute_integrals(n_polymer_types);
 
     for (const auto& [key, phi] : this->phi_block)
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const int n_propagators = block.v_u.size();
+        const double n_propagators = block.n_copies;
 
         this->for_each_segment_pair(key_left, key_right, block.n_segment_left, 0, block.n_segment_right,
             [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
@@ -294,10 +295,17 @@ std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_erro
                 T total_partition = this->backend->inner_product(q, q_dagger)*(block.n_repeated/this->cb->get_volume());
                 total_partition /= n_propagators;
                 total_partitions[p].push_back(total_partition);
+                if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
+                {
+                    double integral = this->backend->absolute_inner_product(q, q_dagger)
+                                      *(block.n_repeated/this->cb->get_volume());
+                    integral /= n_propagators;
+                    absolute_integrals[p].push_back(integral);
+                }
             });
     }
 
-    return relative_partition_errors(total_partitions, this->single_polymer_partitions);
+    return this->partition_errors_from_contours(total_partitions, absolute_integrals);
 }
 
 // Explicit template instantiation

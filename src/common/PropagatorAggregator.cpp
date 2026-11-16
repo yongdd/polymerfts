@@ -87,7 +87,7 @@ std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_continuo
             aggregated_key += dk_part + "0";
 
             if (set_I[key].n_repeated > 1)
-                aggregated_key += ":" + std::to_string(set_I[key].n_repeated);
+                aggregated_key += ":" + PropagatorCode::format_count(set_I[key].n_repeated);
 
             // Collect v_u
             all_v_u.insert(all_v_u.end(), set_I[key].v_u.begin(), set_I[key].v_u.end());
@@ -185,7 +185,7 @@ std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_discrete
             aggregated_key += dk_part + std::to_string(set_F[key].n_segment_right);
 
             if (set_F[key].n_repeated > 1)
-                aggregated_key += ":" + std::to_string(set_F[key].n_repeated);
+                aggregated_key += ":" + PropagatorCode::format_count(set_F[key].n_repeated);
 
             all_v_u.insert(all_v_u.end(), set_F[key].v_u.begin(), set_F[key].v_u.end());
         }

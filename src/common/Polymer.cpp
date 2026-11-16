@@ -13,7 +13,7 @@
  * 2. Connected (all nodes reachable from first block)
  * 3. Has unique edges (no duplicate blocks between same nodes)
  *
- * Uses depth-first search to detect cycles and isolated nodes.
+ * Uses union-find over the blocks to detect loops and disconnected nodes.
  *
  * **Propagator Key Assignment:**
  *
@@ -83,6 +83,12 @@ Polymer::Polymer(
     {
         validation::require_positive(block_inputs[i].contour_length,
             "block_inputs[" + std::to_string(i) + "].contour_length");
+        // Copies of a branch continue an integer number of identical arms; fewer than one
+        // copy would raise propagators to negative powers
+        const double multiplicity = block_inputs[i].multiplicity;
+        if (!std::isfinite(multiplicity) || multiplicity < 1.0 || multiplicity > MAX_BLOCK_MULTIPLICITY)
+            throw_with_line_number("block_inputs[" + std::to_string(i) + "].multiplicity ("
+                + validation::shortest_text(multiplicity) + ") must be a number from 1 to 10^6.");
         // Note: contour_length/ds no longer needs to be exactly an integer.
         // The ContourLengthMapping class handles computing n_segment = round(contour_length/ds)
         // and the corresponding local ds = contour_length / n_segment.
@@ -106,27 +112,16 @@ Polymer::Polymer(
     {
         this->volume_fraction = volume_fraction;
         for(size_t i=0; i<block_inputs.size(); i++){
-            // Robust rounding that handles floating-point errors near 0.5 boundaries.
-            // If the ratio is very close to a half-integer (e.g., 3.4999999999 or 3.5000000001),
-            // snap it to the nearest 0.5 before rounding to ensure consistent results.
-            double ratio = block_inputs[i].contour_length / ds;
-            double rounded_to_half = std::round(ratio * 2.0) / 2.0;
-            if (std::abs(ratio - rounded_to_half) < 1e-9)
-            {
-                ratio = rounded_to_half;
-            }
-            int n_segment = static_cast<int>(std::lround(ratio));
-            if (n_segment < 1)
-            {
-                n_segment = 1;
-            }
+            const int n_segment = ContourLengthMapping::segment_count(block_inputs[i].contour_length, ds);
 
             blocks.push_back({
                 block_inputs[i].monomer_type,                           // monomer_type
                 n_segment,                                              // n_segment
                 block_inputs[i].contour_length,                         // contour_length
                 block_inputs[i].v,                                      // starting node
-                block_inputs[i].u});                                    // ending node
+                block_inputs[i].u,                                      // ending node
+                block_inputs[i].multiplicity,                           // multiplicity
+                1.0});                                                  // n_copies, set below
         }
     }
     catch(std::exception& exc)
@@ -134,14 +129,7 @@ Polymer::Polymer(
         throw_without_line_number(exc.what());
     }
 
-    // Compute alpha, sum of relative contour lengths
-    double alpha{0.0};
-    for(size_t i=0; i<blocks.size(); i++){
-        alpha += blocks[i].contour_length;
-    }
-    this->alpha = alpha;
-
-    // Construct starting vertices 'v', ending vertices 'u', 
+    // Construct starting vertices 'v', ending vertices 'u',
     std::vector<int> v;
     std::vector<int> u;
     for(size_t i=0; i<block_inputs.size(); i++)
@@ -155,7 +143,7 @@ Polymer::Polymer(
     {
         adjacent_nodes[v[i]].push_back(u[i]);
         adjacent_nodes[u[i]].push_back(v[i]);
-        // V and u must be a non-negative integer for depth first search
+        // Node labels are non-negative integers
         validation::require_non_negative(v[i], "v[" + std::to_string(i) + "]");
         validation::require_non_negative(u[i], "u[" + std::to_string(i) + "]");
         if( v[i] == u[i] )
@@ -188,59 +176,52 @@ Polymer::Polymer(
         }
     }
 
-    // Detect a cycle and isolated nodes in the block copolymer graph using depth first search
-    std::map<int, bool> is_visited;
+    // The blocks must form a tree. Union-find over the blocks: every node starts as its own
+    // group, and a block joins the groups of its two nodes. A block whose nodes are already in
+    // one group closes a loop. Groups are merged by size and paths are halved during the
+    // search, so each block costs nearly constant time.
+    std::map<int, int> group_parent;
+    std::map<int, int> group_size;
     for (size_t i = 0; i < v.size(); i++)
-        is_visited[v[i]] = false;
-    for (size_t i = 0; i < u.size(); i++)
-        is_visited[u[i]] = false;
-
-    std::stack<std::pair<int,int>> connected_nodes;
-    // Starting node is v[0]
-    connected_nodes.push(std::make_pair(v[0],-1));
-    // Perform depth first search
-    while (!connected_nodes.empty())
     {
-        // Get one item and visit
-        int cur = connected_nodes.top().first;
-        int parent = connected_nodes.top().second;
-        is_visited[cur] = true;
-
-        // Remove the item
-        connected_nodes.pop();
-
-        // Add adjacent_nodes at stack 
-        auto nodes = adjacent_nodes[cur];
-        for(size_t i=0; i<nodes.size();i++)
+        group_parent.emplace(v[i], v[i]);
+        group_parent.emplace(u[i], u[i]);
+        group_size.emplace(v[i], 1);
+        group_size.emplace(u[i], 1);
+    }
+    auto find_group = [&group_parent](int node)
+    {
+        while (group_parent[node] != node)
         {
-            if (is_visited[nodes[i]] && nodes[i] != parent)
-            {
-                throw_with_line_number("A cycle is detected, which contains nodes " 
-                    + std::to_string(nodes[i]) + " and " + std::to_string(parent)
-                    + ". Only acyclic branched polymers are allowed.");
-            }
-            else if(!is_visited[nodes[i]])
-            {
-                connected_nodes.push(std::make_pair(nodes[i], cur));
-            }
+            group_parent[node] = group_parent[group_parent[node]];
+            node = group_parent[node];
         }
+        return node;
+    };
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        int group_v = find_group(v[i]);
+        int group_u = find_group(u[i]);
+        if (group_v == group_u)
+        {
+            throw_with_line_number("Block " + std::to_string(i) + " (nodes " + std::to_string(v[i])
+                + " and " + std::to_string(u[i]) + ") closes a loop with the preceding blocks. "
+                + "Only acyclic branched polymers are allowed.");
+        }
+        if (group_size[group_v] < group_size[group_u])
+            std::swap(group_v, group_u);
+        group_parent[group_u] = group_v;
+        group_size[group_v] += group_size[group_u];
     }
 
-    // Collect isolated nodes
-    std::set<int> isolated_nodes_set;
-    for (size_t i=0; i<v.size(); i++)
+    // Without a loop, the blocks are connected if all nodes are in the group of v[0]
+    const int group_start = find_group(v[0]);
+    std::vector<int> isolated_nodes;
+    for (const auto& [node, parent] : group_parent)
     {
-        if (!is_visited[v[i]])
-            isolated_nodes_set.insert(v[i]);
+        if (find_group(node) != group_start)
+            isolated_nodes.push_back(node);
     }
-    for (size_t i=0; i<u.size(); i++)
-    {
-        if (!is_visited[u[i]])
-            isolated_nodes_set.insert(u[i]);
-    }
-
-    // Print isolated nodes
-    std::vector<int> isolated_nodes(isolated_nodes_set.begin(), isolated_nodes_set.end());
     if (isolated_nodes.size() > 0)
     {
         std::string error_message = "There is no route from node " + std::to_string(v[0]) + " to nodes: "
@@ -249,6 +230,63 @@ Polymer::Polymer(
             error_message += ", " + std::to_string(isolated_nodes[i]);
         throw_with_line_number(error_message + ".");
     }
+
+    // Copies of each block. A block with a multiplicity replicates itself and every block on
+    // its u side; the copies of a block are the product of the multiplicities replicating it.
+    std::vector<int> multiplied;
+    for (size_t i = 0; i < blocks.size(); i++)
+    {
+        if (blocks[i].multiplicity == 1.0)
+            continue;
+        // The copies of a branch hang at v; a grafted end has one initial condition, not a junction
+        if (this->chain_end_to_q_init.contains(blocks[i].v))
+            throw_with_line_number("Block " + std::to_string(i) + " has a multiplicity at the grafted chain end "
+                + std::to_string(blocks[i].v) + "; give the multiplicity to a block whose v is not grafted.");
+        multiplied.push_back(static_cast<int>(i));
+    }
+    std::vector<std::vector<bool>> replicated(multiplied.size(), std::vector<bool>(blocks.size(), false));
+    for (size_t m = 0; m < multiplied.size(); m++)
+    {
+        const Block& block = blocks[multiplied[m]];
+        replicated[m][multiplied[m]] = true;
+        std::stack<std::pair<int,int>> to_visit;  // (node, node it was reached from)
+        to_visit.push(std::make_pair(block.u, block.v));
+        while (!to_visit.empty())
+        {
+            const auto [node, from] = to_visit.top();
+            to_visit.pop();
+            for (const int next : adjacent_nodes[node])
+            {
+                if (next == from)
+                    continue;
+                replicated[m][edge_to_block_index[std::make_pair(node, next)]] = true;
+                to_visit.push(std::make_pair(next, node));
+            }
+        }
+    }
+    for (size_t a = 0; a < multiplied.size(); a++)
+    {
+        for (size_t b = a + 1; b < multiplied.size(); b++)
+        {
+            if (replicated[a][multiplied[b]] && replicated[b][multiplied[a]])
+                throw_with_line_number("Blocks " + std::to_string(multiplied[a]) + " and " + std::to_string(multiplied[b])
+                    + " have multiplicities and each lies on the u side of the other. Orient the blocks with "
+                    + "multiplicities so that their u sides point away from each other.");
+        }
+    }
+    for (size_t i = 0; i < blocks.size(); i++)
+    {
+        for (size_t m = 0; m < multiplied.size(); m++)
+            if (replicated[m][i])
+                blocks[i].n_copies *= blocks[multiplied[m]].multiplicity;
+    }
+
+    // Compute alpha, the sum of the relative contour lengths of all block copies
+    double alpha{0.0};
+    for(size_t i=0; i<blocks.size(); i++){
+        alpha += blocks[i].n_copies*blocks[i].contour_length;
+    }
+    this->alpha = alpha;
 
     // Generate propagator codes and assign each of them to each of propagator
     auto propagator_codes = PropagatorCode::generate_codes(*this, chain_end_to_q_init);
@@ -272,11 +310,11 @@ int Polymer::get_n_segment(const int idx) const
             std::to_string(static_cast<int>(blocks.size()) - 1) + "]");
     return blocks[idx].n_segment;
 }
-int Polymer::get_n_segment_total() const
+double Polymer::get_n_segment_total() const
 {
-    int total_n{0};
+    double total_n{0.0};
     for(size_t i=0; i<blocks.size(); i++)
-        total_n += blocks[i].n_segment;
+        total_n += blocks[i].n_copies*blocks[i].n_segment;
     return total_n;
 }
 double Polymer::get_alpha() const
@@ -286,6 +324,11 @@ double Polymer::get_alpha() const
 double Polymer::get_volume_fraction() const
 {
     return volume_fraction;
+}
+double Polymer::get_branch_multiplicity(const int node, const int neighbor) const
+{
+    const Block& block = blocks[get_block_index_from_edge(node, neighbor)];
+    return (block.v == node) ? block.multiplicity : 1.0;
 }
 int Polymer::get_block_index_from_edge(const int v, const int u) const
 {
@@ -358,68 +401,78 @@ static std::string format_edge(const Block& block)
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(2);
     oss << block.monomer_type << "[" << block.contour_length << "]";
+    if (block.multiplicity != 1.0)
+        oss << "x" << PropagatorCode::format_count(block.multiplicity);
     return oss.str();
 }
 
 /**
- * @brief Recursive helper to print tree structure.
+ * @brief Print the blocks reached from the root, depth first with sorted children.
  *
- * @param node Current node
- * @param parent Parent node (-1 for root)
- * @param prefix Current indentation prefix
- * @param is_last Whether this is the last child of parent
+ * The traversal keeps its own stack, so a polymer of many blocks cannot exhaust the
+ * call stack. With @p indent every level is drawn below its parent. Its indentation
+ * grows with the depth, so the diagram grows with the square of the number of blocks;
+ * without @p indent each block is one line "(parent)--Type[length]--(child)".
  */
-void print_tree_recursive(
-    int node,
-    int parent,
-    const std::string& prefix,
-    [[maybe_unused]] bool is_last,
+static void print_tree(
+    int root,
+    bool indent,
     const std::map<int, std::vector<int>>& adj_nodes,
     const std::map<std::pair<int, int>, int>& edge_to_idx,
     const std::vector<Block>& all_blocks)
 {
-    // Get children (neighbors except parent)
-    std::vector<int> children;
-    auto it = adj_nodes.find(node);
-    if (it != adj_nodes.end())
+    struct Frame
     {
-        for (int neighbor : it->second)
+        int node;
+        std::string prefix;
+        std::vector<int> children;
+        size_t next;
+    };
+    // Neighbors except the parent, in increasing order
+    auto children_of = [&adj_nodes](int node, int parent)
+    {
+        std::vector<int> children;
+        auto it = adj_nodes.find(node);
+        if (it != adj_nodes.end())
+            for (int neighbor : it->second)
+                if (neighbor != parent)
+                    children.push_back(neighbor);
+        std::sort(children.begin(), children.end());
+        return children;
+    };
+
+    std::vector<Frame> stack;
+    stack.push_back({root, "", children_of(root, -1), 0});
+    while (!stack.empty())
+    {
+        if (stack.back().next == stack.back().children.size())
         {
-            if (neighbor != parent)
-            {
-                children.push_back(neighbor);
-            }
+            stack.pop_back();
+            continue;
         }
-    }
-    std::sort(children.begin(), children.end());
+        const int node = stack.back().node;
+        const int child = stack.back().children[stack.back().next++];
+        const bool child_is_last = stack.back().next == stack.back().children.size();
 
-    // Print each child
-    for (size_t i = 0; i < children.size(); i++)
-    {
-        int child = children[i];
-        bool child_is_last = (i == children.size() - 1);
-
-        // Get block info for this edge
         auto edge_it = edge_to_idx.find(std::make_pair(node, child));
         if (edge_it == edge_to_idx.end())
-        {
             edge_it = edge_to_idx.find(std::make_pair(child, node));
+        const std::string edge_label = format_edge(all_blocks[edge_it->second]);
+
+        std::string prefix;
+        if (indent)
+        {
+            std::cout << stack.back().prefix << (child_is_last ? " \\--" : " +--")
+                      << edge_label << "--(" << child << ")" << std::endl;
+            // The children of the child line up after the edge label
+            prefix = stack.back().prefix + (child_is_last ? "    " : " |  ")
+                   + std::string(edge_label.length(), ' ');
         }
-        const Block& block = all_blocks[edge_it->second];
-        std::string edge_label = format_edge(block);
-
-        // Print edge and child node
-        std::cout << prefix;
-        std::cout << (child_is_last ? " \\--" : " +--");
-        std::cout << edge_label << "--(" << child << ")" << std::endl;
-
-        // Recurse with updated prefix
-        std::string new_prefix = prefix + (child_is_last ? "    " : " |  ");
-        // Add spacing for edge label width
-        new_prefix += std::string(edge_label.length(), ' ');
-
-        print_tree_recursive(child, node, new_prefix, child_is_last,
-                            adj_nodes, edge_to_idx, all_blocks);
+        else
+        {
+            std::cout << "(" << node << ")--" << edge_label << "--(" << child << ")" << std::endl;
+        }
+        stack.push_back({child, std::move(prefix), children_of(child, node), 0});
     }
 }
 
@@ -508,10 +561,10 @@ void Polymer::print_architecture_diagram() const
     }
     else
     {
-        // Print as tree
+        // Print as tree; beyond 100 blocks one line per block keeps the output linear
         std::cout << "(" << root << ")" << std::endl;
-        print_tree_recursive(root, -1, "", true,
-                            adjacent_nodes, edge_to_block_index, blocks);
+        print_tree(root, blocks.size() <= 100,
+                   adjacent_nodes, edge_to_block_index, blocks);
     }
 }
 

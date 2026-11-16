@@ -1,8 +1,10 @@
 """PSCF conversion format and CLI regressions; no compiled backend or simulation."""
 
+import hashlib
 import itertools
 import json
 import math
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -192,6 +194,22 @@ def test_hall_number_range(hall, message):
         TOOL['choose_lattice'](p)
 
 
+@pytest.mark.parametrize('group, outcome', (
+    ({'symbol': 'Ia-3d'}, 'cubic'),                         # one Hall setting: the symbol suffices
+    ({'symbol': 'P2/m'}, 'several Hall settings'),         # 57, 58, 59: the unique axis is ambiguous
+    ({'symbol': 'P2/m', 'hall_number': 5}, 'not of P2/m'),  # Hall 5 is P2, not P2/m
+))
+def test_space_group_symbol_and_hall_number(group, outcome):
+    pytest.importorskip('spglib')
+    p = params()
+    p.update(space_group=group, lx=[3., 3., 3.])
+    if outcome == 'cubic':
+        assert TOOL['choose_lattice'](p)[0] == 'cubic'
+    else:
+        with pytest.raises(ValueError, match=outcome):
+            TOOL['choose_lattice'](p)
+
+
 def test_invalid_space_group_symbol_has_a_clear_error():
     p = params()
     p['space_group'] = {'symbol': 123}
@@ -257,6 +275,120 @@ def test_result_export_import_preserves_fields_cell_and_custom_names(tmp_path, s
         np.testing.assert_array_equal(imported['w_' + name], data['w_' + name].ravel())
 
 
+@pytest.mark.parametrize('names', (
+    ['A', 'B'],
+    ['α', 'B'],
+    ['α', 'α_real'],
+    ['α', 'polymerfts_mat_keys_json'],
+    ['α', 'field_' + hashlib.sha256('w_α'.encode()).hexdigest()[:24]],
+))
+def test_field_import_preserves_unicode_and_encoding_like_names(tmp_path, names):
+    omega = rgrid(tmp_path / 'omega', [2, 3])
+    rho = rgrid(tmp_path / 'rho', [2, 3], values=np.arange(6) / 10)
+    output = TOOL['import_files'](omega, tmp_path / 'imported.mat', rho=rho, monomers=names)
+    raw = loadmat(output, simplify_cells=True)
+    restored = TOOL['_MAT']['decode_mat_fields'](raw)
+    potentials = TOOL['_MAT']['read_monomer_fields'](raw)
+    assert list(restored['monomer_types']) == names
+    for kind, source in (('w_', omega), ('phi_', rho)):
+        expected = TOOL['read_rgrid'](source)['fields']
+        for i, name in enumerate(names):
+            np.testing.assert_array_equal(restored[kind + name], expected[i].ravel())
+            if name.isascii():
+                np.testing.assert_array_equal(raw[kind + name], expected[i].ravel())
+            if kind == 'w_':
+                np.testing.assert_array_equal(potentials[name], expected[i].ravel())
+    if all(name.isascii() for name in names):
+        assert 'polymerfts_mat_keys_json' not in raw
+
+
+@pytest.mark.parametrize('suffix', ('.mat', '.json', '.yaml'))
+@pytest.mark.parametrize('separator', (',', '_', '/', ' '))
+@pytest.mark.parametrize('boundary', ('periodic', 'Periodic', 'PeRiOdIc'))
+def test_saved_result_option_spellings_export_identically(tmp_path, suffix, separator, boundary):
+    p = params()
+    p['chi_n'] = {separator.join(('long_B', 'Zed')): 20.}
+    p['bc'] = [boundary] * 6
+    data = result(p)
+    # SCFT results retain the input spelling and also write canonical top-level chi_n.
+    data['chi_n'] = {'Zed,long_B': 20.}
+    before = json.dumps(data, default=lambda x: x.tolist())
+    prepared, _, lattice, _ = TOOL['prepare_export'](data)
+    text = TOOL['param_text'](prepared, lattice)
+    assert json.dumps(data, default=lambda x: x.tolist()) == before
+    assert '      0 1 20\n' in text
+
+    source = tmp_path / ('source' + suffix)
+    if suffix == '.mat':
+        savemat(source, data, long_field_names=True)
+    elif suffix == '.json':
+        source.write_text(before)
+    else:
+        yaml = pytest.importorskip('yaml')
+        source.write_text(yaml.safe_dump(json.loads(before), sort_keys=False))
+    TOOL['export_files'](source, tmp_path / 'actual')
+
+    control = tmp_path / 'control.json'
+    control.write_text(json.dumps(result(), default=lambda x: x.tolist()))
+    TOOL['export_files'](control, tmp_path / 'expected')
+    for relative in ('param', 'command', 'in/omega', 'metadata.json'):
+        assert (tmp_path / 'actual' / relative).read_bytes() == (tmp_path / 'expected' / relative).read_bytes()
+
+
+@pytest.mark.parametrize('names', (('A', 'B'), ('Zed', 'long_B')))
+@pytest.mark.parametrize('reverse', (False, True))
+def test_unique_compact_interaction_keys_remain_supported(names, reverse):
+    p = params()
+    p['segment_lengths'] = dict(zip(names, (1., 1.2)))
+    for block, name in zip(p['polymers'][0]['blocks'], names):
+        block['type'] = name
+    p['chi_n'] = {''.join(names[::-1] if reverse else names): 20.}
+    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
+    assert '      0 1 20\n' in TOOL['param_text'](prepared, lattice)
+
+
+@pytest.mark.parametrize('interactions', (
+    {'Zed_long_B': 20., 'long_B/Zed': 20.},
+    {'Zed,long_B': 20., 'long_BZed': 20.},
+    {'unknown,Zed': 20.}, {'Zed,Zed': 20.}, {'unknown': 20.}, {0: 20.},
+    {'Zed_long_B': float('nan')}, {'Zed/long_B': float('inf')},
+))
+def test_invalid_interactions_still_fail_before_writing(tmp_path, interactions):
+    p = params()
+    p['chi_n'] = interactions
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(result(p), default=lambda x: x.tolist()))
+    with pytest.raises(ValueError):
+        TOOL['export_files'](source, tmp_path / 'pscf')
+    assert not (tmp_path / 'pscf').exists()
+
+
+@pytest.mark.parametrize('names,pair,message', (
+    (('A', 'AB', 'B', 'BB'), 'ABB', 'ambiguous'),
+    (('A', 'B_C', 'A_B', 'C'), 'A_B_C', 'ambiguous'),
+    # A unique compact interpretation must not override invalid separator syntax.
+    (('A', 'A_'), 'A_A', 'self interaction'),
+    (('A', 'B_C', 'A_B', 'C', 'A_'), 'A_B_C', 'ambiguous'),
+))
+def test_ambiguous_compact_and_legacy_interactions_are_rejected(names, pair, message):
+    p = params()
+    p['segment_lengths'] = dict.fromkeys(names, 1.)
+    for block, name in zip(p['polymers'][0]['blocks'], names):
+        block['type'] = name
+    p['chi_n'] = {pair: 20.}
+    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
+    with pytest.raises(ValueError, match=message):
+        TOOL['param_text'](prepared, lattice)
+
+
+@pytest.mark.parametrize('boundary', ('Reflecting', 'ABSORBING', None, 1))
+def test_case_insensitive_periodic_check_keeps_rejecting_other_boundaries(boundary):
+    p = params()
+    p['bc'] = [boundary] * 6
+    with pytest.raises(ValueError, match='periodic'):
+        TOOL['prepare_export'](result(p))
+
+
 def test_legacy_keys_and_branched_vertices_are_normalized(tmp_path):
     p = params()
     p['distinct_polymers'] = p.pop('polymers')
@@ -284,6 +416,22 @@ def test_matlab_singleton_polymer_and_block_structs(tmp_path):
     assert 'nBlock 1' in (tmp_path / 'pscf/param').read_text()
 
 
+# Python parameter files are read statically; docs/getting-started/PscfConversion.md states the policy.
+P = 'params = ' + repr(params())
+
+
+def script(tmp_path, text):
+    source = tmp_path / 'input.py'
+    source.write_text(text + '\n', encoding='utf-8')
+    return source
+
+
+def zero_fields(tmp_path):
+    fields = tmp_path / 'fields.mat'
+    savemat(fields, {key: value for key, value in result().items() if key.startswith('w_')})
+    return fields
+
+
 def test_static_python_parameters_do_not_execute_code(tmp_path):
     marker = tmp_path / 'executed'
     source = tmp_path / 'input.py'
@@ -292,62 +440,337 @@ def test_static_python_parameters_do_not_execute_code(tmp_path):
     source.write_text(f"from pathlib import Path\nPath({str(marker)!r}).touch()\nf = 100\nparams = " + repr(p).replace("'__DS__'", '1/f') + '\nraise RuntimeError("must not run")\n')
     assert TOOL['read_input'](source)['ds'] == .01
     assert not marker.exists()
-    fields = tmp_path / 'fields.mat'
-    savemat(fields, {k: v for k, v in result().items() if k.startswith('w_')})
-    TOOL['export_files'](source, tmp_path / 'pscf', fields)
+    TOOL['export_files'](source, tmp_path / 'pscf', zero_fields(tmp_path))
     assert not marker.exists()
 
 
-@pytest.mark.parametrize('code', ('params = load_config("file.json")', 'params["nx"] = [3]', 'params.update(nx=[3])'))
-def test_dynamic_python_params_are_rejected(tmp_path, code):
-    source = tmp_path / 'input.py'
-    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
-    with pytest.raises(ValueError): TOOL['read_input'](source)
+@pytest.mark.parametrize('code, expected', (
+    ('f = .4\nparams = {"a": 1 - f, "b": -f / 2 + 2 ** 3, "c": (1, "x")}', {'a': 1 - .4, 'b': -.4 / 2 + 2 ** 3, 'c': [1, 'x']}),
+    ('import math\nimport numpy as np\nparams = {"a": np.sqrt(6.), "b": math.sqrt(4), "c": 2 * np.pi}',
+     {'a': math.sqrt(6.), 'b': 2., 'c': 2 * math.pi}),
+    ('lengths = [2, 3, 4]\nparams = {"nx": lengths, "ds": 1 / lengths[0], "lx": [1.5] * 3}',
+     {'nx': [2, 3, 4], 'ds': .5, 'lx': [1.5, 1.5, 1.5]}),
+    ('base = {"nx": [8], "ds": .01}\nparams: dict = dict(base, ds=.02)', {'nx': [8], 'ds': .02}),
+))
+def test_literal_params(tmp_path, code, expected):
+    assert TOOL['read_input'](script(tmp_path, code)) == expected
 
 
 @pytest.mark.parametrize('code', (
-    'alias = params\nalias["ds"] = .02',
-    'alias = params["polymers"][0]\nalias["volume_fraction"] = .5',
-    'alias = params\nalias.update(ds=.02)',
-    'alias = params\nalias = alias.pop("ds")',
-    'alias = params\ndel alias["ds"]',
-    'alias = params["nx"]\nalias += [8]',
-    'alias = params["nx"]\nif True:\n    alias += [8]',
-    'params["nx"] += [8]',
+    'params = load_config("file.json")',
+    'import numpy as np\nparams = {"f": np.exp(1.)}',
+    'import other as np\nparams = {"f": np.sqrt(4.)}',
+    # Constants changed by control flow, a function (global), an import or a match capture
+    'f = .4\nif True:\n    f = .6\nparams = {"f": f}',
+    'def change():\n    global f\n    f = .6\nf = .4\nchange()\nparams = {"f": f}',
+    'f = .4\nfrom math import pi as f\nparams = {"f": f}',
+    'f = .4\nmatch .6:\n    case f:\n        pass\nparams = {"f": f}',
 ))
-def test_mutations_through_python_aliases_are_rejected(tmp_path, code):
-    source = tmp_path / 'input.py'
-    source.write_text('params = ' + repr(params()) + '\n' + code + '\n')
-    with pytest.raises(ValueError, match='mutations|method calls'):
-        TOOL['read_input'](source)
+def test_params_that_are_not_literal_are_refused(tmp_path, code):
+    with pytest.raises(ValueError, match='Could not read params statically'):
+        TOOL['read_input'](script(tmp_path, code))
 
 
-@pytest.mark.parametrize('code', ('lengths.append(8)', 'lengths[0] = 8', 'del lengths[0]'))
-def test_mutated_helper_containers_are_rejected(tmp_path, code):
-    source = tmp_path / 'input.py'
-    source.write_text('lengths = [2, 3, 4]\n' + code + '\nparams = {"nx": lengths}\n')
-    with pytest.raises(ValueError, match='mutations|method calls'):
-        TOOL['read_input'](source)
+@pytest.mark.parametrize('code', (
+    'print(params, params["polymers"])\nlabel = f"{params}"',
+    'present = "polymers" in params and params["polymers"] is not None and params["nx"] == [2, 3, 4]',
+    'names = [name for name in params["segment_lengths"]]\nfor name in params["chi_n"]:\n    print(name)',
+    'first, second, third = params["lx"]\nfor length in params["lx"]:\n    print(length)',
+    'model = params["chain_model"].upper()\nlast = params["nx"][index]\nkind = params["polymers"][0]["blocks"][index]["type"]',
+    'import numpy as np\nw = np.zeros(params["nx"])\nn = np.prod(params["nx"]) + len(params["lx"])\n'
+    'noise = np.random.normal(0, 1, params["nx"])',
+    'import numpy as np\ninitial = np.zeros(24)\nw = np.asarray(initial).reshape(params["nx"])\nv = np.array(initial, dtype=float).reshape(params["nx"])',
+    'import numpy as np\ndef fields(initial):\n    return np.asarray(initial["w_Zed"]).reshape(params["nx"])',
+    'import numpy as np\nfrom scipy.ndimage import zoom\nw = zoom(np.zeros((2, 2, 2)), params["nx"] / np.array([2, 2, 2]))',
+    'import numpy as np\nnx = params["nx"]\nw = np.zeros(nx)\ncenter = np.array([.5, .5, .5]) * params["lx"]',
+    # Other arguments of such calls: literals, library functions (also by an alias), builtins, and
+    # library calls and arithmetic of such values
+    'import numpy as np\nw = np.broadcast_to(np.cos(2 * np.pi * np.arange(params["nx"][2]) / params["nx"][2]), params["nx"])\n'
+    'std = np.sqrt(2.) * 3\nnoise = np.random.normal(0., std, params["nx"])\nv = np.zeros(params["nx"], dtype=np.float64)\n'
+    'longest = max(params["nx"], params["lx"], key=sum)',
+    'import numpy as np\nw = np.zeros(params["nx"], dtype=complex)\nmask = np.ones(params["nx"], dtype=bool)',
+    'import numpy as np\nzeros = np.zeros\nnorm = np.linalg.norm\nw = zeros(params["nx"])\n'
+    'longest = max(params["nx"], params["lx"], key=norm)',
+    # Method calls on helper lists that do not hold params
+    'positions = [[0., 0.]]\npositions.append([.5, .5])\nfor y, z in positions:\n    print(y + z)',
+))
+def test_reading_params_where_it_cannot_change_is_accepted(tmp_path, code):
+    assert TOOL['read_input'](script(tmp_path, P + '\n' + code)) == params()
 
 
-@pytest.mark.parametrize('code', ('f = load_value()', 'if True:\n    f = .6', 'f += .2', 'f, g = .6, 1.'))
-def test_runtime_constants_do_not_reuse_stale_values(tmp_path, code):
-    source = tmp_path / 'input.py'
-    source.write_text('f = .4\n' + code + '\nparams = {"fraction": f}\n')
-    with pytest.raises(ValueError, match='statically'):
-        TOOL['read_input'](source)
+@pytest.mark.parametrize('code', (
+    # Changes, also through a name that shares a container with params
+    P + '\nparams["ds"] = .02',
+    P + '\nparams["nx"] += [8]',
+    P + '\ndel params["polymers"][0]["blocks"][0]',
+    P + '\nparams.update(ds=.02)',
+    P + '\nalias = params["polymers"][0]\nalias["volume_fraction"] = .5',
+    P + '\nalias = params["nx"]\nalias.append(8)',
+    P + '\nalias = params["nx"]\nalias += [8]',
+    'lengths = [2, 3, 4]\nlengths.append(5)\nparams = {"nx": lengths}',
+    'def refine():\n    lengths.append(5)\nlengths = [2, 3, 4]\nparams = {"nx": lengths}\nrefine()',
+    # Changes of a value the exported params is read from, also through the simulation's params
+    'box = [3.3] * 3\nbox[2] = 4.\nparams = {"lx": [box[0], box[1], box[2]]}',
+    'box = [3.3] * 3\nalias = box\nalias[2] = 4.\nparams = {"lx": [box[2]] * 3}',
+    P + '\nfrom polymerfts import scft\nbox = [4., 4., 4.]\nbox[2] = 6.\ncalculation = scft.SCFT(params=dict(params, lx=box))',
+    P + '\nfrom polymerfts import scft\nbox = [4., 4., 4.]\nrun_params = dict(params, lx=box)\nbox.append(5.)\n'
+    'box.pop(0)\ncalculation = scft.SCFT(run_params)',
+    P + '\nfrom polymerfts import SCFT\nbox = [4., 4., 4.]\nbox[2] = 6.\nSCFT(dict(params, lx=[box[0], box[1], box[2]]))',
+    P + '\nfrom polymerfts import SCFT\nblocks = [{"type": "Zed", "length": .4}, {"type": "long_B", "length": .6}]\n'
+    'polymers = [{"volume_fraction": 1., "blocks": blocks}]\nblocks[0]["length"] = .3\nblocks[1]["length"] = .7\n'
+    'calculation = SCFT(dict(params, polymers=polymers))',
+    # params handed on to code that could change it, also by an index the reader cannot know
+    P + '\nfor block in params["polymers"][0]["blocks"]:\n    block["length"] *= 2',
+    P + '\nimport sys\nkey = sys.argv[0] and "polymers"\nfor item in params[key]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\nkeys[0] = "polymers"\nfor item in params[keys[0]]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\nkeys[0] = "polymers"\nkey = keys[0]\nfor item in params[key]:\n    item["volume_fraction"] = .5',
+    P + '\nkeys = ["nx"]\ndef pick():\n    keys[0] = "polymers"\npick()\nkey = keys[0]\nfor item in params[key]:\n'
+    '    item["volume_fraction"] = .5',
+    P + '\nfor other in [params]:\n    other["ds"] = .02',
+    P + '\n(other := params["nx"]).append(8)',
+    P + '\nmatch params:\n    case {"polymers": polymers}:\n        polymers[0]["volume_fraction"] = .5',
+    P + '\ndef tweak(p=params):\n    p["ds"] = .02\ntweak()',
+    P + '\ndef obtain():\n    return params["nx"]\nobtain().append(8)',
+    P + '\ndef tweak(config):\n    config["ds"] = .02\ntweak(params)',
+    P + '\ntweak = lambda shape: shape.append(8)\ntweak(params["nx"])',
+    P + '\npositions = []\npositions.append(params["lx"])\npositions[0][0] = 9.',
+    P + '\ndef grow(shape):\n    shape.append(8)\nprint(max(params["nx"], params["lx"], key=grow))',
+    # Callbacks of the script that a builtin or library could hand a list to
+    P + '\ngrow = lambda shape: shape.append(8)\nprint(max(params["nx"], params["lx"], key=grow))',
+    P + '\nclass Tools:\n    @staticmethod\n    def grow(shape):\n        shape.append(8)\nprint(max(params["nx"], params["lx"], key=Tools.grow))',
+    P + '\nclass Grower:\n    def grow(self, shape):\n        shape.append(8)\nprint(min(params["nx"], params["lx"], key=Grower().grow))',
+    P + '\nimport functools\ndef grow(shape, n):\n    shape.append(n)\nmeasure = functools.partial(grow, n=8)\n'
+    'print(max(params["nx"], params["lx"], key=measure))',
+    P + '\nfrom helpers import grow\nprint(max(params["nx"], params["lx"], key=grow))',
+    P + '\ndef grow(shape):\n    shape.append(8)\nmeasure = len\nmeasure = grow\nprint(max(params["nx"], params["lx"], key=measure))',
+    P + '\nimport numpy as np\ndef grow(shape):\n    shape.append(8)\nmeasure = np.sum\nmeasure = grow\n'
+    'print(max(params["nx"], params["lx"], key=measure))',
+    P + '\ndef grow(shape):\n    shape.append(8)\ncallbacks = {"grow": 0}\ncallbacks["grow"] = grow\n'
+    'print(max(params["nx"], params["lx"], key=callbacks["grow"]))',
+    P + '\nfrom scipy.optimize import minimize\nclass Model:\n    @staticmethod\n    def cost(x, box):\n        box[0] = 9.\n'
+    '        return x @ x\nfit = minimize(Model.cost, [1.], args=params["lx"])',
+    # Containers the script fills with such a callback, also unpacked into the call
+    P + '\ndef grow(shape):\n    shape.append(8)\noptions = {}\noptions["key"] = grow\n'
+    'print(max(params["nx"], params["lx"], **options))',
+    P + '\nfrom scipy.optimize import minimize\ndef cost(x, box):\n    box[0] = 9.\n    return x @ x\nsetup = [0, [1.]]\n'
+    'setup[0] = cost\nfit = minimize(*setup, args=params["lx"])',
+    P + '\ndef grow(shape):\n    shape.append(8)\ncallbacks = [0]\ncallbacks[0] = grow\n'
+    'print(max(params["nx"], params["lx"], key=max(callbacks)))',
+    P + '\nimport numpy as np\ndef grow(x, shape):\n    shape.append(8)\n    return 0.\nfuncs = [0., 0.]\nfuncs[1] = grow\n'
+    'np.piecewise(np.zeros(2), [[True, False]], funcs, params["nx"])',
+    P + '\ndef grow(shape):\n    shape.append(8)\nfactors = [1.]\nfactors[0] = grow\nscale = factors[0]\n'
+    'print(max(params["nx"], params["lx"], key=scale))',
+    # A reshape of the script, also reached through a builtin or library that returns its argument
+    P + '\nclass Grid:\n    def reshape(self, shape):\n        shape.append(8)\nGrid().reshape(params["nx"])',
+    P + '\nfrom helpers import Grid\nGrid().reshape(params["nx"])',
+    P + '\nclass Grid:\n    def reshape(self, shape):\n        shape.append(8)\nmax([Grid()]).reshape(params["nx"])',
+    P + '\nimport numpy as np\nclass Grid(np.ndarray):\n    def reshape(self, shape):\n        shape.append(8)\n'
+    'np.array(np.zeros(2).view(Grid), subok=True).reshape(params["nx"])',
+    P + '\nimport json\njson.dump(params, open("copy.json", "w"))',
+    P + '\nimport numpy as np\nnp.random.shuffle(params["lx"])',
+    P + '\nsettings = dict(shape=params["nx"])\nsettings["shape"].append(8)',
+    # The reader does not resolve scopes: a local params refuses the script.
+    P + '\ndef helper(params):\n    params.update(ds=.02)\nhelper({})',
+))
+def test_changes_and_escapes_of_params_are_refused(tmp_path, code):
+    with pytest.raises(ValueError, match='changes|used where|bound more than once'):
+        TOOL['read_input'](script(tmp_path, code))
 
 
-def test_unchanged_literal_containers_and_indexing_are_supported(tmp_path):
-    source = tmp_path / 'input.py'
-    source.write_text('lengths = [2, 3, 4]\nparams = {"nx": lengths, "ds": 1 / lengths[0]}\n')
-    assert TOOL['read_input'](source) == {'nx': [2, 3, 4], 'ds': .5}
+@pytest.mark.parametrize('code, message', (
+    (P + '\nfrom settings import params', 'bound more than once'),
+    (P + '\nparams = dict(params, ds=.02)', 'bound more than once'),
+    (P + '\ndef reset():\n    global params\n    params = {}\nreset()', 'bound more than once'),
+    (P + '\nfrom settings import *', 'star import'),
+    (P + '\nexec("params[\'ds\'] = .02")', 'Reflection'),
+    (P + '\ngetattr(params, "update")(ds=.02)', 'Reflection'),
+    (P + '\nimport sys\nsys.modules["__main__"].params["ds"] = .02', 'Reflection'),
+    (P + '\nimport __main__\n__main__.params["ds"] = .02', 'Imports of'),
+    (P + '\nimport copy\ncopy._deepcopy_dispatch[list] = print', 'Imports of'),
+    (P + '\nfrom importlib import import_module\nimport_module("__main__").params["ds"] = .02', 'Imports of'),
+    (P + '\nimport numpy as np\ndef grow(shape):\n    shape.append(8)\nnp.zeros = grow\nw = np.zeros(params["nx"])',
+     'replaces numpy.zeros'),
+    (P + '\nimport numpy as np\ndef grow(*args):\n    args[-1].append(8)\nrandom = np.random\nrandom.normal = grow\n'
+     'noise = np.random.normal(0., 1., params["nx"])', 'replaces numpy.random.normal'),
+    (P + '\nfrom scipy.optimize import OptimizeResult\ndef grow(shape):\n    shape.append(8)\nholder = OptimizeResult()\n'
+     'holder.reshape = grow\nholder.reshape(params["nx"])', 'replaces reshape'),
+))
+def test_rebinding_and_reflection_are_refused(tmp_path, code, message):
+    with pytest.raises(ValueError, match=message):
+        TOOL['read_input'](script(tmp_path, code))
+
+
+@pytest.mark.parametrize('code, changes', (
+    (P + '\nfrom polymerfts import SCFT\ncalculation = SCFT(dict(params, ds=.02))', {'ds': .02}),
+    (P + '\nfrom polymerfts import scft\nfixed = dict(params, relax_cell=False)\ncalculation = scft.SCFT(params=fixed)',
+     {'relax_cell': False}),
+    (P + '\nfrom polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(params=params)', {}),
+    (P + '\nimport polymerfts as pf\nsimulation = pf.LFTS(params, random_seed=1)', {}),
+    ('from polymerfts.fts.clfts import CLFTS\n' + P + '\nCLFTS(params=params)', {}),
+    # A simulation in a function can be defined before params.
+    ('from polymerfts import scft\ndef main():\n    return scft.SCFT(params=params)\n' + P
+     + '\nif __name__ == "__main__":\n    main()', {}),
+))
+def test_export_describes_the_params_the_simulation_receives(tmp_path, code, changes):
+    assert TOOL['read_input'](script(tmp_path, code)) == {**params(), **changes}
+
+
+@pytest.mark.parametrize('code, message', (
+    (P + '\nfrom polymerfts import SCFT\nfirst = SCFT(params)\nsecond = SCFT(dict(params, ds=.02))', 'different params'),
+    (P + '\nfrom polymerfts import SCFT\nfor chi in (10., 20.):\n    SCFT(dict(params, chi_n={"Zed,long_B": chi}))',
+     'cannot read'),
+    ('chi = 10.\n' + P + '\nfrom polymerfts import SCFT\nSCFT(dict(params, chi_n={"Zed,long_B": chi}))\nchi = 20.',
+     'cannot read'),
+    (P + '\nfrom polymerfts import SCFT\ndef run(polymers):\n    return SCFT(dict(params, polymers=polymers))',
+     'cannot read'),
+    (P + '\nfrom polymerfts import SCFT\nSCFT(**{"params": params})', 'cannot read'),
+    (P + '\nfrom polymerfts import SCFT\nSolver = SCFT\nSolver(params)', 'other than by calling'),
+    (P + '\nfrom polymerfts import SCFT\ndef run() -> SCFT:\n    return SCFT(params)', 'other than by calling'),
+    (P + '\nfrom polymerfts import SCFT\ncalculation = SCFT(params)\nchecked = isinstance(calculation, SCFT)',
+     'other than by calling'),
+    ('from polymerfts import SCFT as MeanField\n' + P + '\nMeanField(dict(params, ds=.02))', 'another name'),
+    (P + '\nfrom polymerfts import SCFT\nclass Mine(SCFT):\n    pass', 'other than by calling'),
+    (P + '\nimport functools\nfrom polymerfts import scft\nmake = functools.partial(scft.SCFT, {"ds": .5})',
+     'other than by calling'),
+    (P + '\ndef main():\n    from polymerfts import SCFT\n    return SCFT({"ds": .5})', 'module-level import'),
+    (P + '\nfrom polymerfts import scft\ndef build(module):\n    return module.SCFT({"ds": .5})', 'module-level import'),
+    (P + '\nfrom polymerfts import SCFT\ndef SCFT(p):\n    p["ds"] = .02\nSCFT(params)', 'module-level import'),
+    (P + '\nfrom polymerfts import scft\nscft.SCFT = print', 'replaces'),
+    (P + '\nfrom polymerfts import scft\ncalculation = scft.SCFT.from_file("gyroid.yaml", ds=.02)', 'from_file'),
+))
+def test_simulations_the_converter_cannot_follow_are_refused(tmp_path, code, message):
+    with pytest.raises(ValueError, match=message):
+        TOOL['read_input'](script(tmp_path, code))
+
+
+def test_export_writes_the_params_the_simulation_receives(tmp_path):
+    source = script(tmp_path, P + '\nfrom polymerfts import SCFT\nSCFT(dict(params, chi_n={"Zed,long_B": 25.}))')
+    destination = TOOL['export_files'](source, tmp_path / 'pscf', zero_fields(tmp_path))
+    expected = {**params(), 'chi_n': {'Zed,long_B': 25.}}
+    assert (destination / 'param').read_text() == TOOL['param_text'](expected, 'orthorhombic')
+
+
+def test_refused_python_input_writes_nothing(tmp_path):
+    marker = tmp_path / 'executed'
+    source = script(tmp_path, f'from pathlib import Path\n{P}\ndef tweak(config):\n'
+                              f'    Path({str(marker)!r}).touch()\n    config["ds"] = .02\ntweak(params)')
+    with pytest.raises(ValueError, match='used where'):
+        TOOL['export_files'](source, tmp_path / 'pscf', zero_fields(tmp_path))
+    assert not marker.exists() and not (tmp_path / 'pscf').exists()
+
+
+# The examples the reader must read; continuous-chain models without random blocks, block
+# multiplicities or finite compressibility are also exported.
+EXAMPLES_EXPORTED = (
+    'block_copolymer/lfts/ABC_Triblock_Sphere3D.py', 'block_copolymer/scft/ABA_Triblock1D.py',
+    'block_copolymer/scft/ABC_Triblock_Sphere3D.py', 'block_copolymer/scft/Gyroid.py', 'block_copolymer/scft/Star3Arms1D.py', 'block_copolymer/scft/Star9ArmsGyroid.py',
+    'block_copolymer/scft/crystal_systems/HexagonalCylinder2D.py',
+    'block_copolymer/scft/crystal_systems/ObliqueCylinder2D.py',
+    'block_copolymer/scft/crystal_systems/TriclinicCylinder3D.py', 'block_copolymer/scft/phases/A15.py',
+    'block_copolymer/scft/phases/BCC.py', 'block_copolymer/scft/phases/Cylinder2D.py',
+    'block_copolymer/scft/phases/FCC.py', 'block_copolymer/scft/phases/Fddd.py',
+    'block_copolymer/scft/phases/HCP_Hexagonal.py', 'block_copolymer/scft/phases/PL_Hexagonal.py',
+    'block_copolymer/scft/phases/SC.py', 'block_copolymer/scft/phases/Sigma.py',
+)
+EXAMPLES_READ = (
+    'blend/clfts/GibbsEnsemble.py', 'blend/clfts/HomopolymerSolutionBook.py', 'blend/lfts/MixtureBlockRandom.py',
+    'blend/scft/MixtureBlockRandom.py', 'block_copolymer/clfts/Lamella.py', 'block_copolymer/clfts/SoftBeadDiblockMelt.py',
+    'block_copolymer/lfts/Gyroid.py', 'block_copolymer/lfts/Lamella.py', 'block_copolymer/scft/Cylinder3D.py',
+    'block_copolymer/scft/GyroidNoBoxChange.py',
+    'block_copolymer/scft/Lamella3D.py', 'block_copolymer/scft/StarNonIntegerArms1D.py',
+    'block_copolymer/scft/phases/Lamella1D.py',
+)
+
+
+def test_shipped_examples_are_read():
+    failed = []
+    for example in EXAMPLES_EXPORTED + EXAMPLES_READ:
+        try:
+            p = TOOL['read_input'](ROOT / 'examples' / example)
+            if example in EXAMPLES_EXPORTED:
+                TOOL['prepare_export'](p, {'w_' + name: np.zeros(math.prod(p['nx'])) for name in p['segment_lengths']})
+        except ValueError as exc:
+            failed.append(f'{example}: {exc}')
+    assert not failed, '\n'.join(failed)
+
+
+# A stand-in polymerfts that records the params each simulation receives and runs nothing
+STAND_IN = '''
+import copy, sys
+from unittest import mock
+
+received = []
+
+
+class Simulation:
+    def __init__(self, params=None, *args, **kwargs):
+        received.append(copy.deepcopy(params))
+
+    def __getattr__(self, name):
+        return mock.MagicMock()
+
+
+SCFT, LFTS, CLFTS, GibbsEnsemble = (type(name, (Simulation,), {}) for name in ('SCFT', 'LFTS', 'CLFTS', 'GibbsEnsemble'))
+
+
+def __getattr__(name):
+    if name.startswith('__'):
+        raise AttributeError(name)
+    return sys.modules[__name__] if name in ('scft', 'lfts', 'clfts') else mock.MagicMock()
+'''
+# Runs each example in a directory of its own with the stand-in and writes what its simulations received
+RUN_EXAMPLES = '''
+import json, os, runpy, shutil, sys
+from pathlib import Path
+work = Path(sys.argv[1])
+sys.path.insert(0, str(work))
+import polymerfts
+received = {}
+for i, example in enumerate(map(Path, sys.argv[2:])):
+    (work / str(i)).mkdir()
+    os.chdir(work / str(i))
+    for data in example.parent.glob('*.mat'):  # input fields that the example loads
+        if data.name in example.read_text(encoding='utf-8'):
+            shutil.copy(data, '.')
+    polymerfts.received.clear()
+    try:
+        runpy.run_path(str(example), run_name='__main__')
+    except (Exception, SystemExit):
+        pass  # the stand-in's results end some examples after their simulations are constructed
+    received[example.as_posix()] = polymerfts.received[:]
+(work / 'received.json').write_text(json.dumps(received))
+'''
+
+
+def test_examples_give_their_simulations_the_exported_params(tmp_path):
+    # The export equals what every simulation of the example receives when it runs (with the stand-in).
+    (tmp_path / 'polymerfts.py').write_text(STAND_IN)
+    paths = [ROOT / 'examples' / example for example in EXAMPLES_EXPORTED + EXAMPLES_READ]
+    run = subprocess.run([sys.executable, '-I', '-c', RUN_EXAMPLES, str(tmp_path), *map(str, paths)],
+                         capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+                         env=dict(os.environ, MPLBACKEND='Agg'))
+    assert run.returncode == 0, run.stderr[-2000:]
+    received = json.loads((tmp_path / 'received.json').read_text())
+    for path in paths:
+        export = json.loads(json.dumps(TOOL['read_input'](path)))
+        runs = received[path.as_posix()]
+        assert runs and all(params == export for params in runs), path.relative_to(ROOT)
+
+
+@pytest.mark.parametrize('example, message', (
+    ('blend/scft/CanonicalCoexistence.py', 'cannot read'),  # params of each phase built in a function
+    ('block_copolymer/scft/crystal_systems/MonoclinicLamella3D.py', 'different params'),
+    ('block_copolymer/scft/phases/DD.py', 'Could not read params statically'),  # the cell is loaded from a file
+))
+def test_examples_with_run_time_params_are_refused(example, message):
+    with pytest.raises(ValueError, match=message):
+        TOOL['read_input'](ROOT / 'examples' / example)
 
 
 @pytest.mark.parametrize('problem', ('discrete', 'complex', 'nonfinite', 'field_size', 'nx_mismatch',
                                    'missing_field', 'finite_compressibility', 'walls', 'random_block',
                                    'cycle', 'disconnected', 'partial_nodes', 'duplicate_chi', 'bad_cell',
-                                   'electrostatics', 'grand_canonical'))
+                                   'electrostatics', 'grand_canonical', 'multiplicity'))
 def test_invalid_exports_are_rejected_before_writing(tmp_path, problem):
     data = result()
     p = data['initial_params']
@@ -370,6 +793,7 @@ def test_invalid_exports_are_rejected_before_writing(tmp_path, problem):
     elif problem == 'bad_cell': data['angles'] = [10., 10., 170.]
     elif problem == 'electrostatics': p['electrostatics'] = {'charges': {'Zed': .1, 'long_B': -.1}, 'coupling': 100.}
     elif problem == 'grand_canonical': p['polymers'][0]['chemical_potential'] = p['polymers'][0].pop('volume_fraction')
+    elif problem == 'multiplicity': p['polymers'][0]['blocks'][0]['multiplicity'] = 2.5
     source = tmp_path / 'source.mat'
     savemat(source, data, long_field_names=True)
     with pytest.raises((ValueError, TypeError)): TOOL['export_files'](source, tmp_path / 'pscf')

@@ -10,6 +10,21 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Installation and platforms
 
+- The CUDA backend compiles with CUDA 13 again (2026-11-15): the CN-ADI line kernels are templates
+  defined in `CudaTridiagonalLines.cuh`, so that `TestCudaTridiagonal` links: since CUDA 13 a kernel template
+  instantiated in another file has an internal host stub. `TestCrysFFTObliqueZCuda` includes
+  `<algorithm>`, which GCC 12 and later need for `std::max` over an initializer list.
+- Clang builds with `POLYMERFTS_WERROR=ON` (2026-11-15; Clang 19 as the C++ compiler, with and
+  without CUDA): a missing `override` is added and an unused member of the MKL trigonometric
+  transform is removed; the unused variables of eight C++ tests are removed or marked
+  `[[maybe_unused]]`.
+- Outside MSVC the host C++ code is compiled with `-ffp-contract=off` (2026-11-09). With FMA in the
+  target (`-march=x86-64-v3`, `native`, or a compiler whose default target has it, as on the CI
+  runners) GCC fused products into additions, and full- and reduced-memory computations, which
+  group the same additions differently, differed in the last bit: the stress of
+  `TestBlockMultiplicity` with MKL in CI. MKL, FFTW and the `.cu` files are unaffected. A
+  floating-point model given in the flags (`-ffp-model`, `-fp-model`, `-ffp-contract`,
+  `-ffast-math`, `-Ofast`) is kept, with a configuration message (docs/getting-started/Installation.md).
 - The GitHub repository is renamed from `langevin-fts` to `polymerfts`, the name of the
   package and its import (2026-10-27); GitHub redirects the old URLs.
 - The Conda environment and CI use conda-forge (Miniforge) instead of Anaconda's
@@ -43,6 +58,73 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Added
 
+- Electrostatics in boxes that mix periodic axes and walls (2026-11-09): the platform Fourier
+  transform handles such a box through its mirror image. Each wall axis is extended to twice its
+  length by the even (cosine) or odd (sine) reflection, the extended grid is transformed with the
+  complex FFT of FFTW, MKL or cuFFT, and a phase factor per wall axis gives the series coefficients.
+  The coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
+  series along the walls, also for real fields, which take the real part of `backward`.
+  `PropagatorSolver.fourier` takes the cosine series along every wall, absorbing ones included, so
+  for electrostatics and smearing every wall is a wall of vanishing dielectric constant. CL-FTS and
+  SCFT accept `electrostatics` in such boxes (SCFT with `cn-adi2` or `rs`, CL-FTS, whose fields are
+  complex, with `rs`), for example a brush with periodic lateral axes, and smearing there uses the
+  platform transform instead of SciPy. In a CL-FTS box a few Debye lengths wide the images in the
+  lateral walls deplete the ions across the whole box. `TestFourierTransform` checks the mixed transforms against NumPy/SciPy on every platform, and
+  `TestConfinedElectrostatics` the Poisson-Boltzmann solution and the CL-FTS forces in a box
+  periodic along one axis.
+- `examples/charged/ecscft/BrushMultivalentIons.py` (2026-11-11): a polyelectrolyte brush that
+  trivalent counterions collapse, in EC-SCFT (Duan, Agrawal and Wang 2025): every charge carries
+  its self-energy in the ionic strength around it, screened by charges of their own spread or, as
+  in the paper, by point charges. The chains are discrete, one charged bead per segment as in the
+  paper (`rs`), and with the spread screening each charge feels the mean potential averaged over
+  itself. The script writes the iteration around `PropagatorSolver` in the Na⁺/Y³⁺/NO₃⁻ solution
+  of the experiment of Yu et al. (2016).
+  docs/theory/ElectrostaticCorrelations.md derives the equations and lists where they differ from
+  the published ones; docs/validation/BrushMultivalentIons.md compares the model with Figs. 2–4 of
+  the paper, the experiment, bulk activity coefficients and CL-FTS of the same brush.
+- Blocks take a `multiplicity` (2026-11-07): a block (v, u) with multiplicity m stands for m
+  copies of itself and of everything on its u side, attached at v, so a star with n identical
+  arms is given by one arm. m may be any real number >= 1: the junction takes the propagator of
+  that branch to the power m (m - 1 for the propagator entering a copy), and the copies count m
+  times in the concentrations, the stress and the chain length alpha. This continues the arm
+  number analytically, e.g. the symmetric A_n B_n stars around their tricritical arm number
+  n_tc ≈ 5.4475 (Kim et al., Macromolecules 59, 11903 (2026)). Integer multiplicities reproduce
+  the explicit arms: the same partition functions, concentrations and stress equal to round-off,
+  and, without propagator aggregation, the same keys and junction products. Multiplicities lie
+  between 1 and 10⁶ (2026-11-16), which keeps the binary exponents of the junction products exact;
+  SCFT and L-FTS take real ones, CL-FTS and complex fields integers only. A junction keeps the range
+  of its whole product: in a star with n arms in a strong field q_A^(n-1) can overflow while the
+  product stays finite (tests/TestJunctionRange.py). A real power of
+  a negative numerical propagator (Crank-Nicolson next to absorbing walls, a pseudo-spectral
+  method in a strong field) stops the computation with an error. Polymers with multiplicities
+  are computed without propagator aggregation; `get_block_concentration` gives all copies of a
+  block. The drawings `polymer_<id>.png` mark a block with copies by ×m, and the PSCF export
+  refuses multiplicities (docs/theory/ChainPropagators.md, Section 4.3;
+  docs/validation/StarNonIntegerArms.md; examples/block_copolymer/scft/StarNonIntegerArms1D.py;
+  tests/TestBlockMultiplicity.py).
+- Discrete chains take `numerical_method: "rs"` (2026-11-05): the bond is summed on the grid,
+  one stencil per axis, instead of through FFTs, on the CPU and CUDA backends for real and complex
+  fields. Every concentration stays positive where fields change by hundreds of kT per chain
+  (grafted and charged brushes), where the FFT round-off of the default `"ps"` turns them negative.
+  Like `cn-adi2` it mixes periodic and non-periodic axes and takes a different wall at each end of an
+  axis, and it needs an orthogonal cell; with a space group its propagators stay in the reduced
+  basis. Its stress is the derivative of its own free energy, so the box lengths relax and the
+  CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees. A narrow absorbing axis, where
+  the images of the walls would cancel, multiplies by the dense n × n matrix of its folded kernel,
+  summed once per box from a compact sine/cosine expansion: n multiply-adds per point and n² stored
+  values per kernel along that axis (docs/theory/NumericalMethods.md, Section 4.3).
+- `compute_stress()` takes complex fields with reflecting and absorbing walls (2026-11-06): the
+  pseudo-spectral methods multiply the cosine and sine coefficients of the real and imaginary
+  parts of the propagators as complex numbers, on the CPU and for `"ps"` on CUDA, and `"rs"` sums
+  on the grid. Before, the stress of complex fields needed a periodic box
+  (tests/TestStressComplexWalls.py).
+- `save_vtk` takes `space_group` (2026-11-06): the group of the fields, `calc.sg`. A
+  hexagonal-axes setting samples the lattice axes a and b at the nodes, i/n, and its points are
+  written there, as `PropagatorSolver.get_grid_points` places them; without the argument these
+  fields are drawn half a grid cell off along a and b.
+- The simulation GUI exposes Tetragonal and Monoclinic 3D cells, and Hexagonal
+  and Oblique 2D cells, with their length/angle constraints and the corresponding
+  SCFT `crystal_system` in exported scripts (2026-10-30).
 - CL-FTS records the partition ratio |Q_s|/<|e^(-u_s)|> of every step for each canonical
   single-site species, discrete chains of one segment and point ions
   (`partition_ratio_step_history`, columns named by `partition_ratio_species_json`; 2026-10-29).
@@ -50,6 +132,23 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   of a run prints its smallest value and the fractions of steps below 0.1 and 0.01,
   `scripts/analysis/drift_tail.py` summarizes the records, and checkpoints keep the pending
   steps (NaN for the steps of a checkpoint without the record).
+- `recording.concentrations` (CL-FTS, 2026-10-31) records the mean concentration of every monomer
+  type and point ion on the grid in the `structure_function_NNNNNN.mat` files
+  (`concentration_<name>_real`/`_imag`,
+  `concentration_step_count`), over every step of each interval at no extra cost. Checkpoints keep
+  the pending sums; a continued run reproduces them bit for bit, and a run continued from a
+  checkpoint without them averages from the restart on.
+  `examples/charged/clfts/CounterionsBetweenPlates.py` uses it instead of a callback.
+- `examples/charged/clfts/CoacervateGibbs.py` (2026-11-01): the coexistence of a coacervate and
+  its supernatant from `GibbsEnsemble`, with neutral chains, with charges and with a salt of point
+  ions; the charges widen a coexistence that the fluctuations of neutral chains narrow.
+- `examples/charged/scft/SaltDopedLamella.py` (2026-10-29): a salt that the B block of a lamella
+  solvates, with the ions as molecules of one segment that carry their own chi, and the
+  Coulomb interaction dragging the weakly selective anion after the cation.
+  docs/references/Parameters.md and the theory pages describe how ions get chi this way
+  (point ions have none). docs/validation/ExampleValidation.md records the check against the
+  locally neutral limit: as E grows, the lamella approaches that of one neutral salt molecule
+  with the mean chi, linearly in 1/E.
 - Reproductions of published results as examples and validation records (2026-10-28):
   `examples/charged/scft/CounterionsBetweenPlates.py` (Netz 2001, Poisson-Boltzmann between plates),
   `examples/charged/clfts/CounterionsBetweenPlates.py` (Netz's loop expansion at weak coupling),
@@ -57,8 +156,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `PolyampholyteSolution.py` (McCarty et al. 2019), `ComplexCoacervate.py` (Lee, Popov and
   Fredrickson 2008), `examples/block_copolymer/clfts/SoftBeadDiblockMelt.py` (Lequieu 2024) and
   `examples/blend/clfts/HomopolymerSolutionBook.py` (Fredrickson and Delaney 2023).
-  docs/internals/NumericalValidation.md lists the papers and codes (PSCF, BioFTS, polycomp)
-  that polymerfts reproduces, and docs/internals/ExampleValidation.md gives the compared numbers, including
+  docs/validation/NumericalValidation.md lists the papers and codes (PSCF, BioFTS, polycomp)
+  that polymerfts reproduces, and docs/validation/ExampleValidation.md gives the compared numbers, including
   exact Monte Carlo checks of the CL-FTS of point ions and the results that are not reproduced
   (the phase diagram of Lee et al.; the converged dense branch of Danielsen et al., 3.4–5 %
   below the paper, a difference that the paper's contour step Δs = 0.01 mostly explains).
@@ -69,8 +168,46 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   points, which differs from the pressure at fixed grid spacing when the smearing is not
   resolved; comparisons with BioFTS (with the corrections of its issue 1, which removes the
   time-step dependence the structure-function comparison reported) and polycomp.
+- `polymerfts.checkpoint` holds what a run saves and restores (2026-11-01): `validate_checkpoint`,
+  `restore_recording_state`, `checkpoint_data` and the functions of the extension state left
+  `polymerfts.utils`. `LFTS` and `CLFTS` keep their structure-function code in methods beside `_run`.
+- `scft.py`, `lfts.py` and `clfts.py` hold the flow of each method (2026-11-02), and the details moved
+  to objects with one topic each. `LFTS.saddle` (`saddle.py`) holds the compressors and the search:
+  `sim.find_saddle_point(w)` is now `sim.saddle.solve(w)`, `sim.compressor` is `sim.saddle.compressor`
+  and the input `saddle` is `sim.saddle.settings`; `LR` and `LRAM` are still exported by the package.
+  `CLFTS.thermodynamics` (`thermodynamics.py`) holds `pressure`, `pressure_virial`,
+  `chemical_potentials`, `number_densities`, `partition_ratios`, `grand_canonical_hamiltonian`,
+  `chain_densities`, `n_chemical_potentials`, `partition_ratio_species` and the `record_*` flags.
+  `SCFT.cell` (`cell_relaxation.py`) holds the lattice parameters that vary and the stress:
+  `sim.compute_stress(w, phi)` is now `sim.cell.stress(w, phi)`, and `crystal_system`,
+  `stress_scale`, `CRYSTAL_SYSTEMS`, `lx_reduced_indices`, `lx_full_indices`,
+  `angles_reduced_indices` and `angles_full_indices` moved there too. Both Langevin
+  classes have `structure_functions` (`structure_functions.py`), `SCFTResult` and `IterationInfo` live
+  in `scft_results.py`, and `force_jacobian` and `symmetric_jacobian` in `integrators.py`.
+  `checkpoint.RunRecord` replaces `restore_recording_state` and the lists of the loops: a new recorded
+  quantity needs one entry in its series and one `add()`, and a checkpoint without it gives NaN for
+  its pending samples. Results do not change. The console header is shared too: SCFT prints
+  `Platform:` without the space before the colon and its `Pressure scale` line after the chains,
+  and the lines of the conformational asymmetry and of χN lose their trailing spaces.
+- `chains.py` holds the polymer chains (2026-11-02): reading them, their drawings, and through
+  `chain_fields` and `solve_chains` what the three `compute_concentrations` share, so that the
+  methods keep only what is their own. `file_formats.py` holds `load_config` and `save_vtk`. Both
+  moved out of `polymerfts.utils`, and with them `process_polymer_blocks`, `process_random_copolymer`,
+  `read_chains`, `mean_concentrations` and the drawing functions; the package still exports
+  `load_config`, `ConfigError`, `save_vtk` and `draw_polymer_architectures`. The timings that
+  `SCFT.compute_concentrations` returns now have the keys of the Langevin classes: `solver` for the
+  propagators instead of `pseudo`, and `phi` for all of the concentration integration.
+- `src/python` has four folders (2026-11-02): `scft`, `fts`, `theory` and `utils`. User scripts keep
+  `from polymerfts import scft, lfts, clfts` and the names the package exports. Submodules are
+  imported with their folder: `polymerfts.utils.common` (formerly `polymerfts.utils`), `.checkpoint`,
+  `.validation` and `.file_formats`; `polymerfts.theory.propagator_solver`, `.symmetric_formulation`
+  (formerly `polymer_field_theory`), `.smearing`, `.electrostatics` and `.chains`; `polymerfts.fts.lfts`, `.clfts`, `.integrators`, `.wtmd`, `.gibbs_ensemble`,
+  `.saddle`, `.structure_functions` and `.thermodynamics`; `polymerfts.scft.scft`, `.scft_results`,
+  `.cell_relaxation` and `.phase_equilibrium`. `python_source_sha256` in the metadata covers all folders.
+- Documentation: the validation documents moved to `docs/validation/`, and the five longest entries
+  of `ExampleValidation.md` have their own pages there (2026-11-01).
 - Documentation: `examples/README.md` is a short index of the examples, and
-  `docs/internals/ExampleValidation.md` holds what the tests and validation runs check for each
+  `docs/validation/ExampleValidation.md` holds what the tests and validation runs check for each
   example, with the compared numbers and figures (2026-10-29).
 - Documentation: a system of point ions alone takes a neutral solvent of one segment as the
   reference chain, with `zeta_n: 0` so that it has no field (2026-10-29). With ζN > 0 the
@@ -80,7 +217,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - Examples of charged systems (2026-10-28): `examples/charged/scft/ChargedDiblockLamella.py` relaxes
   the period of a charged diblock lamella with point counterions over a range of added salt,
   `examples/charged/scft/PolyelectrolyteBrush.py` solves a charged brush grafted to a charged wall of a
-  closed box with the real-space `cn-adi2` method, and `examples/charged/clfts/SaltReservoir.py` runs a
+  closed box with discrete chains and the real-space `rs` method, and `examples/charged/clfts/SaltReservoir.py` runs a
   charged diblock melt in contact with a salt reservoir (grand-canonical point ions) and compares
   the uptake of ions with the Donnan equilibrium. `examples/block_copolymer/scft/crystal_systems/`
   relaxes cylinders in hexagonal, oblique and triclinic cells and a lamella in a monoclinic cell, and
@@ -253,6 +390,60 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- A grand-canonical polymer's `chemical_potential` must lie in [-700, 700] (2026-11-16); a larger
+  value raises `ValidationError`. Within this bound the fugacity e^(βμ) is a normal double (it
+  overflows above 709.78 and is subnormal below -708.40) (tests/TestClftsGrandCanonical.py).
+- L-FTS and CL-FTS refuse monomer names for which two pairs share their suffix, the sorted names
+  joined with `_` (A, B_C with A_B, C), since statistics, structure-function and WTMD files name a
+  pair by it; L-FTS also refuses a monomer type named `aux`, whose field key would be `w_aux`
+  (2026-11-16; tests/TestPairRecords.py). Checkpoints of format 3, written by development builds
+  since 2026-11-13, are refused.
+- `Electrostatics.ion_densities()` and `MeanFieldElectrostatics.ion_densities(psi)` return the
+  densities and ln Q of each ion (2026-11-16). One weight e^(-(u - u_min)) per ion gives the
+  density, ln Q = ln<w> - u_min and the partition ratio, so the partition function of an ion in a
+  potential beyond ±709 kT stays meaningful and each evaluation takes one exponential per ion
+  instead of two. Densities, H and βμ change at round-off.
+- `CLFTS` no longer has the attributes `solver`, `molecules` and `propagator_computation_optimizer`
+  (2026-11-16), which nothing used; `prop_solver` gives the same objects.
+- `Polymer.get_n_segment_total()` counts every copy of a block (2026-11-08): it returns the
+  segments of one whole chain as a float, which a real block multiplicity makes non-integer.
+- `ComputationBlock.n_repeated` and the repeat count in each `ComputationEdge.deps` entry are
+  floats for every polymer (2026-11-08), since a real block multiplicity makes them non-integer;
+  `Block.n_copies` is a new read-only attribute.
+- The MATLAB scripts of `scripts/analysis` are removed (2026-11-06); notebooks and Python scripts
+  do their work: `plot_2d_density.m`, `plot_3d_isodensity.m`,
+  `plot_structure_function.m` and `plot_wtmd_statistics.m` by the notebooks of the same name,
+  `plot_2d_slice.m` by the new `plot_2d_slice.ipynb` (tests/scripts/TestSlicePlot.py), and
+  `convert_into_auxiliary_fields.m` by the new `convert_into_auxiliary_fields.py`, which takes the
+  file on the command line, also reads CL-FTS fields and writes the lattice angles
+  (tests/scripts/TestConvertAuxiliaryFields.py).
+- `numerical_method` names the method of either chain model (2026-11-05): the FFT solver of discrete
+  chains, formerly `"discrete"` and chosen whatever `numerical_method` said, is `"ps"`, the default, and
+  `"rs"` is the new real-space one. A discrete chain with `"rqm4"`, `"rk2"` or `"cn-adi2"` raises an
+  error instead of a note. A checkpoint of discrete chains written before records `"discrete"` and
+  continues with `"ps"`, the same solver (2026-11-16).
+- `LR(nx, jk, fourier)` takes `fourier`, a `PropagatorSolver.fourier` (2026-11-02): the update with
+  NumPy is gone, and so are `axis_bc`, the `scipy.fft` update of boxes that mix periodic axes and
+  walls, which `PropagatorSolver.fourier` transforms since 2026-11-09 (the updates agree to 1e-14),
+  and `lx`, which `LR` did not read (2026-11-16). `LFTS` measures J(k) of every box with
+  `PropagatorSolver.fourier`.
+- `GibbsEnsemble` runs both boxes in the fixed cell `lx` (2026-11-01;
+  docs/theory/ComplexLangevinSimulation.md, Section 8). The amounts and volumes count the material
+  for the lever rule; `boxes[].lx` is gone, the top-level `lx` is required as for `CLFTS`, and the
+  optional `boxes[].volume` sets the volume of a phase at the start. Cells that followed the volume
+  at one grid gave the boxes different grid spacings, and the part of the chemical potentials that
+  depends on the spacing drove them apart: at chi N = 24 and a = 0.6 dx the dense branch ended at
+  0.3737 or 0.3688 depending on the volumes, and at chi N = 22 it collapsed on 12^3 grids. In the
+  fixed cell the same runs give 0.3712 and 0.3710. Inputs with `boxes[].lx` raise `ValidationError`,
+  and `continue_run()` refuses their histories: they need a fresh `run()`.
+  The fixed cell is the intensive Gibbs ensemble of Mester, Lynd and Fredrickson (2013); it agrees
+  with 11 of the 13 points of Fredrickson and Delaney (2023), Fig. 7.2, within about one error.
+- `GibbsEnsemble` moves the amounts with the inverse Hessian of the ideal mixture at the reference
+  density (2026-10-31; docs/theory/ComplexLangevinSimulation.md, Section 8) instead of
+  diag(n^I n^II/(n^I + n^II)). The old mobility left the exchange of volume along a tie line
+  thousands of cycles behind the composition when a solvent is much shorter than the chains, and
+  such boxes looked stationary away from the binodal. The coexisting states are the same, but
+  the same `exchange_rate` gives other amounts per cycle.
 - `recording.pressure` records the virial form of the CL-FTS osmotic pressure
   (`CLFTS.pressure_virial`; 2026-10-29). It adds to the dilation operator, which `CLFTS.pressure`
   still returns, the Schwinger-Dyson terms (1/2)[mean(Omega dH/dOmega) - n_g/(C V/R0^3)] of every
@@ -263,6 +454,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   10.3 to 0.013 in the homopolymer solution of `HomopolymerSolutionBook.py` at L = 1.6 R_g with
   16³ grid points), so `GibbsEnsemble` and the examples that average the pressure need fewer
   samples.
+- With `recording.pressure` and `numerical_method: "rk2"`, `CLFTS` warns when the contour step
+  b sqrt(ds) R0 of a monomer type exceeds its smearing length, or with no smearing (2026-10-29).
+  The O(ds²) contour error of the `rk2` pressure is then large: 0.05 to 0.07 per C/R0³ in the
+  coacervate of Danielsen et al. at ds = 0.01. `TestClftsThermodynamics` checks when the warning
+  appears.
 - The examples are grouped by physical system and then by simulation method (2026-10-28):
   `examples/block_copolymer/`, `examples/blend/` and `examples/charged/`, each with `scft/`,
   `lfts/` and `clfts/` as available, and `examples/tools/` for the Fourier transform and the
@@ -310,8 +506,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 - `SymmetricPolymerTheory` exposes its χN matrix as `matrix_chi`; `SCFT.matrix_chi` is the
   same array, so the matrix is built in one place, and `compute_eigen_system(matrix_chi,
   zeta_n)` takes the matrix instead of the pair dictionary (2026-10-24).
-- `parse_chi_n` moved from `polymerfts.utils` to `polymerfts.validation`, next to the other
-  input checks; `polymerfts.utils` still imports it for existing scripts (2026-10-24).
+- `parse_chi_n` moved from `polymerfts.utils` to `polymerfts.utils.validation`, next to the other
+  input checks (2026-10-24); `polymerfts.utils` no longer re-exports it (2026-11-16).
 - With a space group, the internal `advance_propagator_single_segment()` binding takes and
   returns fields in the reduced basis, like `compute_propagators()`. Before, it expected
   full-grid arrays but read and wrote only their first `n_basis` entries. The C++ method
@@ -364,6 +560,138 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `scripts/pscf/pscf_converter.py` reads a Python parameter file by a short, strict policy
+  (2026-11-16) instead of following aliases of `params`, scopes and operators. It accepts a
+  module-level `params` literal built from numbers, strings, earlier literal constants, `+ - * /
+  **`, `np.sqrt`/`math.sqrt`, `np.pi`/`math.pi`, `[n] * 3` and `dict(base, key=value)`. The script
+  may read it only by indexing down to a number, a string or a list of numbers; an index read or
+  computed from a list or dictionary that the script could change stands for every item. Such a list
+  may be given to builtins (also `complex` and `bool`), to functions of NumPy, SciPy, `math` and
+  polymerfts, also under a name assigned one of them once at module level, to arithmetic and to the
+  `.reshape` of `np.asarray(...)` or `np.array(...)` called with at most `dtype=`. The other
+  arguments of that call, and the object of any other `.reshape`, must be literals, constants,
+  library functions, or their calls and arithmetic written in the call, so that no function of the
+  script receives the list (a lambda, function, method, `functools.partial`, imported function, or a
+  list, dictionary or array that the script fills with one, also given with `*` or `**`, as `key=`
+  of `max` or as the function that `scipy.optimize.minimize` calls with `args=`). The script may
+  also print `params`, compare it and loop over the keys of its dictionaries, and give it to `SCFT`,
+  `LFTS`, `CLFTS` or `GibbsEnsemble`, imported from polymerfts at module level under their own names
+  and only called. All simulations must receive the same dictionary, which the export describes.
+  Refused: a change of `params` or of a name sharing its containers, such a container handed to a
+  function of the script or to other code, a second binding of these names, an assignment to an
+  attribute named `reshape` or to an attribute of these libraries, also through a name assigned one
+  of them, other uses of the simulation classes (annotations, `isinstance`, `import ... as`),
+  `from_file`, star imports, reflection, and constants changed by control flow, `global` or `match`.
+  A list or dictionary that the exported params is computed from, such as `box` in `dict(params,
+  lx=box)` or in `"lx": [box[0], box[1], box[2]]`, must not change either, and `np.random.shuffle`
+  of a list of params is refused. The reader does not resolve scopes, so a local name equal to one
+  of these refuses the script. Of the 59 example scripts 31 are read (21 before) and 18 exported (13
+  before), with the same values wherever both readers read a script; among them `BCC`, `FCC`, `SC`,
+  `A15`, `Sigma`, both `ABC_Triblock_Sphere3D` and `Fddd`. A test runs the read examples with a
+  stand-in polymerfts and checks that every simulation receives the exported params.
+  `CanonicalCoexistence` and `MonoclinicLamella3D`, which main read with the module's `params`, are
+  refused because their simulations receive other params (tests/scripts/TestPscfConverter.py).
+- `plot_structure_function.ipynb` reads the structure functions of 1D and 2D L-FTS runs
+  (2026-11-16); it assumed a 3D grid (`nx[2]`). It groups the modes into shells with `np.bincount`
+  instead of a Python loop over the grid (tests/scripts/TestStructureFunctionPlot.py).
+- Long multiblock chains no longer exhaust the process stack (2026-11-14): the propagator keys
+  were generated by a recursion over the blocks, and a linear chain of 24,000 blocks overflowed an
+  8 MiB stack. The architecture diagram that `SCFT`, `LFTS` and `CLFTS` print when they are
+  constructed recursed over the blocks as well (2026-11-15); both now keep their own stack. Above
+  100 blocks the diagram prints one line per block, since its indentation grows with the depth and
+  the diagram of a 2048-block chain took 23 MB (`TestPropagatorCodeStack`).
+- The plots of `scripts/analysis` draw the fields at the grid points of the solvers, in the cell of
+  the file's lattice vectors (2026-11-06). The 2D plots fill the grid cell around each point with its
+  value, with the second lattice vector pointing up (the images before were mirrored):
+  `plot_2d_density.ipynb` drew every cell rectangular and only the types A and B; it draws every
+  monomer type of the file. `plot_3d_isodensity.ipynb` drew in grid
+  indices; it now uses the cell centres, or the nodes along a and b for a hexagonal-axes space
+  group, draws the outline of the cell with true proportions and interpolates a non-orthogonal cell
+  linearly onto a Cartesian grid, which Plotly's isosurface needs (the periodic field fills the box
+  around the cell). The notebooks take the angles of an SCFT result, of the checkpoint settings of a
+  fields file or of the input of an older one, and read CL-FTS files (the real parts) and the `phi`
+  structure of older files, which failed (tests/scripts/TestDensityPlot2D.py, TestIsodensityPlot.py).
+- `plot_structure_function.ipynb` groups the modes of a cell that is not orthogonal by their true
+  |k| (2026-11-06): the reciprocal metric of the cell, with the index alias of the smallest |k| that
+  the solvers use. It took |k|^2 = (2 pi)^2 sum (n_i/L_i)^2, which holds for orthogonal cells
+  only, so modes of different |k| shared a shell. Shells group values equal to a relative 1e-9,
+  so that round-off of the metric does not split one; the rounding to 7 decimals could. The
+  structure function files of L-FTS and CL-FTS save `angles`; for older files the notebook reads
+  those of the input in `initial_params` (tests/scripts/TestStructureFunctionPlot.py and
+  tests/TestStructureFunctionRecords.py).
+- SCFT refuses `electrostatics` together with `space_group` with its own `ValidationError`
+  (2026-11-06). The combination was refused only through the smearing it needs, with a message
+  about `smearing`.
+- A space group fixes its angles to the orthogonality test of the computation box (2026-11-16). An
+  angle the crystal system fixes (90 or 120 degrees, or the right angles at the monoclinic unique
+  axis) must lie within 1e-10 rad of its value, where a relative 1e-6 (9e-5 degrees) was accepted.
+  A solver chooses its CrysFFT engine once, for the angles of its box. Inside the old tolerance a
+  cell change kept an engine that assumes exact angles while the box treated the cell as oblique:
+  the ObliqueZ engine went on folding with Q up to 1e-5 (relative) off the full grid, and the Pmmm
+  DCT and recursive 3m engines differed from a fresh solver by up to 3e-7. Such cells are refused
+  when the box is created and when it changes, for every engine (`TestCrysFFTCellChange`).
+- The FFTW Pmmm and ObliqueZ CrysFFT engines keep no stale size after a failed allocation of their
+  thread-local buffers (2026-11-02). A later engine of the old size on that thread crashed on null
+  buffers; the recursive 3m engine already had the guard.
+- A fresh L-FTS `run()` with WTMD (from step 1) drops the samples an earlier run of the same object
+  left pending (2026-11-16); they entered the first hill of the new run. The bias and statistics
+  that `sim.wtmd` holds stay, also a bias set on it between runs (tests/TestWtmdLifecycle.py).
+- `SCFT.run` checks `initial_fields` and `q_init` before it resets the optimizer (2026-11-16): each
+  must hold booleans, integers or real numbers that are finite at float64 precision, or
+  `ValidationError` names the entry. Strings (also strings of numbers, which were converted), ragged
+  lists (which raised `ValueError`) and Python integers outside the 64-bit range (which were converted
+  to floats, or raised `OverflowError` beyond the float range) are refused
+  (tests/TestScftInitialFields.py).
+- Every method refuses a monomer name containing `,`, the separator of the two names of a `chi_n`
+  pair, with `ValidationError` (2026-11-16); such a name stopped L-FTS and CL-FTS with a
+  `ValueError` (tests/TestPairRecords.py).
+- Simulation metadata also hash the source file of the simulation class when it lies outside the
+  package (`simulation_source`, `simulation_source_sha256`; 2026-11-16), such as a modified copy of
+  `scft.py` as QuickStart describes or a subclass in a script; `python_source_sha256` covers the
+  package only (tests/TestPackageHashes.py).
+- `SCFT.run` stops when `on_iteration` returns the NumPy False of a comparison, as for
+  `return info.error_level > 1e-3` (2026-11-02). It stopped only for the Python `False`, and such a
+  callback let the run go on without a message. `None` still continues.
+- `LFTS` with the `lr` and `lram` compressors no longer stops with `A multiplier must be finite`
+  (2026-11-02). A uniform shift of the incompressible pressure field changes no concentration, so
+  J(0) is zero; the measured value was rounding, and exactly zero on some small 1-D grids. The setup
+  now takes J(0) = 1, as the first LR code did. With `zeta_n`, J(0) stays measured.
+- Numerical and Python API corrections (2026-10-30):
+  - Contour lengths are compared at relative roundoff precision and never merged across
+    different segment counts. Polymer construction and contour mapping share the rounding
+    rule; aggregation looks up stored segment-count/step-index pairs. Accepted roundoff in
+    discrete block lengths is normalized to the global step; SCFT and L-FTS use these
+    native lengths for composition means and chemical-potential field shifts. Charge
+    validation, counterion concentrations and Gibbs ensemble amounts, charges and exchange
+    potentials follow the native canonicalization rules. Standalone input validation
+    applies these rules without importing the compiled backend, including before a build;
+    parity tests cover native rounding and acceptance boundaries. Gibbs histories record
+    their effective block lengths; older histories with materially different input lengths
+    require a fresh run, while ordinary legacy histories remain compatible.
+  - Gibbs chain charges use the same relative cancellation check as charge validation.
+    Roundoff in neutral chains no longer activates a constraint that blocks their exchange;
+    small charges without cancellation remain nonzero.
+  - Oblique-cell smearing and WTMD use the native exact minimal-alias search, including
+    tied-alias derivatives for smearing stress. An anisotropic grid could previously give
+    an asymmetric kernel and a CL-FTS force inconsistent with its Hamiltonian.
+  - Species with zero canonical amount skip canonical division by Q and log(Q). Grand-canonical
+    contour checks normalize by the integral of the absolute integrand, so cancellation near
+    zero Q does not amplify roundoff. Zero Q remains regular for concentrations, stress,
+    the Hamiltonian and imposed chemical potentials; absent canonical polymers have chemical
+    potential minus infinity. Only a zero volume fraction makes a species absent: an occupied
+    polymer whose Q is not finite keeps non-finite concentrations (2026-11-16;
+    tests/TestGceZeroPartition.py).
+  - PropagatorSolver field integrals use the active basis by default and accept an explicit
+    `basis="irreducible"`; equal-sized physical and irreducible arrays are no longer confused.
+  - WTMD handles individual zero Fourier coefficients for exponents at least one, including
+    noninteger exponents, and adds no force when the bias derivative is zero.
+  - Dictionary conversion of monomer fields preserves imaginary components. Stateful custom
+    linear-response integrators capture their initial state after preparing the response.
+  - `plot_structure_function.ipynb` weights the rFFT modes by Hermitian multiplicity and files by
+    their actual sample counts. Runnable PSCF import rejects a single monomer type before
+    writing a bundle; field-only conversion remains available.
+  - The new smearing, WTMD and grand-canonical regression tests fail when a CUDA build cannot
+    run their CUDA cases because no device is visible.
 - The propagator statistics printed `reduction = -nan %` when the chains need no propagator
   steps, as with discrete chains of one segment only; they print 0 % (2026-10-29).
 - The drift summary at the end of a CL-FTS run labelled an auxiliary field that is left out at
@@ -405,9 +733,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   round-off level of the spectral transforms, and Q came out negative (about -3e-19
   against +4.67e-28) on every platform; SCFT reported no error and L-FTS only a
   non-finite Hamiltonian. Intermediate iterates are not checked, since `rqm4` and
-  `cn-adi2` can pass through Q <= 0 during saddle iterations. The check cannot detect a
-  positive Q made of round-off noise; `check_total_partition()` reports that
-  inconsistency. `TestPartitionGuard` covers the checks.
+  `cn-adi2` can pass through Q <= 0 during saddle iterations. A polymer of volume fraction
+  exactly zero is not checked (2026-11-14): it contributes no log Q, and an absent grafted
+  species with a zero graft has Q = 0, which SCFT rejected (`TestScftAbsentPolymer`). The
+  check cannot detect a positive Q made of round-off noise; `check_total_partition()`
+  reports that inconsistency. `TestPartitionGuard` covers the checks.
 - Native input checks (2026-10-25):
   - A monomer name that ends with an underscore, which the name check allows, no longer
     stops the propagator key parser with "invalid stoi argument".
@@ -504,6 +834,39 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- On CUDA a junction takes one kernel launch over up to 32 device-resident sources and their
+  powers, with the product in registers, instead of one launch per factor (2026-11-08, 2026-11-16);
+  the reduced-memory mode stages two checkpoints per launch. An integer power of at most 4 (up to
+  four identical branches) is still taken by successive multiplications, and such junctions are
+  bitwise unchanged. A larger one, a repeated branch such as `A10:5` or an integer block
+  multiplicity up to 10⁶, takes one `pow` per point and changes at round-off (2.7e-15 relative for a
+  41-arm star); a 64³ star with multiplicity 10⁶ takes 17 ms per `compute_propagators` on an A10, as
+  a non-integer multiplicity does.
+- `cn-adi2` on CUDA factorizes the tridiagonal matrix of each axis once, with the Sherman-Morrison
+  vector of periodic axes, instead of in every solve of every line, and stages the lines along the
+  contiguous axis in shared memory, whose reads were not coalesced (2026-11-05). One step on an A10
+  takes 1.2 ms instead of 2.1 ms with reflecting walls and 1.3 ms instead of 4.2 ms periodic on
+  128³; the gyroid benchmark of docs/theory/NumericalMethods.md, Section 6, runs in 30.5 s instead
+  of 49.2 s at Ns = 1000. The per-stream Thomas workspaces of the size of the grid are gone.
+- The DCT and DST of the CPU backends run as one reordered real FFT of the whole grid
+  (`MakhoulTransform`, 2026-11-02), the same code on FFTW and MKL; it replaces `MklDctLines.h`. Both
+  took each line in turn with a copy per line and per axis. The real FFT of the grid runs directly
+  on the scratch arrays of `MakhoulTransform`, which also splits complex fields (2026-11-16). On
+  64³, one thread, double precision, a round trip with walls takes 3.2 ms instead of 16 ms with FFTW
+  and 3.9 ms instead of 12 ms with MKL on an AMD EPYC 7543, and 2.6 ms and 2.4 ms on an Intel Xeon
+  6737P; `compute_propagators` gains
+  4-6x on the AMD and 3-4x on the Intel processor. The 1D FFTW plans came out twice as slow in some
+  processes; 32 repeated runs show no such run now. The new path is also 1.6-2.1x faster on AMD,
+  1.2-1.7x on Intel, than one `fftw_plan_r2r` of the grid. The Pmmm CrysFFT runs on the same
+  transform and gains 6.3-6.5x with FFTW instead of 3.8-4.0x and 5.6-5.9x with MKL instead of 2.2x,
+  and its stress on a cell of three different lengths gains 1.6-2.1x, where MKL lost time before.
+  Results change at round-off: Q agrees with the previous code to 7e-14 on grids up to 96³, and all
+  space groups agree with the full grid to 1.2e-13 on both libraries.
+- The MKL ObliqueZ CrysFFT takes its z DCT through a real FFT of the same length instead of a
+  mirrored sequence of twice that length, and its xy FFT on contiguous z planes, where this step on
+  64³ ran 1.8 times faster, transpositions included (2026-11-02). With a P6/mmm group on 64³ the
+  solver was slower than without a group (0.9x) and now gains 1.2-1.3x (double precision, one thread,
+  AMD EPYC 7543), FFTW 1.5-1.6x. All space groups agree with the full grid on MKL as before, to 1.2e-13.
 - The transforms of every Langevin step in the Python layer use `PropagatorSolver.fourier`,
   the platform FFT, on the GPU with CUDA, instead of NumPy/SciPy on the host (2026-10-27):
   the `etd` step (its matrices are Fourier multipliers, applied in one call), smearing
@@ -566,8 +929,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   contour coefficients and eight threads this saves about 0.9 GB and seven of eight table
   builds after every cell change. The FFTW ObliqueZ and Pmmm engines free their planning
   arrays after planning. The tables are the same, so results are unchanged.
-- Code shared between backends, results unchanged (2026-10-26): MklFFT and the MKL Pmmm
-  engine share one DCT-II/III implementation (`MklDctLines.h`); the CPU and CUDA
+- Code shared between backends, results unchanged (2026-10-26): the CPU and CUDA
   recursive 3m engines share the fold, twiddle and multiplier helpers
   (`src/common/Recursive3mHelpers.h`), and the CPU and CUDA ObliqueZ engines the
   reciprocal metric (`src/common/ReciprocalMetric.h`); both solvers choose their CrysFFT
@@ -575,6 +937,62 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestJunctionProduct` computes the reference of the ordinary junction arithmetic at run time
+  (2026-11-15). GCC 13 and later at `-O3` folded the constant complex reference with another
+  rounding, one ulp off the run-time product, and the test failed although the junction was right.
+- The `basic` label is quicker (2026-11-16): `TestRealSpaceDiscrete` and `TestLftsIdealLimit` carry
+  only the `numerical` label, `TestBlockMultiplicity` and `TestFourierTransform` carry it too, and the
+  Windows job runs the basic tests four at a time. Tests of fixes made in Python run on the first CPU
+  platform only, and the WTMD runs of `TestWtmdRange` too, whose norms keep the FFT of every
+  platform. Run one at a time with one OpenMP thread in a CPU-only build, the label takes 98 s
+  instead of 134 s.
+- `tests/fts_checks.py` holds the helpers of the Python tests of simulation runs (2026-11-16): `quiet`;
+  `python_platform`, the one platform of a test of a fix made in Python (the first CPU platform, else
+  CUDA); `compare_files`, which compares the key sets of two MAT files both ways and their values bit
+  for bit; and `exact_restart`, the check of a run continued from the checkpoint of a shorter one, in
+  a directory of its own or where that run stopped, against the uninterrupted run (random state,
+  partition check and recorded files). 35 tests use them instead of their own copies: 30 `quiet`,
+  15 `exact_restart`, 15 `python_platform` and 5 `compare_files` directly. The restarts of
+  `TestClftsGrandCanonical`, `TestClftsPointIons`, `TestConfinedElectrostatics`,
+  `TestClftsThermodynamics`, `TestClftsElectrostatics`, `TestClftsEtd`, `TestExtensions`,
+  `TestPairRecords`, `TestFtsReliability` and `TestLftsRun` go through `exact_restart`. `TestLftsRun`
+  requires the continuation bit for bit instead of within 1e-8, and `TestClftsEtd` also compares the
+  files of step 4, which hold the samples pending at the restart. `TestNumpyScalarSerialization` runs
+  its L-FTS and CL-FTS restarts on every platform, which checks an exact continuation with real
+  dynamics on CUDA too. One parametrized case of `TestGceZeroPartition` checks the zero partition of a
+  polymer with real and complex fields on every platform and in both memory modes.
+- A Python test without any platform fails in a CUDA build without a visible device, as
+  `tests/cuda_part.py` states, instead of reporting a skip, `TestPropagatorCodeStack` included
+  (2026-11-16). CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1` and writes no
+  `tests/__pycache__`, and `TestSimulationRelease` removes its recording directories.
+- `TestJunctionRange` runs the stars of distinct arms also with four streams (CUDA streams or CPU
+  threads) and compares them bit for bit with one stream (2026-11-16): concurrent CUDA junctions keep
+  partial products in per-stream buffers. `TestCrysFFTCellChange`
+  adds monoclinic P2/m with unique axis c (Hall 58, ObliqueZ): its fixed angles alpha and beta
+  moved by 1e-8 degrees are refused, while gamma stays free.
+- `TestCheckpointCompatibility` continues an L-FTS and a CL-FTS checkpoint and one of discrete chains
+  written by main (895d7e75) to the end of an uninterrupted run of this version (2026-11-16;
+  tests/data/old_checkpoints, 20 KB). The writer reproduces the run bit for bit; on other processors
+  and compilers the test allows round-off (1e-10 relative for CL-FTS, 100 times the saddle tolerance
+  for L-FTS).
+- `TestCpuFFTMixedBC` is removed (2026-11-16): `TestCpuMakhoulTransform` covers its round trips and
+  DCT/DST checks at 1e-13; its MKL part checked 1D DCT round trips to 1e-7 and printed a stale
+  "SKIPPED (known issue)" for the rest.
+  `TestCpuFFTAddressIndependence` checks only the periodic MKL transforms, the only ones that run on
+  the caller's arrays. `TestObliqueZStress` adds an odd z half-length (P6/mmm 12×12×6), the odd
+  branch of the MKL ObliqueZ z-DCT, which only a CUDA-built test reached before.
+- `TestCpuMakhoulTransform` compares the DCT and DST of `FftwFFT` and `MklFFT` with their O(N^2)
+  definitions on grids of one to three axes with even, odd and unit lengths, every mix of cosine and
+  sine axes, real and complex fields of standard deviation 5, in-place and concurrent calls
+  (2026-11-02, 2026-11-16).
+- `TestCrysFFTBench` runs its full-FFT baseline as the solvers do (2026-11-02). It evaluated `exp()`
+  in a CUDA kernel at every step and planned FFTW with `FFTW_ESTIMATE`, which overstated the gains in
+  `docs/internals/FFTImplementation.md`: CUDA recursive 3m 3.1x is 2.3x, Pmmm 2.0x is 1.5x. That page
+  now also gives the gains of the complete solver, the grid sizes where CUDA gains nothing and the
+  stress.
+- `TestChains`, `TestRunRecord`, `TestSimulationRelease` and the new `TestPackageHashes`, which checks
+  the source hash from a copy of `utils/common.py` as QuickStart describes, are `basic` tests
+  (2026-11-02), so the Windows job runs them too.
 - `tests/scripts/TestDriftTail.py` runs the one-pole model of Aarts, Seiler, Sexty and
   Stamatescu (2017) with complex Langevin dynamics (2026-10-29): at β = 1.6, where the walkers
   reach the zero of the weight, `drift_tail.py` finds the power-law tail and Re<z²> is wrong by
@@ -641,6 +1059,13 @@ corrected or removed between releases; those entries do not all describe v0.9.1.
   remove them with `python -m pip uninstall polymerfts`. Direct CMake installation is no
   longer the documented Python installation path. See
   [Installation](docs/getting-started/Installation.md).
+- The user scripts moved from `tools/` to `scripts/`: the MATLAB scripts and notebooks of the
+  analysis to `scripts/analysis/` (`tools/README.md` became `POSTPROCESSING_REFERENCES.md` there),
+  and the PSCF sample fields to `tests/data/pscf/`. The exporter
+  `tools/conversion_to_pscf/to_pscf.py --file_name <script>`, which read a polymerfts input script,
+  and the importer `tools/read_pscf_output/to_matlab.py` are replaced by `export` and `import` of
+  `scripts/pscf/pscf_converter.py`: `export` reads a saved SCFT result, or a parameter file with
+  `--fields`, and `import-script` also translates supported PSCF calculations.
 - Unvalidated Docker image definitions have been removed.
 - The supplied environment uses Anaconda `defaults` and Python 3.14. MKL and FFTW are
   installed separately and enabled explicitly; CUDA detection defaults to `AUTO`.

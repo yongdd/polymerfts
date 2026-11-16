@@ -123,8 +123,8 @@ The potential field affects chain statistics through:
 \text{local weight} \propto e^{-w(\mathbf{r})}
 ```
 
-- $`w > 0`$: Repulsive (monomers avoid this region)
-- $`w < 0`$: Attractive (monomers prefer this region)
+- $`w \gt 0`$: Repulsive (monomers avoid this region)
+- $`w \lt 0`$: Attractive (monomers prefer this region)
 - $`w = 0`$: No bias (reference state)
 
 ## Requirements

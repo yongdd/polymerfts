@@ -122,6 +122,52 @@ void check_grid(const std::array<int, 3>& n, const IndexMetric& g, bool expect_w
             }
 }
 
+bool check_separable_thin_cells()
+{
+    bool ok = true;
+    // Every orientation of a coupled plane beside a short orthogonal axis.
+    // Its 1e20 contribution must neither enlarge the plane's search nor hide
+    // its O(1) form differences/ties in floating-point addition.
+    for (int thin = 0; thin < 3; ++thin)
+    {
+        const int x = (thin + 1) % 3, y = (thin + 2) % 3;
+        double G[3][3]{};
+        G[x][x] = G[y][y] = 1.0;
+        G[thin][thin] = 1e20;
+        G[x][y] = G[y][x] = 0.5;
+        const IndexMetric g{G[0][0], G[1][1], G[2][2], G[0][1], G[0][2], G[1][2]};
+        const Form form{g};
+        std::array<int, 3> n{}, m{};
+        n[x] = n[y] = 8; n[thin] = 4;
+        m[x] = m[y] = 3; m[thin] = 1;
+        int evaluations = 0;
+        auto counted_form = [&](int a, int b, int c) {
+            ++evaluations;
+            return form(a, b, c);
+        };
+        min_form_alias_rep(m, n, g, counted_form);
+        const double plane_min = m[x] * m[x] + m[y] * m[y] + m[x] * m[y];
+        ok &= index_metric_has_coupling(g) && plane_min == 19.0 && m[thin] == 1 && evaluations < 200;
+
+        // Three aliases tie in the hexagonal plane; two tie on z's Nyquist
+        // plane. The Cartesian product has six, regardless of the z scale.
+        n[x] = n[y] = 6;
+        m[x] = m[y] = m[thin] = 2;
+        evaluations = 0;
+        bool values_ok = true;
+        const int ties = for_each_min_form_alias(m, n, g, counted_form, 1e-10, [&](int a, int b, int c) {
+            const std::array<int, 3> v{a, b, c};
+            values_ok &= v[x] * v[x] + v[y] * v[y] + v[x] * v[y] == 12 && std::abs(v[thin]) == 2;
+        });
+        ok &= ties == 6 && values_ok && evaluations < 200;
+    }
+    // A pair's normalized coupling is independent of axis length scaling.
+    ok &= reciprocal_axes_coupled(1e200, 1e-200, 0.5);
+    ok &= !reciprocal_axes_coupled(1e200, 1e-200, 6e-17);
+    std::printf("separable thin cells: %s\n", ok ? "passed" : "FAILED");
+    return ok;
+}
+
 }  // namespace
 
 int main()
@@ -174,6 +220,8 @@ int main()
     std::printf("4x32 on a 4x4 120-degree cell: window misses %ld of %ld modes; search: least form wrong %ld, "
                 "f(m) != f(-m) %ld\n", aniso.window_misses, aniso.modes, aniso.wrong_min, aniso.odd);
     ok &= (aniso.window_misses > 0 && aniso.wrong_min == 0 && aniso.odd == 0);
+
+    ok &= check_separable_thin_cells();
 
     std::printf(ok ? "\nAll passed!\n" : "\nFAILED!\n");
     return ok ? 0 : 1;

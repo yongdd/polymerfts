@@ -23,11 +23,19 @@ This script reports
      unindented (a numbered list continues with "2." as before);
   3. '|' in inline math in a table row: GitHub ends the cell there even inside
      the code span, so write \\vert (and \\Vert for \\|);
-  4. '<' directly before a letter, '/', '!' or '?' in math: GitHub can take it
-     as the start of an HTML tag and break the formula ('\\sum_{i<j}' gave
-     "Extra open brace or missing close brace"), so write \\lt or put a space
-     after '<';
-  5. formulas KaTeX cannot parse, if the KaTeX CLI is installed
+  4. '<', '>' or '&' in inline math: GitHub escapes them twice there, also
+     outside tables, so MathJax receives '&lt;' and fails with "Misplaced &"
+     (an '&' of a matrix shows as "amp;");
+     write \\lt and \\gt, and put matrices and alignments in a ```math block.
+     In a ```math block, '<' directly before a letter, '/', '!' or '?' can
+     start an HTML tag and break the formula ('\\sum_{i<j}' gave "Extra open
+     brace or missing close brace"), so write \\lt or put a space after '<';
+  5. \\tag and \\operatorname in math: GitHub turns the formula into MathML,
+     where \\tag becomes an mlabeledtr element that Chromium does not lay out
+     (the equation falls apart into one symbol per line) and \\operatorname
+     can fail, so write the number as \\qquad\\text{(1)} and the operator as
+     \\mathrm{erf};
+  6. formulas KaTeX cannot parse, if the KaTeX CLI is installed
      (npm install -g katex). GitHub uses MathJax; KaTeX understands nearly
      the same TeX and is the stricter of the two.
 
@@ -50,6 +58,13 @@ FENCE = re.compile(r'^((?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*)(`{
 QUOTES = re.compile(r'^(?:[ \t]*>)*')
 PREFIX = re.compile(r'^(?:[ \t]*> ?)*[ \t]*')
 TABLE_ROW = re.compile(r'^(?:[ \t]*>)*[ \t]*\|')
+# Macros that break in GitHub's MathML output
+UNSUPPORTED = {
+    'tag': "\\tag becomes MathML that Chromium does not lay out, one symbol per line: "
+           "write the number as \\qquad\\text{(1)}",
+    'operatorname': "\\operatorname can fail in GitHub's math renderer: write \\mathrm{...} "
+                    "(e.g. \\mathrm{erf})",
+}
 
 
 def scan(text):
@@ -136,12 +151,21 @@ def scan(text):
     if fence is not None:
         problems.append((fence[1], 'code block is not closed'))
     for ln, tex, display in formulas:
-        m = re.search(r'<[A-Za-z/!?]', tex)
+        # a ```math block starts on the line after its fence
+        line_of = lambda pos: ln + 1 + tex[:pos].count('\n') if display else ln
+        if not display:
+            m = re.search(r'[<>&]', tex)
+            if m:
+                problems.append((ln, f"'{m.group(0)}' in inline math reaches MathJax escaped twice on "
+                                     "GitHub: write \\lt or \\gt, and put '&' (matrices, alignments) "
+                                     "in a ```math block"))
+        m = re.search(r'<[A-Za-z/!?]', tex) if display else None
         if m:
-            # a ```math block starts on the line after its fence
-            at = ln + 1 + tex[:m.start()].count('\n') if display else ln
-            problems.append((at, "'<' before a letter, '/', '!' or '?' in math can start an HTML "
-                                 "tag on GitHub: write \\lt or put a space after '<'"))
+            problems.append((line_of(m.start()), "'<' before a letter, '/', '!' or '?' in math can "
+                                                 "start an HTML tag on GitHub: write \\lt or put a "
+                                                 "space after '<'"))
+        for m in re.finditer(r'(?<!\\)(?:\\\\)*\\(tag|operatorname)(?![A-Za-z])', tex):
+            problems.append((line_of(m.start()), UNSUPPORTED[m.group(1)]))
     return formulas, problems
 
 

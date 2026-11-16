@@ -1,9 +1,9 @@
 /**
  * @file CrysFFTPmmmBase.h
- * @brief CRTP base class for crystallographic FFT with Pmmm symmetry.
+ * @brief Base class for crystallographic FFT with Pmmm symmetry.
  *
- * Provides common functionality for DCT-based Pmmm symmetry FFT implementations.
- * Derived classes (FFTW, MKL) implement the actual DCT forward/backward operations.
+ * Provides the DCT-based Pmmm symmetry FFT. Derived classes (FFTW, MKL) supply
+ * the periodic real FFT under the DCT (MakhoulTransform).
  *
  * **Common Functionality:**
  *
@@ -11,13 +11,6 @@
  * - Boltzmann factors shared by the calling threads (CrysFFTSharedTables.h)
  * - Cell parameter management
  * - Contour step management
- *
- * **CRTP Pattern:**
- *
- * Derived classes must implement:
- * - `get_thread_local_buffers()` - Per-thread (io, temp) work buffers
- * - `void dct_forward_impl(double* io, double* temp)` - DCT-II forward
- * - `void dct_backward_impl(double* io, double* temp)` - DCT-III backward
  *
  * @see FftwCrysFFTPmmm for FFTW implementation
  * @see MklCrysFFTPmmm for MKL implementation
@@ -34,6 +27,7 @@
 
 #include "CrysFFTSharedTables.h"
 #include "Exception.h"
+#include "MakhoulTransform.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -41,11 +35,8 @@
 
 /**
  * @class CrysFFTPmmmBase
- * @brief CRTP base class for Pmmm crystallographic FFT.
- *
- * @tparam Derived The derived class type (CRTP pattern)
+ * @brief Base class for Pmmm crystallographic FFT.
  */
-template <typename Derived>
 class CrysFFTPmmmBase
 {
 protected:
@@ -62,6 +53,11 @@ protected:
 
     /// Boltzmann factors per ds, shared by the threads that call the engine
     SharedTableCache<double, std::unique_ptr<double[]>> boltzmann_;
+
+    /// DCT-II (FFTW's REDFT10) and DCT-III (REDFT01) of the physical grid; the
+    /// derived class sets it. Their round trip gains 2n per dimension, which
+    /// norm_factor_ removes.
+    std::unique_ptr<MakhoulTransform> dct_;
 
     /// Generate Boltzmann factors for given ds.
     std::unique_ptr<double[]> generateBoltzmann(double ds) const
@@ -107,10 +103,6 @@ protected:
     {
         boltzmann_.invalidate();
     }
-
-    /// Access derived class (CRTP).
-    Derived& derived() { return static_cast<Derived&>(*this); }
-    const Derived& derived() const { return static_cast<const Derived&>(*this); }
 
 public:
     /**
@@ -189,49 +181,22 @@ public:
             throw_with_line_number("CrysFFTPmmm::set_contour_step must be called before diffusion().");
         }
 
-        // Get thread-local buffers from derived class
-        auto [io_local, temp_local] = derived().get_thread_local_buffers();
-
-        // Step 1: Copy input
-        std::memcpy(io_local, q_in, sizeof(double) * M_physical_);
-
-        // Step 2: Forward DCT-II
-        derived().dct_forward_impl(io_local, temp_local);
-
-        // Step 3: Apply Boltzmann factor
+        // DCT-II into q_out, the Boltzmann factor, then DCT-III with normalization in place
+        // (MakhoulTransform reads its whole input before it writes)
+        dct_->forward(q_in, q_out, 1.0);
         for (int i = 0; i < M_physical_; ++i)
-            io_local[i] *= (*boltz)[i];
-
-        // Step 4: Backward DCT-III
-        derived().dct_backward_impl(io_local, temp_local);
-
-        // Step 5: Apply normalization and copy result
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] = io_local[i] * norm_factor_;
+            q_out[i] *= (*boltz)[i];
+        dct_->backward(q_out, q_out, norm_factor_);
     }
 
-    /// Apply custom multiplier in Fourier space.
+    /// Apply custom multiplier in Fourier space (multiplier must not be q_out).
     void apply_multiplier(const double* q_in, double* q_out, const double* multiplier)
     {
-        // Get thread-local buffers from derived class
-        auto [io_local, temp_local] = derived().get_thread_local_buffers();
-
-        // Step 1: Copy input
-        std::memcpy(io_local, q_in, sizeof(double) * M_physical_);
-
-        // Step 2: Forward DCT-II
-        derived().dct_forward_impl(io_local, temp_local);
-
-        // Step 3: Apply multiplier
+        // As in diffusion(), on q_out
+        dct_->forward(q_in, q_out, 1.0);
         for (int i = 0; i < M_physical_; ++i)
-            io_local[i] *= multiplier[i];
-
-        // Step 4: Backward DCT-III
-        derived().dct_backward_impl(io_local, temp_local);
-
-        // Step 5: Apply normalization and copy result
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] = io_local[i] * norm_factor_;
+            q_out[i] *= multiplier[i];
+        dct_->backward(q_out, q_out, norm_factor_);
     }
 
     // Accessors

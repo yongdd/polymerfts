@@ -1,0 +1,289 @@
+"""Well-Tempered Metadynamics (WTMD) for L-FTS simulations.
+
+This module implements well-tempered metadynamics to enhance sampling
+in Langevin field-theoretic simulations of block copolymers.
+
+This implementation follows deep-langevin-fts, except for the half-spectrum weight
+of the last kz plane when nz is odd (see WTMD.__init__) and the deposition of the
+hills (see WTMD.update_statistics).
+"""
+
+import numpy as np
+import scipy.signal
+
+from .._core import _periodic_metric
+from ..utils.common import atomic_savemat
+from ..utils.checkpoint import pair_suffix
+from ..utils.validation import ValidationError, _finite_number
+
+
+class WTMD:
+    """Well-Tempered Metadynamics for enhanced sampling in L-FTS.
+
+    This implementation matches deep-langevin-fts up to the odd-nz weight and the
+    deposition of the hills (see the module docstring). With `fourier`, the PropagatorSolver.fourier of the simulation
+    (real fields, periodic box), the order parameter and its derivative are transformed
+    on the platform (on the GPU with CUDA) instead of with numpy.fft, in the same rfftn
+    layout.
+    """
+
+    def __init__(self, nx, lx, nbar,
+                 eigenvalues, real_fields_idx,
+                 l=4,
+                 kc=6.02,
+                 dT=5.0,
+                 sigma_psi=0.16,
+                 psi_min=0.0,
+                 psi_max=10.0,
+                 dpsi=1e-3,
+                 update_freq=1000,
+                 recording_period=100000,
+                 u=None, up=None, I0=None, I1=None, angles=None, fourier=None):
+
+        _finite_number(l, "wtmd.ell", positive=True)
+        if l < 1:
+            raise ValidationError("wtmd.ell must be at least 1")
+        self.l = l
+        self.kc = kc
+        self.sigma_psi = sigma_psi
+        self.dT = dT
+        self.psi_min = psi_min
+        self.psi_max = psi_max
+        self.dpsi = dpsi
+        self.bins = int(np.round((psi_max - psi_min) / dpsi))
+        self.update_freq = update_freq
+        self.recording_period = recording_period
+
+        if len(nx) != 3:
+            raise ValidationError("WTMD requires a 3D grid (nx with three entries)")
+        self.nx = nx
+        self.lx = lx
+        self._fourier = fourier
+        self.M = nx[0] * nx[1] * nx[2]
+        self.Mk = nx[0] * nx[1] * (nx[2] // 2 + 1)
+
+        # Cell volume and metric (angles [alpha, beta, gamma] in degrees; None: orthogonal)
+        cos_a, cos_b, cos_g = np.cos(np.deg2rad(angles)) if angles is not None else (0.0, 0.0, 0.0)
+        self.orthogonal = bool(np.allclose([cos_a, cos_b, cos_g], 0.0, rtol=0.0, atol=1e-12))
+        if self.orthogonal:
+            self.V = lx[0] * lx[1] * lx[2]
+        else:
+            self.V = lx[0] * lx[1] * lx[2] * np.sqrt(1.0 - cos_a**2 - cos_b**2 - cos_g**2 + 2.0 * cos_a * cos_b * cos_g)
+            L = np.array(lx, dtype=np.float64)
+            self._metric_inv = np.linalg.inv(np.outer(L, L) * np.array([[1.0, cos_g, cos_b],
+                                                                         [cos_g, 1.0, cos_a],
+                                                                         [cos_b, cos_a, 1.0]]))
+        self.CV = np.sqrt(nbar) * self.V
+
+        # Choose one index of w_aux to use order parameter
+        self.eigenvalues = eigenvalues
+        self.real_fields_idx = real_fields_idx
+        eigen_value_min = 0.0
+        self.exchange_idx = None
+        for count, i in enumerate(self.real_fields_idx):
+            if self.eigenvalues[i] < eigen_value_min:
+                eigen_value_min = self.eigenvalues[i]
+                self.exchange_idx = i
+                self.langevin_idx = count
+        if self.exchange_idx is None:
+            raise ValidationError("WTMD needs a real auxiliary (exchange) field, i.e. a negative value among the "
+                                  "printed 'Eigenvalues' of the auxiliary fields (for two monomer types, a positive chi_n)")
+
+        self.u = np.zeros(self.bins)
+        self.up = np.zeros(self.bins)
+        self.I0 = np.zeros(self.bins)
+        self.I1 = {}
+
+        # Copy data and normalize them by sqrt(nbar)*V
+        if u is not None:
+            self.u = u.copy() / self.CV
+        if up is not None:
+            self.up = up.copy() / self.CV
+        if I0 is not None:
+            self.I0 = I0.copy()
+        if I1 is not None:
+            self.I1 = {key: np.array(value, dtype=np.float64) / self.CV for key, value in I1.items()}
+
+        # The hills are Gaussians cut at 8σ, where they fall below 1e-13 of their peak. The
+        # histogram of the samples extends by this margin (pad bins) on both sides of the
+        # range, so that samples just outside the range deposit their tails inside it.
+        self.pad = int(np.ceil(8.0 * self.sigma_psi / self.dpsi))
+        self.psi_range = np.linspace(self.psi_min, self.psi_max, num=self.bins, endpoint=False)
+        self.psi_range_hist = np.linspace(self.psi_min - (self.pad + 0.5) * self.dpsi,
+                                          self.psi_max + (self.pad - 0.5) * self.dpsi,
+                                          num=self.bins + 2 * self.pad + 1, endpoint=True)
+
+        # Store order parameters for updating U and U_hat
+        self.order_parameter_history = []
+        # Store dH for updating I1
+        self.dH_history = {}
+
+        # Initialize arrays in Fourier spaces
+        # Half-spectrum weights: the planes kz = 0 and, for even nz, kz = nz/2 are their own
+        # conjugates; every other plane stands for itself and its conjugate
+        self.wt = 2 * np.ones([nx[0], nx[1], nx[2] // 2 + 1])
+        self.wt[:, :, 0] = 1.0
+        if nx[2] % 2 == 0:
+            self.wt[:, :, nx[2] // 2] = 1.0
+
+        if self.orthogonal:
+            space_kx, space_ky, space_kz = np.meshgrid(
+                2 * np.pi / lx[0] * np.concatenate([np.arange((nx[0] + 1) // 2), nx[0] // 2 - np.arange(nx[0] // 2)]),
+                2 * np.pi / lx[1] * np.concatenate([np.arange((nx[1] + 1) // 2), nx[1] // 2 - np.arange(nx[1] // 2)]),
+                2 * np.pi / lx[2] * np.arange(nx[2] // 2 + 1), indexing='ij')
+            mag_k = np.sqrt(space_kx**2 + space_ky**2 + space_kz**2)
+        else:
+            # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form,
+            # from the same exact search as Smearing and the propagator solvers.
+            k_sq, _ = _periodic_metric(nx, self._metric_inv)
+            mag_k = np.sqrt(k_sq[:, :, :nx[2] // 2 + 1])
+        self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
+        self._fk_root = np.power(self.fk, 1.0 / self.l)
+
+        # Gaussian hill and its derivative at the offsets X = (Ψ - Ψ_sample)/σ of the bins
+        X = self.dpsi * np.arange(-self.pad, self.pad + 1) / self.sigma_psi
+        self.u_kernel = np.exp(-0.5 * X**2)
+        self.up_kernel = -X / self.sigma_psi * np.exp(-0.5 * X**2)
+
+    def start_fresh_run(self):
+        """Called before a fresh run of the simulation (from step 1): the samples that an earlier run left
+        pending are dropped. The bias and statistics stay as the object holds them: those of the
+        constructor, of earlier runs or of a checkpoint, or a bias set on the object (an imported bias)."""
+        self.order_parameter_history = []
+        self.dH_history = {}
+
+    # Compute order parameter Ψ
+    def compute_order_parameter(self, langevin_step, w_aux):
+        if self._fourier is not None:
+            self.w_aux_k = self._fourier.forward(np.reshape(w_aux[self.exchange_idx], -1))
+        else:
+            self.w_aux_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))
+        # Absorb the cutoff before scaling: b_k = |w_k| f_k^(1/ell).
+        # Powers of b/max(b) cannot overflow, even for large ell. The half-
+        # spectrum weights are at least one, so b/||b||_ell also stays in [0, 1].
+        magnitude = np.absolute(self.w_aux_k) * self._fk_root
+        scale = np.max(magnitude)
+        if scale == 0.0:
+            return 0.0   # add_bias_to_langevin needs no modes at Ψ = 0
+        self._normalized_modes = magnitude / scale
+        norm = np.power(np.sum(np.power(self._normalized_modes, self.l) * self.wt), 1.0 / self.l)
+        self._normalized_modes /= norm
+        # norm/M <= 1 for ell >= 1; restore the scale without a large product
+        # or an intermediate scale/M that can underflow prematurely.
+        return scale * (norm / self.M)
+
+    def store_order_parameter(self, psi, dH):
+        self.order_parameter_history.append(psi)
+        for key in dH:
+            if key not in self.dH_history:
+                self.dH_history[key] = []
+            self.dH_history[key].append(dH[key])
+
+    # Compute bias from psi and w_aux_k, and add it to the DH/DW
+    def add_bias_to_langevin(self, psi, langevin):
+
+        # Calculate current value of U'(Ψ) using linear interpolation
+        up_hat = np.interp(psi, self.psi_range, self.up)
+        if up_hat == 0.0:
+            print("\t[WTMD] Ψ:%8.5f, bias:0 (U'=0)" % psi)
+            return
+        if psi == 0.0:
+            # Ψ = 0 only for a zero exchange field, where dΨ/dw (0/0) has no direction: no bias
+            dpsi_dwr = np.zeros(self.M)
+        else:
+            # Calculate derivative of order parameter with respect to w_aux_k
+            magnitude = np.absolute(self.w_aux_k)
+            direction = np.divide(self.w_aux_k, magnitude, out=np.zeros_like(self.w_aux_k), where=magnitude > 0)
+            # f_k^(1/ell) [b_k/||b||_ell]^(ell-1) is bounded and independent
+            # of the field scale. Keep the zero subgradient for ell=1 and the
+            # zero derivative at a zero coefficient for ell>1.
+            dpsi_dwk = self._fk_root * np.power(self._normalized_modes, self.l - 1.0) * direction
+            # Calculate derivative of order parameter with respect to w
+            if self._fourier is not None:
+                dpsi_dwr = self._fourier.backward(dpsi_dwk) * self.M / self.V
+            else:
+                dpsi_dwr = np.fft.irfftn(dpsi_dwk, self.nx, axes=tuple(range(len(self.nx)))) * self.M / self.V
+
+        # Add bias
+        bias = np.reshape(self.V * up_hat * dpsi_dwr, self.M)
+        langevin[self.langevin_idx] += bias
+
+        print("\t[WTMD] Ψ:%8.5f, np.std(dΨ_dwr):%8.5e, np.std(bias):%8.5e" % (psi, np.std(dpsi_dwr), np.std(bias)))
+
+    def update_statistics(self):
+
+        # Histogram of the samples on the extended bins, divided by the number of all samples:
+        # every sample deposits a hill of the same weight, and samples beyond the margin none
+        n_samples = len(self.order_parameter_history)
+        counts, _ = np.histogram(self.order_parameter_history, bins=self.psi_range_hist)
+        hist = counts / (n_samples * self.dpsi)
+
+        # The hills are summed by linear convolution; mode "valid" keeps the bins of the range
+        dI1 = {}
+        for key in self.dH_history:
+            hist_dH_, _ = np.histogram(self.order_parameter_history,
+                                       weights=self.dH_history[key],
+                                       bins=self.psi_range_hist)
+            dI1[key] = scipy.signal.fftconvolve(hist_dH_ / n_samples, self.u_kernel, mode="valid")
+
+        # Compute dU(Ψ), dU'(Ψ)
+        amplitude = np.exp(-self.CV * self.u / self.dT) / self.CV
+        gaussian = scipy.signal.fftconvolve(hist, self.u_kernel, mode="valid") * self.dpsi
+        du = amplitude * gaussian
+        dup = amplitude * scipy.signal.fftconvolve(hist, self.up_kernel, mode="valid") * self.dpsi - self.CV * self.up / self.dT * du
+
+        print("np.max(np.abs(amplitude)):%8.5e" % (np.max(np.abs(amplitude))))
+        print("np.max(np.abs(gaussian)):%8.5e" % (np.max(np.abs(gaussian))))
+        print("np.max(np.abs(du)):%8.5e" % (np.max(np.abs(du))))
+        print("np.max(np.abs(dup)):%8.5e" % (np.max(np.abs(dup))))
+        for key in dI1:
+            print("np.max(np.abs(dI1[%s])):%8.5e" % (key, np.max(np.abs(dI1[key]))))
+
+        # Update u, up, I0, I1
+        self.u += du
+        self.up += dup
+        self.I0 += gaussian
+        for key in dI1:
+            if key not in self.I1:
+                self.I1[key] = np.zeros(self.bins)
+            self.I1[key] += dI1[key]
+
+        # Reset lists
+        self.order_parameter_history = []
+        self.dH_history = {}
+
+    def write_data(self, file_name):
+        mdic = {
+            "l": self.l,
+            "kc": self.kc,
+            "sigma_psi": self.sigma_psi,
+            "dT": self.dT,
+            "psi_min": self.psi_min,
+            "psi_max": self.psi_max,
+            "dpsi": self.dpsi,
+            "bins": self.bins,
+            "psi_range": self.psi_range,
+            "update_freq": self.update_freq,
+            "nx": self.nx,
+            "lx": self.lx,
+            "volume": self.V,
+            "nbar": (self.CV / self.V)**2,
+            "eigenvalues": self.eigenvalues,
+            "real_fields_idx": self.real_fields_idx,
+            "exchange_idx": self.exchange_idx,
+            "langevin_idx": self.langevin_idx,
+            "u": self.u * self.CV,
+            "up": self.up * self.CV,
+            "I0": self.I0
+        }
+
+        # Add I0 and dH_Ψ to the dictionary
+        for key in self.I1:
+            I1 = self.I1[key] * self.CV
+            dH_psi = I1.copy()
+            dH_psi[np.abs(self.I0) > 0] /= self.I0[np.abs(self.I0) > 0]
+            suffix = pair_suffix(key)
+            mdic["I1_" + suffix] = I1
+            mdic["dH_psi_" + suffix] = dH_psi
+
+        atomic_savemat(file_name, mdic, long_field_names=True, do_compression=True)

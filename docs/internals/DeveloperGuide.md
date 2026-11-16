@@ -64,7 +64,7 @@ src/
 ### One SCFT Iteration Through the Layers
 
 ```
-SCFT.run (src/python/scft.py)
+SCFT.run (src/python/scft/scft.py)
 ├─ PropagatorSolver.compute_propagators(w)      → ComputationContinuous::compute_propagators
 │   ├─ set_fields: check w and q_init, keep w for solvents, backend.update_dw → solver Boltzmann factors
 │   ├─ for each scheduler group, its propagators concurrently (OpenMP thread i uses stream i):
@@ -72,7 +72,8 @@ SCFT.run (src/python/scft.py)
 │   │     advance_propagator n times → solver: e^{-w ds/2} F⁻¹[ e^{-b²k²ds/6} F[ e^{-w ds/2} q ] ] (+ RQM4 extrapolation)
 │   │   synchronize
 │   └─ Q = inner_product(q, q†) / V
-├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs), normalize_concentration; then solvents
+├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs); then solvents (the getters
+│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: normalize_concentration)
 ├─ compute_stress, per block: block_stress (segment pairs) → solver segment stress; sum the blocks; lattice derivatives
 └─ AndersonMixing.calculate_new_fields(w, w_out - w)
 ```
@@ -137,9 +138,10 @@ The classes each platform provides (the computation classes above them are share
 | Pseudo-spectral base | `CpuSolverPseudoBase<T>` | `CudaSolverPseudoBase<T>` |
 | Continuous, RQM4 | `CpuSolverPseudoRQM4` | `CudaSolverPseudoRQM4` |
 | Continuous, RK2 | `CpuSolverPseudoRK2` | `CudaSolverPseudoRK2` |
-| Discrete chains | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
+| Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
-| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT, DCT, DST) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` | `CudaSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond`) |
+| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `{Fftw,Mkl}CrysFFT{Pmmm,Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
@@ -160,7 +162,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 
 **Notes:**
 
-- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
+- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
 - The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
@@ -171,7 +173,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 | `create_computation_box(nx, lx, bc, angles, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask |
 | `create_propagator_computation_optimizer(molecules, aggregate)` | `std::unique_ptr<PropagatorComputationOptimizer>` | Propagator dependency graph with optional aggregation (concrete method of the base class) |
 | `create_molecules_information(model, ds, bond_lengths)` | `std::unique_ptr<Molecules>` | Polymer/solvent container (concrete method of the base class) |
-| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2, cn-adi2); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
+| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
 | `create_anderson_mixing(n_var, max_hist, ...)` | `std::unique_ptr<AndersonMixing<T>>` | Field update accelerator |
 | `create_fourier_transform(box, bc)` | `std::unique_ptr<FourierTransform<T>>` | Transforms and Fourier multipliers of whole fields (one transform per axis, see Section 3.4) |
 
@@ -283,7 +285,7 @@ calls the `require_*` checks first in its getters. `compute_partition_errors()`
 returns the forward/backward error of every polymer and prints nothing;
 `check_total_partition()` compares them with a tolerance. The molecules are
 fixed once a computation exists (`add_polymer()` and `add_solvent()` throw), and
-a `cn-adi2` computation keeps its box orthogonal while it exists
+a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 (`ComputationBox::hold_orthogonal_cell()`).
 
 **Who does what.** The computation classes decide *what* is computed and in
@@ -319,14 +321,17 @@ every propagator, at the segments other propagators start from, and every
 checkpoint before them. The solvers are deterministic and the classes use the
 same segment pairs, weights and summation order as full storage, so both
 modes give bit-for-bit identical results. Propagators are computed one at a
-time on one stream.
+time on one stream. The host C++ code is built with `-ffp-contract=off`
+(CMakeLists.txt): on targets with FMA, fused multiply-adds would round the
+differently grouped sums of the two modes differently (see
+[Installation](../getting-started/Installation.md), CMake Options).
 
 **Chain Models:**
 
 | Model | Propagator Equation | Solver Method |
 |-------|---------------------|---------------|
 | Continuous | $`\partial q/\partial s = (b^2/6)\nabla^2 q - wq`$ | RQM4, RK2, or CN-ADI2 |
-| Discrete | Recursive integral (Chapman-Kolmogorov) | Pseudo-spectral (bond convolution) |
+| Discrete | Recursive integral (Chapman-Kolmogorov) | PS (bond convolution through FFTs) or RS (bond summed on the grid) |
 
 ### 3.3 Solver Hierarchy
 
@@ -362,8 +367,14 @@ CpuSolver<T>                                  [Abstract Base]
         │           ├── advance_propagator_half_bond_step()
         │           └── get_stress_boltz_bond(): returns boltz_bond
         │
-        └── CpuSolverCNADI                     [Finite Difference; CpuSolver<double>, real fields only]
-            └── CN-ADI with tridiagonal solver
+        ├── CpuSolverCNADI                     [Finite Difference; CpuSolver<double>, real fields only]
+        │   └── CN-ADI with tridiagonal solver
+        │
+        └── CpuSolverRealSpaceDiscrete<T>      [Discrete chains, bond summed on the grid]
+            ├── update_dw(): exp(-w·ds)
+            ├── advance_propagator(): one stencil per axis, then exp(-w·ds)
+            ├── advance_propagator_half_bond_step()
+            └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
@@ -383,7 +394,8 @@ work buffers through `stress_scratch()`, and the discrete solver overrides
 `get_stress_boltz_bond()` (the base default, nullptr, is the continuous chain).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
-`CudaSolverCNADI` is the finite-difference solver. The non-periodic DCT/DST
+`CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
+bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
 `backward_stream()` run the transform on the propagator's stream. Mechanical real/complex
 differences (D2Z vs Z2Z transforms, CUB sum vs reduce) are hidden behind the overloads
@@ -438,14 +450,17 @@ current box with the alias convention of `Pseudo`. For real fields the multiplie
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
-the next (cuFFT needs 16-byte aligned real data). Periodic and wall axes cannot be mixed;
-`PropagatorSolver.fourier` uses the cosine series along walls, whose fields have no
-boundary value. The Langevin steps use it for smearing (except in boxes that mix periodic
-and wall axes), the transforms of ψ, the `etd` integrator, the dilation of the smearing
-(osmotic pressure), the LR compressor of L-FTS in periodic boxes and in boxes with reflecting
-walls only (boxes that mix periodic and wall axes use `scipy.fft`; absorbing walls are refused)
-and, in periodic boxes, WTMD and the samples for the structure functions; boxes with walls
-record the Fourier coefficients of `numpy.fft`.
+the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
+is transformed through its mirror image: each wall axis is extended to twice its length by
+the even (cosine) or odd (sine) reflection, the complex FFT of the extended periodic grid
+(FFTW, MKL or cuFFT) gives its modes, and a phase factor per wall axis turns them into the
+series coefficients; the coefficients are complex, with the full spectrum on the periodic
+axes, and real fields take the real part of `backward`. `PropagatorSolver.fourier` uses the
+cosine series along walls, whose fields have no boundary value. The Langevin steps use it
+for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
+(osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls
+(absorbing walls are refused) and, in periodic boxes, WTMD and the samples for the structure
+functions; boxes with walls record the Fourier coefficients of `numpy.fft`.
 
 ### 3.5 AndersonMixing Hierarchy
 
@@ -610,7 +625,15 @@ When adding new computational features, you must implement them for both platfor
 | Which propagators are computed, aggregation | `PropagatorComputationOptimizer`, `PropagatorAggregator` |
 | Concurrent groups | `Scheduler` |
 | Which objects a platform creates | the factories |
-| Simulation loop and parameters | `src/python` |
+| Flow of each method and its parameters | `src/python/scft/scft.py`, `src/python/fts/lfts.py`, `src/python/fts/clfts.py` |
+| Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
+| Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
+| Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
+| Cell relaxation and stress of SCFT | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
+| What SCFT returns and writes | `src/python/scft/scft_results.py` |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`) |
+| Reading, drawing and solving the polymer chains | `src/python/theory/chains.py` |
+| Parameter files and VTK fields | `src/python/utils/file_formats.py` |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -713,6 +736,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 
 ### Python
 
+- `scft.py`, `lfts.py` and `clfts.py` show the flow of a method. A step that takes more than a few
+  lines belongs in an object with one topic, which the simulation creates in its constructor. The
+  object keeps the fixed parts it needs as attributes and reads what changes during a run through
+  `self.sim`, a `weakref.proxy`: a strong reference would make a cycle that keeps the solver and
+  device memory of a dropped simulation alive (`TestSimulationRelease`).
 - Follow PEP 8 style guidelines
 - Add docstrings for public functions
 - Include type hints where practical

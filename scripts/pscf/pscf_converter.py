@@ -15,6 +15,7 @@ import ast
 import copy
 import json
 import math
+import operator
 from pathlib import Path
 from pprint import pformat
 import runpy
@@ -28,7 +29,8 @@ from scipy.io.matlab import MatReadError
 
 
 # Reuse input aliases and validation without importing the compiled package.
-_VALIDATION = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/validation.py"))
+_VALIDATION = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/validation.py"))
+_MAT = runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/mat_fields.py"))
 
 
 def real(value):
@@ -143,19 +145,28 @@ def choose_lattice(params, override=None):
         except ImportError:
             raise ValueError("Space-group inputs need Python spglib, or an explicit --lattice.") from None
         group = params["space_group"]
+        symbol = group.get("symbol")
+        if symbol is not None and not isinstance(symbol, str):
+            raise ValueError("space_group.symbol must be a string.")
+        # The Hall settings of the symbol; like SCFT, a symbol with several needs the hall_number
+        key = None if symbol is None else symbol.replace(" ", "").replace("_", "")
+        settings = [] if key is None else [h for h in range(1, 531) if spglib_call(
+            spglib, spglib.get_spacegroup_type, h).international_short.replace("_", "") == key]
         hall = group.get("hall_number")
         if hall is not None:
             numbers = vector(hall, "hall_number", integer=True)
             if len(numbers) != 1 or numbers[0] > 530:
                 raise ValueError("hall_number must be an integer between 1 and 530.")
             hall = numbers[0]
+            if key is not None and hall not in settings:
+                raise ValueError(f"space_group.hall_number {hall} is a setting of "
+                                 f"{spglib_call(spglib, spglib.get_spacegroup_type, hall).international_short}, "
+                                 f"not of {symbol}.")
+        elif len(settings) > 1:
+            raise ValueError(f"space_group.symbol {symbol} has several Hall settings ({', '.join(map(str, settings))}); "
+                             "give space_group.hall_number, as SCFT requires, or --lattice.")
         else:
-            symbol = group.get("symbol", "")
-            if not isinstance(symbol, str):
-                raise ValueError("space_group.symbol must be a string.")
-            symbol = symbol.replace(" ", "")
-            hall = next((h for h in range(1, 531) if spglib_call(spglib, spglib.get_spacegroup_type, h)
-                         .international_short.replace("_", "") == symbol.replace("_", "")), None)
+            hall = settings[0] if settings else None
         if hall is None:
             raise ValueError("Could not identify the space group. Specify --lattice explicitly.")
         sg = spglib_call(spglib, spglib.get_spacegroup_type, hall)
@@ -283,83 +294,335 @@ def write_rgrid(path, nx, lattice, cell, fields):
         np.savetxt(handle, np.column_stack([field.ravel(order="F") for field in fields]), fmt="%.17e")
 
 
+# A Python parameter file is read, never run (docs/getting-started/PscfConversion.md). The reader
+# accepts a module-level params literal that the script reads only where neither it nor a library
+# can change it, and gives unchanged to the simulation. It does not resolve scopes: a local name
+# equal to a name it follows makes it refuse the script, never export other params.
+SIMULATIONS = {"SCFT", "LFTS", "CLFTS", "GibbsEnsemble"}
+REFLECTION = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "compile",
+              "__import__", "import_module", "__builtins__", "__dict__", "modules", "__main__"}
+RUNTIME_MODULES = {"__main__", "importlib", "builtins", "copy", "copyreg"}
+# Builtins that read a list of scalars without keeping it, or fail on one (complex, also as a dtype)
+READING_BUILTINS = {"print", "len", "list", "tuple", "sorted", "sum", "min", "max", "range", "zip", "enumerate",
+                    "str", "repr", "int", "float", "complex", "bool", "abs", "round", "any", "all"}
+LIBRARIES = {"numpy", "scipy", "math", "polymerfts"}
+# Their functions that change a list in place: numpy.random.shuffle (also as a method of a
+# Generator or RandomState class). NumPy's other in-place functions (put, place, putmask, copyto,
+# fill_diagonal, out=) raise for a list.
+IN_PLACE = {"shuffle"}
+SCALARS = (int, float, complex, str, bool, type(None))
+NOT_LITERAL = (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError)
+ARITHMETIC = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+              ast.Pow: operator.pow}
+PYTHON_POLICY = ("Write params as a module-level literal, read it only by indexing and give it unchanged to "
+                 "the simulation, or export a saved SCFT result or a JSON/YAML parameter file.")
+
+
+def unsupported(reason):
+    return ValueError(f"{reason} {PYTHON_POLICY}")
+
+
+def bound_names(node):
+    """The names a node binds, in whichever scope."""
+    if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+        return [node.id]
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [alias.asname or alias.name.split(".")[0] for alias in node.names]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return node.names
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
+
+
+def container_ids(value):
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else None
+    return set() if children is None else {id(value)}.union(*map(container_ids, children))
+
+
+def kind_of(value):
+    """0 for a scalar, 1 for a list of scalars, 2 for a dictionary and 3 for other containers."""
+    if isinstance(value, SCALARS):
+        return 0
+    if isinstance(value, list) and all(isinstance(item, SCALARS) for item in value):
+        return 1
+    return 2 if isinstance(value, dict) else 3
+
+
 def read_python_params(path):
-    """Read simple module-level parameter expressions, never execute user Python."""
-    symbols, params = {}, None
+    """The params a Python script gives its simulation, read from the source without running it."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    nodes = list(ast.walk(tree))
+    parents = {id(child): node for node in nodes for child in ast.iter_child_nodes(node)}
+    binders = {}
+    for node in nodes:
+        for name in bound_names(node):
+            binders.setdefault(name, []).append(node)
+    module_level = {id(statement) for statement in tree.body}
+    redeclared = {name for node in nodes if isinstance(node, (ast.Global, ast.Nonlocal)) for name in node.names}
+
+    def origin(name, seen=()):
+        """The dotted path a name is imported as, if module-level imports alone bind it, or that it
+        was assigned from once at module level (an alias such as random = np.random), else None."""
+        nodes = binders.get(name, [None])
+        statement = parents.get(id(nodes[0]))
+        if len(nodes) == 1 and isinstance(statement, ast.Assign) and id(statement) in module_level \
+                and name not in seen:
+            return dotted(statement.value, (*seen, name))
+        paths = set()
+        for node in nodes:
+            if not (isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) in module_level):
+                return None
+            for alias in node.names:
+                if (alias.asname or alias.name.split(".")[0]) != name:
+                    continue
+                if isinstance(node, ast.ImportFrom):
+                    paths.add(f"{node.module}.{alias.name}")
+                else:  # import a.b binds a, import a.b as c binds a.b
+                    paths.add(alias.name if alias.asname else name)
+        return paths.pop() if len(paths) == 1 else None
+
+    def dotted(node, seen=()):
+        """The dotted path of an imported name or of an attribute of one, else None."""
+        if isinstance(node, ast.Name):
+            return origin(node.id, seen)
+        owner = dotted(node.value, seen) if isinstance(node, ast.Attribute) else None
+        return owner and owner + "." + node.attr
+
+    def builtin(node, *names):
+        return isinstance(node, ast.Name) and node.id in names and node.id not in binders
 
     def evaluate(node):
-        if isinstance(node, ast.Name):
-            # Keep literal containers shared so aliases cannot conceal mutations.
-            return symbols[node.id]
-        if isinstance(node, ast.Constant):
+        """The value of a literal expression; raises one of NOT_LITERAL for anything else."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, SCALARS):
             return node.value
+        if isinstance(node, ast.Name) and node.id not in redeclared:
+            value = symbols[node.id]
+            looked_up.add(node.id)
+            return value
         if isinstance(node, (ast.List, ast.Tuple)):
-            return [evaluate(v) for v in node.elts]
-        if isinstance(node, ast.Dict):
-            return {evaluate(k): evaluate(v) for k, v in zip(node.keys, node.values)}
+            return [evaluate(item) for item in node.elts]
+        if isinstance(node, ast.Dict) and None not in node.keys:
+            return {evaluate(key): evaluate(value) for key, value in zip(node.keys, node.values)}
         if isinstance(node, ast.Subscript):
             container, index = evaluate(node.value), evaluate(node.slice)
-            if isinstance(container, (dict, list, tuple)) and isinstance(index, (str, int)):
+            if isinstance(container, (dict, list)) and isinstance(index, (str, int)):
                 return container[index]
+        if isinstance(node, ast.Call) and builtin(node.func, "dict") and len(node.args) <= 1 \
+                and all(keyword.arg for keyword in node.keywords):  # dict(params, key=value)
+            base = evaluate(node.args[0]) if node.args else {}
+            if isinstance(base, dict):
+                return {**base, **{keyword.arg: evaluate(keyword.value) for keyword in node.keywords}}
+        if isinstance(node, ast.Attribute) and node.attr == "pi" and dotted(node) in ("numpy.pi", "math.pi"):
+            return math.pi
+        if isinstance(node, ast.Call) and dotted(node.func) in ("numpy.sqrt", "math.sqrt") \
+                and len(node.args) == 1 and not node.keywords:
+            value = evaluate(node.args[0])
+            if isinstance(value, (int, float)) and value >= 0:
+                return math.sqrt(value)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = evaluate(node.operand)
-            return value if isinstance(node.op, ast.UAdd) else -value
-        if isinstance(node, ast.BinOp):
+            if isinstance(value, (int, float)):
+                return value if isinstance(node.op, ast.UAdd) else -value
+        if isinstance(node, ast.BinOp) and type(node.op) in ARITHMETIC:
             a, b = evaluate(node.left), evaluate(node.right)
-            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
-                raise ValueError("Only numerical arithmetic is supported.")
-            if isinstance(node.op, ast.Add): return a + b
-            if isinstance(node.op, ast.Sub): return a - b
-            if isinstance(node.op, ast.Mult): return a * b
-            if isinstance(node.op, ast.Div): return a / b
-            if isinstance(node.op, ast.Pow) and abs(b) <= 100: return a ** b
-        raise ValueError("Use literal params with simple arithmetic, or a saved SCFT result/configuration file.")
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
+                    and not (isinstance(node.op, ast.Pow) and abs(b) > 100):
+                return ARITHMETIC[type(node.op)](a, b)
+            if isinstance(node.op, ast.Mult) and isinstance(a, int) and isinstance(b, list):
+                a, b = b, a
+            if isinstance(node.op, ast.Mult) and kind_of(a) == 1 and isinstance(b, int) and 0 <= b <= 1000:
+                return a * b  # [n] * 3 repeats a list of scalars
+        raise ValueError("not a literal")
 
+    # Module-level assignments in order. Any other binding of a name, in any scope, forgets its value.
+    symbols, params, history, read, looked_up, computed_from = {}, None, [], set(), set(), {}
     for statement in tree.body:
-        containers = {name for name, value in symbols.items() if isinstance(value, (dict, list, tuple))}
-        names = []
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            names = [t.id for t in targets if isinstance(t, ast.Name)]
-            if "params" in names and params is not None:
-                raise ValueError("Repeated params assignments are not supported; use a saved SCFT result.")
+        targets = (statement.targets if isinstance(statement, ast.Assign) else
+                   [statement.target] if isinstance(statement, ast.AnnAssign) and statement.value else [])
+        names = [target.id for target in targets] if all(isinstance(t, ast.Name) for t in targets) else []
+        if names:
             try:
+                looked_up.clear()
                 value = evaluate(statement.value)
-            except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, OverflowError):
+            except NOT_LITERAL:
                 if "params" in names:
-                    raise ValueError("Could not read params statically. Use a saved SCFT result or JSON/YAML parameters.") from None
-                # Never retain a stale constant after an unsupported assignment.
-                for name in names:
-                    symbols.pop(name, None)
+                    raise unsupported("Could not read params statically.") from None
+                names = []
             else:
+                symbols.update((name, value) for name in names)
+                history.extend((name, value) for name in names)
                 for name in names:
-                    symbols[name] = value
-                if "params" in names:
-                    params = value
-        # Parameter mutations are ambiguous without executing the script.
-        containers.update(name for name, value in symbols.items() if isinstance(value, (dict, list, tuple)))
+                    computed_from.setdefault(name, set()).update(looked_up)
+                read.update(id(node) for node in ast.walk(statement.value))
+                params = value if "params" in names else params
         for node in ast.walk(statement):
-            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.id not in names:
-                if node.id == "params":
-                    raise ValueError("Runtime params assignments are not supported; use a saved SCFT result.")
-                if isinstance(node.ctx, ast.Store) and node.id in containers:
-                    raise ValueError("Runtime container mutations are not supported; use a saved SCFT result.")
-                # Assignments inside control flow and tuple unpacking are not evaluated.
-                symbols.pop(node.id, None)
-            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
-                target = node
-                while isinstance(target, ast.Subscript): target = target.value
-                if isinstance(target, ast.Name) and (target.id == "params" or target.id in containers):
-                    raise ValueError("Runtime params mutations are not supported; use a saved SCFT result.")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                target = node.func.value
-                while isinstance(target, ast.Subscript): target = target.value
-                if isinstance(target, ast.Name) and (target.id == "params" or target.id in containers):
-                    raise ValueError("Runtime params method calls are not supported; use a saved SCFT result.")
+            for name in bound_names(node):
+                if name not in names:
+                    symbols.pop(name, None)
     if not isinstance(params, dict):
-        raise ValueError("The Python file needs a module-level params dictionary.")
-    return params
+        raise unsupported("The Python file needs a module-level params dictionary.")
+
+    # From here on, only a name bound once has a known value everywhere.
+    for name in [name for name in symbols if len(binders[name]) > 1]:
+        del symbols[name]
+
+    # Simulation classes, imported under their own names and only called with readable params
+    received, received_from = [], set()
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
+            if any(module.split(".")[0] in RUNTIME_MODULES for module in modules):
+                raise unsupported("Imports of __main__, importlib, builtins or copy can change params at run time.")
+            if any(alias.name == "*" for alias in node.names):
+                raise unsupported("A star import can bind any name, params or a simulation class too.")
+            if any(alias.name in SIMULATIONS and alias.asname not in (None, alias.name) for alias in node.names):
+                raise unsupported("A simulation class is imported under another name.")
+        name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        if name in REFLECTION:
+            raise unsupported(f"Reflection ({name}) can change params at run time.")
+        if name == "from_file":
+            raise ValueError("from_file loads params when the script runs; export that parameter file instead.")
+        if isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load) \
+                and ((dotted(node) or "").split(".")[0] in LIBRARIES or node.attr == "reshape"):
+            # a simulation class, a library function, or the reshape that a list may be given to
+            raise unsupported(f"The script replaces {dotted(node) or node.attr}.")
+        if name not in SIMULATIONS or not isinstance(node.ctx, ast.Load):
+            continue
+        call = parents.get(id(node))
+        if not (isinstance(call, ast.Call) and call.func is node):
+            raise unsupported(f"{name} is used other than by calling it.")
+        path = dotted(node) or ""
+        if path.split(".")[0] != "polymerfts" or path.split(".")[-1] not in SIMULATIONS:
+            raise unsupported(f"{name} is not imported from polymerfts by a module-level import.")
+        given = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg == "params"), None)
+        try:
+            if given is None or isinstance(given, ast.Starred) or any(k.arg is None for k in call.keywords):
+                raise ValueError("params is not given by name or position")
+            looked_up.clear()
+            received.append(evaluate(given))
+            received_from |= looked_up
+        except NOT_LITERAL:
+            raise unsupported(f"{name} receives params the converter cannot read.") from None
+        if not isinstance(received[-1], dict):
+            raise unsupported(f"{name} needs a params dictionary.")
+        read.update(id(part) for part in ast.walk(given))
+    if any(value != received[0] for value in received):
+        raise unsupported("The script runs calculations with different params, which one PSCF input cannot describe.")
+
+    def closure(names):
+        """The names and every module-level name their values were computed from."""
+        found, pending = set(), list(names)
+        while pending:
+            name = pending.pop()
+            if name not in found:
+                found.add(name)
+                pending.extend(computed_from.get(name, ()))
+        return found
+
+    # The containers the export is read from: those of params, of the params the simulations
+    # receive and of every module-level value these were computed from. The names that share
+    # one of them must keep it unchanged.
+    sources = closure(["params", *received_from])
+    exported = container_ids(params).union(*map(container_ids, received),
+                                           *(container_ids(value) for name, value in history if name in sources))
+    tracked = {name for name, value in history if container_ids(value) & exported}
+    for name in sorted(tracked):
+        if len(binders[name]) > 1:
+            source = "" if name == "params" else ", which the exported params is read from,"
+            raise unsupported(f"{name}{source} is bound more than once.")
+
+    # Uses of params and of the names that share its containers
+    def known(node):
+        """The value of a literal expression that the script cannot have changed: its names, and the
+        names their values were computed from, hold scalars or containers of the export, which the
+        script must keep unchanged."""
+        looked_up.clear()
+        value = evaluate(node)
+        if any(kind_of(symbols[name]) and name not in tracked for name in closure(looked_up)):
+            raise ValueError("a container the script can change")
+        return value
+
+    def library(node):
+        """Whether node is a builtin that reads lists or a library function that does not change them."""
+        path = (dotted(node) or "").split(".")
+        return builtin(node, *READING_BUILTINS) or path[0] in LIBRARIES and path[-1] not in IN_PLACE
+
+    def data(node):
+        """Whether node is a known literal, a library function (also by an alias), or a library call or
+        arithmetic of such values: never a function of the script (lambda, method, partial, other
+        import, ...) or a container that the script could fill with one, which a library could hand
+        a list to."""
+        try:
+            known(node)
+            return True
+        except NOT_LITERAL:
+            pass
+        if isinstance(node, ast.Call):
+            return library(node.func) and all(map(data, [*node.args, *(k.value for k in node.keywords)]))
+        if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+            return all(map(data, [node.left, node.right] if isinstance(node, ast.BinOp) else [node.operand]))
+        return library(node)
+
+    def possible(node):
+        """The values a subscript of a tracked name can take; an unknown index selects any item."""
+        if isinstance(node, ast.Name):
+            return [symbols[node.id]]
+        values = []
+        for container in possible(node.value):
+            try:
+                index = None if isinstance(node.slice, ast.Slice) else known(node.slice)
+            except NOT_LITERAL:
+                values.extend(container.values() if isinstance(container, dict) else container)
+            else:
+                values.append(container if index is None else container[index])
+        return values
+
+    def unchanged(node, kind):
+        """Whether the value of node, of the given kind, is read where nothing can change it."""
+        parent = parents.get(id(node))
+        while isinstance(parent, (ast.keyword, ast.Starred)):
+            node, parent = parent, parents.get(id(parent))
+        if kind == 0 or isinstance(parent, (ast.Compare, ast.FormattedValue)) \
+                or isinstance(parent, ast.Call) and builtin(parent.func, "print") and parent.func is not node:
+            return True
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)) and parent.iter is node:
+            return kind <= 2  # scalars, or the keys of a dictionary
+        if kind > 1:
+            return False
+        if isinstance(parent, ast.Call):  # a list of scalars, given to a builtin, a library or reshape
+            function, others = parent.func, [a for a in (*parent.args, *parent.keywords) if a is not node]
+            owner = function.value if isinstance(function, ast.Attribute) and function.attr == "reshape" else None
+            array = isinstance(owner, ast.Call) and dotted(owner.func) in ("numpy.asarray", "numpy.array") \
+                and all(keyword.arg == "dtype" for keyword in owner.keywords)  # an ndarray, never a subclass
+            return ((library(function) or owner is not None and data(owner) or array)  # NumPy's reshape
+                    and all(data(a.value if isinstance(a, (ast.keyword, ast.Starred)) else a) for a in others))
+        return (isinstance(parent, (ast.BinOp, ast.UnaryOp, ast.AugAssign, ast.Subscript,
+                                    ast.If, ast.While, ast.Assert, ast.Expr))
+                or isinstance(parent, ast.Assign) and all(isinstance(t, (ast.Tuple, ast.List)) for t in parent.targets))
+
+    for node in nodes:
+        if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in tracked) \
+                or id(node) in read:
+            continue
+        top = node
+        while isinstance(parents.get(id(top)), ast.Subscript) and parents[id(top)].value is top:
+            top = parents[id(top)]
+        if not isinstance(top.ctx, ast.Load):
+            raise unsupported(f"The script changes {node.id}.")
+        try:
+            kind = max(map(kind_of, possible(top)), default=0)
+        except NOT_LITERAL:
+            kind = 3
+        if not unchanged(top, kind):
+            raise unsupported(f"{node.id} is used where the script or a library could change it.")
+    return received[0] if received else params
 
 
 def read_input(path):
@@ -367,7 +630,7 @@ def read_input(path):
     suffix = path.suffix.lower()
     if suffix == ".mat":
         try:
-            return loadmat(path, simplify_cells=True)
+            return _MAT['decode_mat_fields'](loadmat(path, simplify_cells=True))
         except (MatReadError, IndexError, NotImplementedError) as exc:
             raise ValueError(f"Cannot read MATLAB file {path}: {exc}. Use a SciPy-compatible MAT file (not HDF5/v7.3).") from None
     if suffix == ".json":
@@ -434,7 +697,8 @@ def prepare_export(source, field_source=None, lattice=None):
         raise ValueError("Electrostatics cannot be transferred to this PSCF input.")
     bc = params.get("bc")
     if bc is not None and (not isinstance(bc, (list, tuple, np.ndarray))
-            or len(bc) != 2 * len(params["nx"]) or any(value != "periodic" for value in bc)):
+            or len(bc) != 2 * len(params["nx"])
+            or any(not isinstance(value, str) or value.lower() != "periodic" for value in bc)):
         raise ValueError("Export supports one periodic boundary condition for each cell face only.")
     if params.get("axis_ordering") is not None:
         raise ValueError("Use a saved SCFT result with normalized axes instead of axis_ordering parameters.")
@@ -466,6 +730,9 @@ def prepare_export(source, field_source=None, lattice=None):
         for block in blocks:
             if "monomer_fractions" in block:
                 raise ValueError("Random-copolymer blocks are not supported by this PSCF export.")
+            if block.get("multiplicity", 1) != 1:
+                raise ValueError("Block multiplicities are not supported by this PSCF export; "
+                                 "write integer copies as separate blocks.")
             if block["type"] not in names:
                 raise ValueError(f"Unknown block monomer: {block['type']}.")
             if explicit:
@@ -502,11 +769,22 @@ def param_text(params, lattice):
     lines += [f"    ds {params['ds']:.17g}", "  }", "  Interaction{", "    chi("]
     interactions = {}
     for pair, chi in params["chi_n"].items():
-        if not isinstance(pair, str): raise ValueError("chi_n keys must name two monomers, e.g. 'A,B'.")
-        candidates = [tuple(pair.split(","))] if "," in pair else [(a, b) for i, a in enumerate(names) for b in names[i+1:] if pair in (a+b, b+a)]
-        if len(candidates) != 1: raise ValueError(f"Ambiguous interaction key: {pair}. Use 'type1,type2'.")
-        a, b = [name.strip() for name in candidates[0]] if len(candidates[0]) == 2 else (None, None)
-        if a not in indices or b not in indices or a == b: raise ValueError(f"Invalid interaction: {pair}.")
+        try:
+            normalized = _VALIDATION["parse_chi_n"]({pair: chi}, params["segment_lengths"])
+            a, b = next(iter(normalized)).split(",")
+        except _VALIDATION["ValidationError"] as exc:
+            # Older converter inputs also accepted concatenated names (AB).
+            # A recognized separator syntax must retain its validation error,
+            # including self-interactions and ambiguous names.
+            if (not isinstance(pair, str) or "," in pair
+                    or any(pair == a + separator + b for a in names for b in names
+                           for separator in (" ", "_", "/"))):
+                raise ValueError(str(exc)) from None
+            candidates = [(a, b) for i, a in enumerate(names) for b in names[i+1:]
+                          if pair in (a+b, b+a)]
+            if len(candidates) != 1:
+                raise ValueError(str(exc)) from None
+            a, b = candidates[0]
         key = tuple(sorted((indices[a], indices[b])))
         if key in interactions: raise ValueError(f"Repeated interaction: {pair}.")
         interactions[key] = chi
@@ -599,7 +877,8 @@ def import_files(omega, output, rho=None, monomers=None, metadata=None, chain_mo
     if output.suffix.lower() != ".mat": raise ValueError("Import output must have a .mat extension.")
     with output.open("xb") as handle:
         try:
-            savemat(handle, result, long_field_names=True, do_compression=True)
+            encoded = _MAT['_encode_mat_fields'](result, 63, top_level=True)
+            savemat(handle, encoded, long_field_names=True, do_compression=True)
         except Exception:
             output.unlink()
             raise
@@ -716,6 +995,9 @@ def script_params(text, data, names):
     count = param_scalar(mixture, "nMonomer", integer=True, minimum=1)
     if count != len(names):
         raise ValueError("PSCF nMonomer does not match the initial fields.")
+    if count < 2:
+        raise ValueError("Runnable incompressible SCFT scripts require at least two monomer types; "
+                         "use field-only import for a single-monomer PSCF result.")
     if any(any(c not in string.ascii_letters + "_" for c in name) for name in names):
         raise ValueError("Runnable script monomer names require ASCII letters and underscores only; provide compatible --monomers names.")
     segments = vector([real(x) for x in param_value(mixture, "monomers", "[")], "monomers")

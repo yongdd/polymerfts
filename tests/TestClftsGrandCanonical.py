@@ -5,10 +5,10 @@ A canonical AB diblock (volume fraction 0.6, charged A blocks, discrete chains, 
 grand-canonical B homopolymer of length 0.5 and grand-canonical Na+ and Cl- point ions:
 1. Input: a polymer with both or neither of volume_fraction and chemical_potential, canonical volume
    fractions above 1, grand-canonical polymers in SCFT and L-FTS, grafted grand-canonical polymers,
-   an ion with both concentration and chemical_potential and a grand-canonical counterion are
-   rejected. Charged grand-canonical species need no electroneutral input and free the uniform mode
-   of psi; a neutral grand-canonical polymer, or a grand-canonical polyampholyte without net
-   charge, keeps it at zero.
+   a polymer chemical potential beyond +-700, an ion with both concentration and chemical_potential
+   and a grand-canonical counterion are rejected. Charged grand-canonical species need no
+   electroneutral input and free the uniform mode of psi; a neutral grand-canonical polymer, or a
+   grand-canonical polyampholyte without net charge, keeps it at zero.
 2. Ensembles agree on the same (real) fields: with e^(beta mu) = phi_h/(alpha_h Q_h) the
    grand-canonical homopolymer has the partition function, concentrations and number of chains of
    the canonical one with volume fraction phi_h, and the chemical potentials of the two ensembles
@@ -28,6 +28,7 @@ import contextlib
 import io
 import os
 import tempfile
+import warnings
 from pathlib import Path
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -36,7 +37,8 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
-from polymerfts.validation import validate_scft_params
+from polymerfts.utils.validation import validate_scft_params
+from fts_checks import exact_restart, quiet, recording_dir
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 CHI, ZETA, Z_A = 2.0, 50.0, 0.2
@@ -70,11 +72,6 @@ def parameters(directory, steps=2, charges=None, ions=None, screening_length=Non
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def expect_validation_error(make, message):
@@ -117,6 +114,18 @@ def inputs(root):
     def open_counterion(params):
         params["electrostatics"]["counterion"] = "Cl"
     expect_validation_error(changed(open_counterion), "is not one of the canonical")
+
+    # |beta mu| of a grand-canonical polymer is bounded by 700, where its fugacity is a normal double
+    for mu in (700.5, -700.5, 710.0, -750.0):
+        def large_mu(params, mu=mu):
+            params["polymers"][1]["chemical_potential"] = mu
+        expect_validation_error(changed(large_mu), "'polymers[1].chemical_potential' must lie in [-700, 700]")
+    for mu in (700.0, -700.0):
+        params = parameters(root / "inputs")
+        params.pop("electrostatics")
+        params["polymers"][1]["chemical_potential"] = mu
+        sim = quiet(lambda: CLFTS(params))
+        assert sim.fugacities[1] == np.exp(mu) and np.isfinite(sim.fugacities[1]) and sim.fugacities[1] > 0
 
     params = parameters(root / "inputs")
     params.pop("electrostatics")
@@ -166,8 +175,8 @@ def ensembles(root):
     assert np.allclose(q_grand, q, rtol=1e-12, atol=0), "partition functions"
     for m in "AB":
         assert np.max(np.abs(phi_grand[m] - phi[m])) < 1e-12, f"concentration {m}"
-    assert np.allclose(sim.number_densities(q_grand), [0.6, 0.4 / ALPHA_H], rtol=1e-12, atol=0), "numbers of chains"
-    assert np.allclose(sim.chemical_potentials(q_grand), sim_canonical.chemical_potentials(q), rtol=0, atol=1e-12), \
+    assert np.allclose(sim.thermodynamics.number_densities(q_grand), [0.6, 0.4 / ALPHA_H], rtol=1e-12, atol=0), "numbers of chains"
+    assert np.allclose(sim.thermodynamics.chemical_potentials(q_grand), sim_canonical.thermodynamics.chemical_potentials(q), rtol=0, atol=1e-12), \
         "chemical potentials"
 
 
@@ -177,7 +186,7 @@ def hamiltonian(sim, w_aux):
     partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
     h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
                                     include_const_term=True, phi=phi_smeared)
-    return h + sim.electrostatics.hamiltonian() + sim.grand_canonical_hamiltonian(partitions), phi_smeared
+    return h + sim.electrostatics.hamiltonian() + sim.thermodynamics.grand_canonical_hamiltonian(partitions), phi_smeared
 
 
 def forces(root):
@@ -285,11 +294,11 @@ def pressure(root):
             h_fields = sum(s.mpt.h_coef_mu2[i] * np.mean(pinned[i] ** 2) + s.mpt.h_coef_mu1[i] * np.mean(pinned[i])
                            for i in range(M)) + s.mpt.h_const
             # Terms that scale with V: the fields, psi with the grand-canonical ions, the homopolymer
-            h_volume = h_fields + s.electrostatics.hamiltonian() + s.grand_canonical_hamiltonian(q)
+            h_volume = h_fields + s.electrostatics.hamiltonian() + s.thermodynamics.grand_canonical_hamiltonian(q)
             return np.log(q[0]), h_volume, phi, pinned
 
         _, _, phi, pinned = state(sim)
-        operator = sim.pressure(pinned, phi) - 0.6
+        operator = sim.thermodynamics.pressure(pinned, phi) - 0.6
 
         def dilated(scale):
             s = make(scale)
@@ -309,24 +318,108 @@ def pressure(root):
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        sim = quiet(lambda: CLFTS(parameters(directory, steps=steps, charges={"A": Z_A, "B": -0.05}), random_seed=7))
-        rng = np.random.default_rng(3)
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 4)
-    run(root / "part", 3)
-    run(root / "part", 4, continue_from=root / "part" / "fields_000003.mat")
-    for name in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        a, b = loadmat(root / "full" / name, squeeze_me=True), loadmat(root / "part" / name, squeeze_me=True)
-        keys = [k for k in a if not k.startswith("__") and isinstance(a[k], np.ndarray) and a[k].dtype.kind in "fc"
-                and a[k].size]
-        assert keys and max(np.max(np.abs(a[k] - b[k])) for k in keys) == 0.0, f"continued run, {name}"
-    data = loadmat(root / "part" / "dH_000004.mat", squeeze_me=True)
+    rng = np.random.default_rng(3)
+    initial = {m: rng.normal(0.0, 1.0, int(np.prod(NX))) for m in "AB"}
+    sims = exact_restart(
+        lambda name, steps, seed: quiet(CLFTS, parameters(root / name, steps=steps, charges={"A": Z_A, "B": -0.05}),
+                                        random_seed=seed),
+        lambda sim: sim.run(initial_fields=initial), 4, 3,
+        dict.fromkeys(("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"), ""),
+        exclude=("initial_params", "simulation_metadata_json"), same_directory=True)
+    data = loadmat(recording_dir(sims["continued"]) / "dH_000004.mat", squeeze_me=True)
     assert np.shape(data["number_density_history_real"]) == (2, 4), "pending numbers of chains and ions"
+
+
+def zero_partition(root):
+    """Q=0 is regular for GCE and absent canonical species, including recorded observables.
+
+    The observables are Python; TestGceZeroPartition.py checks the same propagators,
+    partitions and concentrations on every platform.
+    """
+    class HoldFields:
+        name = "hold-fields"
+        settings = {"version": 1}
+
+        def step(self, fields, force, **kwargs):
+            # Keep Q=0 through sampling instead of moving away in an LM proposal.
+            return fields.copy()
+
+    for reduced in (False, True):
+        for ensemble in ("grand-canonical", "absent-canonical"):
+            for length in (1, 3):
+                check_zero_partition(root, cpu_platform(), reduced, ensemble, length, HoldFields())
+
+
+def check_zero_partition(root, platform, reduced, ensemble, length, integrator):
+    grand_canonical = ensemble == "grand-canonical"
+    directory = root / f"zero-Q-{platform}-{reduced}-{ensemble}-{length}"
+    params = {
+        "nx": [4], "lx": [2.0], "ds": 1.0, "chain_model": "discrete",
+        "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 2.0}, "zeta_n": 5.0,
+        "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 1.0}]},
+                     {("chemical_potential" if grand_canonical else "volume_fraction"): 0.0,
+                      "blocks": [{"type": "B", "length": float(length)}]}],
+        "platform": platform, "reduce_memory": reduced,
+        "langevin": {"nbar": 10000.0, "dt": 0.01, "max_step": 1},
+        "recording": {"dir": str(directory), "checkpoint_interval": 1,
+                      "sample_interval": 1, "statistics_save_interval": 1, "pressure": True},
+        "verbose_level": 0,
+    }
+    sim = quiet(lambda: CLFTS(params, random_seed=17, integrator=integrator))
+    sim.draw_architectures = False
+    # The one-bead Q is exactly zero. Three beads with a phase offset leave
+    # a rounding-sized Q whose contour values must be compared on the weight scale.
+    phase = np.array([0.0, 0.0, np.pi, -np.pi]) if length == 1 else np.array([0.0, 0.0, np.pi, np.pi]) + 0.7
+    w = np.array([np.zeros(4), 1j * phase], dtype=complex)
+    w_aux = sim.mpt.to_aux_fields(w)
+    phi, _ = quiet(lambda: sim.compute_concentrations(w_aux))
+    partitions = [sim.prop_solver.get_partition_function(p) for p in range(2)]
+    assert partitions[0] == 1.0
+    assert partitions[1] == 0.0 if length == 1 else abs(partitions[1]) < 2e-14
+    np.testing.assert_allclose(phi["A"], 1.0, rtol=0, atol=2e-14)
+    assert np.all(np.isfinite(phi["B"]))
+    if not grand_canonical:
+        np.testing.assert_array_equal(phi["B"], np.zeros(4))
+    elif length == 1:
+        np.testing.assert_allclose(phi["B"], np.exp(-w[1]), rtol=0, atol=2e-14)
+    else:
+        np.testing.assert_allclose(np.mean(phi["B"]), length * partitions[1], rtol=0, atol=2e-14)
+    expected_mu = [0.0, 0.0 if grand_canonical else -np.inf]
+    with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise"):
+        warnings.simplefilter("error", RuntimeWarning)
+        mu = sim.thermodynamics.chemical_potentials(partitions)
+        np.testing.assert_array_equal(mu.real, expected_mu)
+        np.testing.assert_array_equal(mu.imag, np.zeros(2))
+        h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
+                                       include_const_term=True, phi=phi)
+        h += sim.thermodynamics.grand_canonical_hamiltonian(partitions)
+        assert np.isfinite(h)
+        assert np.isfinite(sim.thermodynamics.pressure(w_aux, phi))
+        assert np.isfinite(sim.thermodynamics.pressure_virial(w_aux, phi))
+        assert np.all(np.isfinite(sim.evaluate_force(w_aux)))
+        # Exercise the public sampling path at the unchanged cancellation state.
+        status = quiet(lambda: sim.run({name: w[i] for i, name in enumerate("AB")}))
+    assert status["status"] == "completed" and status["last_completed_step"] == 1
+    assert sim.prop_solver.get_partition_function(1) == partitions[1], "sampling must keep the cancellation state"
+    recorded = loadmat(directory / "dH_000001.mat", squeeze_me=True)
+    np.testing.assert_array_equal(recorded["chemical_potential_history_real"], expected_mu)
+    np.testing.assert_array_equal(recorded["chemical_potential_history_imag"], np.zeros(2))
+    for name in ("H", "pressure"):
+        for part in ("real", "imag"):
+            assert np.all(np.isfinite(recorded[f"{name}_history_{part}"])), (name, part)
+    if grand_canonical:
+        np.testing.assert_array_equal(recorded["number_density_history_real"], np.real(partitions))
+        np.testing.assert_array_equal(recorded["number_density_history_imag"], np.imag(partitions))
+    # An occupied canonical species still has a logarithmic singularity.
+    with np.errstate(divide="raise", invalid="raise"):
+        try:
+            sim.thermodynamics.chemical_potentials([0.0, 0.0])
+        except FloatingPointError:
+            pass
+        else:
+            raise AssertionError("Positive canonical density with Q=0 must remain singular")
+    for invalid_q in (np.nan, np.inf):
+        assert not np.isfinite(sim.thermodynamics.chemical_potentials([invalid_q, 0.0])[0])
 
 
 def main():
@@ -335,7 +428,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("ensembles", ensembles), ("forces", forces),
-                            ("mean-field limit", mean_field), ("pressure", pressure), ("restart", restart)):
+                            ("mean-field limit", mean_field), ("pressure", pressure), ("restart", restart),
+                            ("zero grand-canonical partition", zero_partition)):
             check(root)
             print(f"[PASS] {name}")
     return 0

@@ -59,7 +59,7 @@ protected:
      */
     ComputationReduceMemoryBase(ComputationBox<T>* cb, Molecules* molecules,
                                 PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                SpaceGroup* space_group, int first_segment,
+                                const NumericalMethodInfo& numerical_method, SpaceGroup* space_group, int first_segment,
                                 const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     /// Contour step index used to advance propagator key (discrete chains: 0).

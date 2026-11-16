@@ -50,9 +50,15 @@ protected:
     void backward_impl(const double* coefficients, int n_fields, T* fields) override;
 
 private:
-    std::unique_ptr<FFT<T>> fft_;
+    std::unique_ptr<FFT<T>> fft_;                             ///< periodic or wall boxes
+    std::unique_ptr<FFT<std::complex<double>>> mirror_fft_;   ///< mirror image of a mixed box
     std::vector<double> coefficients_in_;    ///< coefficients of the inputs of a term
     std::vector<double> coefficients_out_;   ///< accumulated output coefficients
+
+    /// Coefficients of one field of a mixed box (FourierTransform: the mirror image)
+    void mirror_forward(const T* field, std::complex<double>* coefficients) const;
+    /// Inverse of mirror_forward() (real fields take the real part)
+    void mirror_backward(const std::complex<double>* coefficients, T* field) const;
 };
 
 #endif

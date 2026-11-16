@@ -63,6 +63,11 @@
 // Forward declaration
 class SpaceGroup;
 
+/// An angle fixed at 90 degrees (or at another value a space group fixes) holds when it lies
+/// within this many radians of it: the box is then orthogonal (is_orthogonal()), a CrysFFT
+/// engine that needs the angle applies, and SpaceGroup::check_cell accepts the cell.
+constexpr double FIXED_ANGLE_TOLERANCE = 1e-10;
+
 /**
  * @enum BoundaryCondition
  * @brief Types of boundary conditions supported by the simulation.
@@ -475,7 +480,7 @@ public:
 
     /**
      * @brief Check if the lattice is orthogonal.
-     * @return True if all angles are 90°, false otherwise
+     * @return True if all angles are 90° (within FIXED_ANGLE_TOLERANCE), false otherwise
      */
     bool is_orthogonal() const;
 
@@ -634,6 +639,7 @@ public:
      *         cell of volume below 0.1 abc), for a
      *         non-orthogonal cell with walls or while hold_orthogonal_cell()
      *         is in effect, and for a cell that does not match the space group
+     *         (whose fixed angles pass the orthogonality test of this box)
      */
     virtual void set_lattice_parameters(std::vector<double> new_lx, std::vector<double> new_angles);
 };

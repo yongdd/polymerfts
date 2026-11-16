@@ -35,9 +35,12 @@
  * // Create CUDA factory (reduce_memory=false for speed)
  * CudaFactory<double> factory(false);
  *
- * // Create simulation objects
+ * // Create simulation objects (each create function returns a std::unique_ptr)
  * auto cb = factory.create_computation_box(nx, lx, bc);
- * auto* solver = factory.create_propagator_computation(cb, mols, optimizer, "rqm4");
+ * auto mols = factory.create_molecules_information("continuous", 0.01, bonds);
+ * mols->add_polymer(1.0, blocks);
+ * auto optimizer = factory.create_propagator_computation_optimizer(mols.get(), true);
+ * auto solver = factory.create_propagator_computation(cb.get(), mols.get(), optimizer.get(), "rqm4");
  *
  * // Display GPU info
  * factory.display_info();

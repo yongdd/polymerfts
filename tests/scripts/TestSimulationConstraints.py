@@ -4,6 +4,8 @@ import ast
 import json
 from pathlib import Path
 import runpy
+import shutil
+import subprocess
 import threading
 
 import pytest
@@ -40,6 +42,8 @@ def test_exports_use_canonical_parameter_names(mode):
 @pytest.mark.parametrize("shape, lengths, system", (
     ("cubic", ["3", "3", "3"], "Cubic"),
     ("orthorhombic", ["3", "4", "5"], "Orthorhombic"),
+    ("tetragonal", ["3", "3", "5"], "Tetragonal"),
+    ("monoclinic", ["3", "4", "5"], "Monoclinic"),
     ("hexagonal", ["3", "3", "5"], "Hexagonal"),
     ("triclinic", ["3", "4", "5"], "Triclinic"),
 ))
@@ -50,8 +54,33 @@ def test_scft_preserves_selected_relaxation_constraints(shape, lengths, system):
     params = parameters(form)
     assert params["relax_cell"] is True
     assert params["crystal_system"] == system
-    # A triclinic cell must retain free angles even when it starts orthogonal.
+    # Cells with free angles must retain them even when they start orthogonal.
     assert params.get("angles", [90, 90, 90]) == [int(a) for a in angles]
+
+
+def test_2d_oblique_retains_free_gamma_when_starting_orthogonal():
+    form = MODEL["values"]()
+    form["model"]["box"].update(dimension=2, shape="oblique", nx=["8", "8"], lx=["3", "4"])
+    params = parameters(form)
+    assert params["relax_cell"] is True
+    assert params["crystal_system"] == "Oblique2D"
+    assert params.get("angles", [90, 90, 90]) == [90, 90, 90]
+
+
+def test_browser_cell_controls_and_export():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is needed to exercise the browser event handlers")
+    # Only a guard against a hang: the script needs well below a second, but a CI runner can be much slower
+    result = subprocess.run([node, str(Path(__file__).with_name("check_simulation_cells.cjs"))],
+                            check=True, capture_output=True, text=True, timeout=120)
+    for exported in json.loads(result.stdout):
+        form = MODEL["values"]()
+        form["model"] = exported["model"]
+        params = parameters(form)
+        assert params["crystal_system"] == exported["system"]
+        assert params["relax_cell"] is True
+        assert params["lx"][0] == 3.5
 
 
 @pytest.mark.parametrize("mode", ("L-FTS", "CL-FTS"))
@@ -70,18 +99,20 @@ def test_space_group_determines_crystal_system():
     assert "crystal_system" not in params
 
 
-def test_cn_adi_cannot_relax_initially_orthogonal_triclinic_angles():
+@pytest.mark.parametrize("shape", ("orthorhombic", "triclinic"))
+def test_cn_adi_cannot_relax_cells(shape):
+    # The real-space method computes no stress, also in orthogonal boxes
     form = MODEL["values"]()
-    form["model"]["box"]["shape"] = "triclinic"
-    form["numerical_method"] = "cn-adi2"
-    with pytest.raises(ValueError, match="relax triclinic angles"):
+    form["model"]["box"]["shape"] = shape
+    form.update(numerical_method="cn-adi2", relax_cell=True)
+    with pytest.raises(ValueError, match="computes no stress"):
         BUILDER["build_script"](form)
 
 
 @pytest.mark.parametrize("mode", ("SCFT", "L-FTS"))
 def test_cn_adi_remains_available_for_real_orthogonal_fields(mode):
     form = MODEL["values"]()
-    form.update(mode=mode, numerical_method="cn-adi2")
+    form.update(mode=mode, numerical_method="cn-adi2", relax_cell=False)
     assert parameters(form)["numerical_method"] == "cn-adi2"
 
 
@@ -112,3 +143,17 @@ def test_clfts_cn_adi_is_rejected_before_generation_or_save(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("shape", ("orthorhombic", "monoclinic", "triclinic"))
+def test_rs_relaxes_lengths_of_orthogonal_cells_only(shape):
+    # rs computes the stress but keeps the cell angles at 90 degrees
+    form = MODEL["values"]()
+    form["model"]["box"]["shape"] = shape
+    form.update(chain_model="discrete", numerical_method="rs", relax_cell=True)
+    if shape == "orthorhombic":
+        params = parameters(form)
+        assert params["numerical_method"] == "rs" and params["relax_cell"]
+    else:
+        with pytest.raises(ValueError, match="keeps the cell angles"):
+            BUILDER["build_script"](form)

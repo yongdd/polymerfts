@@ -6,13 +6,17 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <type_traits>
 
 #include "CpuComputationBackend.h"
+#include "Exception.h"
 #include "NumericalMethods.h"
+#include "JunctionProduct.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
 #include "CpuSolverPseudoRK2.h"
 #include "CpuSolverPseudoRQM4.h"
+#include "CpuSolverRealSpaceDiscrete.h"
 
 template <typename T>
 CpuComputationBackend<T>::CpuComputationBackend(
@@ -26,8 +30,11 @@ CpuComputationBackend<T>::CpuComputationBackend(
 
     switch (method_info.id)
     {
-    case NumericalMethodId::Discrete:
+    case NumericalMethodId::PS:
         solver = std::make_unique<CpuSolverPseudoDiscrete<T>>(cb, molecules, fft_backend);
+        break;
+    case NumericalMethodId::RS:
+        solver = std::make_unique<CpuSolverRealSpaceDiscrete<T>>(cb, molecules);
         break;
     case NumericalMethodId::RQM4:
         solver = std::make_unique<CpuSolverPseudoRQM4<T>>(cb, molecules, fft_backend);
@@ -185,30 +192,49 @@ void CpuComputationBackend<T>::copy(int, BackendArray<T>* dst, BackendArray<T>* 
 }
 
 template <typename T>
-void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<const T*, int>>& sources)
+void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
     for (int i = 0; i < n_basis; i++)
         q[i] = 0.0;
     for (const auto& [src, n_repeated] : sources)
         for (int i = 0; i < n_basis; i++)
-            q[i] += src[i]*static_cast<double>(n_repeated);
+            q[i] += src[i]*n_repeated;
 }
 
 template <typename T>
-void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, int>>& sources)
+void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources)
 {
+    if constexpr (!std::is_same_v<T, double>)
+    {
+        for (const auto& source : sources)
+            if (!junction_product::integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
+    }
     for (int i = 0; i < n_basis; i++)
-        q[i] = 1.0;
-    for (const auto& [src, n_repeated] : sources)
-        for (int i = 0; i < n_basis; i++)
-            q[i] *= pow(src[i], n_repeated);
+    {
+        junction_product::Accumulator<T> product;
+        for (const auto& [src, n_repeated] : sources)
+        {
+            if constexpr (std::is_same_v<T, double>)
+                product.multiply(src[i], n_repeated);
+            else
+                product.multiply(src[i].real(), src[i].imag(), static_cast<int>(n_repeated));
+        }
+        if constexpr (std::is_same_v<T, double>)
+            q[i] = product.value();
+        else
+        {
+            const auto value = product.value();
+            q[i] = T(value.real, value.imag);
+        }
+    }
 }
 
 template <typename T>
 void CpuComputationBackend<T>::junction_sum(
-    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     sum_sources(raw(q), host_sources);
@@ -216,9 +242,9 @@ void CpuComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_product(
-    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     multiply_sources(raw(q), host_sources);
@@ -226,9 +252,9 @@ void CpuComputationBackend<T>::junction_product(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_sum(
-    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     sum_sources(raw(q), host_sources);
@@ -236,9 +262,9 @@ void CpuComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CpuComputationBackend<T>::junction_product(
-    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    std::vector<std::pair<const T*, int>> host_sources;
+    std::vector<std::pair<const T*, double>> host_sources;
     for (const auto& [src, n_repeated] : sources)
         host_sources.push_back({raw(src), n_repeated});
     multiply_sources(raw(q), host_sources);
@@ -279,6 +305,28 @@ T CpuComputationBackend<T>::inner_product_inverse_weight(BackendArray<T>* a, Bac
 }
 
 template <typename T>
+double CpuComputationBackend<T>::absolute_inner_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor)
+{
+    if (absolute_product.empty())
+        absolute_product.resize(n_basis);
+    const double* mask = cb->get_mask();
+    for (int i = 0; i < n_basis; ++i)
+    {
+        if (mask != nullptr && mask[i] == 0.0)
+        {
+            absolute_product[i] = T(0.0);
+            continue;
+        }
+        T product = raw(a)[i] * raw(b)[i];
+        if (divisor != nullptr)
+            product /= raw(divisor)[i];
+        absolute_product[i] = std::abs(product);
+    }
+    return std::real(cb->integral(absolute_product.data()));
+}
+
+template <typename T>
 void CpuComputationBackend<T>::add_segment_products(
     int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
 {
@@ -300,8 +348,15 @@ void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi
     if (divisor != nullptr)
     {
         const T* _divisor = raw(divisor);
+        const double* mask = cb->get_mask();
         for (int i = 0; i < n_basis; i++)
-            _phi[i] /= _divisor[i];
+        {
+            // A masked bead has zero density, including when exp(-w ds) underflows.
+            if (mask != nullptr && mask[i] == 0.0)
+                _phi[i] = T(0.0);
+            else
+                _phi[i] /= _divisor[i];
+        }
     }
     for (int i = 0; i < n_basis; i++)
         _phi[i] *= norm;
@@ -333,6 +388,13 @@ T CpuComputationBackend<T>::solvent_concentration(
         _phi[i] = exp(-_w[i] * ds);
 
     const T partition = cb->mean(_phi);
+    // Keep Q for diagnostics, but an absent species has zero concentration even
+    // when its Boltzmann factors cancel (Q = 0) or are non-finite.
+    if (volume_fraction == 0.0)
+    {
+        std::fill(_phi, _phi + n_basis, T(0.0));
+        return partition;
+    }
     const T norm = volume_fraction / partition;
     for (int i = 0; i < n_basis; i++)
         _phi[i] *= norm;

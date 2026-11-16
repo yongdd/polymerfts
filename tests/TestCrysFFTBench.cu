@@ -2,6 +2,9 @@
  * @file TestCrysFFTBench.cu
  * @brief CUDA FFT-only benchmark for CrysFFT (Pmmm/3m) vs full FFT.
  *
+ * The full-FFT baseline does what the solvers do: it multiplies by a table built
+ * once and plans FFTW with FFTW_MEASURE, as the standard FFT of the solvers does.
+ *
  * Usage: ./TestCrysFFTBench [Nx Ny Nz] [iters] [warmup] [--cpu] [--obliquez]
  * Defaults: Nx=Ny=Nz=64, iters=100, warmup=10
  */
@@ -31,31 +34,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// Simple CUDA kernel for diffusion multiplier on full FFT
-__global__ void ker_apply_boltzmann(
-    cufftDoubleComplex* freq, double Lx, double Ly, double Lz,
-    int Nx, int Ny, int Nz_half, double coeff, double norm)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int M = Nx * Ny * Nz_half;
-    if (idx >= M) return;
-
-    int iz = idx % Nz_half;
-    int iy = (idx / Nz_half) % Ny;
-    int ix = idx / (Ny * Nz_half);
-
-    int kx = (ix > Nx/2) ? (Nx - ix) : ix;
-    int ky = (iy > Ny/2) ? (Ny - iy) : iy;
-
-    double kx2 = (kx * 2.0 * M_PI / Lx);
-    double ky2 = (ky * 2.0 * M_PI / Ly);
-    double kz2 = (iz * 2.0 * M_PI / Lz);
-
-    double boltz = exp(-(kx2*kx2 + ky2*ky2 + kz2*kz2) * coeff) * norm;
-    freq[idx].x *= boltz;
-    freq[idx].y *= boltz;
-}
-
+// CUDA kernel for the diffusion multiplier on the full FFT
 __global__ void ker_apply_boltzmann_lut(
     cufftDoubleComplex* freq, const double* boltz, int M)
 {
@@ -115,6 +94,27 @@ static void fill_hex_physical_field(
             {
                 h_hex[(ix * Ny + iy) * Nz2 + iz] =
                     h_full[(ix * Ny + iy) * Nz + iz];
+            }
+        }
+    }
+}
+
+static void fill_boltzmann_orthogonal(
+    std::vector<double>& boltz, int Nx, int Ny, int Nz, double Lx, double Ly, double Lz, double coeff, double norm)
+{
+    int idx = 0;
+    for (int ix = 0; ix < Nx; ++ix)
+    {
+        int kx = (ix > Nx/2) ? (Nx - ix) : ix;
+        double kx2 = (kx * 2.0 * M_PI / Lx) * (kx * 2.0 * M_PI / Lx);
+        for (int iy = 0; iy < Ny; ++iy)
+        {
+            int ky = (iy > Ny/2) ? (Ny - iy) : iy;
+            double ky2 = (ky * 2.0 * M_PI / Ly) * (ky * 2.0 * M_PI / Ly);
+            for (int iz = 0; iz < Nz/2 + 1; ++iz)
+            {
+                double kz2 = (iz * 2.0 * M_PI / Lz) * (iz * 2.0 * M_PI / Lz);
+                boltz[idx++] = std::exp(-(kx2 + ky2 + kz2) * coeff) * norm;
             }
         }
     }
@@ -357,17 +357,23 @@ int main(int argc, char** argv)
     int blocks = (M_complex + 255) / 256;
     double norm = 1.0 / M_full;
 
+    std::vector<double> boltz_full(M_complex, 0.0);
+    fill_boltzmann_orthogonal(boltz_full, Nx, Ny, Nz, Lx, Ly, Lz, coeff, norm);
+    double* d_boltz_full{};
+    CUDA_CHECK(cudaMalloc(&d_boltz_full, sizeof(double) * M_complex));
+    CUDA_CHECK(cudaMemcpy(d_boltz_full, boltz_full.data(), sizeof(double) * M_complex, cudaMemcpyHostToDevice));
+
     for (int i = 0; i < warmup; ++i)
     {
         cufftExecD2Z(plan_fwd, d_full, d_freq);
-        ker_apply_boltzmann<<<blocks, 256>>>(d_freq, Lx, Ly, Lz, Nx, Ny, Nz/2+1, coeff, norm);
+        ker_apply_boltzmann_lut<<<blocks, 256>>>(d_freq, d_boltz_full, M_complex);
         cufftExecZ2D(plan_bwd, d_freq, d_full);
     }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     float ms_off = time_cuda_events([&](){
         cufftExecD2Z(plan_fwd, d_full, d_freq);
-        ker_apply_boltzmann<<<blocks, 256>>>(d_freq, Lx, Ly, Lz, Nx, Ny, Nz/2+1, coeff, norm);
+        ker_apply_boltzmann_lut<<<blocks, 256>>>(d_freq, d_boltz_full, M_complex);
         cufftExecZ2D(plan_bwd, d_freq, d_full);
     }, iters);
 
@@ -380,6 +386,7 @@ int main(int argc, char** argv)
     cudaFree(d_3m_out);
     cudaFree(d_full);
     cudaFree(d_freq);
+    cudaFree(d_boltz_full);
 
     std::printf("=== CUDA FFT-only benchmark ===\n");
     std::printf("Grid: %dx%dx%d  (iters=%d, warmup=%d)\n", Nx, Ny, Nz, iters, warmup);
@@ -435,26 +442,10 @@ int main(int argc, char** argv)
         std::vector<double> cpu_full_work(M_full, 0.0);
         int M_complex_full = Nx * Ny * (Nz/2 + 1);
         fftw_complex* freq = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * M_complex_full);
-        fftw_plan plan_fwd = fftw_plan_dft_r2c_3d(Nx, Ny, Nz, cpu_full_work.data(), freq, FFTW_ESTIMATE);
-        fftw_plan plan_bwd = fftw_plan_dft_c2r_3d(Nx, Ny, Nz, freq, cpu_full_work.data(), FFTW_ESTIMATE);
+        fftw_plan plan_fwd = fftw_plan_dft_r2c_3d(Nx, Ny, Nz, cpu_full_work.data(), freq, FFTW_MEASURE);
+        fftw_plan plan_bwd = fftw_plan_dft_c2r_3d(Nx, Ny, Nz, freq, cpu_full_work.data(), FFTW_MEASURE);
 
-        std::vector<double> boltz(M_complex_full, 0.0);
-        for (int ix = 0; ix < Nx; ++ix)
-        {
-            int kx = (ix > Nx/2) ? (Nx - ix) : ix;
-            double kx2 = (kx * 2.0 * M_PI / Lx) * (kx * 2.0 * M_PI / Lx);
-            for (int iy = 0; iy < Ny; ++iy)
-            {
-                int ky = (iy > Ny/2) ? (Ny - iy) : iy;
-                double ky2 = (ky * 2.0 * M_PI / Ly) * (ky * 2.0 * M_PI / Ly);
-                for (int iz = 0; iz < Nz/2 + 1; ++iz)
-                {
-                    double kz2 = (iz * 2.0 * M_PI / Lz) * (iz * 2.0 * M_PI / Lz);
-                    int idx = (ix * Ny + iy) * (Nz/2 + 1) + iz;
-                    boltz[idx] = std::exp(-(kx2 + ky2 + kz2) * coeff) * (1.0 / M_full);
-                }
-            }
-        }
+        const std::vector<double>& boltz = boltz_full;
 
         for (int i = 0; i < warmup; ++i)
         {
@@ -598,8 +589,8 @@ int main(int argc, char** argv)
             std::vector<double> cpu_full_hex_in = h_full;
             std::vector<double> cpu_full_hex_work(M_full, 0.0);
             fftw_complex* freq_hex = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * M_complex);
-            fftw_plan plan_hex_fwd_cpu = fftw_plan_dft_r2c_3d(Nx, Ny, Nz, cpu_full_hex_work.data(), freq_hex, FFTW_ESTIMATE);
-            fftw_plan plan_hex_bwd_cpu = fftw_plan_dft_c2r_3d(Nx, Ny, Nz, freq_hex, cpu_full_hex_work.data(), FFTW_ESTIMATE);
+            fftw_plan plan_hex_fwd_cpu = fftw_plan_dft_r2c_3d(Nx, Ny, Nz, cpu_full_hex_work.data(), freq_hex, FFTW_MEASURE);
+            fftw_plan plan_hex_bwd_cpu = fftw_plan_dft_c2r_3d(Nx, Ny, Nz, freq_hex, cpu_full_hex_work.data(), FFTW_MEASURE);
 
             std::vector<double> boltz_hex_cpu = boltz_hex;
 

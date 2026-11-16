@@ -17,56 +17,64 @@ This document describes the utility scripts in `scripts/analysis/` and `scripts/
 
 ### 1.1 Density Plots
 
-| File | Language | Description |
-|------|----------|-------------|
-| `plot_2d_density.m` | MATLAB | Plot 2D monomer density from `fields.mat` |
-| `plot_2d_density.ipynb` | Python | Plot `phi_A` and `phi_B` of a 2D `.mat` file (set the file name in the notebook) |
-| `plot_2d_slice.m` | MATLAB | Extract and plot a 2D slice from 3D density data in `fields_002000.mat` |
-| `plot_3d_isodensity.m` | MATLAB | Render 3D isodensity surfaces with lighting from `fields_002000.mat` |
-| `plot_3d_isodensity.ipynb` | Python | Interactive Plotly isosurfaces of `fields_002000.mat` |
+The notebooks read SCFT results and L-FTS fields files, CL-FTS fields files (the real parts) and the
+`phi` structure of older files, with the lattice angles of the file. Each 2D plot fills the grid cell
+around each point with its value, in the unit cell of the file's lengths and angles.
 
-**Usage (MATLAB):**
-```matlab
-% Run in the directory that holds the input file (edit the file name in the script if needed)
-cd /path/to/simulation
-matlab -nodisplay -r "run('/path/to/scripts/analysis/plot_3d_isodensity.m'); exit"
-```
+| File | Description |
+|------|-------------|
+| `plot_2d_density.ipynb` | The concentration of every monomer type of a 2D file (`phases/C2D.mat`) |
+| `plot_2d_slice.ipynb` | `phi_A` on one plane of a 3D file (`fields_002000.mat`): the plane of grid index `slice_index` along the lattice vector `a`, drawn with `b` and `c` |
+| `plot_3d_isodensity.ipynb` | Interactive Plotly isosurfaces of `phi_A` of a 3D file (`fields_002000.mat`) at the grid points of the solvers, with the outline of the cell; a non-orthogonal cell is interpolated linearly onto a Cartesian grid, which Plotly's isosurface needs, and the periodic field fills the box around the cell |
 
-**Usage (Python):**
+**Usage:** Jupyter runs a notebook in the folder of the notebook, so copy it next to the data (or
+set an absolute file name in it):
 ```bash
 cd /path/to/simulation
-jupyter notebook /path/to/scripts/analysis/plot_2d_density.ipynb
+cp /path/to/polymerfts/scripts/analysis/plot_2d_density.ipynb .
+jupyter notebook plot_2d_density.ipynb
 ```
 
-**Output:** the MATLAB scripts write PNG image files (`2d_density.png`, `2d_slice_image.png`, `isodensity.png`); the notebooks only display the figures.
+Set the file name in the first lines of a notebook. The figures are displayed; commented lines at
+the end save them (`savefig` for the 2D plots; `write_html`, or `write_image`, which needs kaleido,
+for the isosurfaces).
 
 ### 1.2 Structure Function
 
-| File | Language | Description |
-|------|----------|-------------|
-| `plot_structure_function.m` | MATLAB | Plot spherically-averaged structure function S(k) |
-| `plot_structure_function.ipynb` | Python | Same functionality as Jupyter notebook |
+| File | Description |
+|------|-------------|
+| `plot_structure_function.ipynb` | Plot the angle-averaged structure function S(k) |
 
-Reads structure function data from L-FTS simulations and computes spherically-averaged S(k) by grouping Fourier modes with equal |k|².
+Reads structure function data from L-FTS simulations in 1D, 2D or 3D and computes the angular average of S(k) by grouping Fourier modes with equal |k|².
+In a cell that is not orthogonal, |k| follows from the reciprocal metric of the cell, with the index
+alias of the smallest |k| that the solvers use ([Numerical Methods, Sections 3.1 and 3.5](../theory/NumericalMethods.md#35-boltzmann-weight-calculation));
+the files save the lattice angles (older files keep those of the input in `initial_params`).
+The real-FFT half spectrum is weighted by the number of full-spectrum modes it represents:
+twice for interior planes, once for the zero and even-grid Nyquist planes. Each file's mean
+is also weighted by its saved `sample_count`, so unequal measurement windows contribute
+their actual numbers of samples. Zero-sample windows are skipped. If every selected file
+predates `sample_count`, files receive equal weight for compatibility; mixing files with
+and without counts is rejected because their relative sample weights are unknown.
 
-**Usage:**
-```matlab
-% Edit file_path and type_pair ("A_A", "A_B", or "B_B") in script
-% Reads: data_simulation/structure_function_*.mat
-matlab -nodisplay -r "run('plot_structure_function.m'); exit"
+**Usage:** copy the notebook next to the data, as in Section 1.1:
+```bash
+cd /path/to/simulation
+cp /path/to/polymerfts/scripts/analysis/plot_structure_function.ipynb .
+jupyter notebook plot_structure_function.ipynb
+# Reads data_simulation/structure_function_*.mat
 ```
 
-**Parameters to edit in script:**
+**Parameters to edit in the notebook:**
 - `file_path`: Path to structure function files
-- `type_pair`: Correlation type (`"A_A"`, `"A_B"`, or `"B_B"`)
+- `type_pair`: the pair of monomer types, e.g. `("A", "B")`
+- `iterations`: the steps of the files to average (`range(100000, 500000, 100000)` reads 100000 to 400000)
 
 ### 1.3 WTMD Statistics
 
-| File | Language | Description |
-|------|----------|-------------|
-| `plot_wtmd_statistics.m` | MATLAB | Plot WTMD bias potential and probability distribution |
-| `plot_wtmd_statistics.ipynb` | Python | Same functionality as Jupyter notebook |
-| `plot_wtmd_chib_AB.ipynb` | Python | χN reweighting analysis for free energy computation |
+| File | Description |
+|------|-------------|
+| `plot_wtmd_statistics.ipynb` | Plot the WTMD bias potential and probability distribution |
+| `plot_wtmd_chib_AB.ipynb` | χN reweighting analysis for free energy computation |
 
 These tools visualize Well-Tempered Metadynamics (WTMD) simulation output, including:
 - **U(Ψ)**: Bias potential as a function of order parameter
@@ -74,17 +82,19 @@ These tools visualize Well-Tempered Metadynamics (WTMD) simulation output, inclu
 - **P(Ψ)**: Probability distribution (from converged bias potential)
 - **∂F/∂χN**: Free energy derivative for histogram reweighting
 
-**Usage (basic statistics):**
-```matlab
-% Run in the directory that holds the wtmd_statistics_*.mat files
+**Usage (basic statistics):** copy the notebook next to the data, as in Section 1.1, and set the
+file name (`wtmd_statistics_1000000.mat`) in it:
+```bash
 cd /path/to/simulation/data_simulation
-matlab -nodisplay -r "run('/path/to/scripts/analysis/plot_wtmd_statistics.m'); exit"
+cp /path/to/polymerfts/scripts/analysis/plot_wtmd_statistics.ipynb .
+jupyter notebook plot_wtmd_statistics.ipynb
 ```
 
 **Usage (χN reweighting):**
 ```bash
 cd /path/to/simulation
-jupyter notebook /path/to/scripts/analysis/plot_wtmd_chib_AB.ipynb
+cp /path/to/polymerfts/scripts/analysis/plot_wtmd_chib_AB.ipynb .
+jupyter notebook plot_wtmd_chib_AB.ipynb
 # Edit chin (simulation χN), dchiN (shift), and data_dir in the notebook
 ```
 
@@ -144,11 +154,12 @@ Uses networkx and matplotlib; a graphviz layout is used when pygraphviz is insta
 from polymerfts import save_vtk
 result = calc.run(initial_fields=w, return_result=True)
 save_vtk("phi.vtk", result.phi, calc.prop_solver.get_lx(), nx=calc.prop_solver.nx,
-         angles=calc.prop_solver.get_angles_degrees())
+         angles=calc.prop_solver.get_angles_degrees(), space_group=calc.sg)
 ```
 
 - `fields` is one array (named by `field_name`, default `phi`) or a dictionary `{name: array}`, which puts several fields in one file. Arrays have the grid shape, or are flat when `nx` is given; 1D and 2D grids are padded to 3D.
 - Grid points sit at the cell centres, `(i + 1/2) * lx / nx`, as in the solvers. The outline ParaView draws through the points therefore lies half a cell inside the box; the walls of a non-periodic box are at 0 and `lx`.
+- `space_group` takes the space group of the fields (`calc.sg` or `calc.prop_solver.space_group`, `None` without one), built for the grid `nx`. A hexagonal-axes setting of a hexagonal or trigonal group samples the lattice axes a and b at the nodes, `i * lx / nx` ([Space Group](../theory/SpaceGroup.md#how-hexagonaltrigonal-groups-are-handled)), and the points along a and b are placed there, as in `PropagatorSolver.get_grid_points`; the outline then starts at 0 along a and b.
 - With `angles` (degrees) of a non-orthogonal cell, the file is a structured grid with explicit point coordinates along the lattice vectors (`a` along x, `b` in the xy plane, as in `ComputationBox`).
 - Values are written as single-precision text; complex fields are rejected (write the real and imaginary parts separately).
 
@@ -194,9 +205,9 @@ script separately with polymerfts installed. Results are complete polymerfts
 and unsupported physical models are rejected; the guide lists the restrictions.
 
 See the [PSCF conversion guide](../getting-started/PscfConversion.md) for dependencies,
-cell conventions, supported models, migration from the old tool paths, and
-examples. The converter uses PSCF's full-grid iterator; it does not impose the
-source space group or convert discrete/complex models by approximation.
+cell conventions, supported models, checks and examples. The converter uses PSCF's
+full-grid iterator; it does not impose the source space group or convert
+discrete/complex models by approximation.
 
 ---
 
@@ -247,7 +258,7 @@ With a fields file, the script also prints $`z_\infty \chi_b N`$ for each `chi_n
 - one smearing function for all monomer types: `a_int` is a number, and the per-type
   lengths of charged CL-FTS are rejected.
 
-Both integrands approach $`c/k^2`$ at $`k = 0`$ ($`c = 12`$ for $`z_\infty`$, $`c = 2`$ for $`a_b/a`$, since $`\Gamma(0) = 1`$). The script integrates this term exactly, by one-dimensional quadrature of $`\int d\mathbf{k}/k^2 = \int_0^\infty ds \prod_\nu (\pi/s)^{1/2} \operatorname{erf}(\pi s^{1/2}/\Delta_\nu)`$, and the Gauss-Legendre quadrature only sees the bounded remainder. With the default 64 points per axis, $`z_\infty`$ agrees with the bond sum to $`10^{-13}`$. With Gaussian smearing and compressibility, the change on refinement is below $`10^{-12}`$. Sigmoidal smearing depends on $`\vert k \vert`$, so its remainder is not smooth at $`k = 0`$; there the error is below $`10^{-9}`$. `tests/scripts/TestRenormalization.py` checks the results against three references:
+Both integrands approach $`c/k^2`$ at $`k = 0`$ ($`c = 12`$ for $`z_\infty`$, $`c = 2`$ for $`a_b/a`$, since $`\Gamma(0) = 1`$). The script integrates this term exactly, by one-dimensional quadrature of $`\int d\mathbf{k}/k^2 = \int_0^\infty ds \prod_\nu (\pi/s)^{1/2} \,\mathrm{erf}(\pi s^{1/2}/\Delta_\nu)`$, and the Gauss-Legendre quadrature only sees the bounded remainder. With the default 64 points per axis, $`z_\infty`$ agrees with the bond sum to $`10^{-13}`$. With Gaussian smearing and compressibility, the change on refinement is below $`10^{-12}`$. Sigmoidal smearing depends on $`\vert k \vert`$, so its remainder is not smooth at $`k = 0`$; there the error is below $`10^{-9}`$. `tests/scripts/TestRenormalization.py` checks the results against three references:
 
 - the bond sum of Beardsley and Matsen (2019);
 - the limit $`N \to \infty`$;
@@ -263,7 +274,7 @@ Both integrands approach $`c/k^2`$ at $`k = 0`$ ($`c = 12`$ for $`z_\infty`$, $`
 
 ## 4. Field Conversion
 
-### 4.1 Monomer to Auxiliary Fields (`convert_into_auxiliary_fields.m`)
+### 4.1 Monomer to Auxiliary Fields (`convert_into_auxiliary_fields.py`)
 
 Convert monomer potential fields $`(w_A, w_B, \ldots)`$ to auxiliary potential fields $`(w_{\text{aux}})`$ using the inverse transformation matrix from eigenvalue decomposition.
 
@@ -272,16 +283,16 @@ Convert monomer potential fields $`(w_A, w_B, \ldots)`$ to auxiliary potential f
 ```
 
 **Usage:**
-```matlab
-% Run in directory containing fields_*.mat
-matlab -nodisplay -r "run('/path/to/scripts/analysis/convert_into_auxiliary_fields.m'); exit"
+```bash
+python scripts/analysis/convert_into_auxiliary_fields.py fields_000200.mat -o w_aux.mat
 ```
 
-**Input:** `fields_*.mat` containing:
-- `w_A`, `w_B`, ... (monomer potential fields)
-- `matrix_a_inverse` (inverse transformation matrix, saved by simulation)
+**Input:** a fields file or an SCFT result containing:
+- `w_A`, `w_B`, ... (monomer potential fields; CL-FTS: `w_A_real`, `w_A_imag`, ...)
+- `monomer_types` and `matrix_a_inverse` (inverse transformation matrix, saved by the simulation)
 
-**Output:** `w_aux.mat` containing the auxiliary fields
+**Output:** `w_aux.mat` with `w_aux`, one row per auxiliary field, and `nx`, `lx`, `angles` and
+`monomer_types`. L-FTS and CL-FTS fields files hold `w_aux` themselves.
 
 **Reference:**
 - D. Düchs, K. T. Delaney, and G. H. Fredrickson, "A multi-species exchange model for fully fluctuating polymer field theory simulations," *J. Chem. Phys.* **2014**, 141, 174103
@@ -307,7 +318,7 @@ Simulation output files (`fields_XXXXXX.mat`) contain:
 | `matrix_a` | float matrix | Transformation matrix $`\mathbf{A}`$ |
 | `matrix_a_inverse` | float matrix | Inverse transformation matrix $`\mathbf{A}^{-1}`$ |
 
-L-FTS and CL-FTS checkpoints additionally hold `initial_params`, `langevin_step`, `dt`, `eigenvalues`, `aux_fields_real`/`aux_fields_imag`, the noise array `normal_noise_prev` and the random-generator state (`random_generator`, `random_state_state`, `random_state_inc`), which `continue_run()` restores. CL-FTS stores complex fields as `w_A_real`/`w_A_imag` and `phi_A_real`/`phi_A_imag`; with `electrostatics` its checkpoints also hold $`\psi`$ (`psi_real`/`psi_imag`, `psi_k_real`/`psi_k_imag`), the previous noise `psi_noise_prev` and the random-generator state `psi_rng_state_json` of $`\psi`$, and the order of the point ions `ion_names_json`.
+L-FTS and CL-FTS checkpoints additionally hold `checkpoint_settings_json` (the settings of the run as JSON, among them `nx`, `lx` and `angles`), `initial_params`, the auxiliary fields `w_aux`, `langevin_step`, `dt`, `eigenvalues`, `aux_fields_real`/`aux_fields_imag`, the noise array `normal_noise_prev` and the random-generator state (`random_generator`, `random_state_state`, `random_state_inc`), which `continue_run()` restores. CL-FTS stores complex fields as `w_A_real`/`w_A_imag` and `phi_A_real`/`phi_A_imag`; with `electrostatics` its checkpoints also hold $`\psi`$ (`psi_real`/`psi_imag`, `psi_k_real`/`psi_k_imag`), the previous noise `psi_noise_prev` and the random-generator state `psi_rng_state_json` of $`\psi`$, and the order of the point ions `ion_names_json`.
 
 **SCFT results** (`SCFT.save_results(path)`, `.mat`, `.json` or `.yaml` by extension) contain `initial_params`, `dim`, `nx`, `lx`, `angles`, `monomer_types`, `chi_n`, `chain_model`, `ds`, `eigenvalues`, `matrix_a`, `matrix_a_inverse`, `simulation_metadata_json` (run metadata, including whether the run converged), `free_energy`, `free_energy_absolute`, `free_energy_homogeneous`, `partition_functions`, `polymer_lengths`, `polymer_volume_fractions`, `chemical_potentials` and `grand_potential` (omitted for grafted chains or supplied initial propagators), `w_<type>` and `phi_<type>` on the full grid (expanded from the reduced basis when a space group was used), with `electrostatics` the potential `psi` and, with point ions, `ion_chemical_potentials`, and `space_group_symbol`/`space_group_hall_number` if one was used. Load `.json` with `json.load` and `.yaml` with `yaml.safe_load`; arrays are stored as lists there. The `.json` file is strict JSON: a non-finite number, such as the entry `-inf` of `chemical_potentials` for a species with volume fraction 0, is stored as `{"nonfinite_float": "-inf"}`.
 
@@ -338,11 +349,14 @@ L-FTS simulations save structure function data in `structure_function_XXXXXX.mat
 | Variable | Description |
 |----------|-------------|
 | `nx`, `lx` | Grid and box dimensions |
+| `angles` | Lattice angles [alpha, beta, gamma] in degrees |
 | `structure_function_A_A` | $`S_{AA}(\mathbf{k}) = V \sqrt{\bar{N}} \langle \tilde{\mu}_A(\mathbf{k}) \tilde{\phi}_A(-\mathbf{k}) \rangle`$ |
 | `structure_function_A_B` | $`S_{AB}(\mathbf{k}) = V \sqrt{\bar{N}} \langle \tilde{\mu}_A(\mathbf{k}) \tilde{\phi}_B(-\mathbf{k}) \rangle`$ |
 | `structure_function_B_B` | $`S_{BB}(\mathbf{k}) = V \sqrt{\bar{N}} \langle \tilde{\mu}_B(\mathbf{k}) \tilde{\phi}_B(-\mathbf{k}) \rangle`$ |
 
-$`\tilde{\mu}_i`$ is the Fourier transform of the chemical potential field of monomer $`i`$, $`\mu_i = \sum_k A_{ik}\Omega_k/\lambda_k`$, and the average runs over the steps at which the structure function is computed within one recording period; $`\bar{N}`$ is `nbar`; see the [estimator](../theory/LangevinFieldTheoreticSimulation.md#42-estimator). With smearing in a periodic box the recorded $`S`$ is divided by $`\Gamma(\mathbf{k})`$ (modes with $`\Gamma < 10^{-12}`$ are recorded as 0); with walls, where $`\Gamma`$ is defined in the cosine basis, the estimator is recorded as it is.
+$`\tilde{\mu}_i`$ is the Fourier transform of the chemical potential field of monomer $`i`$, $`\mu_i = \sum_k A_{ik}\Omega_k/\lambda_k`$, and the average runs over the steps at which the structure function is computed within one recording period; $`\bar{N}`$ is `nbar`; see the [estimator](../theory/LangevinFieldTheoreticSimulation.md#42-estimator). With smearing in a periodic box the recorded $`S`$ is divided by $`\Gamma(\mathbf{k})`$ (modes with $`\Gamma \lt 10^{-12}`$ are recorded as 0); with walls, where $`\Gamma`$ is defined in the cosine basis, the estimator is recorded as it is.
+
+The suffix of a pair joins its two monomer names in sorted order with `_`, also in `dH_history_*`, WTMD `I1_*` and `dH_psi_*`, and WTMD checkpoint histories. L-FTS and CL-FTS refuse monomer names for which two pairs would share a suffix (such as `A,B_C` and `A_B,C`). The structure-function and WTMD-statistics notebooks take the two monomer names of a pair.
 
 Fields are stored in Fourier space with dimensions `[nx, ny, nz/2+1]` (real FFT format).
 

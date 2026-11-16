@@ -35,8 +35,8 @@ The monomer potential field $`w_\alpha(\mathbf{r})`$ determines local Boltzmann 
 \text{local weight} \propto e^{-w_\alpha(\mathbf{r})}
 ```
 
-- $`w < 0`$: **Attractive** — monomers are favored here
-- $`w > 0`$: **Repulsive** — monomers avoid this region
+- $`w \lt 0`$: **Attractive** — monomers are favored here
+- $`w \gt 0`$: **Repulsive** — monomers avoid this region
 
 ---
 
@@ -104,8 +104,8 @@ Q = \frac{1}{V} \int d\mathbf{r} \, q^{0 \rightarrow 1}(\mathbf{r}, s) \cdot q^{
 The partition function can be computed at any point along the chain (result is independent of $`s`$).
 
 **Interpretation:**
-- $`Q > 1`$: Potential field favors certain conformations
-- $`Q < 1`$: Potential field restricts conformations
+- $`Q \gt 1`$: Potential field favors certain conformations
+- $`Q \lt 1`$: Potential field restricts conformations
 - $`Q = 1`$: No external field ($`w = 0`$)
 
 ### 3.3 Concentrations
@@ -160,7 +160,48 @@ blocks = [
 \phi_A(\mathbf{r}) = \frac{1}{Q} \sum_{(v,u) \in \{(0,1),(0,2),(0,3)\}} \int_0^{f_A} ds \, q^{v \rightarrow u}(\mathbf{r}, s) \cdot q^{u \rightarrow v}(\mathbf{r}, f_A - s)
 ```
 
-### 4.3 Comb Polymer
+### 4.3 Real Number of Arms (Block Multiplicity)
+
+A block $`(v,u)`$ with multiplicity $`m`$ stands for $`m`$ copies of itself and of
+everything on its $`u`$ side, all attached at $`v`$. A star with $`n`$ identical arms is
+one arm with multiplicity $`n`$, and an $`\mathrm{A}_n\mathrm{B}_n`$ star is two blocks:
+
+```python
+blocks = [["A", f_A, 0, 1, n], ["B", f_B, 0, 2, n]]   # [type, length, v, u, multiplicity]
+```
+
+Let $`q_A`$ and $`q_B`$ be the propagators of one arm from its free end, and
+$`q_A^\dagger`$ the propagator that starts at the center and runs into one A arm. At the
+center the $`n`$ copies of a branch enter the junction product as a power, and the
+propagator that enters one copy carries the other $`n-1`$:
+
+```math
+Q = \frac{1}{V}\int d\mathbf r\, q_A(\mathbf r, f_A)^n\, q_B(\mathbf r, f_B)^n,
+\qquad
+q_A^\dagger(\mathbf r, 0) = q_A(\mathbf r, f_A)^{n-1}\, q_B(\mathbf r, f_B)^n .
+```
+
+The copies count $`n`$ times in the concentrations and in the chain length,
+$`\alpha = n(f_A + f_B)`$:
+
+```math
+\phi_A(\mathbf r) = \frac{\bar\phi_p}{\alpha Q}\, n \int_0^{f_A} ds\, q_A(\mathbf r, s)\, q_A^\dagger(\mathbf r, f_A - s).
+```
+
+For an integer $`n`$ these are the equations of $`n`$ explicit arms. The propagators
+of real fields are positive, so the equations hold for any real $`n \ge 1`$ (the code
+takes $`1 \le n \le 10^6`$), which continues the arm number analytically: the symmetric $`\mathrm{A}_n\mathrm{B}_n`$ melt
+has a tricritical order-disorder transition at $`n_{tc} \approx 5.4475`$ [5]
+([validation](../validation/StarNonIntegerArms.md)). A numerical propagator can turn
+slightly negative, for example with Crank-Nicolson next to absorbing walls or with a
+pseudo-spectral method in a strong field. Its real power is then undefined, and the
+computation stops with an error. The power of a complex
+propagator has no unique value for a non-integer $`n`$, so complex fields (CL-FTS) take
+integer multiplicities only. Multiplicities may be nested (a block inside the copies of
+another one has the product of both as its number of copies), but two blocks must not lie
+each on the $`u`$ side of the other.
+
+### 4.4 Comb Polymer
 
 A comb polymer with backbone and side chains:
 
@@ -228,7 +269,7 @@ Boundary conditions are specified as a list `[x_low, x_high, y_low, y_high, z_lo
 bc = ["periodic", "periodic", "periodic", "periodic", "reflecting", "reflecting"]
 ```
 
-> **Note:** Mixing periodic and non-periodic boundary conditions is **not** supported by the pseudo-spectral methods (`rqm4`, `rk2`, or the discrete-chain solver) — the solver raises an error on all platforms. The confined-film example above requires `numerical_method="cn-adi2"` (real-space solver, continuous chains only); for discrete chains it cannot be used at all. Uniform boundary conditions (all-periodic, all-reflecting, or all-absorbing) work with all numerical methods.
+> **Note:** Mixing periodic and non-periodic boundary conditions is **not** supported by the pseudo-spectral methods (`rqm4`, `rk2` and `ps`) — the solver raises an error on all platforms. The confined-film example above requires a real-space method: `numerical_method="cn-adi2"` for continuous chains or `"rs"` for discrete chains. Uniform boundary conditions (all-periodic, all-reflecting, or all-absorbing) work with all numerical methods.
 
 ---
 
@@ -303,7 +344,9 @@ getters raise `RuntimeError` before it, after it failed and after a box change
 `compute_concentrations()` and the stress `compute_stress()`. The solver reports
 values only: with real fields a partition function that is not positive and finite
 is rejected by `SCFT` (final fields) and `LFTS` (saddle points), not by the solver,
-because intermediate iterates can pass through such values.
+because intermediate iterates can pass through such values. A polymer of volume
+fraction exactly zero is absent and is not checked: it contributes no $`\log Q`$,
+and a zero graft gives it $`Q = 0`$.
 
 ---
 
@@ -316,3 +359,5 @@ because intermediate iterates can pass through such values.
 3. Park, S. J., Yong, D., Kim, Y. & Kim, J. U. "Numerical implementation of pseudo-spectral method in self-consistent mean field theory for discrete polymer chains." *J. Chem. Phys.* **150**, 234901 (2019).
 
 4. Yong, D. & Kim, J. U. "Dynamic Programming for Chain Propagator Computation of Branched Block Copolymers in Polymer Field Theory Simulations." *J. Chem. Theory Comput.* **2025**, 21, 3676.
+
+5. Kim, M., Kang, W., Cho, J., Yong, D. & Kim, J. U. "Order–Disorder Tricriticality in Symmetric A<sub>n</sub>B<sub>n</sub> Star Polymer Melts." *Macromolecules* **59**, 11903 (2026).

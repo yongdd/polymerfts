@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chemical potential and osmotic pressure operators of CL-FTS (CLFTS.chemical_potentials, CLFTS.pressure,
-CLFTS.pressure_virial).
+"""Chemical potential and osmotic pressure operators of CL-FTS (ThermodynamicOperators.chemical_potentials,
+pressure and pressure_virial).
 
 1. Pressure as a volume derivative: for random complex fields (standard deviation 5 for the
    real parts) and psi, the operator without the ideal term equals -(dH/dV + d ln N/dV)/C at
@@ -23,12 +23,13 @@ CLFTS.pressure_virial).
 5. Restart: a continued run reproduces the pending records bit for bit; a checkpoint without
    them (earlier versions) gives NaN for its pending samples.
 6. Input checks: recording.pressure must be a bool, is CL-FTS only and needs free chains in a
-   periodic box.
+   periodic box; with continuous chains and rk2 it warns about the monomer types whose contour
+   step b sqrt(ds) exceeds their smearing length, and only then (a random block with its
+   effective segment length).
 """
-import contextlib
-import io
 import os
 import tempfile
+import warnings
 from pathlib import Path
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -36,6 +37,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat, savemat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
+from fts_checks import exact_restart, quiet, recording_dir
 
 NX, LX = [8, 6, 7], [1.6, 1.3, 1.45]
 Z_A = 0.2
@@ -74,11 +76,6 @@ def parameters(directory, lx=LX, charged=True, screening_length=None, smearing="
     if charged and screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def quiet(make):
-    with contextlib.redirect_stdout(io.StringIO()):
-        return make()
 
 
 def smooth(x, nx, std):
@@ -130,7 +127,7 @@ def state(sim, w_aux, psi):
     if sim.electrostatics is not None:
         sim.electrostatics.psi = psi
     phi, _ = sim.compute_concentrations(w_aux)
-    log_q = np.array([np.log(sim.prop_solver.get_partition_function(p)) for p in range(len(sim.chain_densities))])
+    log_q = np.array([np.log(sim.prop_solver.get_partition_function(p)) for p in range(len(sim.thermodynamics.chain_densities))])
     h_field = sum(sim.mpt.h_coef_mu2[i] * np.mean(w_aux[i] ** 2) + sim.mpt.h_coef_mu1[i] * np.mean(w_aux[i])
                   for i in range(len(sim.monomer_types))) + sim.mpt.h_const
     h_el = 0.0 if sim.electrostatics is None else sim.electrostatics.hamiltonian()
@@ -158,7 +155,7 @@ def pressure_derivative(root):
                           for _ in range(M)])
         psi = smooth(rng.normal(0, 1, n_grid), nx, 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), nx, 0.5)
         _, _, phi, pinned = state(sim, w_aux, psi)
-        operator = sim.pressure(pinned, phi) - np.sum(sim.chain_densities)
+        operator = sim.thermodynamics.pressure(pinned, phi) - np.sum(sim.thermodynamics.chain_densities)
         volume = sim.prop_solver.get_volume()
 
         # H and ln N at fixed numbers of chains n_p = (phi_p/alpha_p) C V0 and fixed grid values
@@ -167,7 +164,7 @@ def pressure_derivative(root):
             dilated_sim = quiet(lambda: CLFTS(dilated_params))
             log_q, h_fields, _, _ = state(dilated_sim, w_aux, psi)
             v = dilated_sim.prop_solver.get_volume()
-            return C * (volume * -np.sum(sim.chain_densities * log_q) + v * h_fields), log_normalization(dilated_sim, params), v
+            return C * (volume * -np.sum(sim.thermodynamics.chain_densities * log_q) + v * h_fields), log_normalization(dilated_sim, params), v
         (h_plus, n_plus, v_plus), (h_minus, n_minus, v_minus) = dilated(1 + 1e-5), dilated(1 - 1e-5)
         expected = -((h_plus - h_minus) + (n_plus - n_minus)) / (v_plus - v_minus) / C
         assert abs(operator - expected) < tolerance * abs(expected), \
@@ -193,18 +190,18 @@ def mean_field(root):
         psi_0 = 0.0 if es.screening_length is None else es.coupling * q / es.kappa_sq
         w_aux = sim.mpt.to_aux_fields(np.repeat(w[:, None], n_grid, axis=1)).astype(complex)
         _, _, phi, w_aux = state(sim, w_aux, np.full(n_grid, psi_0, dtype=complex))
-        flory_huggins = np.sum(sim.chain_densities) + 0.5 * phi_mean @ X @ phi_mean + 0.5 * ZETA_N * (np.sum(phi_mean) ** 2 - 1)
+        flory_huggins = np.sum(sim.thermodynamics.chain_densities) + 0.5 * phi_mean @ X @ phi_mean + 0.5 * ZETA_N * (np.sum(phi_mean) ** 2 - 1)
         if es.screening_length is not None:
             assert abs(q) > 0.05, "a net charge"
             flory_huggins += es.coupling * q ** 2 / (2 * es.kappa_sq)
-        pressure = sim.pressure(w_aux, phi) - normalization(sim)
+        pressure = sim.thermodynamics.pressure(w_aux, phi) - normalization(sim)
         assert abs(pressure - flory_huggins) < 1e-10 * flory_huggins, f"mean-field pressure {pressure} vs {flory_huggins}"
-        pressure = sim.pressure_virial(w_aux, phi)
+        pressure = sim.thermodynamics.pressure_virial(w_aux, phi)
         assert abs(pressure - flory_huggins) < 1e-10 * flory_huggins, f"mean-field virial pressure {pressure} vs {flory_huggins}"
-        mu = sim.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(len(sim.chain_densities))])
+        mu = sim.thermodynamics.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(len(sim.thermodynamics.chain_densities))])
         for p, polymer in enumerate(sim.polymers):
             shift = sum(block["length"] * (w + z * psi_0)[sim.monomer_types.index(block["type"])] for block in polymer["blocks"])
-            expected = np.log(sim.chain_densities[p]) + shift
+            expected = np.log(sim.thermodynamics.chain_densities[p]) + shift
             assert abs(mu[p] - expected) < 1e-10, f"mean-field chemical potential {p}: {mu[p]} vs {expected}"
 
 
@@ -218,8 +215,8 @@ def records(root):
     sim.electrostatics.psi = saved["psi_real"] + 1j * saved["psi_imag"]
     w_aux = np.reshape(saved["w_aux"], (3, -1))
     phi, _ = sim.compute_concentrations(w_aux)
-    pressure = sim.pressure_virial(w_aux, phi)
-    mu = sim.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(2)])
+    pressure = sim.thermodynamics.pressure_virial(w_aux, phi)
+    mu = sim.thermodynamics.chemical_potentials([sim.prop_solver.get_partition_function(p) for p in range(2)])
     measured = complex(recorded["pressure_history_real"]) + 1j * complex(recorded["pressure_history_imag"])
     assert abs(measured - pressure) < 1e-10 * abs(pressure), f"recorded pressure {measured} vs {pressure}"
     measured = recorded["chemical_potential_history_real"] + 1j * recorded["chemical_potential_history_imag"]
@@ -239,7 +236,7 @@ def virial(root):
 
         def record_dilation(sample):
             phi = {name: np.asarray(value) for name, value in sample["phi"].items()}
-            dilation.append(sim.pressure(np.asarray(sample["w_aux"]), phi))
+            dilation.append(sim.thermodynamics.pressure(np.asarray(sample["w_aux"]), phi))
         sim = quiet(lambda: CLFTS(params, random_seed=5, callbacks={"dilation": record_dilation}))
         quiet(lambda: sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"}))
         recorded = loadmat(root / "virial" / f"dH_{steps:06d}.mat", squeeze_me=True)
@@ -253,30 +250,21 @@ def virial(root):
 
 
 def restart(root):
-    def run(directory, steps, continue_from=None):
-        params = parameters(directory, steps=steps)
+    def make(name, steps, seed):
+        params = parameters(root / name, steps=steps)
         params["recording"].update(checkpoint_interval=3, statistics_save_interval=4)
-        sim = quiet(lambda: CLFTS(params, random_seed=3))
-        with contextlib.redirect_stdout(io.StringIO()):
-            if continue_from is None:
-                sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"})
-            else:
-                sim.continue_run(continue_from)
-    run(root / "full", 8)
-    run(root / "part", 3)
-    run(root / "part", 8, root / "part" / "fields_000003.mat")
-    a, b = loadmat(root / "full" / "dH_000004.mat"), loadmat(root / "part" / "dH_000004.mat")
-    for key in ("chemical_potential_history_real", "chemical_potential_history_imag", "pressure_history_real",
-                "pressure_history_imag"):
-        assert np.array_equal(a[key], b[key]), f"continued record {key}"
+        return quiet(CLFTS, params, random_seed=seed)
+    sims = exact_restart(make, lambda sim: sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "ABC"}),
+                         8, 3, {"dH_000004.mat": ("chemical_potential_history_", "pressure_history_")},
+                         same_directory=True)
 
     # A checkpoint without the pending records: NaN for the three pending samples of steps 1-3
-    data = loadmat(root / "part" / "fields_000003.mat", squeeze_me=True)
+    data = loadmat(recording_dir(sims["partial"]) / "fields_000003.mat", squeeze_me=True)
     for key in ("record_chemical_potential_history", "record_pressure_history"):
         data.pop(key)
     savemat(root / "old.mat", {k: v for k, v in data.items() if not k.startswith("__")},
             long_field_names=True, do_compression=True)
-    run(root / "old", 4, root / "old.mat")
+    quiet(make("old", 4, 3).continue_run, root / "old.mat")
     records = loadmat(root / "old" / "dH_000004.mat")
     for key, shape in (("chemical_potential_history_real", (4, 2)), ("pressure_history_real", (1, 4))):
         values = np.atleast_2d(records[key])
@@ -308,6 +296,35 @@ def input_checks(root):
     lfts["saddle"] = {"max_iter": 10, "tolerance": 1e-4}
     lfts["compressor"] = {"name": "am", "max_hist": 5, "start_error": 0.5, "mix_min": 0.01, "mix_init": 0.01}
     expect_validation_error(lambda: LFTS(lfts), "CL-FTS only")
+
+    # rk2 warns about the pressure where one contour step b sqrt(ds) exceeds the smearing length: with
+    # ds = 1/50 the steps of A, B and C are 0.141, 0.184 and 0.141 against the lengths 0.12, 0.15 and 0.2
+    def rk2_warnings(change, **options):
+        params = parameters(root / "inputs", chain_model="continuous", **options)
+        params["numerical_method"] = "rk2"
+        change(params)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            quiet(lambda: CLFTS(params))
+        return [str(w.message) for w in caught if "rk2" in str(w.message)]
+    messages = rk2_warnings(lambda p: None)
+    assert len(messages) == 1 and "A: step" in messages[0] and "B: step" in messages[0] and "C: step" not in messages[0], messages
+    assert len(rk2_warnings(lambda p: None, charged=False, smearing=None)) == 1
+    assert not rk2_warnings(lambda p: p["smearing"].update(a_int=0.2))
+    assert not rk2_warnings(lambda p: p.update(numerical_method="rqm4"))
+    assert not rk2_warnings(lambda p: p["recording"].update(pressure=False))
+    # A random block R of C (1.0) and D (1.5) has the step 1.27 sqrt(ds) = 0.180, while D alone would have
+    # 0.212: only the effective segment length counts, so a_int = 0.19 gives no warning and a_int = 0.17
+    # names R (and B, 0.184), not D
+    def random_block(a_int):
+        def change(p):
+            p["segment_lengths"].update(D=1.5)
+            p["polymers"][1]["blocks"] = [{"type": "R", "length": 1.0, "monomer_fractions": {"C": 0.5, "D": 0.5}}]
+            p["smearing"] = {"type": "gaussian", "a_int": a_int}
+        return change
+    assert not rk2_warnings(random_block(0.19), charged=False)
+    messages = rk2_warnings(random_block(0.17), charged=False)
+    assert len(messages) == 1 and "R: step" in messages[0] and "D: step" not in messages[0], messages
 
 
 def main():

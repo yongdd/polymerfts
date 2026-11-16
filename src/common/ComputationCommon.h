@@ -28,6 +28,7 @@
 #include "ComputationBackend.h"
 #include "ComputationBox.h"
 #include "Molecules.h"
+#include "NumericalMethods.h"
 #include "PropagatorComputation.h"
 #include "PropagatorComputationOptimizer.h"
 #include "Scheduler.h"
@@ -73,6 +74,7 @@ template <typename T>
 class ComputationCommon : public PropagatorComputation<T>
 {
 protected:
+    NumericalMethodInfo numerical_method;            ///< The numerical method (check_stress_supported())
     std::unique_ptr<ComputationBackend<T>> backend;  ///< Platform operations
     std::unique_ptr<Scheduler> sc;                   ///< Order in which the propagators are computed
     int n_streams;                   ///< Number of propagators computed concurrently
@@ -89,12 +91,13 @@ protected:
     std::set<std::string> w_input_types;           ///< Monomer types given to the last compute_propagators()
 
     /**
-     * @param create_backend Called after the space group is set on the box,
-     *                       because the solvers size their buffers from it.
+     * @param numerical_method The numerical method of the solver
+     * @param create_backend   Called after the space group is set on the box,
+     *                         because the solvers size their buffers from it.
      */
     ComputationCommon(ComputationBox<T>* cb, Molecules* molecules,
                       PropagatorComputationOptimizer* propagator_computation_optimizer,
-                      SpaceGroup* space_group,
+                      const NumericalMethodInfo& numerical_method, SpaceGroup* space_group,
                       const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     /**
@@ -110,12 +113,26 @@ protected:
     /// Solvent concentrations and partition functions from the stored fields.
     void compute_solvent_concentrations();
 
+    /**
+     * @brief Throw if a non-integer block multiplicity met a negative propagator.
+     *
+     * A real power of a negative value is NaN, which reaches the partition
+     * function of the polymer, so only Q is checked, once per compute_propagators().
+     */
+    void check_real_power_partitions() const;
+
     /// Contour step ds of the block that propagator `key` belongs to.
     double contour_step(const std::string& key) const;
 
     /// Normalization of a block concentration, φ = norm · Σ_n c_n q q†:
     /// norm = ds · volume fraction / alpha · n_repeated / Q.
     T concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const;
+
+    /// Compare canonical Q relatively and zero-weight species on the scale of
+    /// their absolute contour integrands (which need not cancel when Q does).
+    std::vector<double> partition_errors_from_contours(
+        const std::vector<std::vector<T>>& values,
+        const std::vector<std::vector<double>>& absolute_integrals) const;
 
     /// Stress of a block: the sum over its segments times the contour step ds.
     void scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const;
@@ -134,8 +151,8 @@ protected:
      */
     void convert_stress_to_lattice_derivatives();
 
-    /// Throw if stress is requested for a setup that does not support it.
-    void check_stress_supported(const std::string& method) const;
+    /// Throw if the numerical method computes no stress.
+    void check_stress_supported() const;
 
 private:
     /// Free the concentrations, the fields and the backend (also on a failed construction).

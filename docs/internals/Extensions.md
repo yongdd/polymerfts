@@ -5,6 +5,10 @@ integrate, resolve the saddle or concentrations, accept the step, update WTMD,
 record observables, call observers, and checkpoint. The default integrator is
 Leimkuhler–Matthews (LM). Existing simulation scripts keep working.
 
+A callback suits most observables. To keep a quantity in the `dH_*.mat` files and in
+checkpoints instead, add it to the series of the run's `RunRecord` and call
+`record.add()` in the run loop: the files and restarts follow from that table.
+
 Start with [CustomExtensions.py](../../examples/tools/CustomExtensions.py), which
 implements a composition observable and an additive-noise predictor–corrector
 integrator (one explicit Heun correction).
@@ -69,7 +73,7 @@ sim = LFTS(params, integrator=PredictorCorrector(), callbacks={"variance": obser
 ```
 
 The actual LM and Euler equations are together in
-[integrators.py](../../src/python/integrators.py). A custom method needs a stable
+[integrators.py](../../src/python/fts/integrators.py). A custom method needs a stable
 nonempty `name` and this method:
 
 ```python
@@ -153,6 +157,9 @@ contain finite JSON values; convert NumPy arrays to lists and reconstruct them
 explicitly. Loaders must validate values before accepting them. A fresh `run`
 restores the extension states captured at construction; use `continue_run` for
 continuation. `from_file` accepts the same extension keyword arguments.
+For a linear-response integrator the initial state is captured after its copy
+has received `set_linear_response`, so prepared response values included in
+`state_dict` survive the first run and subsequent fresh runs.
 
 ## Restart and validation
 
@@ -165,26 +172,25 @@ Code/source hashes in simulation metadata help identify changed implementations;
 they do not replace the extension author's versioned compatibility contract.
 Version-1 checkpoints continue with default LM and no callbacks. Unversioned
 checkpoints require the existing explicit legacy opt-in and cannot restore custom
-extensions. v0.9.1 checkpoints are unversioned; format version 1 was introduced
-during development after that release. v0.9.1 does not restore the complete state
-in version-2 checkpoints; resume them with v0.10.0.
+extensions. Checkpoints of v0.9.1 are unversioned, and v0.9.1 does not restore the
+complete state of version-2 checkpoints; resume those with v0.10.0 or later.
 
 `TestExtensions` checks exact linear stochastic moments, observer isolation,
 multistage force calls, failed-proposal handling, and uninterrupted/split-run
 equivalence including extension state. New scientific methods also need their
 own time-step refinement and statistical validation; the runnable predictor–corrector example
 does not certify sampling correctness for every physical model. See
-[NumericalValidation.md](NumericalValidation.md).
+[NumericalValidation.md](../validation/NumericalValidation.md).
 
 ## Propagator methods (MDE and discrete chains)
 
 [NumericalMethods.h](../../src/common/NumericalMethods.h) is the common table of
 names, chain models, solver families, contour order, complex-field support,
-orthogonal-cell requirements and mixed-boundary support. Python reads it through
-`PropagatorSolver.numerical_methods()`, which also reports compiled backends.
-The discrete entry describes its separate bond-convolution solver; it has no
-continuum contour convergence order. `numerical_method` remains ignored for
-discrete chains.
+orthogonal-cell requirements, mixed-boundary support and stress support. Python reads it
+through `PropagatorSolver.numerical_methods()`, which also reports compiled backends.
+`numerical_method` names a method of the chain model: `rqm4`, `rk2` or `cn-adi2` for
+continuous chains, `ps` (default) or `rs` for discrete chains, whose bond convolution
+has no continuum contour convergence order.
 
 To add a new native method:
 

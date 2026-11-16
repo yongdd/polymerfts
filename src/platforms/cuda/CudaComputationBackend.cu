@@ -5,15 +5,20 @@
 
 #include <algorithm>
 #include <complex>
+#include <type_traits>
 #include <utility>
 #include <cuComplex.h>
 
 #include "CudaComputationBackend.h"
+#include "Exception.h"
 #include "NumericalMethods.h"
 #include "CudaSolverCNADI.h"
 #include "CudaSolverPseudoDiscrete.h"
 #include "CudaSolverPseudoRK2.h"
 #include "CudaSolverPseudoRQM4.h"
+#include "CudaSolverRealSpaceDiscrete.h"
+#include "CudaTypeDispatch.h"
+#include "CudaJunctionProduct.cuh"
 
 namespace {
 
@@ -83,7 +88,8 @@ CudaComputationBackend<T>::CudaComputationBackend(
     const NumericalMethodInfo& method_info,
     SpaceGroup* space_group, int max_n_streams)
     : cb(nullptr), space_group(space_group),
-      solver_discrete(nullptr), n_streams(0), n_basis(0), force_off_diagonal_stress(false)
+      solver_discrete(nullptr), discrete_chains(std::string(method_info.chain_model) == "discrete"),
+      n_streams(0), n_basis(0), force_off_diagonal_stress(false)
 {
     for (int i = 0; i < MAX_STREAMS; i++)
     {
@@ -126,13 +132,16 @@ CudaComputationBackend<T>::CudaComputationBackend(
 
         switch (method_info.id)
         {
-        case NumericalMethodId::Discrete:
+        case NumericalMethodId::PS:
         {
             auto discrete = std::make_unique<CudaSolverPseudoDiscrete<T>>(cb, molecules, n_streams, streams, false);
             solver_discrete = discrete.get();
             solver = std::move(discrete);
             break;
         }
+        case NumericalMethodId::RS:
+            solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(cb, molecules, n_streams, streams, false);
+            break;
         case NumericalMethodId::RQM4:
             solver = std::make_unique<CudaSolverPseudoRQM4<T>>(cb, molecules, n_streams, streams, false);
             break;
@@ -314,9 +323,9 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
 {
     solver->update_dw("cpu", w_input);
 
-    // The discrete solver keeps exp(-w ds) on the full grid unless its CrysFFT
-    // path stores it in the reduced basis already
-    if (solver_discrete != nullptr && space_group != nullptr)
+    // The discrete solvers keep exp(-w ds) on the full grid unless the CrysFFT
+    // path of the pseudo-spectral one stores it in the reduced basis already
+    if (discrete_chains && space_group != nullptr)
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -331,7 +340,7 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
             }
             CuDeviceData<T>* d_exp_dw_basis  = found->second.get();
             CuDeviceData<T>* d_exp_dw_solver = solver->d_exp_dw.at(0).at(monomer_type);
-            if (solver_discrete->exp_dw_stored_reduced())
+            if (solver_discrete != nullptr && solver_discrete->exp_dw_stored_reduced())
             {
                 CUDA_CHECK(cudaMemcpy(d_exp_dw_basis, d_exp_dw_solver,
                                            sizeof(T)*n_basis, cudaMemcpyDeviceToDevice));
@@ -399,8 +408,49 @@ void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendAr
 }
 
 template <typename T>
+template <typename Source>
+void CudaComputationBackend<T>::multiply_sources(
+    int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources)
+{
+    // Complex fields take integer powers only; check them all before a launch changes q
+    if constexpr (!std::is_same_v<T, double>)
+        for (const auto& source : sources)
+            if (!junction_product::integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
+    // Device-resident sources: up to MAX_SOURCES_PER_LAUNCH per launch. Checkpoints: two per
+    // launch, staged in the first stress pair buffer, which is free while propagators are computed
+    constexpr bool staged = std::is_same_v<Source, CheckpointArray<T>>;
+    const size_t batch_size = staged ? 2 : junction_product::MAX_SOURCES_PER_LAUNCH;
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    for (size_t begin = 0; begin < sources.size(); begin += batch_size)
+    {
+        junction_product::Sources<CuDeviceData<T>> batch{};
+        batch.n = static_cast<int>(std::min(batch_size, sources.size() - begin));
+        for (int k = 0; k < batch.n; ++k)
+        {
+            const auto& [source, power] = sources[begin + k];
+            if constexpr (staged)
+            {
+                CuDeviceData<T>* d_source = d_q_pair[stream][0].get() + k*n_basis;
+                CUDA_CHECK(cudaMemcpyAsync(d_source, raw(source), sizeof(T)*n_basis,
+                                           cudaMemcpyHostToDevice, streams[stream][0]));
+                batch.q[k] = d_source;
+            }
+            else
+                batch.q[k] = raw(source);
+            batch.power[k] = power;
+        }
+        // A product over several launches keeps its accumulator in q and in the second
+        // stress pair buffer
+        junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            raw(q), batch, d_q_pair[stream][1].get(), begin == 0, begin + batch.n == sources.size(), n_basis);
+        CUDA_CHECK_LAUNCH();
+    }
+}
+
+template <typename T>
 void CudaComputationBackend<T>::junction_sum(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -417,28 +467,14 @@ void CudaComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CudaComputationBackend<T>::junction_product(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    CuDeviceData<T>* d_q = raw(q);
-
-    CUDA_CHECK(cudaMemcpyAsync(d_q, d_q_unity, sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
-    for (const auto& [src, n_repeated] : sources)
-    {
-        // q_i^n as n multiplications
-        for (int r = 0; r < n_repeated; r++)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(d_q, d_q, raw(src), 1.0, n_basis);
-            CUDA_CHECK_LAUNCH();
-        }
-    }
+    multiply_sources(stream, q, sources);
 }
 
 template <typename T>
 void CudaComputationBackend<T>::junction_sum(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -459,26 +495,9 @@ void CudaComputationBackend<T>::junction_sum(
 
 template <typename T>
 void CudaComputationBackend<T>::junction_product(
-    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, int>>& sources)
+    int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    CuDeviceData<T>* d_q = raw(q);
-    // The stress pair buffer is free while propagators are computed; stage each checkpoint in it
-    CuDeviceData<T>* d_stage = d_q_pair[stream][0];
-
-    CUDA_CHECK(cudaMemcpyAsync(d_q, d_q_unity, sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
-    for (const auto& [src, n_repeated] : sources)
-    {
-        CUDA_CHECK(cudaMemcpyAsync(d_stage, raw(src), sizeof(T)*n_basis,
-                                        cudaMemcpyHostToDevice, streams[stream][0]));
-        for (int r = 0; r < n_repeated; r++)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(d_q, d_q, d_stage, 1.0, n_basis);
-            CUDA_CHECK_LAUNCH();
-        }
-    }
+    multiply_sources(stream, q, sources);
 }
 
 template <typename T>
@@ -517,6 +536,13 @@ T CudaComputationBackend<T>::inner_product_inverse_weight(BackendArray<T>* a, Ba
 }
 
 template <typename T>
+double CudaComputationBackend<T>::absolute_inner_product(
+    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor)
+{
+    return cb->absolute_inner_product_device(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor));
+}
+
+template <typename T>
 void CudaComputationBackend<T>::add_segment_products(
     int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
 {
@@ -547,7 +573,12 @@ void CudaComputationBackend<T>::normalize_concentration(int stream, BackendArray
     CuDeviceData<T>* d_phi = raw(phi);
     cudaStream_t s = streams[stream][0];
     if (divisor != nullptr)
-        ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
+    {
+        if (!d_q_mask.empty())
+            ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, d_q_mask, n_basis);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
+    }
     CUDA_CHECK_LAUNCH();
     ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, to_device_scalar(norm), d_phi, 0.0, d_phi, n_basis);
     CUDA_CHECK_LAUNCH();
@@ -644,11 +675,16 @@ T CudaComputationBackend<T>::solvent_concentration(
 
     const T partition = cb->mean_device(d_phi);
 
-    CuDeviceData<T> norm;
-    if constexpr (std::is_same_v<T, double>)
-        norm = volume_fraction / partition;
-    else
-        norm = cuCdiv(make_cuDoubleComplex(volume_fraction, 0.0), stdToCuDoubleComplex(partition));
+    // Keep Q for diagnostics, but an absent species has zero concentration even
+    // when its Boltzmann factors cancel (Q = 0) or are non-finite.
+    if (volume_fraction == 0.0)
+    {
+        CUDA_CHECK(cudaMemsetAsync(d_phi, 0, sizeof(T)*n_basis, 0));
+        return partition;
+    }
+
+    // The same host arithmetic as the CPU backend
+    const CuDeviceData<T> norm = to_device_scalar(volume_fraction / partition);
     ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_phi, norm, d_phi, 0.0, d_phi, n_basis);
     CUDA_CHECK_LAUNCH();
 
