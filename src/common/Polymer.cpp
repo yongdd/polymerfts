@@ -86,9 +86,9 @@ Polymer::Polymer(
         // Copies of a branch continue an integer number of identical arms; fewer than one
         // copy would raise propagators to negative powers
         const double multiplicity = block_inputs[i].multiplicity;
-        if (!std::isfinite(multiplicity) || multiplicity < 1.0)
+        if (!std::isfinite(multiplicity) || multiplicity < 1.0 || multiplicity > MAX_BLOCK_MULTIPLICITY)
             throw_with_line_number("block_inputs[" + std::to_string(i) + "].multiplicity ("
-                + validation::shortest_text(multiplicity) + ") must be a finite number >= 1.");
+                + validation::shortest_text(multiplicity) + ") must be a number from 1 to 10^6.");
         // Note: contour_length/ds no longer needs to be exactly an integer.
         // The ContourLengthMapping class handles computing n_segment = round(contour_length/ds)
         // and the corresponding local ds = contour_length / n_segment.

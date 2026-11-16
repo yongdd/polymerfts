@@ -124,8 +124,8 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
             this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
             this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 0));
             this->backend->synchronize();
-            this->single_polymer_partitions[p] = this->backend->partition_product(
-                this->q_work[0], this->q_work[1], nullptr, n_aggregated);
+            this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
+                                                 /(n_aggregated*this->cb->get_volume());
         }
         this->check_real_power_partitions();
 
@@ -174,8 +174,6 @@ void ComputationReduceMemoryContinuous<T>::compute_concentrations()
 
             // A block without segments has no concentration
             this->backend->set_zero(0, phi);
-            BackendArray<T>* exponent = this->phi_block_exponent.at(key);
-            this->backend->set_zero(0, exponent);
             if (N_RIGHT == 0)
                 continue;
 
@@ -184,7 +182,7 @@ void ComputationReduceMemoryContinuous<T>::compute_concentrations()
             this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
                 [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}}, nullptr, exponent);
+                    this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
                 });
 
             // Getters normalize the integral for the requested ensemble.
@@ -211,7 +209,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: Simpson's rule over the segment stresses
-        std::vector<StressAccumulator<T>> stress_of_block;
+        std::vector<std::array<T, 6>> stress_of_block;
         for (const auto& [key, phi] : this->phi_block)
         {
             const auto& [p, key_left, key_right] = key;
@@ -219,7 +217,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
             const int N_LEFT  = block.n_segment_left;
             const int N_RIGHT = block.n_segment_right;
 
-            StressAccumulator<T> stress{};
+            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
             if (N_RIGHT > 0)
             {
                 // Every segment contributes, the chain ends included (see ComputationContinuous)
@@ -227,7 +225,7 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
                 this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
                     [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
                     {
-                        const StressAccumulator<T> segment = this->backend->block_stress(
+                        const std::array<T, 6> segment = this->backend->block_stress(
                             0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
                         for (int d = 0; d < 6; d++)
                             stress[d] += segment[d];
@@ -294,13 +292,14 @@ std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_erro
         this->for_each_segment_pair(key_left, key_right, block.n_segment_left, 0, block.n_segment_right,
             [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
             {
-                T total_partition = this->backend->partition_product(
-                    q, q_dagger, nullptr, n_propagators/block.n_repeated);
+                T total_partition = this->backend->inner_product(q, q_dagger)*(block.n_repeated/this->cb->get_volume());
+                total_partition /= n_propagators;
                 total_partitions[p].push_back(total_partition);
                 if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
                 {
-                    double integral = this->backend->absolute_partition_product(
-                        q, q_dagger, nullptr, n_propagators/block.n_repeated);
+                    double integral = this->backend->absolute_inner_product(q, q_dagger)
+                                      *(block.n_repeated/this->cb->get_volume());
+                    integral /= n_propagators;
                     absolute_integrals[p].push_back(integral);
                 }
             });

@@ -79,14 +79,9 @@ protected:
     std::unique_ptr<Scheduler> sc;                   ///< Order in which the propagators are computed
     int n_streams;                   ///< Number of propagators computed concurrently
 
-    /// Mantissas of each block's segment-product integral (ordinary doubles
-    /// when its exponent is zero); getters apply the canonical or fugacity
-    /// normalization, including when volume fraction is zero.
+    /// Unnormalized segment-product integral of each block; getters apply the
+    /// canonical or fugacity normalization, including when volume fraction is zero.
     std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*> phi_block;
-
-    /// Binary exponents for the block integrals, independently per real/imag
-    /// component. Zero keeps the usual raw-double accumulator representation.
-    std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*> phi_block_exponent;
 
     /// Indexed access in map order. The block map is fixed after construction.
     std::vector<typename decltype(phi_block)::const_iterator> phi_block_iterators;
@@ -130,14 +125,8 @@ protected:
     double contour_step(const std::string& key) const;
 
     /// Normalization of a block concentration, φ = norm · Σ_n c_n q q†:
-    /// norm = ds · volume fraction / alpha · copies / Q. A negative copies
-    /// argument selects the computation block's n_repeated.
-    DensityNormalization<T> concentration_norm(
-        const std::tuple<int, std::string, std::string>& block_key, double copies = -1.0) const;
-
-    /// Shared GCE density assembly; activity is z or log(z), as indicated.
-    void get_gce_concentration(double activity, bool logarithmic, int polymer,
-                               const std::string& monomer_type, T* phi);
+    /// norm = ds · volume fraction / alpha · n_repeated / Q.
+    T concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const;
 
     /// Compare canonical Q relatively and zero-weight species on the scale of
     /// their absolute contour integrands (which need not cancel when Q does).
@@ -146,14 +135,14 @@ protected:
         const std::vector<std::vector<double>>& absolute_integrals) const;
 
     /// Stress of a block: the sum over its segments times the contour step ds.
-    void scale_by_contour_step(StressAccumulator<T>& stress, const std::string& key_right) const;
+    void scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const;
 
     /**
      * @brief Sum the stresses of the blocks of each polymer into dq_dl and
      *        convert them to lattice derivatives.
      * @param stress_of_block One entry per block, in the order of phi_block.
      */
-    void set_stress_from_blocks(const std::vector<StressAccumulator<T>>& stress_of_block);
+    void set_stress_from_blocks(const std::vector<std::array<T, 6>>& stress_of_block);
 
     /**
      * @brief Turn the summed v⊗v components in dq_dl into lattice-parameter
@@ -182,7 +171,6 @@ public:
     void get_total_concentration(std::string monomer_type, T* phi) override;
     void get_total_concentration(int polymer, std::string monomer_type, T* phi) override;
     void get_total_concentration_gce(double fugacity, int polymer, std::string monomer_type, T* phi) override;
-    void get_total_concentration_gce_log(double log_fugacity, int polymer, std::string monomer_type, T* phi) override;
     void get_block_concentration(int polymer, T* phi) override;
     void get_solvent_concentration(int s, T* phi) override;
 };

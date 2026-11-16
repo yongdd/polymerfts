@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""A zero grand-canonical partition is regular; canonical zero Q remains invalid."""
+"""A zero grand-canonical partition is regular; canonical zero Q remains invalid.
+
+A zero fugacity gives exactly zero density, also when the unused raw density of
+the chain is not finite, and still validates its polymer and monomer arguments.
+"""
 
 import contextlib
 import io
@@ -89,8 +93,37 @@ def solve_cancellation(platform, reduced, real_offset, model):
     return partition, phi, stress, errors
 
 
+def zero_fugacity(platform, reduced, method, field_type):
+    """Zero fugacity stays zero even if an unused raw density is nonfinite."""
+    dtype = np.complex128 if field_type == "complex" else np.float64
+    factory = PlatformSelector.create_factory(platform, reduced, field_type)
+    box = factory.create_computation_box([4], [4.0])
+    molecules = factory.create_molecules_information("discrete", 1.0, {"A": 1.0, "B": 1.0})
+    molecules.add_polymer(0.0, [["A", 1.0, 0, 1]])
+    molecules.add_polymer(1.0, [["B", 1.0, 0, 1]])
+    optimizer = factory.create_propagator_computation_optimizer(molecules, False)
+    solver = factory.create_propagator_computation(box, molecules, optimizer, method)
+    # exp(-1000) underflows: the raw density of A divides zero by zero
+    solver.compute_propagators({"A": np.full(4, 1000.0, dtype=dtype),
+                                "B": np.zeros(4, dtype=dtype)})
+    solver.compute_concentrations()
+    np.testing.assert_array_equal(solver.get_total_concentration_gce(0.0, 0, "A"), np.zeros(4))
+    np.testing.assert_allclose(solver.get_total_concentration("B"), 1.0, rtol=0.0, atol=2e-14)
+    for polymer, monomer in ((2, "A"), (0, "unknown")):
+        try:
+            solver.get_total_concentration_gce(0.0, polymer, monomer)
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            raise AssertionError("Zero fugacity bypassed polymer/monomer validation")
+
+
 def main():
     for platform in PlatformSelector.avail_platforms():
+        for method in ("ps", "rs"):
+            for field_type in ("real", "complex"):
+                for reduced in (False, True):
+                    zero_fugacity(platform, reduced, method, field_type)
         for model in ("continuous", "discrete"):
             full = solve(platform, False, model)
             reduced = solve(platform, True, model)

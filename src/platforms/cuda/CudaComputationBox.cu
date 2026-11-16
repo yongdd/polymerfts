@@ -36,46 +36,11 @@
 #include <numeric>
 #include <cuda_runtime.h>
 #include <cuComplex.h>
-#include <cub/device/device_reduce.cuh>
-#include <thrust/iterator/counting_iterator.h>
-#include <thrust/iterator/transform_iterator.h>
 
 #include "CudaComputationBox.h"
 #include "CudaCommon.h"
 #include "CudaTypeDispatch.h"
 #include "SpaceGroup.h"
-
-namespace
-{
-template <typename DeviceT>
-struct PartitionProduct
-{
-    const DeviceT* g;
-    const DeviceT* h;
-    const DeviceT* divisor;
-    const double* counts;
-    double total_grid;
-    double copies;
-    bool absolute;
-
-    __host__ __device__ partition_accumulation::Sum operator()(int i) const
-    {
-        const double count = counts == nullptr ? 1.0 : counts[i];
-        if (count == 0.0)
-            return {};
-        if constexpr (std::is_same_v<DeviceT, double>)
-            return partition_accumulation::product(g[i], 0.0, h == nullptr ? 1.0 : h[i], 0.0,
-                divisor == nullptr ? 1.0 : divisor[i], 0.0, count, total_grid, copies, absolute);
-        else
-        {
-            const cuDoubleComplex right = h == nullptr ? make_cuDoubleComplex(1.0, 0.0) : h[i];
-            const cuDoubleComplex weight = divisor == nullptr ? make_cuDoubleComplex(1.0, 0.0) : divisor[i];
-            return partition_accumulation::product(g[i].x, g[i].y, right.x, right.y,
-                weight.x, weight.y, count, total_grid, copies, absolute);
-        }
-    }
-};
-}
 
 /**
  * @brief Construct CUDA computation box with device memory.
@@ -105,11 +70,6 @@ void CudaComputationBox<T>::initialize()
 {
     d_dv.allocate(this->total_grid);
     CUDA_CHECK(cudaMemcpy(d_dv, this->dv.data(), sizeof(double)*this->total_grid, cudaMemcpyHostToDevice));
-    if (!this->mask_full_.empty())
-    {
-        d_mask_.allocate(this->total_grid);
-        CUDA_CHECK(cudaMemcpy(d_mask_, this->mask_full_.data(), sizeof(double)*this->total_grid, cudaMemcpyHostToDevice));
-    }
 
     // Allocate memory for cub reduction sum
     d_sum.allocate(this->total_grid);
@@ -202,45 +162,7 @@ T CudaComputationBox<T>::integral_device(const CuDeviceData<T> *d_g)
 template <typename T>
 T CudaComputationBox<T>::mean_device(const CuDeviceData<T> *d_g)
 {
-    return mean_product_device(d_g);
-}
-
-template <typename T>
-T CudaComputationBox<T>::mean_product_device(
-    const CuDeviceData<T>* g, const CuDeviceData<T>* h, const CuDeviceData<T>* divisor,
-    double copies, bool absolute)
-{
-    if (!absolute && (h != nullptr || divisor == nullptr))
-    {
-        const T integral_value = h == nullptr ? integral_device(g)
-            : divisor == nullptr ? inner_product_device(g, h) : inner_product_inverse_weight_device(g, h, divisor);
-        const T result = integral_value / (copies * this->volume);
-        if (partition_accumulation::ordinary_result(integral_value)
-            && partition_accumulation::ordinary_result(result))
-            return result;
-    }
-
-    const double* counts = this->space_group_ != nullptr ? d_basis_weights_.get() : d_mask_.get();
-    // CUDA 13 (CCCL 3) removed the cub input iterators; the thrust ones exist in CUDA 12 and 13
-    using Transform = PartitionProduct<CuDeviceData<T>>;
-    const auto input = thrust::make_transform_iterator(thrust::counting_iterator<int>(0),
-        Transform{g, h, divisor, counts, static_cast<double>(this->total_grid), copies, absolute});
-    if (d_partition_out_.empty())
-    {
-        CudaDeviceBuffer<partition_accumulation::Sum> output(1);
-        size_t bytes = 0;
-        CUDA_CHECK(cub::DeviceReduce::Reduce(nullptr, bytes, input, output.get(),
-            this->total_grid, partition_accumulation::Add{}, partition_accumulation::Sum{}, 0));
-        CudaDeviceBuffer<unsigned char> storage(bytes);
-        d_partition_out_ = std::move(output);
-        d_partition_storage_ = std::move(storage);
-        partition_storage_bytes_ = bytes;
-    }
-    CUDA_CHECK(cub::DeviceReduce::Reduce(d_partition_storage_.get(), partition_storage_bytes_, input,
-        d_partition_out_.get(), this->n_basis_, partition_accumulation::Add{}, partition_accumulation::Sum{}, 0));
-    partition_accumulation::Sum sum;
-    CUDA_CHECK(cudaMemcpy(&sum, d_partition_out_.get(), sizeof(sum), cudaMemcpyDeviceToHost));
-    return partition_accumulation::value<T>(sum);
+    return integral_device(d_g) / static_cast<T>(this->volume);
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -279,14 +201,41 @@ T CudaComputationBox<T>::inner_product_device(const CuDeviceData<T>* d_g, const 
 template <typename T>
 T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<T>* d_g, const CuDeviceData<T>* d_h, const CuDeviceData<T>* d_w)
 {
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    const int n = this->get_n_basis();
-    const double* weights = device_integration_weights();
-    ker_product_divide<<<grid_blocks(n, N_THREADS), N_THREADS>>>(
-        d_sum.get(), d_g, d_h, d_w, weights,
-        this->get_mask() != nullptr ? weights : nullptr, integration_weight_scale(), n);
-    CUDA_CHECK_LAUNCH();
-    return reduce_sum_to_host(n);
+    T sum{0.0};
+
+    if (this->space_group_ != nullptr)
+    {
+        int N = this->n_basis_;
+        double dv_base = this->volume / this->total_grid;
+
+        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
+        CUDA_CHECK_LAUNCH();
+        if (this->get_mask() != nullptr)
+            ker_divide_masked<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_basis_weights_, N);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, N);
+        CUDA_CHECK_LAUNCH();
+        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
+        CUDA_CHECK_LAUNCH();
+        sum = reduce_sum_to_host(N);
+        return sum * static_cast<T>(dv_base);
+    }
+    else
+    {
+        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, this->total_grid);
+        CUDA_CHECK_LAUNCH();
+        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_dv, 1.0, this->total_grid);
+        CUDA_CHECK_LAUNCH();
+        if (this->get_mask() != nullptr)
+            ker_divide_masked<<<grid_blocks(this->total_grid, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_dv, this->total_grid);
+        else
+            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, this->total_grid);
+        CUDA_CHECK_LAUNCH();
+        sum = reduce_sum_to_host(this->total_grid);
+        return sum;
+    }
 }
 //-----------------------------------------------------------
 template <typename T>

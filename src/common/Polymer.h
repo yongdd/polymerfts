@@ -82,13 +82,18 @@ class ContourLengthMapping;
  * BlockInput block_B = {"B", 0.5, 1, 2};
  * @endcode
  */
+/// Largest block multiplicity. The extended-range junction products (JunctionProduct.h)
+/// then keep exact binary exponents in a double, and complex fields take every integer
+/// multiplicity (is_integer_power in ComputationBackend.h).
+constexpr double MAX_BLOCK_MULTIPLICITY = 1.0e6;
+
 struct BlockInput{
     std::string monomer_type;   ///< Monomer type label, e.g., "A", "B", "C"
     double contour_length;      ///< Relative contour length (fraction of reference chain)
     int v;                      ///< Starting vertex (node) index
     int u;                      ///< Ending vertex (node) index
     /// Number of copies of the block and of everything on its u side, all attached at v
-    /// (a real number >= 1; e.g. the arm number of a star given by one arm)
+    /// (a real number in [1, MAX_BLOCK_MULTIPLICITY]; e.g. the arm number of a star given by one arm)
     double multiplicity = 1.0;
 };
 
@@ -133,7 +138,7 @@ struct Block{
  * - **Volume Fraction**: Fraction of system volume occupied by this polymer type
  * - **Multiplicity**: A block (v,u) with multiplicity m stands for m copies of the
  *   block and of everything on its u side, all attached at v. m may be any real
- *   number >= 1: the junction product at v contains that branch to the power m
+ *   number in [1, 10^6]: the junction product at v contains that branch to the power m
  *   (m - 1 for the propagator that enters one of the copies), which continues an
  *   integer number of identical arms to real values (e.g. an A_n B_n star with
  *   real n is two blocks of multiplicity n). Two blocks with multiplicities may

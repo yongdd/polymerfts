@@ -112,17 +112,10 @@ class ThermodynamicOperators:
         return values
 
     def _grand_canonical_numbers(self, total_partitions):
-        """e^(βμ_p) Q_p of the current propagators, zero for canonical species.
-
-        A scaled native product avoids materializing an overflowing or underflowing
-        fugacity. It preserves a true Q = 0 and does not take log(Q).
-        """
+        """e^(βμ_p) Q_p of the current propagators, zero for canonical species."""
         values = np.zeros(len(self.sim.polymers), dtype=np.complex128)
-        for p in self.sim.grand_canonical:
-            if self.sim._log_fugacity_required[p]:
-                values[p] = self.prop_solver.get_partition_function_gce_log(self.sim.log_fugacities[p], p)
-            else:
-                values[p] = self.sim.fugacities[p] * total_partitions[p]
+        grand = self.sim.grand_canonical
+        values[grand] = self.sim.fugacities[grand] * np.asarray(total_partitions, dtype=np.complex128)[grand]
         return values
 
     def grand_canonical_hamiltonian(self, total_partitions):
@@ -185,10 +178,7 @@ class ThermodynamicOperators:
         stress, lx = np.asarray(self.prop_solver.get_stress()), self.prop_solver.get_lx()
         if self.sim.grand_canonical:
             # h = -Σ_p e^(βμ_p) Q_p of the grand-canonical chains: dh/dθ = -Σ_p e^(βμ_p) dQ_p/dθ
-            grand_stress = (self.prop_solver.get_stress_gce_log(self.sim.log_fugacities)
-                           if np.any(self.sim._log_fugacity_required)
-                           else self.prop_solver.get_stress_gce(self.sim.fugacities))
-            stress = stress + np.asarray(grand_stress)
+            stress = stress + np.asarray(self.prop_solver.get_stress_gce(self.sim.fugacities))
         value -= sum(lx[a] * stress[a] for a in range(dim)) / dim
 
         if self.smearing.enabled:

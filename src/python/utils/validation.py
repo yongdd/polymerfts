@@ -92,6 +92,16 @@ def normalize_params(params):
     return params
 
 
+# Largest block multiplicity, as MAX_BLOCK_MULTIPLICITY in Polymer.h (the native check)
+MAX_BLOCK_MULTIPLICITY = 1.0e6
+
+# Largest |βμ| of a grand-canonical polymer. Its chains enter as e^(βμ) times their unnormalized
+# density and partition function, which are of order one for fields of zero mean. e^(βμ) overflows
+# a double above βμ = 709.78 and is subnormal (losing precision) below -708.40; 700 keeps it a
+# normal double with a margin of about e^8 for that factor.
+MAX_POLYMER_CHEMICAL_POTENTIAL = 700.0
+
+
 def _finite_number(value, name, *, positive=False, nonnegative=False):
     if (isinstance(value, (bool, np.bool_)) or
             not isinstance(value, (int, float, np.integer, np.floating)) or
@@ -268,7 +278,13 @@ def validate_system_params(params: Dict[str, Any]) -> None:
                                   "CL-FTS, 'chemical_potential' in place of 'volume_fraction')")
         if "chemical_potential" in polymer:
             # Grand canonical: the chemical potential fixes the number of chains (CL-FTS checks the rest)
-            _finite_number(polymer["chemical_potential"], f"polymers[{i}].chemical_potential")
+            mu = polymer["chemical_potential"]
+            _finite_number(mu, f"polymers[{i}].chemical_potential")
+            if abs(mu) > MAX_POLYMER_CHEMICAL_POTENTIAL:
+                raise ValidationError(
+                    f"'polymers[{i}].chemical_potential' must lie in [-{MAX_POLYMER_CHEMICAL_POTENTIAL:g}, "
+                    f"{MAX_POLYMER_CHEMICAL_POTENTIAL:g}], got {mu!r}: the fugacity e^(chemical_potential) "
+                    "must be a normal double (it overflows above 709.78 and is subnormal below -708.40)")
         else:
             vf = polymer["volume_fraction"]
             _finite_number(vf, f"polymers[{i}].volume_fraction", nonnegative=True)
@@ -287,8 +303,9 @@ def validate_system_params(params: Dict[str, Any]) -> None:
                     _integer(block[vertex], name + "." + vertex, minimum=0)
             if "multiplicity" in block:
                 _finite_number(block["multiplicity"], name + ".multiplicity")
-                if block["multiplicity"] < 1:
-                    raise ValidationError(f"'{name}.multiplicity' must be a number >= 1, got {block['multiplicity']!r}")
+                if not 1 <= block["multiplicity"] <= MAX_BLOCK_MULTIPLICITY:
+                    raise ValidationError(f"'{name}.multiplicity' must be a number from 1 to 10^6, "
+                                          f"got {block['multiplicity']!r}")
             if "monomer_fractions" in block:
                 fractions = block["monomer_fractions"]
                 validate_monomer_fractions(fractions, name + ".monomer_fractions")
@@ -470,13 +487,11 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Non
     _reject_mask(params, "CL-FTS" if complex_fields else "L-FTS")
     if complex_fields:
         # A non-integer multiplicity raises complex propagators to a real power, which has no unique value.
-        # The backends take powers up to 10^6 as integers (is_integer_power in ComputationBackend.h).
         for i, polymer in enumerate(params["polymers"]):
             for j, block in enumerate(polymer["blocks"]):
-                multiplicity = float(block.get("multiplicity", 1))
-                if not (multiplicity.is_integer() and multiplicity <= 1e6):
-                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer of at most "
-                                          f"10^6 in CL-FTS (complex fields), got {block['multiplicity']!r}")
+                if not float(block.get("multiplicity", 1)).is_integer():
+                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer in CL-FTS "
+                                          f"(complex fields), got {block['multiplicity']!r}")
     if not complex_fields:
         _reject_grand_canonical(params, "L-FTS")
     else:

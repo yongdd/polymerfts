@@ -49,9 +49,6 @@
 #include <utility>
 #include <vector>
 
-#include "DensityNormalization.h"
-#include "StressAccumulator.h"
-
 /// True if a junction power is an integer. The backends raise a propagator to an integer
 /// power with an integer exponent (std::pow on the CPU, repeated multiplication on CUDA),
 /// the same operation as for explicit arms; other powers come from non-integer block
@@ -193,13 +190,6 @@ public:
     virtual void junction_product(int stream, BackendArray<T>* q,
                                   const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) = 0;
 
-    /**
-     * @brief Called once after construction with the largest number of sources of
-     *        any junction_product(); a backend that keeps the product state between
-     *        sources allocates it here. The default does nothing.
-     */
-    virtual void prepare_junction_products(int /*max_sources*/) {}
-
     /// q = q * mask (impenetrable regions); does nothing without a mask.
     virtual void apply_mask(int stream, BackendArray<T>* q) = 0;
 
@@ -220,22 +210,9 @@ public:
     virtual double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                           BackendArray<T>* divisor = nullptr) = 0;
 
-    /// The partition of a contour cut: mean(a*b/divisor)/copies. Normalize
-    /// within the reduction when the unnormalized integral is out of range.
-    virtual T partition_product(BackendArray<T>* a, BackendArray<T>* b,
-                                BackendArray<T>* divisor, double copies) = 0;
-    virtual double absolute_partition_product(BackendArray<T>* a, BackendArray<T>* b,
-                                               BackendArray<T>* divisor, double copies) = 0;
-
-    /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i / divisor.
-    /// Discrete chains remove the shared bead in each term, before a product
-    /// can underflow or overflow; continuous chains omit divisor.
-    /// When exponent is supplied, (phi, exponent) keeps each real/imaginary
-    /// component in scaled form until sum_to_host applies its normalization.
+    /// Concentration of a block, accumulated: phi += Σ_i weight_i q_1,i q_2,i.
     virtual void add_segment_products(int stream, BackendArray<T>* phi,
-                                      const std::vector<SegmentPair<T>>& pairs,
-                                      BackendArray<T>* divisor = nullptr,
-                                      BackendArray<T>* exponent = nullptr) = 0;
+                                      const std::vector<SegmentPair<T>>& pairs) = 0;
 
     /**
      * @brief Normalize a block concentration: phi = norm * phi / divisor.
@@ -256,7 +233,7 @@ public:
      * [V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃] in the deformation-vector basis;
      * components the solver does not compute are zero.
      */
-    virtual StressAccumulator<T> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
+    virtual std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                           const std::string& monomer_type) = 0;
 
     /**
@@ -266,11 +243,9 @@ public:
     virtual T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w,
                                     double ds, double volume_fraction) = 0;
 
-    /// Sum ensemble-normalized densities into a host array of get_n_basis() elements.
-    /// Optional exponents correspond to the arrays; nullptr denotes an unscaled field.
+    /// out = Σ_i weight_i a_i, where out is a host array of get_n_basis() elements.
     virtual void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
-                             const std::vector<DensityNormalization<T>>& weights,
-                             const std::vector<BackendArray<T>*>& exponents = {}) = 0;
+                             const std::vector<T>& weights) = 0;
 };
 
 #endif

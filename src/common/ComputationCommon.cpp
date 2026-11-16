@@ -11,7 +11,6 @@
 #include "ComputationCommon.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
-#include "LogFugacity.h"
 
 std::string complex_real_power_message(double power)
 {
@@ -45,19 +44,8 @@ ComputationCommon<T>::ComputationCommon(
         backend = create_backend();
         n_streams = backend->get_n_streams();
 
-        // Identical branches are one source raised to a power; only a junction of
-        // different branches carries a product state from one source to the next.
-        size_t max_junction_sources = 0;
-        for (const auto& [key, edge] : propagator_computation_optimizer->get_computation_propagators())
-            if (key[0] == '(')
-                max_junction_sources = std::max(max_junction_sources, edge.deps.size());
-        backend->prepare_junction_products(static_cast<int>(max_junction_sources));
-
         for (const auto& item : propagator_computation_optimizer->get_computation_blocks())
-        {
             phi_block[item.first] = backend->allocate();
-            phi_block_exponent[item.first] = backend->allocate();
-        }
 
         phi_block_iterators.reserve(phi_block.size());
         for (auto it = phi_block.cbegin(); it != phi_block.cend(); ++it)
@@ -91,8 +79,6 @@ void ComputationCommon<T>::release()
     {
         for (const auto& item : phi_block)
             backend->deallocate(item.second);
-        for (const auto& item : phi_block_exponent)
-            backend->deallocate(item.second);
         for (const auto& item : phi_solvent)
             backend->deallocate(item);
         for (const auto& item : w)
@@ -100,7 +86,6 @@ void ComputationCommon<T>::release()
         backend.reset();
     }
     phi_block.clear();
-    phi_block_exponent.clear();
     phi_solvent.clear();
     w.clear();
 }
@@ -184,15 +169,15 @@ double ComputationCommon<T>::contour_step(const std::string& key) const
 }
 
 template <typename T>
-DensityNormalization<T> ComputationCommon<T>::concentration_norm(
-    const std::tuple<int, std::string, std::string>& block_key, double copies) const
+T ComputationCommon<T>::concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const
 {
     const int p = std::get<0>(block_key);
     const auto& block = this->propagator_computation_optimizer->get_computation_block(block_key);
     Polymer& pc = this->molecules->get_polymer(p);
-    return make_density_normalization(contour_step(std::get<2>(block_key)),
-        pc.get_volume_fraction(), copies < 0.0 ? block.n_repeated : copies,
-        pc.get_alpha(), this->single_polymer_partitions[p]);
+    if (pc.get_volume_fraction() == 0.0)
+        return T(0.0);
+    return (contour_step(std::get<2>(block_key))*pc.get_volume_fraction()/pc.get_alpha()*block.n_repeated)
+           /this->single_polymer_partitions[p];
 }
 
 template <typename T>
@@ -214,7 +199,7 @@ std::vector<double> ComputationCommon<T>::partition_errors_from_contours(
 }
 
 template <typename T>
-void ComputationCommon<T>::scale_by_contour_step(StressAccumulator<T>& stress, const std::string& key_right) const
+void ComputationCommon<T>::scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const
 {
     const double ds = contour_step(key_right);
     for (int d = 0; d < 6; d++)
@@ -222,11 +207,11 @@ void ComputationCommon<T>::scale_by_contour_step(StressAccumulator<T>& stress, c
 }
 
 template <typename T>
-void ComputationCommon<T>::set_stress_from_blocks(const std::vector<StressAccumulator<T>>& stress_of_block)
+void ComputationCommon<T>::set_stress_from_blocks(const std::vector<std::array<T, 6>>& stress_of_block)
 {
     for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
         for (int d = 0; d < 6; d++)
-            this->dq_dl[p][d] = {};
+            this->dq_dl[p][d] = 0.0;
     size_t b = 0;
     for (const auto& item : this->phi_block)
     {
@@ -280,9 +265,9 @@ void ComputationCommon<T>::convert_stress_to_lattice_derivatives()
 
     for (int p = 0; p < this->molecules->get_n_polymer_types(); p++)
     {
-        StressValue<T> V_11 = this->dq_dl[p][0];
-        StressValue<T> V_22 = (DIM >= 2) ? this->dq_dl[p][1] : StressValue<T>{};
-        StressValue<T> V_33{}, V_12{}, V_13{}, V_23{};
+        T V_11 = this->dq_dl[p][0];
+        T V_22 = (DIM >= 2) ? this->dq_dl[p][1] : T(0.0);
+        T V_33 = T(0.0), V_12 = T(0.0), V_13 = T(0.0), V_23 = T(0.0);
         if (DIM == 3)
         {
             V_33 = this->dq_dl[p][2];
@@ -305,13 +290,13 @@ void ComputationCommon<T>::convert_stress_to_lattice_derivatives()
         // ∂g₁₂/∂γ = -L₁L₂sinγ → ∂H/∂γ = -L₁L₂sinγ·V₁₂, and likewise for β and α
         if (DIM == 3)
         {
-            this->dq_dl[p][3] = ((V_12 * -L1) * L2) * sin_g / norm;  // dH/dγ
-            this->dq_dl[p][4] = ((V_13 * -L1) * L3) * sin_b / norm;  // dH/dβ
-            this->dq_dl[p][5] = ((V_23 * -L2) * L3) * sin_a / norm;  // dH/dα
+            this->dq_dl[p][3] = -L1 * L2 * sin_g * V_12 / norm;  // dH/dγ
+            this->dq_dl[p][4] = -L1 * L3 * sin_b * V_13 / norm;  // dH/dβ
+            this->dq_dl[p][5] = -L2 * L3 * sin_a * V_23 / norm;  // dH/dα
         }
         else if (DIM == 2)
         {
-            this->dq_dl[p][2] = ((V_12 * -L1) * L2) * sin_g / norm;  // dH/dγ
+            this->dq_dl[p][2] = -L1 * L2 * sin_g * V_12 / norm;  // dH/dγ
         }
     }
 }
@@ -379,19 +364,17 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
         // A name that is not a monomer type (a typo) is an error, not a zero field
         validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
         std::vector<BackendArray<T>*> arrays;
-        std::vector<BackendArray<T>*> exponents;
-        std::vector<DensityNormalization<T>> weights;
+        std::vector<T> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
             if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
-                const auto norm = concentration_norm(key);
-                if (norm.factor.mantissa == 0.0)
+                const T norm = concentration_norm(key);
+                if (norm == T(0.0))
                     continue;
                 arrays.push_back(phi_b);
-                exponents.push_back(phi_block_exponent.at(key));
                 weights.push_back(norm);
             }
         }
@@ -400,11 +383,10 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
             if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
             {
                 arrays.push_back(phi_solvent[s]);
-                exponents.push_back(nullptr);
-                weights.push_back(make_density_normalization(1.0, 1.0, 1.0, 1.0, T(1.0)));
+                weights.push_back(1.0);
             }
         }
-        backend->sum_to_host(phi, arrays, weights, exponents);
+        backend->sum_to_host(phi, arrays, weights);
     }
     catch (std::exception& exc)
     {
@@ -426,23 +408,21 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
         std::vector<BackendArray<T>*> arrays;
-        std::vector<BackendArray<T>*> exponents;
-        std::vector<DensityNormalization<T>> weights;
+        std::vector<T> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
             if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
-                const auto norm = concentration_norm(key);
-                if (norm.factor.mantissa == 0.0)
+                const T norm = concentration_norm(key);
+                if (norm == T(0.0))
                     continue;
                 arrays.push_back(phi_b);
-                exponents.push_back(phi_block_exponent.at(key));
                 weights.push_back(norm);
             }
         }
-        backend->sum_to_host(phi, arrays, weights, exponents);
+        backend->sum_to_host(phi, arrays, weights);
     }
     catch (std::exception& exc)
     {
@@ -453,44 +433,27 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
 template <typename T>
 void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, std::string monomer_type, T* phi)
 {
-    get_gce_concentration(fugacity, false, p, monomer_type, phi);
-}
-
-template <typename T>
-void ComputationCommon<T>::get_total_concentration_gce_log(double log_fugacity, int p, std::string monomer_type, T* phi)
-{
-    get_gce_concentration(log_fugacity, true, p, monomer_type, phi);
-}
-
-template <typename T>
-void ComputationCommon<T>::get_gce_concentration(
-    double activity, bool logarithmic, int p, const std::string& monomer_type, T* phi)
-{
     this->check_box_space_group();
     this->require_concentrations();
     try
     {
         // A name that is not a monomer type (a typo) is an error, not a zero field
         validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
-        if (logarithmic)
-            log_fugacity::validate(activity);
-        else
-            validation::require_non_negative(activity, "fugacity");
+        validation::require_non_negative(fugacity, "fugacity");
         const int P = this->molecules->get_n_polymer_types();
         if (p < 0 || p > P-1)
             throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
         // An absent GCE species contributes exactly zero even if an unused
         // propagator integral is nonfinite. Validate its arguments first.
-        if (logarithmic ? activity == -std::numeric_limits<double>::infinity() : activity == 0.0)
+        if (fugacity == 0.0)
         {
             std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
             return;
         }
 
         std::vector<BackendArray<T>*> arrays;
-        std::vector<BackendArray<T>*> exponents;
-        std::vector<DensityNormalization<T>> weights;
+        std::vector<T> weights;
         for (const auto& [key, phi_b] : phi_block)
         {
             const std::string& key_left = std::get<1>(key);
@@ -498,15 +461,11 @@ void ComputationCommon<T>::get_gce_concentration(
             if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
             {
                 arrays.push_back(phi_b);
-                exponents.push_back(phi_block_exponent.at(key));
                 const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-                weights.push_back(logarithmic
-                    ? log_fugacity::normalization<T>(activity, contour_step(std::get<2>(key)), block.n_repeated)
-                    : make_density_normalization(activity,
-                        contour_step(std::get<2>(key)), block.n_repeated, 1.0, T(1.0)));
+                weights.push_back(fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
             }
         }
-        backend->sum_to_host(phi, arrays, weights, exponents);
+        backend->sum_to_host(phi, arrays, weights);
     }
     catch (std::exception& exc)
     {
@@ -542,17 +501,23 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
             auto block_it = phi_block.find(block_key);
             if (block_it == phi_block.end())
                 throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
-            // Identical blocks share one raw entry. Normalize directly with
-            // this original block's copies, without first forming the total
-            // density of every copy (which need not be representable).
-            const auto norm = concentration_norm(block_key, blocks[b].n_copies);
-            if (norm.factor.mantissa == 0.0)
+            const T norm = concentration_norm(block_key);
+            if (norm == T(0.0))
             {
                 std::fill_n(&phi[b*N], N, T(0.0));
                 continue;
             }
-            backend->sum_to_host(&phi[b*N], {block_it->second}, {norm},
-                                 {phi_block_exponent.at(block_key)});
+            backend->copy_to_host(&phi[b*N], block_it->second);
+            for (int i = 0; i < N; i++)
+                phi[b*N + i] *= norm;
+
+            // Identical blocks (e.g. the equal arms of a star) share one entry, which
+            // holds the copies of all of them; each block gets the share of its copies
+            const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
+            const double n_copies = blocks[b].n_copies;
+            if (n_repeated != n_copies)
+                for (int i = 0; i < N; i++)
+                    phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
         }
     }
     catch (std::exception& exc)

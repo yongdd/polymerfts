@@ -217,8 +217,9 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
             this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
             this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 1));
             this->backend->synchronize();
-            this->single_polymer_partitions[p] = this->backend->partition_product(
-                this->q_work[0], this->q_work[1], this->backend->boltzmann_factor(monomer_type), n_aggregated);
+            this->single_polymer_partitions[p] = this->backend->inner_product_inverse_weight(
+                this->q_work[0], this->q_work[1], this->backend->boltzmann_factor(monomer_type))
+                /(n_aggregated*this->cb->get_volume());
         }
         this->check_real_power_partitions();
 
@@ -266,8 +267,6 @@ void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
 
             // A block without segments has no concentration
             this->backend->set_zero(0, phi);
-            BackendArray<T>* exponent = this->phi_block_exponent.at(key);
-            this->backend->set_zero(0, exponent);
             if (N_RIGHT == 0)
                 continue;
 
@@ -275,10 +274,12 @@ void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
             this->for_each_segment_pair(key_left, key_right, N_LEFT+1, 1, N_RIGHT,
                 [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}},
-                        this->backend->boltzmann_factor(block.monomer_type), exponent);
+                    this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}});
                 });
-            // Getters apply ensemble normalization to the already corrected sum.
+
+            // Remove the shared bead factor; getters apply ensemble normalization.
+            this->backend->normalize_concentration(0, phi, 1.0,
+                                                   this->backend->boltzmann_factor(block.monomer_type));
         }
         this->backend->synchronize();
 
@@ -302,7 +303,7 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds (see ComputationDiscrete)
-        std::vector<StressAccumulator<T>> stress_of_block;
+        std::vector<std::array<T, 6>> stress_of_block;
         for (const auto& [key, phi] : this->phi_block)
         {
             const auto& [p, key_left, key_right] = key;
@@ -313,10 +314,10 @@ void ComputationReduceMemoryDiscrete<T>::compute_stress()
             const bool left_is_leaf  = this->propagator_computation_optimizer->get_computation_propagator(key_left).deps.size() == 0;
             const bool right_is_leaf = this->propagator_computation_optimizer->get_computation_propagator(key_right).deps.size() == 0;
 
-            StressAccumulator<T> stress{};
+            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
             auto add_bond = [&](BackendArray<T>* q, BackendArray<T>* q_dagger, bool is_half_bond_length)
             {
-                const StressAccumulator<T> bond = this->backend->block_stress(
+                const std::array<T, 6> bond = this->backend->block_stress(
                     0, {{q, q_dagger, weight, is_half_bond_length}}, block.monomer_type);
                 for (int d = 0; d < 6; d++)
                     stress[d] += bond[d];
@@ -410,13 +411,15 @@ std::vector<double> ComputationReduceMemoryDiscrete<T>::compute_partition_errors
             this->for_each_segment_pair(key_left, key_right, block.n_segment_left+1, 1, block.n_segment_right,
                 [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
                 {
-                    T total_partition = this->backend->partition_product(
-                        q, q_dagger, exp_dw, n_propagators/block.n_repeated);
+                    T total_partition = this->backend->inner_product_inverse_weight(q, q_dagger, exp_dw)
+                                        *(block.n_repeated/this->cb->get_volume());
+                    total_partition /= n_propagators;
                     total_partitions[p].push_back(total_partition);
                     if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
                     {
-                        double integral = this->backend->absolute_partition_product(
-                            q, q_dagger, exp_dw, n_propagators/block.n_repeated);
+                        double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
+                                          *(block.n_repeated/this->cb->get_volume());
+                        integral /= n_propagators;
                         absolute_integrals[p].push_back(integral);
                     }
                 });

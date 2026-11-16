@@ -105,6 +105,8 @@ using overload_cast_ = py::detail::overload_cast_impl<Args...>;
  * Exact periodic metric for Python kernels, without creating a platform or FFT.
  * The optional moments <(Gm)_a (Gm)_b> average all tied minimal aliases, so
  * derivatives of the metric use the same representatives as the propagators.
+ * The callers (Smearing, WTMD) pass a validated grid and the inverse metric of a
+ * validated cell; only the shapes are checked here, so that no read leaves the arrays.
  */
 py::tuple periodic_metric(const std::vector<int>& nx, array_in<double> reciprocal_metric,
                           bool with_moments)
@@ -117,38 +119,14 @@ py::tuple periodic_metric(const std::vector<int>& nx, array_in<double> reciproca
     std::array<int, 3> grid = {1, 1, 1};
     for (int d = 0; d < dim; ++d)
     {
-        if (nx[d] < 1 || nx[d] > MAX_GRID_POINTS / n_grid)
-            throw py::value_error("The periodic metric grid is empty or exceeds the supported grid size.");
         n_grid *= nx[d];
         grid[d] = nx[d];
     }
     const auto* values = static_cast<const double*>(metric.ptr);
     double G[3][3] = {};
-    double scale = 0.0;
     for (int a = 0; a < dim; ++a)
         for (int b = 0; b < dim; ++b)
-        {
             G[a][b] = values[a * dim + b];
-            if (!std::isfinite(G[a][b]))
-                throw py::value_error("The reciprocal metric must be finite.");
-            scale = std::max(scale, std::abs(G[a][b]));
-        }
-    if (!(scale > 0.0))
-        throw py::value_error("The reciprocal metric must be positive definite.");
-    double normalized[3][3] = {};
-    for (int a = 0; a < dim; ++a)
-        for (int b = 0; b < dim; ++b)
-        {
-            if (std::abs(G[a][b] - G[b][a]) > 1e-12 * scale)
-                throw py::value_error("The reciprocal metric must be symmetric.");
-            normalized[a][b] = G[a][b] / scale;
-        }
-    const double minor2 = normalized[0][0] * normalized[1][1] - normalized[0][1] * normalized[1][0];
-    const double determinant = normalized[0][0] * (normalized[1][1] * normalized[2][2] - normalized[1][2] * normalized[2][1])
-                             - normalized[0][1] * (normalized[1][0] * normalized[2][2] - normalized[1][2] * normalized[2][0])
-                             + normalized[0][2] * (normalized[1][0] * normalized[2][1] - normalized[1][1] * normalized[2][0]);
-    if (!(normalized[0][0] > 0.0) || (dim >= 2 && !(minor2 > 0.0)) || (dim == 3 && !(determinant > 0.0)))
-        throw py::value_error("The reciprocal metric must be positive definite.");
 
     py::array_t<double> k_squared(nx);
     py::array_t<double> moments;
@@ -496,12 +474,6 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
                 throw_with_line_number(exc.what());
             }
         })
-        .def("get_total_concentration_gce_log", [](PropagatorComputation<T>& obj, double log_fugacity, int polymer, std::string monomer_type)
-        {
-            py::array_t<T> phi(obj.get_cb()->get_n_basis());
-            obj.get_total_concentration_gce_log(log_fugacity, polymer, monomer_type, phi.mutable_data());
-            return phi;
-        })
         .def("get_block_concentration", [](PropagatorComputation<T>& obj, int polymer)
         {
             try{
@@ -519,7 +491,6 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
             }
         })
         .def("get_total_partition", &PropagatorComputation<T>::get_total_partition)
-        .def("get_total_partition_gce_log", &PropagatorComputation<T>::get_total_partition_gce_log)
         .def("get_solvent_partition", &PropagatorComputation<T>::get_solvent_partition)
         .def("get_solvent_concentration", [](PropagatorComputation<T>& obj, int s)
         {
@@ -557,7 +528,6 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
         .def("get_force_off_diagonal_stress", &PropagatorComputation<T>::get_force_off_diagonal_stress)
         .def("get_stress", &PropagatorComputation<T>::get_stress)
         .def("get_stress_gce", &PropagatorComputation<T>::get_stress_gce)
-        .def("get_stress_gce_log", &PropagatorComputation<T>::get_stress_gce_log)
         .def("compute_partition_errors", &PropagatorComputation<T>::compute_partition_errors,
             "Relative partition function error of each polymer (nothing is printed)")
         .def("check_total_partition", &PropagatorComputation<T>::check_total_partition,
@@ -1078,7 +1048,6 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("contour_length", &Block::contour_length)
         .def_readonly("v", &Block::v)
         .def_readonly("u", &Block::u)
-        .def_readonly("multiplicity", &Block::multiplicity)
         .def_readonly("n_copies", &Block::n_copies);
 
     py::class_<ComputationEdge>(m, "ComputationEdge")
@@ -1093,7 +1062,6 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("n_segment_left", &ComputationBlock::n_segment_left)
         .def_readonly("n_segment_right", &ComputationBlock::n_segment_right)
         .def_readonly("n_repeated", &ComputationBlock::n_repeated)
-        .def_readonly("n_copies", &ComputationBlock::n_copies)
         .def_readonly("v_u", &ComputationBlock::v_u);
 
     py::class_<Polymer>(m, "Polymer")

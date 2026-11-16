@@ -36,7 +36,6 @@
 #include <string>
 
 #include "CudaCommon.h"
-#include "CudaScaledProduct.cuh"
 
 void report_cuda_error(cudaError_t code, const char *file, int line, const char *func)
 {
@@ -235,51 +234,6 @@ __global__ void ker_multi(double* dst, const double* src1, const double* src2, d
     }
 }
 
-__global__ void ker_multi_pow(double* dst, const double* src, double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i] *= pow(src[i], a);
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_int_pow(double* dst, const double* src, const int n, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // The products of n successive ker_multi calls, in the same order
-        double q = dst[i];
-        const double s = src[i];
-        for (int r = 0; r < n; r++)
-            q = q * s;
-        dst[i] = q;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_int_pow(cuDoubleComplex* dst, const cuDoubleComplex* src, const int n, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // The products of n successive ker_multi calls, in the same order
-        cuDoubleComplex q = dst[i];
-        const cuDoubleComplex s = src[i];
-        for (int r = 0; r < n; r++)
-        {
-            cuDoubleComplex t;
-            t.x = q.x * s.x - q.y * s.y;
-            t.y = q.x * s.y + q.y * s.x;
-            q = t;
-        }
-        dst[i] = q;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -368,96 +322,17 @@ __global__ void ker_divide(double* dst, const double* src1, const double* src2, 
     }
 }
 
-__global__ void ker_product_divide(double* dst, const double* a, const double* b, const double* divisor,
-                                  const double* weights, const double* mask, double weight_scale, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-        dst[i] = mask != nullptr && mask[i] == 0.0 ? 0.0
-            : scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale);
-}
-
-__global__ void ker_product_divide(cuDoubleComplex* dst, const cuDoubleComplex* a, const cuDoubleComplex* b,
-                                  const cuDoubleComplex* divisor, const double* weights, const double* mask,
-                                  double weight_scale, int n)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-        dst[i] = mask != nullptr && mask[i] == 0.0 ? make_cuDoubleComplex(0.0, 0.0)
-            : scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale);
-}
-
-namespace
-{
-    __device__ double scaled_product_sum(double a, double b, double c, double d,
-                                         int& exponent)
-    {
-        // Normalize the two products separately: one component can be tiny
-        // beside the other and still contribute a representable quotient.
-        int ea = 0, eb = 0, ec = 0, ed = 0;
-        const double ma = frexp(a, &ea), mb = frexp(b, &eb);
-        const double mc = frexp(c, &ec), md = frexp(d, &ed);
-        // Round each bounded product once, including when identical products
-        // cancel. An FMA here would retain only one product's rounding error.
-        const double first = __dmul_rn(ma, mb);
-        const double second = __dmul_rn(mc, md);
-        if (first == 0.0)
-        {
-            exponent = ec + ed;
-            return second;
-        }
-        if (second == 0.0)
-        {
-            exponent = ea + eb;
-            return first;
-        }
-        const int first_exponent = ea + eb;
-        const int second_exponent = ec + ed;
-        exponent = first_exponent > second_exponent ? first_exponent : second_exponent;
-        return scalbn(first, first_exponent - exponent) + scalbn(second, second_exponent - exponent);
-    }
-
-    __device__ cuDoubleComplex scaled_complex_divide(cuDoubleComplex numerator,
-                                                    cuDoubleComplex divisor,
-                                                    double factor)
-    {
-        const double divisor_size = fmax(fabs(divisor.x), fabs(divisor.y));
-        if (divisor_size == 0.0 || !isfinite(numerator.x) || !isfinite(numerator.y)
-            || !isfinite(divisor.x) || !isfinite(divisor.y) || !isfinite(factor))
-        {
-            // Keep true zero divisors and nonfinite inputs singular; scaling
-            // must not replace an invalid physical weight with a finite value.
-            const cuDoubleComplex quotient = cuCdiv(numerator, divisor);
-            return make_cuDoubleComplex(factor * quotient.x, factor * quotient.y);
-        }
-
-        int divisor_exponent = 0, factor_exponent = 0;
-        (void)frexp(divisor_size, &divisor_exponent);
-        const double real_divisor = scalbn(divisor.x, -divisor_exponent);
-        const double imag_divisor = scalbn(divisor.y, -divisor_exponent);
-        const double norm = real_divisor * real_divisor + imag_divisor * imag_divisor;
-        const double factor_mantissa = frexp(factor, &factor_exponent);
-
-        // Store each numerator as a bounded mantissa and a separate exponent.
-        // This avoids q^3 and squared-denominator overflow/underflow, as well as
-        // overflowing numerator/divisor_scale before a finite complex quotient.
-        int real_exponent = 0, imag_exponent = 0;
-        const double real_numerator = scaled_product_sum(
-            numerator.x, divisor.x, numerator.y, divisor.y, real_exponent);
-        const double imag_numerator = scaled_product_sum(
-            numerator.y, divisor.x, -numerator.x, divisor.y, imag_exponent);
-        const int exponent_adjustment = factor_exponent - 2 * divisor_exponent;
-        return make_cuDoubleComplex(
-            scalbn((real_numerator / norm) * factor_mantissa, real_exponent + exponent_adjustment),
-            scalbn((imag_numerator / norm) * factor_mantissa, imag_exponent + exponent_adjustment));
-    }
-}
-
 __global__ void ker_divide(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < M)
     {
-        // The helper takes copies, so dst may alias either input.
-        dst[i] = scaled_complex_divide(src1[i], src2[i], a);
+        // Use a temporary variable to avoid overwriting when dst and src share the same address
+        cuDoubleComplex temp_dst;
+        double denom = src2[i].x * src2[i].x + src2[i].y * src2[i].y;
+        temp_dst.x = a * (src1[i].x * src2[i].x + src1[i].y * src2[i].y) / denom;
+        temp_dst.y = a * (src1[i].y * src2[i].x - src1[i].x * src2[i].y) / denom;
+        dst[i] = temp_dst;
         i += blockDim.x * gridDim.x;
     }
 }
@@ -481,7 +356,14 @@ __global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* s
         if (mask[i] == 0.0)
             dst[i] = make_cuDoubleComplex(0.0, 0.0);
         else
-            dst[i] = scaled_complex_divide(src1[i], src2[i], a);
+        {
+            // Preserve ker_divide's arithmetic and its support for aliased inputs.
+            cuDoubleComplex temp_dst;
+            double denom = src2[i].x * src2[i].x + src2[i].y * src2[i].y;
+            temp_dst.x = a * (src1[i].x * src2[i].x + src1[i].y * src2[i].y) / denom;
+            temp_dst.y = a * (src1[i].y * src2[i].x - src1[i].x * src2[i].y) / denom;
+            dst[i] = temp_dst;
+        }
         i += blockDim.x * gridDim.x;
     }
 }

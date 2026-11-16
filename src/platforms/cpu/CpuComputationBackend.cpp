@@ -11,25 +11,12 @@
 #include "CpuComputationBackend.h"
 #include "Exception.h"
 #include "NumericalMethods.h"
-#include "ScaledProduct.h"
-#include "PartitionAccumulator.h"
 #include "JunctionProduct.h"
 #include "CpuSolverCNADI.h"
 #include "CpuSolverPseudoDiscrete.h"
 #include "CpuSolverPseudoRK2.h"
 #include "CpuSolverPseudoRQM4.h"
 #include "CpuSolverRealSpaceDiscrete.h"
-
-// Only GCC vectorizes these loops as `omp simd`. MSVC accepts the pragma only with
-// /openmp:experimental, and Clang-based compilers (clang, clang-cl, icx) cannot
-// vectorize them and warn with -Wpass-failed, an error under -Werror. Elsewhere they
-// stay ordinary loops; their reductions give the same values in either form.
-#if defined(__GNUC__) && !defined(__clang__)
-#define POLYMERFTS_PRAGMA(text) _Pragma(#text)
-#define POLYMERFTS_OMP_SIMD(clauses) POLYMERFTS_PRAGMA(omp simd clauses)
-#else
-#define POLYMERFTS_OMP_SIMD(clauses)
-#endif
 
 template <typename T>
 CpuComputationBackend<T>::CpuComputationBackend(
@@ -40,7 +27,6 @@ CpuComputationBackend<T>::CpuComputationBackend(
 {
     n_basis = cb->get_n_basis();
     n_streams = std::min(this->n_streams_from_env(/*default_n_streams=*/4), max_n_streams);
-    stress_pairs.resize(n_streams);
 
     switch (method_info.id)
     {
@@ -313,26 +299,6 @@ T CpuComputationBackend<T>::inner_product(BackendArray<T>* a, BackendArray<T>* b
 }
 
 template <typename T>
-T CpuComputationBackend<T>::partition_product(
-    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
-{
-    return cb->mean_product(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor), copies);
-}
-
-template <typename T>
-double CpuComputationBackend<T>::absolute_partition_product(
-    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
-{
-    const double integral_value = absolute_inner_product(a, b, divisor);
-    const double result = integral_value / (copies * cb->get_volume());
-    if (partition_accumulation::ordinary_result(integral_value)
-        && partition_accumulation::ordinary_result(result))
-        return result;
-    return std::real(cb->mean_product(raw(a), raw(b),
-        divisor == nullptr ? nullptr : raw(divisor), copies, true));
-}
-
-template <typename T>
 T CpuComputationBackend<T>::inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w)
 {
     return cb->inner_product_inverse_weight(raw(a), raw(b), raw(w));
@@ -342,22 +308,6 @@ template <typename T>
 double CpuComputationBackend<T>::absolute_inner_product(
     BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor)
 {
-    if (divisor != nullptr)
-    {
-        // Include the integration weight before restoring the product's
-        // exponent, including the volume element in a reduced basis.
-        const double* mask = cb->get_mask();
-        const double dv = cb->get_volume() / cb->get_total_grid();
-        const auto& orbits = cb->get_orbit_counts();
-        double sum = 0.0;
-        for (int i = 0; i < n_basis; ++i)
-            if (mask == nullptr || mask[i] != 0.0)
-            {
-                const double weight = space_group != nullptr ? orbits[i] * dv : cb->get_dv(i);
-                sum += std::abs(scaled_product::divide(raw(a)[i], raw(b)[i], raw(divisor)[i], weight));
-            }
-        return sum;
-    }
     if (absolute_product.empty())
         absolute_product.resize(n_basis);
     const double* mask = cb->get_mask();
@@ -369,6 +319,8 @@ double CpuComputationBackend<T>::absolute_inner_product(
             continue;
         }
         T product = raw(a)[i] * raw(b)[i];
+        if (divisor != nullptr)
+            product /= raw(divisor)[i];
         absolute_product[i] = std::abs(product);
     }
     return std::real(cb->integral(absolute_product.data()));
@@ -376,132 +328,9 @@ double CpuComputationBackend<T>::absolute_inner_product(
 
 template <typename T>
 void CpuComputationBackend<T>::add_segment_products(
-    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor,
-    BackendArray<T>* exponent)
+    int, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
 {
     T* _phi = raw(phi);
-    if (exponent != nullptr)
-    {
-        T* _exponent = raw(exponent);
-        const T* _divisor = divisor == nullptr ? nullptr : raw(divisor);
-        const double* mask = divisor == nullptr ? nullptr : cb->get_mask();
-        for (const SegmentPair<T>& pair : pairs)
-        {
-            const T* q_1 = raw(pair.q_1);
-            const T* q_2 = raw(pair.q_2);
-            const double weight = pair.weight;
-            // Classify a cache-sized tile with a SIMD reduction, then retain
-            // the original vectorizable arithmetic for ordinary fields. A
-            // per-point branch containing frexp/scalbn prevents that loop
-            // from vectorizing even when none of its slow paths are taken.
-            constexpr int TILE = 256;
-            const auto ordinary_value = [](T value)
-            {
-                const auto component = [](double x)
-                {
-                    const double magnitude = std::abs(x);
-                    return static_cast<int>(magnitude == 0.0)
-                         | (static_cast<int>(magnitude >= 0x1p-200)
-                          & static_cast<int>(magnitude <= 0x1p200));
-                };
-                return component(std::real(value)) & component(std::imag(value));
-            };
-            for (int begin = 0, end = 0; begin < n_basis; begin = end)
-            {
-                end = begin + std::min(TILE, n_basis - begin);
-                int regular = scaled_product::ordinary(weight);
-                if (_divisor == nullptr)
-                {
-                    if constexpr (std::is_same_v<T, double>)
-                    {
-                        double minimum = 1.0, maximum = 1.0, maximum_exponent = 0.0;
-                        POLYMERFTS_OMP_SIMD(reduction(min:minimum) reduction(max:maximum,maximum_exponent))
-                        for (int i = begin; i < end; ++i)
-                        {
-                            const double a = std::abs(q_1[i]), b = std::abs(q_2[i]);
-                            minimum = std::min(minimum, std::min(a, b));
-                            maximum = std::max(maximum, std::max(a, b));
-                            maximum_exponent = std::max(maximum_exponent, std::abs(_exponent[i]));
-                        }
-                        regular &= static_cast<int>(minimum >= 0x1p-200 && maximum <= 0x1p200
-                                                    && maximum_exponent == 0.0);
-                        // Zero operands are safe, but must not hide a tiny
-                        // nonzero operand elsewhere in the same tile.
-                        if (minimum == 0.0 && maximum <= 0x1p200 && maximum_exponent == 0.0)
-                        {
-                            regular = scaled_product::ordinary(weight);
-                            POLYMERFTS_OMP_SIMD(reduction(&:regular))
-                            for (int i = begin; i < end; ++i)
-                                regular &= ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
-                        }
-                        // The bounded nonzero products lie in [2^-600,2^600].
-                        // Adding one to any finite unscaled accumulator is
-                        // safe: near DBL_MAX half an ulp is at least 2^970.
-                        // No lower bound on that accumulator is needed either.
-                        // A NaN operand may be ignored by min/max, but its
-                        // product stays NaN with the original IEEE arithmetic;
-                        // it cannot conceal an exceptional finite product.
-                    }
-                    else
-                    {
-                        POLYMERFTS_OMP_SIMD(reduction(&:regular))
-                        for (int i = begin; i < end; ++i)
-                            regular &= static_cast<int>(_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
-                                     & ordinary_value(q_1[i]) & ordinary_value(q_2[i]);
-                    }
-                }
-                else
-                {
-                    POLYMERFTS_OMP_SIMD(reduction(&:regular))
-                    for (int i = begin; i < end; ++i)
-                    {
-                        const int safe = static_cast<int>(_exponent[i] == T(0.0)) & ordinary_value(_phi[i])
-                                       & ordinary_value(q_1[i]) & ordinary_value(q_2[i])
-                                       & ordinary_value(_divisor[i])
-                                       & static_cast<int>(_divisor[i] != T(0.0));
-                        regular &= safe | static_cast<int>(mask != nullptr && mask[i] == 0.0);
-                    }
-                }
-                if (regular)
-                {
-                    if (_divisor == nullptr)
-                        for (int i = begin; i < end; ++i)
-                            _phi[i] += weight * q_1[i] * q_2[i];
-                    else
-                        for (int i = begin; i < end; ++i)
-                            if (mask == nullptr || mask[i] != 0.0)
-                                _phi[i] += weight * q_1[i] * q_2[i] / _divisor[i];
-                    continue;
-                }
-                for (int i = begin; i < end; ++i)
-                {
-                    if (mask != nullptr && mask[i] == 0.0)
-                        continue;
-                    if constexpr (std::is_same_v<T, double>)
-                        density_accumulation::accumulate(_phi[i], _exponent[i], q_1[i], q_2[i], weight,
-                                                         _divisor == nullptr ? 1.0 : _divisor[i]);
-                    else
-                        density_accumulation::accumulate(_phi[i], _exponent[i], q_1[i], q_2[i], weight,
-                                                         _divisor == nullptr ? nullptr : &_divisor[i]);
-                }
-            }
-        }
-        return;
-    }
-    if (divisor != nullptr)
-    {
-        const T* _divisor = raw(divisor);
-        const double* mask = cb->get_mask();
-        for (const SegmentPair<T>& pair : pairs)
-        {
-            const T* q_1 = raw(pair.q_1);
-            const T* q_2 = raw(pair.q_2);
-            for (int i = 0; i < n_basis; ++i)
-                if (mask == nullptr || mask[i] != 0.0)
-                    _phi[i] += scaled_product::divide(q_1[i], q_2[i], _divisor[i], pair.weight);
-        }
-        return;
-    }
     for (const SegmentPair<T>& pair : pairs)
     {
         const T* q_1 = raw(pair.q_1);
@@ -534,75 +363,17 @@ void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi
 }
 
 template <typename T>
-StressAccumulator<T> CpuComputationBackend<T>::block_stress(
-    int stream, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
+std::array<T, 6> CpuComputationBackend<T>::block_stress(
+    int, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
 {
-    StressAccumulator<T> stress{};
+    std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (const SegmentPair<T>& pair : pairs)
     {
-        T* original[2] = {raw(pair.q_1), raw(pair.q_2)};
-        double maxima[2][2] = {};
-        bool split_components = false;
-        for (int side = 0; side < 2; ++side)
-        {
-            for (int i = 0; i < n_basis; ++i)
-            {
-                maxima[side][0] = std::max(maxima[side][0], std::abs(std::real(original[side][i])));
-                if constexpr (!std::is_same_v<T, double>)
-                    maxima[side][1] = std::max(maxima[side][1], std::abs(std::imag(original[side][i])));
-            }
-            split_components = split_components || stress_accumulation::needs_component_split(
-                maxima[side][0], maxima[side][1]);
-        }
-
-        // Ordinary complex pairs retain their two FFTs. A rare pair with a
-        // component too small for common scaling uses Re/Re, Re/Im, Im/Re,
-        // Im/Im contractions; their signs/phases are restored after the FFT.
-        StressAccumulator<T> pair_stress{};
-        for (int contraction = 0; contraction < (split_components ? 4 : 1); ++contraction)
-        {
-            T* inputs[2] = {original[0], original[1]};
-            int shift = 0;
-            for (int side = 0; side < 2; ++side)
-            {
-                const int component = side == 0 ? contraction / 2 : contraction % 2;
-                const double maximum = split_components ? maxima[side][component]
-                    : std::max(maxima[side][0], maxima[side][1]);
-                const int exponent = stress_accumulation::input_shift(maximum);
-                shift += exponent;
-                if (exponent != 0 || split_components)
-                {
-                    auto& scaled = stress_pairs[stream][side];
-                    scaled.resize(n_basis);
-                    for (int i = 0; i < n_basis; ++i)
-                    {
-                        if constexpr (std::is_same_v<T, double>)
-                            scaled[i] = std::scalbn(original[side][i], -exponent);
-                        else if (split_components)
-                            scaled[i] = T(std::scalbn(component == 0 ? original[side][i].real()
-                                                                 : original[side][i].imag(), -exponent), 0.0);
-                        else
-                            scaled[i] = {std::scalbn(original[side][i].real(), -exponent),
-                                         std::scalbn(original[side][i].imag(), -exponent)};
-                    }
-                    inputs[side] = scaled.data();
-                }
-            }
-            // The solver expands/reduces internally when a space group is set.
-            const std::vector<T> segment_stress = solver->compute_single_segment_stress(
-                inputs[0], inputs[1], monomer_type, pair.is_half_bond_length);
-            for (int d = 0; d < 6; d++)
-            {
-                T segment = segment_stress[d];
-                if constexpr (!std::is_same_v<T, double>)
-                    if (split_components)
-                        segment = (contraction == 1 || contraction == 2)
-                            ? T(0.0, segment.real()) : T((contraction == 3 ? -1.0 : 1.0) * segment.real(), 0.0);
-                pair_stress[d] += StressValue<T>::shifted(segment, shift);
-            }
-        }
-        for (int d = 0; d < 6; ++d)
-            stress[d] += pair_stress[d] * pair.weight;
+        // The solver expands/reduces internally when a space group is set
+        std::vector<T> segment_stress = solver->compute_single_segment_stress(
+            raw(pair.q_1), raw(pair.q_2), monomer_type, pair.is_half_bond_length);
+        for (int d = 0; d < 6; d++)
+            stress[d] += segment_stress[d]*pair.weight;
     }
     return stress;
 }
@@ -624,9 +395,9 @@ T CpuComputationBackend<T>::solvent_concentration(
         std::fill(_phi, _phi + n_basis, T(0.0));
         return partition;
     }
-    const auto norm = make_density_normalization(volume_fraction, 1.0, 1.0, 1.0, partition);
+    const T norm = volume_fraction / partition;
     for (int i = 0; i < n_basis; i++)
-        _phi[i] = apply_density_normalization(_phi[i], norm);
+        _phi[i] *= norm;
 
     // No solvent inside impenetrable regions (the mask is in the field basis)
     const double* mask = cb->get_mask();
@@ -638,19 +409,16 @@ T CpuComputationBackend<T>::solvent_concentration(
 
 template <typename T>
 void CpuComputationBackend<T>::sum_to_host(
-    T* out, const std::vector<BackendArray<T>*>& arrays,
-    const std::vector<DensityNormalization<T>>& weights,
-    const std::vector<BackendArray<T>*>& exponents)
+    T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights)
 {
     for (int i = 0; i < n_basis; i++)
         out[i] = 0.0;
     for (size_t a = 0; a < arrays.size(); a++)
     {
         const T* _a = raw(arrays[a]);
-        const T* exponent = exponents.empty() || exponents[a] == nullptr ? nullptr : raw(exponents[a]);
-        const auto& weight = weights[a];
+        const T weight = weights[a];
         for (int i = 0; i < n_basis; i++)
-            out[i] += apply_density_normalization(_a[i], weight, exponent == nullptr ? T(0.0) : exponent[i]);
+            out[i] += _a[i]*weight;
     }
 }
 

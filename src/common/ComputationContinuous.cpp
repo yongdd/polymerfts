@@ -138,8 +138,8 @@ void ComputationContinuous<T>::compute_propagators(
 
         // Partition function of each polymer: Q = ∫ q(r,s) q†(r,N-s) dr / V
         for (const auto& [p, q_left, q_right, n_aggregated] : single_partition_segment)
-            this->single_polymer_partitions[p] = this->backend->partition_product(
-                q_left, q_right, nullptr, n_aggregated);
+            this->single_polymer_partitions[p] = this->backend->inner_product(q_left, q_right)
+                                                 /(n_aggregated*this->cb->get_volume());
         this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
@@ -209,8 +209,6 @@ void ComputationContinuous<T>::compute_concentrations()
 
                 // A block without segments has no concentration
                 this->backend->set_zero(STREAM, it->second);
-                BackendArray<T>* exponent = this->phi_block_exponent.at(it->first);
-                this->backend->set_zero(STREAM, exponent);
                 if (N_RIGHT == 0)
                     return;
 
@@ -219,7 +217,7 @@ void ComputationContinuous<T>::compute_concentrations()
                 std::vector<SegmentPair<T>> pairs;
                 for (int n = 0; n <= N_RIGHT; n++)
                     pairs.push_back({propagator.at(key_left)[N_LEFT-n], propagator.at(key_right)[n], simpson[n]});
-                this->backend->add_segment_products(STREAM, it->second, pairs, nullptr, exponent);
+                this->backend->add_segment_products(STREAM, it->second, pairs);
 
                 // Getters normalize the integral for the requested ensemble.
             });
@@ -247,7 +245,7 @@ void ComputationContinuous<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: Simpson's rule over the segment stresses
-        std::vector<StressAccumulator<T>> stress_of_block(this->phi_block.size());
+        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
         ParallelErrors errors;
         #pragma omp parallel for num_threads(this->n_streams)
         for (size_t b = 0; b < this->phi_block_iterators.size(); b++)
@@ -261,7 +259,7 @@ void ComputationContinuous<T>::compute_stress()
                 const int N_LEFT  = block.n_segment_left;
                 const int N_RIGHT = block.n_segment_right;
 
-                stress_of_block[b] = {};
+                stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
                 if (N_RIGHT == 0)
                     return;
 
@@ -336,13 +334,15 @@ std::vector<double> ComputationContinuous<T>::compute_partition_errors()
         {
             BackendArray<T>* q = propagator.at(key_left)[block.n_segment_left-n];
             BackendArray<T>* q_dagger = propagator.at(key_right)[n];
-            T total_partition = this->backend->partition_product(
-                q, q_dagger, nullptr, n_propagators/block.n_repeated);
+            T total_partition = this->backend->inner_product(
+                q, q_dagger)*(block.n_repeated/this->cb->get_volume());
+            total_partition /= n_propagators;
             total_partitions[p].push_back(total_partition);
             if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
             {
-                double integral = this->backend->absolute_partition_product(
-                    q, q_dagger, nullptr, n_propagators/block.n_repeated);
+                double integral = this->backend->absolute_inner_product(q, q_dagger)
+                                  *(block.n_repeated/this->cb->get_volume());
+                integral /= n_propagators;
                 absolute_integrals[p].push_back(integral);
             }
         }

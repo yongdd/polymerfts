@@ -5,10 +5,10 @@ A canonical AB diblock (volume fraction 0.6, charged A blocks, discrete chains, 
 grand-canonical B homopolymer of length 0.5 and grand-canonical Na+ and Cl- point ions:
 1. Input: a polymer with both or neither of volume_fraction and chemical_potential, canonical volume
    fractions above 1, grand-canonical polymers in SCFT and L-FTS, grafted grand-canonical polymers,
-   an ion with both concentration and chemical_potential and a grand-canonical counterion are
-   rejected. Charged grand-canonical species need no electroneutral input and free the uniform mode
-   of psi; a neutral grand-canonical polymer, or a grand-canonical polyampholyte without net
-   charge, keeps it at zero.
+   a polymer chemical potential beyond +-700, an ion with both concentration and chemical_potential
+   and a grand-canonical counterion are rejected. Charged grand-canonical species need no
+   electroneutral input and free the uniform mode of psi; a neutral grand-canonical polymer, or a
+   grand-canonical polyampholyte without net charge, keeps it at zero.
 2. Ensembles agree on the same (real) fields: with e^(beta mu) = phi_h/(alpha_h Q_h) the
    grand-canonical homopolymer has the partition function, concentrations and number of chains of
    the canonical one with volume fraction phi_h, and the chemical potentials of the two ensembles
@@ -119,6 +119,18 @@ def inputs(root):
     def open_counterion(params):
         params["electrostatics"]["counterion"] = "Cl"
     expect_validation_error(changed(open_counterion), "is not one of the canonical")
+
+    # |beta mu| of a grand-canonical polymer is bounded by 700, where its fugacity is a normal double
+    for mu in (700.5, -700.5, 710.0, -750.0):
+        def large_mu(params, mu=mu):
+            params["polymers"][1]["chemical_potential"] = mu
+        expect_validation_error(changed(large_mu), "'polymers[1].chemical_potential' must lie in [-700, 700]")
+    for mu in (700.0, -700.0):
+        params = parameters(root / "inputs")
+        params.pop("electrostatics")
+        params["polymers"][1]["chemical_potential"] = mu
+        sim = quiet(lambda: CLFTS(params))
+        assert sim.fugacities[1] == np.exp(mu) and np.isfinite(sim.fugacities[1]) and sim.fugacities[1] > 0
 
     params = parameters(root / "inputs")
     params.pop("electrostatics")

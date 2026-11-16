@@ -557,13 +557,6 @@ public:
      */
     T mean(const T *g);
 
-    /// Normalized product mean, including masks and symmetry orbits. A null h
-    /// means one; a null divisor omits the discrete shared-bead division.
-    /// copies is the number of aggregated propagators represented by the pair.
-    /// absolute integrates the magnitude for the zero-partition diagnostic.
-    T mean_product(const T* g, const T* h = nullptr, const T* divisor = nullptr,
-                   double copies = 1.0, bool absolute = false);
-
     /**
      * @brief Compute inner product of two fields.
      *

@@ -84,7 +84,7 @@ Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real
 | Key | Type | Description |
 |-----|------|-------------|
 | `volume_fraction` | float | Volume fraction in system |
-| `chemical_potential` | float | (CL-FTS) In place of `volume_fraction`: a grand-canonical species with the chemical potential $`\beta\mu_p`$ per chain, in the convention $`\beta\mu_p = \ln(\phi_p/\alpha_p) - \ln Q_p`$ of the recorded chemical potentials; the number of chains per reference chain is $`e^{\beta\mu_p} Q_p`$. Not for grafted chains or random copolymers |
+| `chemical_potential` | float | (CL-FTS) In place of `volume_fraction`: a grand-canonical species with the chemical potential $`\beta\mu_p`$ per chain, in the convention $`\beta\mu_p = \ln(\phi_p/\alpha_p) - \ln Q_p`$ of the recorded chemical potentials; the number of chains per reference chain is $`e^{\beta\mu_p} Q_p`$. $`\vert\beta\mu_p\vert`$ may not exceed 700, so that the fugacity $`e^{\beta\mu_p}`$ is a normal double (it overflows above 709.78). Not for grafted chains or random copolymers |
 | `blocks` | list | Block specifications |
 | `initial_conditions` | dict | (Optional) Custom propagator initial conditions per node, e.g. `{0: "G"}` maps node 0 to the initial condition labeled `"G"` in `q_init` (used for grafted chains). Labels may contain letters, digits and underscores only. Only SCFT takes `q_init`: L-FTS and CL-FTS reject grafted chains |
 
@@ -96,7 +96,7 @@ Note: FFT/DCT/DST apply to the pseudo-spectral methods (RQM4, RK2, PS). The real
 - `"v"`: Start vertex (optional for linear chains)
 - `"u"`: End vertex (optional for linear chains)
 - `"monomer_fractions"`: (Optional) Random copolymer, see below
-- `"multiplicity"`: (Optional) Number of copies $`m \ge 1`$ of the block and of everything on its `u` side, attached at `v` (default 1); a real number continues an integer number of identical arms, see below
+- `"multiplicity"`: (Optional) Number of copies $`1 \le m \le 10^6`$ of the block and of everything on its `u` side, attached at `v` (default 1); a real number continues an integer number of identical arms, see below
 
 Discrete block lengths must be integer multiples of `ds`. Lengths within the absolute
 acceptance tolerance of `1e-9` are snapped to the selected multiple. Composition means,
@@ -118,7 +118,7 @@ The volume fractions sum to 1. With grand-canonical polymers (`chemical_potentia
 
 **Random copolymer:** a polymer with a single block that has a `"monomer_fractions"` dictionary, e.g. `{"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.5, "B": 0.5}}`, is a random copolymer of the listed monomer types. `"type"` is a new name that is not in `segment_lengths`, the fractions must sum to 1 within an absolute tolerance of `1e-10` and are used without normalization, and the chain uses the field $`\sum_i f_i w_i`$ and the segment length $`(\sum_i f_i b_i^2)^{1/2}`$; its concentration is split among the monomer types by the fractions (see `examples/blend/lfts/MixtureBlockRandom.py`).
 
-**Block multiplicity:** a block with `"multiplicity": m` stands for `m` copies of itself and of all blocks on its `u` side, attached at its `v` vertex, so a star with `n` identical arms is one arm with multiplicity `n`. `m` may be any real number $`\ge 1`$: the junction at `v` takes the propagator of that branch to the power `m` (`m - 1` for the propagator that enters one of the copies), and the copies count `m` times in the concentrations and in the chain length $`\alpha`$ ([theory](../theory/ChainPropagators.md#43-real-number-of-arms-block-multiplicity)). Two blocks with multiplicities must not lie each on the `u` side of the other, and `v` must not be a grafted chain end. SCFT and L-FTS take real multiplicities; CL-FTS (complex fields) takes integers only, up to 10⁶. A real power needs positive propagators: where a numerical propagator turns negative (Crank-Nicolson next to absorbing walls, a pseudo-spectral method in a strong field), the computation stops with an error. A polymer with multiplicities is computed without propagator aggregation, and `get_block_concentration` gives the concentration of all copies of a block.
+**Block multiplicity:** a block with `"multiplicity": m` stands for `m` copies of itself and of all blocks on its `u` side, attached at its `v` vertex, so a star with `n` identical arms is one arm with multiplicity `n`. `m` may be any real number from 1 to 10⁶: the junction at `v` takes the propagator of that branch to the power `m` (`m - 1` for the propagator that enters one of the copies), and the copies count `m` times in the concentrations and in the chain length $`\alpha`$ ([theory](../theory/ChainPropagators.md#43-real-number-of-arms-block-multiplicity)). Two blocks with multiplicities must not lie each on the `u` side of the other, and `v` must not be a grafted chain end. SCFT and L-FTS take real multiplicities; CL-FTS (complex fields) takes integers only. A real power needs positive propagators: where a numerical propagator turns negative (Crank-Nicolson next to absorbing walls, a pseudo-spectral method in a strong field), the computation stops with an error. A polymer with multiplicities is computed without propagator aggregation, and `get_block_concentration` gives the concentration of all copies of a block.
 
 ### Polymer Architectures
 

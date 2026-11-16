@@ -189,8 +189,8 @@ $`\alpha = n(f_A + f_B)`$:
 ```
 
 For an integer $`n`$ these are the equations of $`n`$ explicit arms. The propagators
-of real fields are positive, so the equations hold for any real $`n \ge 1`$, which
-continues the arm number analytically: the symmetric $`\mathrm{A}_n\mathrm{B}_n`$ melt
+of real fields are positive, so the equations hold for any real $`n \ge 1`$ (the code
+takes $`1 \le n \le 10^6`$), which continues the arm number analytically: the symmetric $`\mathrm{A}_n\mathrm{B}_n`$ melt
 has a tricritical order-disorder transition at $`n_{tc} \approx 5.4475`$ [5]
 ([validation](../validation/StarNonIntegerArms.md)). A numerical propagator can turn
 slightly negative, for example with Crank-Nicolson next to absorbing walls or with a

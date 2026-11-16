@@ -29,7 +29,6 @@
 #include "Molecules.h"
 #include "NumericalMethods.h"
 #include "SpaceGroup.h"
-#include "JunctionProduct.h"
 
 template <typename T>
 class CudaSolverPseudoDiscrete;
@@ -46,20 +45,18 @@ private:
     int n_streams;
     int n_basis;
     bool force_off_diagonal_stress;
-    int stress_storage_size = 13;  ///< Values, exponents, retry flag, and per-pair flags for complex blocks
 
     cudaStream_t streams[MAX_STREAMS][2];  ///< [kernels, copies] per stream index
 
     CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (full grid)
-    CudaDeviceBuffer<junction_product::Accumulator<T>> d_junction_product[MAX_STREAMS]; ///< Product state across junction sources; empty unless a junction has several sources
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
     CudaDeviceBuffer<int> d_reduced_basis_indices;                   ///< Space group: reduced -> full index (lent to the solver)
     CudaDeviceBuffer<int> d_full_to_reduced_map;                     ///< Space group: full -> reduced index (lent to the solver)
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_pair[MAX_STREAMS][2];      ///< Stress: [q_1 | q_2] double buffer per stream
-    CudaDeviceBuffer<double> d_stress_pair_maximum[MAX_STREAMS][2]; ///< Real/imaginary component maxima of each copied field
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_pair[MAX_STREAMS][2];      ///< Stress: [q_1 | q_2] double buffer per stream;
+                                                                     ///< junction products: staged checkpoints and accumulator
     CudaDeviceBuffer<CuDeviceData<T>> d_segment_stress[MAX_STREAMS]; ///< Stress: six sums of one segment per stream
-    CudaDeviceBuffer<CuDeviceData<T>> d_block_stress[MAX_STREAMS];   ///< Stress: six accumulated values, six binary exponents, one component-range flag
-    CudaPinnedBuffer<T> h_block_stress[MAX_STREAMS];                 ///< Stress: pinned host copy of values and exponents
+    CudaDeviceBuffer<CuDeviceData<T>> d_block_stress[MAX_STREAMS];   ///< Stress: weighted sum over the segments of a block
+    CudaPinnedBuffer<T> h_block_stress[MAX_STREAMS];                 ///< Stress: pinned host copy of d_block_stress
     cudaEvent_t kernel_done[MAX_STREAMS];           ///< Stress: kernel stream reached this point
     cudaEvent_t copy_done[MAX_STREAMS];             ///< Stress: copy stream reached this point
     CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
@@ -74,9 +71,11 @@ private:
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
 
-    /// Keep the junction product scaled until the final source has been included.
-    void multiply_power(int stream, CuDeviceData<T>* d_q, const CuDeviceData<T>* d_src,
-                        double power, bool first, bool last);
+    /// One launch of a junction product over device-resident sources (at most
+    /// junction_product::MAX_SOURCES_PER_LAUNCH); first and last mark the launches of one product.
+    void launch_junction_product(int stream, CuDeviceData<T>* d_q,
+                                 const std::vector<std::pair<const CuDeviceData<T>*, double>>& sources,
+                                 bool first, bool last);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
 
     /// Destroy the solver, then the streams and events it runs on (the device
@@ -126,28 +125,20 @@ public:
                       const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,
                           const std::vector<std::pair<CheckpointArray<T>*, double>>& sources) override;
-    void prepare_junction_products(int max_sources) override;
     void apply_mask(int stream, BackendArray<T>* q) override;
     void multiply_boltzmann_factor(int stream, BackendArray<T>* q, const std::string& monomer_type) override;
 
     T inner_product(BackendArray<T>* a, BackendArray<T>* b) override;
-    T partition_product(BackendArray<T>* a, BackendArray<T>* b,
-                         BackendArray<T>* divisor, double copies) override;
-    double absolute_partition_product(BackendArray<T>* a, BackendArray<T>* b,
-                                       BackendArray<T>* divisor, double copies) override;
     T inner_product_inverse_weight(BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* w) override;
     double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                   BackendArray<T>* divisor = nullptr) override;
-    void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs,
-                              BackendArray<T>* divisor = nullptr, BackendArray<T>* exponent = nullptr) override;
+    void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
     void prepare_stress() override;
-    StressAccumulator<T> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
+    std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;
-    void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays,
-                     const std::vector<DensityNormalization<T>>& weights,
-                     const std::vector<BackendArray<T>*>& exponents = {}) override;
+    void sum_to_host(T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights) override;
 };
 
 #endif

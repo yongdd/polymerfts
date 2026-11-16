@@ -10,17 +10,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Installation and platforms
 
-- The CUDA backend compiles with CUDA 13 again (2026-11-15): the range-preserving partition
-  reduction used the cub input iterators that CCCL 3 removed; it uses the thrust iterators that
-  CUDA 12 and 13 both provide. The CN-ADI line kernels are templates defined in
-  `CudaTridiagonalLines.cuh`, so that `TestCudaTridiagonal` links: since CUDA 13 a kernel template
+- The CUDA backend compiles with CUDA 13 again (2026-11-15): the CN-ADI line kernels are templates
+  defined in `CudaTridiagonalLines.cuh`, so that `TestCudaTridiagonal` links: since CUDA 13 a kernel template
   instantiated in another file has an internal host stub. `TestCrysFFTObliqueZCuda` includes
   `<algorithm>`, which GCC 12 and later need for `std::max` over an initializer list.
 - Clang builds with `POLYMERFTS_WERROR=ON` (2026-11-15; Clang 19 as the C++ compiler, with and
-  without CUDA): the range checks of `add_segment_products` request `omp simd` only from GCC, since
-  Clang, clang-cl and icx cannot vectorize them and warn with `-Wpass-failed`. A missing `override`
-  is added and an unused member of the MKL trigonometric transform is removed; the unused variables
-  of eight C++ tests are removed or marked `[[maybe_unused]]`.
+  without CUDA): a missing `override` is added and an unused member of the MKL trigonometric
+  transform is removed; the unused variables of eight C++ tests are removed or marked
+  `[[maybe_unused]]`.
 - The GitHub repository is renamed from `langevin-fts` to `polymerfts`, the name of the
   package and its import (2026-10-27); GitHub redirects the old URLs.
 - The Conda environment and CI use conda-forge (Miniforge) instead of Anaconda's
@@ -86,8 +83,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   number analytically, e.g. the symmetric A_n B_n stars around their tricritical arm number
   n_tc ≈ 5.4475 (Kim et al., Macromolecules 59, 11903 (2026)). Integer multiplicities reproduce
   the explicit arms: the same partition functions, concentrations and stress equal to round-off,
-  and, without propagator aggregation, the same keys and junction products. SCFT and L-FTS take
-  real multiplicities; CL-FTS and complex fields take integers only (up to 10⁶). A real power of
+  and, without propagator aggregation, the same keys and junction products. Multiplicities lie
+  between 1 and 10⁶ (2026-11-16), which keeps the binary exponents of the junction products exact;
+  SCFT and L-FTS take real ones, CL-FTS and complex fields integers only. A junction keeps the range
+  of its whole product: in a star with n arms in a strong field q_A^(n-1) can overflow while the
+  product stays finite (tests/TestJunctionRange.py). A real power of
   a negative numerical propagator (Crank-Nicolson next to absorbing walls, a pseudo-spectral
   method in a strong field) stops the computation with an error. Polymers with multiplicities
   are computed without propagator aggregation; `get_block_concentration` gives all copies of a
@@ -381,12 +381,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- A grand-canonical polymer's `chemical_potential` must lie in [-700, 700] (2026-11-16); a larger
+  value raises `ValidationError`. Within this bound the fugacity e^(βμ) is a normal double (it
+  overflows above 709.78 and is subnormal below -708.40) (tests/TestClftsGrandCanonical.py).
 - `Polymer.get_n_segment_total()` counts every copy of a block (2026-11-08): it returns the
   segments of one whole chain as a float, which a real block multiplicity makes non-integer.
 - `ComputationBlock.n_repeated` and the repeat count in each `ComputationEdge.deps` entry are
   floats for every polymer (2026-11-08), since a real block multiplicity makes them non-integer;
-  `Block.multiplicity`, `Block.n_copies` and `ComputationBlock.n_copies` are new read-only
-  attributes.
+  `Block.n_copies` is a new read-only attribute.
 - The MATLAB scripts of `scripts/analysis` are removed (2026-11-06); notebooks and Python scripts
   do their work: `plot_2d_density.m`, `plot_3d_isodensity.m`,
   `plot_structure_function.m` and `plot_wtmd_statistics.m` by the notebooks of the same name,
@@ -793,10 +795,12 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
-- On CUDA the product state of a junction is allocated only when a junction has two or more
-  different sources (2026-11-15). It takes 40 (real fields) or 72 (complex fields) bytes per grid
-  point and stream, and was allocated for every stream of every computation: 2.7 GB at 256³ with
-  real fields and four streams, also for a diblock, which never uses it.
+- On CUDA a junction of several sources takes one kernel launch over up to 32 device-resident
+  sources, with the product in registers (2026-11-16); the reduced-memory mode stages two
+  checkpoints per launch. A product over several launches keeps its partial value in the stress
+  scratch buffer, and the per-point product state is gone, which took 40 (real fields) or 72
+  (complex fields) bytes per grid point and stream: 2.5 GiB (real) and 4.5 GiB (complex) less device
+  memory for a 3-arm star or a comb at 256³ with four streams. The propagators are bitwise unchanged.
 - On CUDA an integer power at a junction, a repeated branch such as `A10:5` or an integer block
   multiplicity, takes one kernel launch instead of one per factor (2026-11-08); the propagators
   are bitwise unchanged.

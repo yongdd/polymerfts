@@ -24,10 +24,11 @@ models, propagator aggregation on and off and reduced memory on and off:
      (< 1e-10), the uniform-field limit
      Q = exp(-sum copies * length * w) (< 1e-12), ln Q is convex in n, and the
      real power at n = 5 + 1e-9 joins the integer power at n = 5 (< 1e-7).
-  3. Input errors: multiplicity < 1, two blocks replicating each other, copies at
-     a grafted end, a non-integer multiplicity with complex fields (every platform
-     and chain model, and CL-FTS validation, which also refuses integers above
-     10^6), while an integer one reproduces the explicit arms in complex fields; a
+  3. Input errors: multiplicity < 1 or above 10^6 (natively and in the validation of
+     every method and of CL-FTS, which accept 10^6), two blocks replicating each
+     other, copies at a grafted end, a non-integer multiplicity with complex fields
+     (every platform and chain model, and CL-FTS validation), while an integer one
+     reproduces the explicit arms in complex fields; a
      real power of a negative propagator (Crank-Nicolson next to absorbing walls)
      stops with an error naming the multiplicity on every platform, a near-integer
      one with all its digits; blocks numbered only in part give a
@@ -51,7 +52,8 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
-from polymerfts.utils.validation import ValidationError, polymer_block_copies, validate_lfts_params
+from polymerfts.utils.validation import (ValidationError, polymer_block_copies, validate_lfts_params,
+                                         validate_system_params)
 from cuda_part import cuda_part_missing
 
 NX = [12, 10, 8]
@@ -323,6 +325,10 @@ def check_input_errors(w, platforms):
 
     message = raises(lambda: add([["A", 0.5, 0, 1, 0.5]]))
     check(message is not None and "multiplicity" in message, f"multiplicity < 1 is rejected ({message})")
+    message = raises(lambda: add([["A", 0.5, 0, 1, 1.0e6 + 1.0]]))
+    check(message is not None and "10^6" in message, f"multiplicity above 10^6 is rejected ({message})")
+    message = raises(lambda: add([["A", 0.5, 0, 1, 1.0e6]]))
+    check(message is None, f"multiplicity 10^6 is accepted ({message})")
     message = raises(lambda: add([["A", 0.2, 0, 1, 2], ["A", 0.2, 1, 2], ["A", 0.2, 3, 2, 2]]))
     check(message is not None and "u side" in message, f"blocks replicating each other are rejected ({message})")
     message = raises(lambda: add([["A", 0.5, 0, 1, 2]], {0: "G"}))
@@ -381,17 +387,27 @@ def check_input_errors(w, platforms):
               "recording": {"dir": "unused", "checkpoint_interval": 1, "sample_interval": 1,
                             "statistics_save_interval": 1},
               "verbose_level": 1}
-    # The backends take integer powers up to 10^6 only, so CL-FTS refuses larger integers too
-    for multiplicity in [2.5, 2000000]:
+    # Every method takes multiplicities up to 10^6, CL-FTS (complex fields) integers only
+    for complex_fields, multiplicity, accepted in [(True, 2.5, False), (True, 2000000, False),
+                                                   (True, 1000000, True), (False, 1.0e6 + 0.5, False),
+                                                   (False, 1.0e6, True), (False, 999999.5, True)]:
         for block in params["polymers"][0]["blocks"]:
             block["multiplicity"] = multiplicity
         try:
-            validate_lfts_params(params, complex_fields=True)
+            # CL-FTS adds its integer rule to the system checks that every method shares
+            if complex_fields:
+                validate_lfts_params(params, complex_fields=True)
+            else:
+                validate_system_params(params)
             message = None
         except ValidationError as exc:
             message = str(exc)
-        check(message is not None and "multiplicity" in message,
-              f"CL-FTS validation rejects the multiplicity {multiplicity} ({message})")
+        method = "CL-FTS" if complex_fields else "System"
+        if accepted:
+            check(message is None, f"{method} validation accepts the multiplicity {multiplicity} ({message})")
+        else:
+            check(message is not None and "multiplicity" in message,
+                  f"{method} validation rejects the multiplicity {multiplicity} ({message})")
 
     try:
         polymer_block_copies({"blocks": [{"type": "A", "length": 0.5, "v": 0, "u": 1, "multiplicity": 2},

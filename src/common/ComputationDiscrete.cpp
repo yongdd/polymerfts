@@ -202,8 +202,9 @@ void ComputationDiscrete<T>::compute_propagators(
 
         // Partition function of each polymer: Q = ∫ q(r,n) q†(r,N+1-n) / exp(-w ds) dr / V
         for (const auto& [p, q_left, q_right, monomer_type, n_aggregated] : single_partition_segment)
-            this->single_polymer_partitions[p] = this->backend->partition_product(
-                q_left, q_right, this->backend->boltzmann_factor(monomer_type), n_aggregated);
+            this->single_polymer_partitions[p] = this->backend->inner_product_inverse_weight(
+                q_left, q_right, this->backend->boltzmann_factor(monomer_type))
+                /(n_aggregated*this->cb->get_volume());
         this->check_real_power_partitions();
 
         this->propagators_computed_ = true;
@@ -272,8 +273,6 @@ void ComputationDiscrete<T>::compute_concentrations()
 
                 // A block without segments has no concentration
                 this->backend->set_zero(STREAM, it->second);
-                BackendArray<T>* exponent = this->phi_block_exponent.at(it->first);
-                this->backend->set_zero(STREAM, exponent);
                 if (N_RIGHT == 0)
                     return;
 
@@ -281,10 +280,11 @@ void ComputationDiscrete<T>::compute_concentrations()
                 std::vector<SegmentPair<T>> pairs;
                 for (int n = 1; n <= N_RIGHT; n++)
                     pairs.push_back({propagator.at(key_left)[N_LEFT-n+1], propagator.at(key_right)[n], 1.0});
-                // Remove the shared bead before each product is rounded to the
-                // field type. Getters apply ensemble normalization to the sum.
-                this->backend->add_segment_products(STREAM, it->second, pairs,
-                    this->backend->boltzmann_factor(block.monomer_type), exponent);
+                this->backend->add_segment_products(STREAM, it->second, pairs);
+
+                // Remove the shared bead factor; getters apply ensemble normalization.
+                this->backend->normalize_concentration(STREAM, it->second, 1.0,
+                                                       this->backend->boltzmann_factor(block.monomer_type));
             });
         }
         this->backend->synchronize();
@@ -310,7 +310,7 @@ void ComputationDiscrete<T>::compute_stress()
         this->backend->prepare_stress();
 
         // Stress of each block: sum over its bonds
-        std::vector<StressAccumulator<T>> stress_of_block(this->phi_block.size());
+        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
         ParallelErrors errors;
         #pragma omp parallel for num_threads(this->n_streams)
         for (size_t b = 0; b < this->phi_block_iterators.size(); b++)
@@ -413,13 +413,15 @@ std::vector<double> ComputationDiscrete<T>::compute_partition_errors()
         {
             BackendArray<T>* q = propagator.at(key_left)[block.n_segment_left-n+1];
             BackendArray<T>* q_dagger = propagator.at(key_right)[n];
-            T total_partition = this->backend->partition_product(
-                q, q_dagger, exp_dw, n_propagators/block.n_repeated);
+            T total_partition = this->backend->inner_product_inverse_weight(
+                q, q_dagger, exp_dw)*(block.n_repeated/this->cb->get_volume());
+            total_partition /= n_propagators;
             total_partitions[p].push_back(total_partition);
             if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
             {
-                double integral = this->backend->absolute_partition_product(
-                    q, q_dagger, exp_dw, n_propagators/block.n_repeated);
+                double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
+                                  *(block.n_repeated/this->cb->get_volume());
+                integral /= n_propagators;
                 absolute_integrals[p].push_back(integral);
             }
         }

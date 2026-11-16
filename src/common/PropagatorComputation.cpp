@@ -40,7 +40,6 @@
 
 #include "PropagatorComputation.h"
 #include "ValidationUtils.h"
-#include "LogFugacity.h"
 
 /**
  * @brief Construct propagator computation engine.
@@ -84,7 +83,7 @@ PropagatorComputation<T>::PropagatorComputation(
 
     // Allocate memory for dq_dl (6 components: dH/dL1..3, dH/dγ, dH/dβ, dH/dα)
     for(int p=0; p<molecules->get_n_polymer_types(); p++){
-        dq_dl.emplace_back();
+        dq_dl.push_back({0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
     }
 }
 template <typename T>
@@ -174,21 +173,8 @@ std::vector<T> PropagatorComputation<T>::get_stress()
         if (pc.get_volume_fraction() == 0.0)
             continue;
         for(int d=0; d<N_STRESS; d++){
-            const auto& derivative = this->dq_dl[p][d];
-            const T partition = this->single_polymer_partitions[p];
-            // Keep the ordinary evaluation order; the scaled path divides by Q
-            // only after the lattice and population factors have been included.
-            if (derivative.exponent == T(0.0)
-                && scaled_product::ordinary(std::real(derivative.value))
-                && scaled_product::ordinary(std::imag(derivative.value))
-                && scaled_product::ordinary(pc.get_volume_fraction())
-                && scaled_product::ordinary(pc.get_alpha())
-                && partition != T(0.0) && scaled_product::ordinary(std::real(partition))
-                && scaled_product::ordinary(std::imag(partition)))
-                stress[d] += (derivative.value * pc.get_volume_fraction() / pc.get_alpha()) / partition;
-            else
-                stress[d] += derivative.normalized(make_density_normalization(
-                    pc.get_volume_fraction(), 1.0, 1.0, pc.get_alpha(), partition));
+            stress[d] += (this->dq_dl[p][d] * pc.get_volume_fraction() /
+                 pc.get_alpha()) / this->single_polymer_partitions[p];
         }
     }
     return stress;
@@ -226,45 +212,8 @@ std::vector<T> PropagatorComputation<T>::get_stress_gce(std::vector<double> fuga
         if (fugacities[p] == 0.0)
             continue;
         for(int d=0; d<N_STRESS; d++){
-            const auto& derivative = this->dq_dl[p][d];
-            if (derivative.exponent == T(0.0)
-                && scaled_product::ordinary(std::real(derivative.value))
-                && scaled_product::ordinary(std::imag(derivative.value))
-                && scaled_product::ordinary(fugacities[p]))
-                stress[d] += static_cast<T>(fugacities[p]) * derivative.value;
-            else
-                stress[d] += derivative.normalized(make_density_normalization(
-                    fugacities[p], 1.0, 1.0, 1.0, T(1.0)));
+            stress[d] += static_cast<T>(fugacities[p]) * this->dq_dl[p][d];
         }
-    }
-    return stress;
-}
-
-template <typename T>
-T PropagatorComputation<T>::get_total_partition_gce_log(double activity, int polymer)
-{
-    const auto normalization = log_fugacity::normalization<T>(activity);
-    // The ordinary accessor also validates the index and computation state.
-    const T partition = get_total_partition(polymer);
-    return apply_density_normalization(partition, normalization);
-}
-
-template <typename T>
-std::vector<T> PropagatorComputation<T>::get_stress_gce_log(std::vector<double> activities)
-{
-    this->check_box_space_group();
-    this->require_stress();
-    const int count = this->molecules->get_n_polymer_types();
-    if (activities.size() != static_cast<size_t>(count))
-        throw_with_line_number("get_stress_gce_log needs one log fugacity per polymer type.");
-    std::vector<T> stress(6, T(0.0));
-    for (int p = 0; p < count; ++p)
-    {
-        const auto normalization = log_fugacity::normalization<T>(activities[p]);
-        if (normalization.factor.mantissa == 0.0)
-            continue;
-        for (int d = 0; d < 6; ++d)
-            stress[d] += dq_dl[p][d].normalized(normalization);
     }
     return stress;
 }

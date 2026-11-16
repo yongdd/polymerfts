@@ -18,152 +18,9 @@
 #include "CudaSolverPseudoRQM4.h"
 #include "CudaSolverRealSpaceDiscrete.h"
 #include "CudaTypeDispatch.h"
-#include "CudaScaledProduct.cuh"
 #include "CudaJunctionProduct.cuh"
 
 namespace {
-
-constexpr int STRESS_RANGE_THREADS = 256;
-
-// Fuse the existing stress-pair copies with the magnitude scan. The two
-// metadata buffers follow the same copy/kernel-stream ownership as the pairs.
-template <typename TD>
-__global__ void ker_copy_stress_pair(
-    TD* pair, const TD* first, const TD* second, double* maxima, int n, int contraction)
-{
-    double maximum[4] = {};
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-    {
-        TD a = first[i], b = second[i];
-        if constexpr (std::is_same_v<TD, double>)
-        {
-            maximum[0] = fmax(maximum[0], fabs(a));
-            maximum[2] = fmax(maximum[2], fabs(b));
-        }
-        else
-        {
-            if (contraction >= 0)
-            {
-                a = make_cuDoubleComplex(contraction / 2 == 0 ? a.x : a.y, 0.0);
-                b = make_cuDoubleComplex(contraction % 2 == 0 ? b.x : b.y, 0.0);
-            }
-            maximum[0] = fmax(maximum[0], fabs(a.x));
-            maximum[1] = fmax(maximum[1], fabs(a.y));
-            maximum[2] = fmax(maximum[2], fabs(b.x));
-            maximum[3] = fmax(maximum[3], fabs(b.y));
-        }
-        pair[i] = a;
-        pair[n + i] = b;
-    }
-    __shared__ double local_maxima[4][STRESS_RANGE_THREADS];
-    for (int component = 0; component < 4; ++component)
-        local_maxima[component][threadIdx.x] = maximum[component];
-    __syncthreads();
-    for (int stride = STRESS_RANGE_THREADS / 2; stride > 0; stride /= 2)
-    {
-        if (threadIdx.x < stride)
-            for (int component = 0; component < 4; ++component)
-                local_maxima[component][threadIdx.x] = fmax(local_maxima[component][threadIdx.x],
-                                                          local_maxima[component][threadIdx.x + stride]);
-        __syncthreads();
-    }
-    if (threadIdx.x == 0)
-        for (int component = 0; component < 4; ++component)
-            // Positive doubles have the same ordering as their unsigned bits.
-            atomicMax(reinterpret_cast<unsigned long long*>(&maxima[component]),
-                      static_cast<unsigned long long>(__double_as_longlong(local_maxima[component][0])));
-}
-
-template <typename TD>
-__global__ void ker_scale_stress_pair(TD* pair, const double* maxima, int n)
-{
-    const int first_shift = stress_accumulation::input_shift(fmax(maxima[0], maxima[1]));
-    const int second_shift = stress_accumulation::input_shift(fmax(maxima[2], maxima[3]));
-    if (first_shift == 0 && second_shift == 0)
-        return;
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-    {
-        if constexpr (std::is_same_v<TD, double>)
-        {
-            pair[i] = scalbn(pair[i], -first_shift);
-            pair[n + i] = scalbn(pair[n + i], -second_shift);
-        }
-        else
-        {
-            pair[i].x = scalbn(pair[i].x, -first_shift);
-            pair[i].y = scalbn(pair[i].y, -first_shift);
-            pair[n + i].x = scalbn(pair[n + i].x, -second_shift);
-            pair[n + i].y = scalbn(pair[n + i].y, -second_shift);
-        }
-    }
-}
-
-template <typename TD>
-__global__ void ker_accumulate_stress(
-    TD* block, TD* segment, const double* maxima, double weight, int n, int contraction, int pair_index)
-{
-    const int shift = stress_accumulation::input_shift(fmax(maxima[0], maxima[1]))
-                    + stress_accumulation::input_shift(fmax(maxima[2], maxima[3]));
-    if constexpr (!std::is_same_v<TD, double>)
-        if (threadIdx.x == 0 && blockIdx.x == 0
-            && (stress_accumulation::needs_component_split(maxima[0], maxima[1])
-                || stress_accumulation::needs_component_split(maxima[2], maxima[3])))
-        {
-            block[12] = make_cuDoubleComplex(1.0, 0.0);
-            block[13 + pair_index] = make_cuDoubleComplex(1.0, 0.0);
-        }
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-    {
-        if constexpr (std::is_same_v<TD, double>)
-        {
-            const auto result = stress_accumulation::accumulate_segment(
-                {block[i], block[6 + i]}, segment[i], shift, weight);
-            block[i] = result.value;
-            block[6 + i] = result.exponent;
-        }
-        else
-        {
-            cuDoubleComplex value = segment[i];
-            if (contraction >= 0)
-                value = (contraction == 1 || contraction == 2)
-                    ? make_cuDoubleComplex(0.0, value.x)
-                    : make_cuDoubleComplex((contraction == 3 ? -1.0 : 1.0) * value.x, 0.0);
-            if (contraction < 0)
-            {
-                const auto real = stress_accumulation::accumulate_segment(
-                    {block[i].x, block[6 + i].x}, value.x, shift, weight);
-                const auto imag = stress_accumulation::accumulate_segment(
-                    {block[i].y, block[6 + i].y}, value.y, shift, weight);
-                block[i] = make_cuDoubleComplex(real.value, imag.value);
-                block[6 + i] = make_cuDoubleComplex(real.exponent, imag.exponent);
-            }
-            else
-            {
-                // Finish the four terms of one pair before adding its weighted
-                // result to the contour sum, also in reduce-memory mode.
-                const auto real = stress_accumulation::add(
-                    contraction == 0 ? stress_accumulation::Component{0.0, 0.0}
-                                     : stress_accumulation::Component{segment[6 + i].x, segment[12 + i].x},
-                    stress_accumulation::shifted(value.x, shift));
-                const auto imag = stress_accumulation::add(
-                    contraction == 0 ? stress_accumulation::Component{0.0, 0.0}
-                                     : stress_accumulation::Component{segment[6 + i].y, segment[12 + i].y},
-                    stress_accumulation::shifted(value.y, shift));
-                segment[6 + i] = make_cuDoubleComplex(real.value, imag.value);
-                segment[12 + i] = make_cuDoubleComplex(real.exponent, imag.exponent);
-                if (contraction == 3)
-                {
-                    const auto total_real = stress_accumulation::add({block[i].x, block[6 + i].x},
-                        stress_accumulation::multiply(real, weight));
-                    const auto total_imag = stress_accumulation::add({block[i].y, block[6 + i].y},
-                        stress_accumulation::multiply(imag, weight));
-                    block[i] = make_cuDoubleComplex(total_real.value, total_imag.value);
-                    block[6 + i] = make_cuDoubleComplex(total_real.exponent, total_imag.exponent);
-                }
-            }
-        }
-    }
-}
 
 /// Host scalar to the device scalar type.
 template <typename T>
@@ -175,90 +32,12 @@ CuDeviceData<T> to_device_scalar(T value)
         return stdToCuDoubleComplex(value);
 }
 
-template <typename T>
-DensityNormalization<CuDeviceData<T>> to_device_normalization(const DensityNormalization<T>& normalization)
-{
-    return {normalization.factor, to_device_scalar(normalization.partition),
-            to_device_scalar(normalization.multiplier), normalization.multiplier_available};
-}
-
-// Fuse physical normalization with the density, restoring the exponent only
-// after its raw value and partition have both been included. In the ordinary
-// range use the same arithmetic as ker_lin_comb, including its accumulation.
-template <typename TD, bool Add>
-__global__ void ker_normalize_density(
-    TD* out, const TD* density, DensityNormalization<TD> normalization, int n,
-    const TD* exponents = nullptr)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-    {
-        if constexpr (std::is_same_v<TD, double>)
-        {
-            if (normalization.factor.mantissa == 0.0)
-            {
-                if constexpr (!Add)
-                    out[i] = 0.0;
-                continue;
-            }
-            const double raw_density = density[i];
-            const double previous = Add ? out[i] : 0.0 * raw_density;
-            if (exponents != nullptr && exponents[i] != 0.0)
-                out[i] = scaled_product::quotient(scaled_product::multiply(
-                    density_accumulation::stored(raw_density, exponents[i]), normalization.factor),
-                    scaled_product::split(normalization.partition)) + previous;
-            else if (normalization.multiplier_available && scaled_product::ordinary(raw_density))
-                out[i] = normalization.multiplier * raw_density + previous;
-            else
-                out[i] = scaled_product::divide(raw_density, 1.0, normalization.partition,
-                                                normalization.factor) + previous;
-        }
-        else
-        {
-            if (normalization.factor.mantissa == 0.0)
-            {
-                if constexpr (!Add)
-                    out[i] = make_cuDoubleComplex(0.0, 0.0);
-                continue;
-            }
-            const cuDoubleComplex raw_density = density[i];
-            const cuDoubleComplex previous = Add ? out[i]
-                : make_cuDoubleComplex(0.0 * raw_density.x, 0.0 * raw_density.y);
-            cuDoubleComplex result;
-            if (exponents != nullptr && (exponents[i].x != 0.0 || exponents[i].y != 0.0))
-            {
-                const auto normalized = density_accumulation::normalize(
-                    density_accumulation::stored(raw_density.x, exponents[i].x),
-                    density_accumulation::stored(raw_density.y, exponents[i].y),
-                    normalization.partition.x, normalization.partition.y, normalization.factor);
-                result.x = normalized.real + previous.x;
-                result.y = normalized.imag + previous.y;
-            }
-            else if (normalization.multiplier_available && scaled_product::ordinary(raw_density.x)
-                && scaled_product::ordinary(raw_density.y))
-            {
-                result.x = normalization.multiplier.x * raw_density.x
-                         - normalization.multiplier.y * raw_density.y + previous.x;
-                result.y = normalization.multiplier.x * raw_density.y
-                         + normalization.multiplier.y * raw_density.x + previous.y;
-            }
-            else
-            {
-                result = scaled_product::divide(raw_density, make_cuDoubleComplex(1.0, 0.0),
-                                                 normalization.partition, normalization.factor);
-                result.x += previous.x;
-                result.y += previous.y;
-            }
-            out[i] = result;
-        }
-    }
-}
-
 /// Segment pairs added to a concentration in one launch (passed as kernel parameters)
 constexpr int MAX_PAIRS_PER_LAUNCH = 32;
 
 __global__ void ker_absolute_partition_product(
     double* out, const double* a, const double* b, const double* divisor,
-    const double* weights, const double* mask, double weight_scale, int n)
+    const double* weights, const double* mask, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
@@ -267,10 +46,10 @@ __global__ void ker_absolute_partition_product(
             out[i] = 0.0;
         else
         {
+            double product = a[i] * b[i];
             if (divisor != nullptr)
-                out[i] = fabs(scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale));
-            else
-                out[i] = fabs(a[i] * b[i]) * weights[i];
+                product /= divisor[i];
+            out[i] = fabs(product) * weights[i];
         }
         i += blockDim.x * gridDim.x;
     }
@@ -278,7 +57,7 @@ __global__ void ker_absolute_partition_product(
 
 __global__ void ker_absolute_partition_product(
     cuDoubleComplex* out, const cuDoubleComplex* a, const cuDoubleComplex* b,
-    const cuDoubleComplex* divisor, const double* weights, const double* mask, double weight_scale, int n)
+    const cuDoubleComplex* divisor, const double* weights, const double* mask, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < n)
@@ -287,11 +66,10 @@ __global__ void ker_absolute_partition_product(
             out[i] = make_cuDoubleComplex(0.0, 0.0);
         else
         {
+            cuDoubleComplex product = cuCmul(a[i], b[i]);
             if (divisor != nullptr)
-                out[i] = make_cuDoubleComplex(
-                    cuCabs(scaled_product::divide(a[i], b[i], divisor[i], weights[i] * weight_scale)), 0.0);
-            else
-                out[i] = make_cuDoubleComplex(cuCabs(cuCmul(a[i], b[i])) * weights[i], 0.0);
+                product = cuCdiv(product, divisor[i]);
+            out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
         }
         i += blockDim.x * gridDim.x;
     }
@@ -308,91 +86,37 @@ struct SegmentProducts
 
 // phi += Σ_k weight_k q_1k q_2k in the order of the pairs, with the same arithmetic as one
 // ker_add_multi per pair, but phi is read and written once per launch
-__global__ void ker_add_segment_products(double* phi, SegmentProducts<double> p, const int M,
-                                         double* exponents)
+__global__ void ker_add_segment_products(double* phi, SegmentProducts<double> p, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < M)
     {
         double acc = phi[i];
-        double exponent = exponents == nullptr ? 0.0 : exponents[i];
         for (int k = 0; k < p.n; ++k)
-        {
-            if (exponents == nullptr)
-                acc += p.weight[k] * p.q_1[k][i] * p.q_2[k][i];
-            else
-                density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i], p.weight[k]);
-        }
+            acc += p.weight[k] * p.q_1[k][i] * p.q_2[k][i];
         phi[i] = acc;
-        if (exponents != nullptr)
-            exponents[i] = exponent;
         i += blockDim.x * gridDim.x;
     }
 }
 
-__global__ void ker_add_segment_products(cuDoubleComplex* phi, SegmentProducts<cuDoubleComplex> p, const int M,
-                                         cuDoubleComplex* exponents)
+__global__ void ker_add_segment_products(cuDoubleComplex* phi, SegmentProducts<cuDoubleComplex> p, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     while (i < M)
     {
         cuDoubleComplex acc = phi[i];
-        cuDoubleComplex exponent = exponents == nullptr ? make_cuDoubleComplex(0.0, 0.0) : exponents[i];
         for (int k = 0; k < p.n; ++k)
         {
             const cuDoubleComplex a = p.q_1[k][i];
             const cuDoubleComplex b = p.q_2[k][i];
             const double w = p.weight[k];
-            if (exponents != nullptr)
-            {
-                density_accumulation::accumulate(acc, exponent, a, b, w, nullptr);
-                continue;
-            }
             const double tx = w * (a.x * b.x - a.y * b.y);
             const double ty = w * (a.x * b.y + a.y * b.x);
             acc.x += tx;
             acc.y += ty;
         }
         phi[i] = acc;
-        if (exponents != nullptr)
-            exponents[i] = exponent;
         i += blockDim.x * gridDim.x;
-    }
-}
-
-template <typename TD>
-__global__ void ker_add_discrete_segment_products(TD* phi, SegmentProducts<TD> p,
-                                                  const TD* divisor, const double* mask, int n, TD* exponents)
-{
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
-    {
-        if (mask != nullptr && mask[i] == 0.0)
-            continue;
-        TD acc = phi[i];
-        TD exponent{};
-        if (exponents != nullptr)
-            exponent = exponents[i];
-        for (int k = 0; k < p.n; ++k)
-        {
-            if (exponents != nullptr)
-            {
-                if constexpr (std::is_same_v<TD, double>)
-                    density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i],
-                                                     p.weight[k], divisor[i]);
-                else
-                    density_accumulation::accumulate(acc, exponent, p.q_1[k][i], p.q_2[k][i],
-                                                     p.weight[k], &divisor[i]);
-                continue;
-            }
-            const TD term = scaled_product::divide(p.q_1[k][i], p.q_2[k][i], divisor[i], p.weight[k]);
-            if constexpr (std::is_same_v<TD, double>)
-                acc += term;
-            else
-                acc = cuCadd(acc, term);
-        }
-        phi[i] = acc;
-        if (exponents != nullptr)
-            exponents[i] = exponent;
     }
 }
 
@@ -492,22 +216,12 @@ CudaComputationBackend<T>::CudaComputationBackend(
         {
             d_q_pair[i][0].allocate(2*M);
             d_q_pair[i][1].allocate(2*M);
-            d_stress_pair_maximum[i][0].allocate(4);
-            d_stress_pair_maximum[i][1].allocate(4);
-        }
-        if constexpr (!std::is_same_v<T, double>)
-        {
-            int max_pairs = 0;
-            for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
-                for (const auto& block : molecules->get_polymer(p).get_blocks())
-                    max_pairs = std::max(max_pairs, block.n_segment + 1);
-            stress_storage_size += max_pairs;
         }
         for (int i = 0; i < MAX_STREAMS; i++)
         {
-            d_segment_stress[i].allocate(18);
-            d_block_stress[i].allocate(stress_storage_size);
-            h_block_stress[i].allocate(stress_storage_size);
+            d_segment_stress[i].allocate(6);
+            d_block_stress[i].allocate(6);
+            h_block_stress[i].allocate(6);
         }
 
         solver->update_laplacian_operator();
@@ -551,11 +265,8 @@ void CudaComputationBackend<T>::release()
 
     for (int i = 0; i < MAX_STREAMS; i++)
     {
-        d_junction_product[i].release();
         d_q_pair[i][0].release();
         d_q_pair[i][1].release();
-        d_stress_pair_maximum[i][0].release();
-        d_stress_pair_maximum[i][1].release();
         d_segment_stress[i].release();
         d_block_stress[i].release();
         h_block_stress[i].release();
@@ -740,38 +451,22 @@ void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendAr
 }
 
 template <typename T>
-void CudaComputationBackend<T>::multiply_power(int stream, CuDeviceData<T>* d_q,
-    const CuDeviceData<T>* d_src, double power, bool first, bool last)
+void CudaComputationBackend<T>::launch_junction_product(int stream, CuDeviceData<T>* d_q,
+    const std::vector<std::pair<const CuDeviceData<T>*, double>>& sources, bool first, bool last)
 {
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    if (!(first && last) && d_junction_product[stream].empty())
-        throw_with_line_number("A junction of several sources needs prepare_junction_products() first.");
-    if constexpr (std::is_same_v<T, double>)
+    junction_product::Sources<CuDeviceData<T>> batch{};
+    batch.n = static_cast<int>(sources.size());
+    for (int k = 0; k < batch.n; ++k)
     {
-        junction_product::accumulate<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-            d_q, d_junction_product[stream].get(), d_src, power, first, last, n_basis);
-        CUDA_CHECK_LAUNCH();
+        batch.q[k] = sources[k].first;
+        batch.power[k] = sources[k].second;
     }
-    else
-    {
-        if (!is_integer_power(power))
-            throw_with_line_number(complex_real_power_message(power));
-        junction_product::accumulate<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-            d_q, d_junction_product[stream].get(), d_src, static_cast<int>(power), first, last, n_basis);
-        CUDA_CHECK_LAUNCH();
-    }
-}
-
-template <typename T>
-void CudaComputationBackend<T>::prepare_junction_products(int max_sources)
-{
-    // One source is raised to its power within one launch and needs no state.
-    // The state takes 40 (real) or 72 (complex) bytes per point and stream.
-    if (max_sources < 2)
-        return;
-    for (int i = 0; i < n_streams; i++)
-        if (d_junction_product[i].empty())
-            d_junction_product[i].allocate(n_basis);
+    // A product over several launches keeps its accumulator in q and in the second stress
+    // pair buffer, which is free while propagators are computed
+    junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+        d_q, batch, d_q_pair[stream][1].get(), first, last, n_basis);
+    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
@@ -795,13 +490,26 @@ template <typename T>
 void CudaComputationBackend<T>::junction_product(
     int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    CuDeviceData<T>* d_q = raw(q);
-
+    // Complex fields take integer powers only; check them all before a launch changes q
+    if constexpr (!std::is_same_v<T, double>)
+        for (const auto& source : sources)
+            if (!is_integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
     if (sources.empty())
+    {
         set_unity(stream, q);
-    for (size_t index = 0; index < sources.size(); ++index)
-        multiply_power(stream, d_q, raw(sources[index].first), sources[index].second,
-                       index == 0, index + 1 == sources.size());
+        return;
+    }
+    // One launch takes up to MAX_SOURCES_PER_LAUNCH device-resident sources
+    const size_t batch_size = junction_product::MAX_SOURCES_PER_LAUNCH;
+    for (size_t begin = 0; begin < sources.size(); begin += batch_size)
+    {
+        const size_t end = std::min(begin + batch_size, sources.size());
+        std::vector<std::pair<const CuDeviceData<T>*, double>> batch;
+        for (size_t index = begin; index < end; ++index)
+            batch.push_back({raw(sources[index].first), sources[index].second});
+        launch_junction_product(stream, raw(q), batch, begin == 0, end == sources.size());
+    }
 }
 
 template <typename T>
@@ -829,18 +537,31 @@ template <typename T>
 void CudaComputationBackend<T>::junction_product(
     int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    CuDeviceData<T>* d_q = raw(q);
-    // The stress pair buffer is free while propagators are computed; stage each checkpoint in it
-    CuDeviceData<T>* d_stage = d_q_pair[stream][0];
-
+    // Complex fields take integer powers only; check them all before a launch changes q
+    if constexpr (!std::is_same_v<T, double>)
+        for (const auto& source : sources)
+            if (!is_integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
     if (sources.empty())
-        set_unity(stream, q);
-    for (size_t index = 0; index < sources.size(); ++index)
     {
-        const auto& [src, n_repeated] = sources[index];
-        CUDA_CHECK(cudaMemcpyAsync(d_stage, raw(src), sizeof(T)*n_basis,
-                                        cudaMemcpyHostToDevice, streams[stream][0]));
-        multiply_power(stream, d_q, d_stage, n_repeated, index == 0, index + 1 == sources.size());
+        set_unity(stream, q);
+        return;
+    }
+    // The first stress pair buffer is free while propagators are computed; it stages
+    // two checkpoints per launch (the second one holds the accumulator between launches)
+    CuDeviceData<T>* d_stage = d_q_pair[stream][0];
+    for (size_t begin = 0; begin < sources.size(); begin += 2)
+    {
+        const size_t end = std::min(begin + 2, sources.size());
+        std::vector<std::pair<const CuDeviceData<T>*, double>> batch;
+        for (size_t index = begin; index < end; ++index)
+        {
+            CuDeviceData<T>* d_source = d_stage + (index - begin)*n_basis;
+            CUDA_CHECK(cudaMemcpyAsync(d_source, raw(sources[index].first), sizeof(T)*n_basis,
+                                       cudaMemcpyHostToDevice, streams[stream][0]));
+            batch.push_back({d_source, sources[index].second});
+        }
+        launch_junction_product(stream, raw(q), batch, begin == 0, end == sources.size());
     }
 }
 
@@ -871,26 +592,6 @@ template <typename T>
 T CudaComputationBackend<T>::inner_product(BackendArray<T>* a, BackendArray<T>* b)
 {
     return cb->inner_product_device(raw(a), raw(b));
-}
-
-template <typename T>
-T CudaComputationBackend<T>::partition_product(
-    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
-{
-    return cb->mean_product_device(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor), copies);
-}
-
-template <typename T>
-double CudaComputationBackend<T>::absolute_partition_product(
-    BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor, double copies)
-{
-    const double integral_value = absolute_inner_product(a, b, divisor);
-    const double result = integral_value / (copies * cb->get_volume());
-    if (partition_accumulation::ordinary_result(integral_value)
-        && partition_accumulation::ordinary_result(result))
-        return result;
-    return std::real(cb->mean_product_device(raw(a), raw(b),
-        divisor == nullptr ? nullptr : raw(divisor), copies, true));
 }
 
 template <typename T>
@@ -929,20 +630,19 @@ double CudaComputationBackend<T>::absolute_inner_product(
     const int threads = CudaCommon::get_instance().get_n_threads();
     ker_absolute_partition_product<<<grid_blocks(n_basis, threads), threads, 0, stream>>>(
         d_sum.get(), raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor),
-        cb->device_integration_weights(), d_q_mask.get(), cb->integration_weight_scale(), n_basis);
+        cb->device_integration_weights(), d_q_mask.get(), n_basis);
     CUDA_CHECK_LAUNCH();
     CUDA_CHECK(cuda_reduce_sum(d_partition_temp.get(), partition_temp_bytes, d_sum.get(),
                                d_partition_sum.get(), n_basis, stream));
     CUDA_CHECK(cudaMemcpyAsync(h_partition_sum.get(), d_partition_sum.get(), sizeof(T),
                                cudaMemcpyDeviceToHost, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
-    return std::real(h_partition_sum[0]) * (divisor == nullptr ? cb->integration_weight_scale() : 1.0);
+    return std::real(h_partition_sum[0]) * cb->integration_weight_scale();
 }
 
 template <typename T>
 void CudaComputationBackend<T>::add_segment_products(
-    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs, BackendArray<T>* divisor,
-    BackendArray<T>* exponent)
+    int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -957,11 +657,7 @@ void CudaComputationBackend<T>::add_segment_products(
             chunk.q_2[k] = raw(pairs[first + k].q_2);
             chunk.weight[k] = pairs[first + k].weight;
         }
-        if (divisor != nullptr)
-            ker_add_discrete_segment_products<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-                raw(phi), chunk, raw(divisor), d_q_mask.get(), n_basis, raw(exponent));
-        else
-            ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis, raw(exponent));
+        ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis);
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK_LAUNCH();
@@ -993,10 +689,10 @@ void CudaComputationBackend<T>::prepare_stress()
 }
 
 template <typename T>
-StressAccumulator<T> CudaComputationBackend<T>::block_stress(
+std::array<T, 6> CudaComputationBackend<T>::block_stress(
     int stream, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
 {
-    StressAccumulator<T> stress{};
+    std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     if (pairs.empty())
         return stress;
 
@@ -1011,77 +707,56 @@ StressAccumulator<T> CudaComputationBackend<T>::block_stress(
     CuDeviceData<T>* d_segment = d_segment_stress[stream];
     CuDeviceData<T>* d_block   = d_block_stress[stream];
     CUDA_CHECK(cudaMemsetAsync(d_segment, 0, sizeof(T)*6, s_kernel));
+    CUDA_CHECK(cudaMemsetAsync(d_block,   0, sizeof(T)*6, s_kernel));
 
     cudaEvent_t kernel_done_s = kernel_done[stream];
     cudaEvent_t copy_done_s   = copy_done[stream];
 
-    // Normal pairs keep the original complex FFT path. Only when common
-    // scaling would lose a component do we retry the block as four real
-    // bilinear forms. The flag travels with the existing block-result copy:
-    // there is no per-segment host check or additional ordinary-path sync.
-    auto run_block = [&](bool split_components)
-    {
-        std::vector<std::pair<size_t, int>> sequence;
-        for (size_t i = 0; i < pairs.size(); ++i)
-        {
-            const bool split_pair = split_components && std::real(h_block_stress[stream][13 + i]) != 0.0;
-            if (split_pair)
-                for (int component = 0; component < 4; ++component)
-                    sequence.push_back({i, component});
-            else
-                sequence.push_back({i, -1});
-        }
-        CUDA_CHECK(cudaMemsetAsync(d_block, 0, sizeof(T)*stress_storage_size, s_kernel));
-        CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-        CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-        const size_t count = sequence.size();
-        auto copy_pair = [&](size_t step, int buffer)
-        {
-            const auto [i, contraction] = sequence[step];
-            double* maxima = d_stress_pair_maximum[stream][buffer];
-            CUDA_CHECK(cudaMemsetAsync(maxima, 0, 4*sizeof(double), s_copy));
-            ker_copy_stress_pair<<<grid_blocks(n_basis, STRESS_RANGE_THREADS), STRESS_RANGE_THREADS, 0, s_copy>>>(
-                static_cast<CuDeviceData<T>*>(d_q_pair[stream][buffer]), raw(pairs[i].q_1), raw(pairs[i].q_2),
-                maxima, n_basis, contraction);
-            CUDA_CHECK_LAUNCH();
-            CUDA_CHECK(cudaEventRecord(copy_done_s, s_copy));
-        };
+    // The pairs may still be computed on the kernel stream (reduce-memory
+    // recomputation): the copies wait for it
+    CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
+    CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
 
-        int prev = 0, next = 1;
-        copy_pair(0, prev);
-        CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-        for (size_t step = 0; step < count; ++step)
-        {
-            if (step + 1 < count)
-                copy_pair(step + 1, next);
-            const auto [i, contraction] = sequence[step];
-            double* maxima = d_stress_pair_maximum[stream][prev];
-            ker_scale_stress_pair<<<grid_blocks(n_basis, STRESS_RANGE_THREADS), STRESS_RANGE_THREADS, 0, s_kernel>>>(
-                static_cast<CuDeviceData<T>*>(d_q_pair[stream][prev]), maxima, n_basis);
-            CUDA_CHECK_LAUNCH();
-            solver->compute_single_segment_stress(stream, d_q_pair[stream][prev], d_segment,
-                                                  monomer_type, pairs[i].is_half_bond_length);
-            ker_accumulate_stress<<<1, 32, 0, s_kernel>>>(
-                d_block, d_segment, maxima, pairs[i].weight, N_STRESS_DIM, contraction, static_cast<int>(i));
-            CUDA_CHECK_LAUNCH();
-            CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-            CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-            CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-            std::swap(prev, next);
-        }
-        const size_t result_size = std::is_same_v<T, double> ? 12 : 13 + pairs.size();
-        CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*result_size,
-                                  cudaMemcpyDeviceToHost, s_kernel));
-        CUDA_CHECK(cudaStreamSynchronize(s_kernel));
-        CUDA_CHECK(cudaStreamSynchronize(s_copy));
+    // The solver reads the pair as one contiguous [q_1 | q_2] buffer; copy the
+    // next pair on the copy stream while the current one is computed.
+    auto copy_pair = [&](size_t i, CuDeviceData<T>* d_pair)
+    {
+        CUDA_CHECK(cudaMemcpyAsync(&d_pair[0], raw(pairs[i].q_1), sizeof(T)*n_basis,
+                                        cudaMemcpyDeviceToDevice, s_copy));
+        CUDA_CHECK(cudaMemcpyAsync(&d_pair[n_basis], raw(pairs[i].q_2), sizeof(T)*n_basis,
+                                        cudaMemcpyDeviceToDevice, s_copy));
+        CUDA_CHECK(cudaEventRecord(copy_done_s, s_copy));
     };
-    run_block(false);
-    if constexpr (!std::is_same_v<T, double>)
-        if (std::real(h_block_stress[stream][12]) != 0.0)
-            run_block(true);
+
+    int prev = 0, next = 1;
+    copy_pair(0, d_q_pair[stream][prev]);
+    CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
+
+    for (size_t i = 0; i < pairs.size(); i++)
+    {
+        if (i + 1 < pairs.size())
+            copy_pair(i + 1, d_q_pair[stream][next]);
+
+        // block += weight * segment, summed on the device
+        solver->compute_single_segment_stress(stream, d_q_pair[stream][prev], d_segment,
+                                              monomer_type, pairs[i].is_half_bond_length);
+        ker_lin_comb<<<1, 32, 0, s_kernel>>>(d_block, 1.0, d_block, pairs[i].weight, d_segment, N_STRESS_DIM);
+        CUDA_CHECK_LAUNCH();
+        CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
+
+        CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
+        CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
+        std::swap(prev, next);
+    }
+
+    // One copy per block; waiting on this stream only lets the other streams run on
+    CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*N_STRESS_DIM,
+                                    cudaMemcpyDeviceToHost, s_kernel));
+    CUDA_CHECK(cudaStreamSynchronize(s_kernel));
+    CUDA_CHECK(cudaStreamSynchronize(s_copy));
 
     for (int d = 0; d < N_STRESS_DIM; d++)
-        stress[d] = {h_block_stress[stream][d], h_block_stress[stream][6 + d]};
+        stress[d] = h_block_stress[stream][d];
     return stress;
 }
 
@@ -1106,16 +781,9 @@ T CudaComputationBackend<T>::solvent_concentration(
         return partition;
     }
 
-    const auto normalization = make_density_normalization(volume_fraction, 1.0, 1.0, 1.0, partition);
-    auto norm = to_device_normalization(normalization);
-    if constexpr (!std::is_same_v<T, double>)
-    {
-        // Preserve the existing CUDA solvent coefficient in its safe range.
-        if (norm.multiplier_available)
-            norm.multiplier = cuCdiv(make_cuDoubleComplex(volume_fraction, 0.0), stdToCuDoubleComplex(partition));
-    }
-    ker_normalize_density<CuDeviceData<T>, false><<<grid_blocks(n_basis, N_THREADS), N_THREADS>>>(
-        d_phi, d_phi, norm, n_basis);
+    // The same host arithmetic as the CPU backend
+    const CuDeviceData<T> norm = to_device_scalar(volume_fraction / partition);
+    ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_phi, norm, d_phi, 0.0, d_phi, n_basis);
     CUDA_CHECK_LAUNCH();
 
     // No solvent inside impenetrable regions (the mask is in the field basis)
@@ -1129,18 +797,15 @@ T CudaComputationBackend<T>::solvent_concentration(
 
 template <typename T>
 void CudaComputationBackend<T>::sum_to_host(
-    T* out, const std::vector<BackendArray<T>*>& arrays,
-    const std::vector<DensityNormalization<T>>& weights,
-    const std::vector<BackendArray<T>*>& exponents)
+    T* out, const std::vector<BackendArray<T>*>& arrays, const std::vector<T>& weights)
 {
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
     CUDA_CHECK(cudaMemset(d_sum, 0, sizeof(T)*n_basis));
     for (size_t a = 0; a < arrays.size(); a++)
     {
-        ker_normalize_density<CuDeviceData<T>, true><<<grid_blocks(n_basis, N_THREADS), N_THREADS>>>(
-            d_sum, raw(arrays[a]), to_device_normalization(weights[a]), n_basis,
-            exponents.empty() ? nullptr : raw(exponents[a]));
+        ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_sum, to_device_scalar(weights[a]), raw(arrays[a]), 1.0, d_sum, n_basis);
         CUDA_CHECK_LAUNCH();
     }
     CUDA_CHECK(cudaMemcpy(out, d_sum, sizeof(T)*n_basis, cudaMemcpyDeviceToHost));

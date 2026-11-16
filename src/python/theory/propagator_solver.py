@@ -470,14 +470,6 @@ class PropagatorSolver:
         """
         return self._computed().get_total_partition(polymer)
 
-    def get_partition_function_gce_log(self, log_fugacity: float, polymer: int):
-        """Return exp(log_fugacity) * Q without forming exp(log_fugacity).
-
-        The stored partition must itself be representable. ``-inf`` denotes
-        zero activity; this returns zero even at a zero partition.
-        """
-        return self._computed().get_total_partition_gce_log(log_fugacity, polymer)
-
     def check_total_partition(self, tolerance: float = _core.PARTITION_TOLERANCE) -> bool:
         """Check forward/backward partition function consistency.
 
@@ -540,15 +532,6 @@ class PropagatorSolver:
         compute_concentrations().
         """
         return self._computed().get_total_concentration_gce(fugacity, polymer, monomer_type)
-
-    def get_concentration_gce_log(self, log_fugacity: float, polymer: int, monomer_type: str) -> NDArray[np.floating]:
-        """GCE density weighted by exp(log_fugacity), retaining its range until normalization.
-
-        This accepts finite chemical potentials and ``-inf`` for an absent
-        species. Propagators still need to be representable. Call after
-        compute_concentrations(), as for get_concentration_gce().
-        """
-        return self._computed().get_total_concentration_gce_log(log_fugacity, polymer, monomer_type)
 
     def get_grid_points(self) -> Tuple[NDArray[np.floating], ...]:
         """Get the Cartesian coordinates of the grid points.
@@ -931,10 +914,6 @@ class PropagatorSolver:
         with the chains weighted by the fugacities z_p (get_stress gives the derivatives of
         -Σ_p (φ_p/α_p) ln Q_p). Must be called after compute_stress()."""
         return self._computed().get_stress_gce([float(z) for z in fugacities])
-
-    def get_stress_gce_log(self, log_fugacities: List[float]) -> List[float]:
-        """GCE stress using log activities; ``-inf`` gives a species zero weight."""
-        return self._computed().get_stress_gce_log([float(value) for value in log_fugacities])
 
     def update_laplacian_operator(self) -> None:
         """Update the Laplacian operator after changing box dimensions.

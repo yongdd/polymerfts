@@ -1,4 +1,4 @@
-/** A junction keeps the range of its entire product, including complex components. */
+/** A junction product keeps the range of its entire product, for real and complex factors. */
 #include <cmath>
 #include <complex>
 #include <iostream>
@@ -13,14 +13,17 @@ void check(double actual, double expected, double tolerance = 2e-13)
 {
     if (!std::isfinite(actual) || (expected == 0.0 ? actual != 0.0
             : actual == 0.0 || std::abs(actual / expected - 1.0) > tolerance))
-        throw std::runtime_error("A junction product lost a finite component.");
+        throw std::runtime_error("A junction product lost a finite value.");
 }
 
-void check(junction_product::Complex actual, std::complex<double> expected)
+// Complex products are accurate relative to their magnitude, as complex products of doubles
+void check(const junction_product::Complex& actual, std::complex<double> expected, double tolerance = 2e-13)
 {
     const auto result = actual.value();
-    check(result.real, expected.real());
-    check(result.imag, expected.imag());
+    const std::complex<double> value(result.real, result.imag);
+    if (!std::isfinite(value.real()) || !std::isfinite(value.imag())
+        || std::abs(value - expected) > tolerance * std::abs(expected))
+        throw std::runtime_error("A complex junction product lost a finite value.");
 }
 } // namespace
 
@@ -28,6 +31,7 @@ int main()
 {
     try
     {
+        // A finite product whose partial products and powers overflow or underflow a double
         const double large = std::exp(500.0), small = std::exp(-500.0);
         for (const double first : {large, small})
         {
@@ -65,39 +69,22 @@ int main()
         unit.multiply(std::numeric_limits<double>::quiet_NaN(), 0.0);
         check(unit.value(), 1.0);
 
-        // Multiplicities above 10^6 take the real-power path. Their binary
-        // exponents can exceed INT_MAX even though the final product is one.
-        junction_product::Real large_power;
-        large_power.multiply(0x1p300, 1e8);
-        large_power.multiply(0x1p-300, 1e8);
-        check(large_power.value(), 1.0);
-        for (const double base : {1.0, 1.0 + 0x1p-40, 1.0 - 0x1p-40})
-        {
-            junction_product::Real near_one;
-            near_one.multiply(base, 1e8 + 0.5);
-            check(near_one.value(), std::pow(base, 1e8 + 0.5));
-        }
-        for (const double exponent : {1e20, 1e300})
+        // The largest multiplicity, 10^6: binary exponents of 3*10^8 cancel exactly,
+        // integer and real powers, and a truly unrepresentable product stays infinite.
+        for (const double multiplicity : {1.0e6, 1.0e6 - 0.5})
         {
             junction_product::Real cancelling;
-            cancelling.multiply(2.0, exponent);
-            cancelling.multiply(0.5, exponent);
+            cancelling.multiply(0x1p300, multiplicity);
+            cancelling.multiply(0x1p-300, multiplicity);
             check(cancelling.value(), 1.0);
-            // Complex component addition aligns both exponent parts, including
-            // a one-bit difference invisible in the high part alone.
-            const auto full = junction_product::power(2.0, exponent);
-            auto half = full;
-            junction_product::shift(half, -1.0);
-            const auto sum = junction_product::add(full, half);
-            check(junction_product::value(junction_product::multiply(sum,
-                  junction_product::power(0.5, exponent))), 1.5);
-            check(junction_product::value(junction_product::add(full,
-                  junction_product::negate(full))), 0.0);
-        }
-        for (const double exponent : {1e300, 1e308})
-        {
+            for (const double base : {1.0 + 0x1p-40, 1.0 - 0x1p-40})
+            {
+                junction_product::Real near_one;
+                near_one.multiply(base, multiplicity);
+                check(near_one.value(), std::pow(base, multiplicity));
+            }
             junction_product::Real unrepresentable;
-            unrepresentable.multiply(1e300, exponent);
+            unrepresentable.multiply(1e300, multiplicity);
             if (!std::isinf(unrepresentable.value()))
                 throw std::runtime_error("An unrepresentable final junction product was made finite.");
         }
@@ -110,21 +97,32 @@ int main()
             check(product.value(), edge);
         }
 
-        junction_product::Complex independent;
-        independent.multiply(1e150, 1e-200, 1);
-        independent.multiply(1e200, 0.0, 1);
-        independent.multiply(1e-200, 0.0, 1);
-        check(independent, {1e150, 1e-200});
+        // Complex factors share one exponent per number
+        junction_product::Complex scaled_parts;
+        scaled_parts.multiply(1e150, 1e130, 1);
+        scaled_parts.multiply(1e200, 0.0, 1);
+        scaled_parts.multiply(1e-200, 0.0, 1);
+        check(scaled_parts, {1e150, 1e130});
         junction_product::Complex phase;
         phase.multiply(0.0, large, 2);
         phase.multiply(small, 0.0, 1);
         check(phase, {-large, 0.0});
         phase.multiply(0.0, small, 1);
         check(phase, {0.0, -1.0});
+        junction_product::Complex cube;
+        cube.multiply(1e200, 1e200, 3);
+        cube.multiply(1e-200, 0.0, 3);
+        check(cube, {-2.0, 2.0});
+        junction_product::Complex large_power;
+        large_power.multiply(0.0, 0x1p300, 1000000);
+        large_power.multiply(0x1p-300, 0.0, 1000000);
+        check(large_power, {1.0, 0.0});
         junction_product::Complex complex_zero;
         complex_zero.multiply(large, 0.0, 2);
         complex_zero.multiply(0.0, 0.0, 1);
-        check(complex_zero, {0.0, 0.0});
+        const auto zero_value = complex_zero.value();
+        if (zero_value.real != 0.0 || zero_value.imag != 0.0)
+            throw std::runtime_error("A complex junction product with a zero factor is not zero.");
 
         // The ordinary CPU path keeps its previous arithmetic exactly. The inputs are
         // volatile so that the reference is computed at run time, as the junction is:
@@ -146,7 +144,7 @@ int main()
         if (result.real != expected.real() || result.imag != expected.imag())
             throw std::runtime_error("The ordinary complex junction arithmetic changed.");
 
-        std::cout << "Junction products: finite range, independent complex components and domains passed\n";
+        std::cout << "Junction products: extended range, complex factors and domains passed\n";
         return 0;
     }
     catch (const std::exception& error)

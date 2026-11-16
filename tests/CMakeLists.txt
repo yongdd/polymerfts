@@ -23,21 +23,10 @@ SET(BASIC_TESTS
     TestScftResultGeometry
     TestMaskedDiscreteWeights
     TestSmallFieldCoefficients
-    TestComplexDivisionRange
-    TestDiscreteProductRange
-    TestConcentrationNormalizationRange
-    TestConcentrationAccumulationRange
-    TestStressRange
     TestJunctionRange
     TestJunctionProduct
-    TestPartitionVolumeRange
-    TestPartitionAccumulator
-    TestPolymerFugacityRange
-    TestLogFugacity
     TestCanonicalIonRange
     TestThinObliqueCell
-    TestDensityNormalization
-    TestDensityAccumulator
     TestAuxFieldCheckpointNames
     TestLftsIdealLimit
     TestRandomCopolymerFractions
@@ -101,7 +90,6 @@ SET(BASIC_TESTS
     TestCudaDST
     TestCudaSimulationBox
     TestCudaSimulationBoxComplex
-    TestCudaComplexDivision
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
     TestCudaPinnedMemory
@@ -192,11 +180,10 @@ SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation
     TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
     TestLftsRun TestLftsDetails TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
-    TestStressRange TestJunctionRange
-    TestPartitionVolumeRange TestPolymerFugacityRange
+    TestJunctionRange
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange
     TestCnAdiLongLines TestCrysFFTCellChange
-    TestContourPrecision TestDiscreteComposition TestDiscreteProductRange TestConcentrationNormalizationRange TestConcentrationAccumulationRange TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierRange TestAuxFieldCheckpointNames TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
     APPEND PROPERTY LABELS numerical)
 
 # Generate files named "Test*.cpp"
