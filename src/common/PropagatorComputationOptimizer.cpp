@@ -518,11 +518,8 @@ void PropagatorComputationOptimizer::update_computation_propagator_map(
  */
 bool PropagatorComputationOptimizer::is_junction(Polymer& pc, int node)
 {
-    const auto& adjacent_nodes = pc.get_adjacent_nodes();
-    const auto found = adjacent_nodes.find(node);
-    if (found == adjacent_nodes.end() || found->second.empty())
-        throw_with_line_number("Node " + std::to_string(node) + " is not a node of the polymer.");
-    const auto& neighbors = found->second;
+    // The node is an end of a block, so it has a neighbor
+    const auto& neighbors = pc.get_adjacent_nodes().at(node);
     if (neighbors.size() > 1)
         return true;
     // A chain end where the copies of its block hang (multiplicity) joins them

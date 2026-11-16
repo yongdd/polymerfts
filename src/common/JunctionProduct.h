@@ -5,6 +5,8 @@
 #include <complex>
 #include <type_traits>
 
+#include "Polymer.h"   // MAX_BLOCK_MULTIPLICITY
+
 #ifdef __CUDACC__
 #define POLYMERFTS_JUNCTION_HD __host__ __device__
 #else
@@ -14,8 +16,9 @@
 // A junction is one product: in a star with n arms in a strong field q_A^(n-1) can
 // overflow while the product with the other arms is finite. An accumulator keeps the
 // ordinary arithmetic while its factors stay in an ordinary range and continues with
-// a mantissa and a binary exponent otherwise. A block multiplicity is at most 10^6
-// (Polymer.cpp), so the exponents stay far below 2^53 and a double holds them exactly.
+// a mantissa and a binary exponent otherwise. A block multiplicity is at most
+// MAX_BLOCK_MULTIPLICITY = 10^6, so the exponents stay far below 2^53 and a double
+// holds them exactly.
 namespace junction_product
 {
 POLYMERFTS_JUNCTION_HD inline bool finite(double value)
@@ -55,9 +58,13 @@ POLYMERFTS_JUNCTION_HD inline double scale(double mantissa, double exponent)
     return scalbn(mantissa, static_cast<int>(fmin(fmax(exponent, -2200.0), 2200.0)));
 }
 
+/// True if a junction power is an integer in [0, MAX_BLOCK_MULTIPLICITY]: an integer block
+/// multiplicity takes the same operation as explicit arms. Other powers (a non-integer
+/// multiplicity, or identical copied branches whose powers sum beyond the limit) need real
+/// propagators: complex fields refuse them (complex_real_power_message).
 POLYMERFTS_JUNCTION_HD inline bool integer_power(double power)
 {
-    return power >= 0.0 && power <= 1.0e6 && power == floor(power);
+    return power >= 0.0 && power <= MAX_BLOCK_MULTIPLICITY && power == floor(power);
 }
 
 POLYMERFTS_JUNCTION_HD inline Number power(Number base, unsigned int exponent)
@@ -127,7 +134,9 @@ struct Real
         if (!scaled && ordinary(current) && ordinary_power(source, power))
         {
 #ifdef __CUDA_ARCH__
-            if (integer_power(power))
+            // An integer power of at most 4 as successive multiplications (as the complex
+            // product), every other power by pow: a multiplicity of 10^6 costs one call
+            if (power <= 4.0 && integer_power(power))
                 for (int n = 0; n < static_cast<int>(power); ++n)
                     current *= source;
             else
@@ -197,7 +206,7 @@ struct ComplexValue
     double imag;
 };
 
-/// Product of integer powers of complex numbers (the caller checks is_integer_power).
+/// Product of integer powers of complex numbers (the caller checks integer_power).
 /// Once scaled, (current_real, current_imag) is the mantissa of the product.
 struct Complex
 {

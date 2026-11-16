@@ -648,7 +648,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
     contour checks normalize by the integral of the absolute integrand, so cancellation near
     zero Q does not amplify roundoff. Zero Q remains regular for concentrations, stress,
     the Hamiltonian and imposed chemical potentials; absent canonical polymers have chemical
-    potential minus infinity.
+    potential minus infinity. Only a zero volume fraction makes a species absent: an occupied
+    polymer whose Q is not finite keeps non-finite concentrations (2026-11-16;
+    tests/TestGceZeroPartition.py).
   - PropagatorSolver field integrals use the active basis by default and accept an explicit
     `basis="irreducible"`; equal-sized physical and irreducible arrays are no longer confused.
   - WTMD handles individual zero Fourier coefficients for exponents at least one, including
@@ -802,12 +804,6 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
-- On CUDA a junction of several sources takes one kernel launch over up to 32 device-resident
-  sources, with the product in registers (2026-11-16); the reduced-memory mode stages two
-  checkpoints per launch. A product over several launches keeps its partial value in the stress
-  scratch buffer, and the per-point product state is gone, which took 40 (real fields) or 72
-  (complex fields) bytes per grid point and stream: 2.5 GiB (real) and 4.5 GiB (complex) less device
-  memory for a 3-arm star or a comb at 256³ with four streams. The propagators are bitwise unchanged.
 - The CPU DCT and DST run the real FFT of the grid directly on the scratch arrays of
   `MakhoulTransform` (2026-11-16). With FFTW the transform went through `FftwFFT`, which copied the
   reordered samples, copied the modes before the complex-to-real transform and divided by N, which
@@ -819,9 +815,14 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   (2026-11-16), instead of forming every entry from the eigenfunction expansion at each point of
   each bond; CPU and CUDA now use the same entries. A folded contiguous axis takes 2.4 times less
   time (`compute_propagators` 62 → 26 ms on 32×32×16, FFTW, one thread of an AMD EPYC 7543).
-- On CUDA an integer power at a junction, a repeated branch such as `A10:5` or an integer block
-  multiplicity, takes one kernel launch instead of one per factor (2026-11-08); the propagators
-  are bitwise unchanged.
+- On CUDA a junction takes one kernel launch over up to 32 device-resident sources and their
+  powers, with the product in registers, instead of one launch per factor (2026-11-08, 2026-11-16);
+  the reduced-memory mode stages two checkpoints per launch. An integer power of at most 4 (up to
+  four identical branches) is still taken by successive multiplications, and such junctions are
+  bitwise unchanged. A larger one, a repeated branch such as `A10:5` or an integer block
+  multiplicity up to 10⁶, takes one `pow` per point and changes at round-off (2.7e-15 relative for a
+  41-arm star); a 64³ star with multiplicity 10⁶ takes 17 ms per `compute_propagators` on an A10, as
+  a non-integer multiplicity does.
 - `cn-adi2` on CUDA factorizes the tridiagonal matrix of each axis once, with the Sherman-Morrison
   vector of periodic axes, instead of in every solve of every line, and stages the lines along the
   contiguous axis in shared memory, whose reads were not coalesced (2026-11-05). One step on an A10
@@ -938,6 +939,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   CUDA build without a visible device fails, as `tests/cuda_part.py` states, instead of reporting a
   skip. CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1` and writes no
   `tests/__pycache__`, and `TestSimulationRelease` removes its recording directories.
+- `TestJunctionRange` runs the stars of distinct arms also with four streams (CUDA streams or CPU
+  threads) and compares them bit for bit with one stream (2026-11-16): concurrent CUDA junctions keep
+  partial products in per-stream buffers. `TestCrysFFTCellChange`
+  adds monoclinic P2/m with unique axis c (Hall 58, ObliqueZ): its fixed angles alpha and beta
+  moved by 1e-8 degrees are refused, while gamma stays free.
 - `TestCpuFFTMixedBC` is removed (2026-11-16): `TestCpuMakhoulTransform` covers its round trips and
   DCT/DST checks at 1e-13; its MKL part checked 1D DCT round trips to 1e-7 and printed a stale
   "SKIPPED (known issue)" for the rest.

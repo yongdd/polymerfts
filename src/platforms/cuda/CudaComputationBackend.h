@@ -60,10 +60,6 @@ private:
     cudaEvent_t kernel_done[MAX_STREAMS];           ///< Stress: kernel stream reached this point
     cudaEvent_t copy_done[MAX_STREAMS];             ///< Stress: copy stream reached this point
     CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
-    CudaDeviceBuffer<CuDeviceData<T>> d_partition_sum; ///< Absolute partition-integrand reduction
-    CudaPinnedBuffer<T> h_partition_sum;
-    CudaDeviceBuffer<unsigned char> d_partition_temp;
-    size_t partition_temp_bytes = 0;
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis
     std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_exp_dw_reduced;
@@ -71,11 +67,9 @@ private:
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
 
-    /// One launch of a junction product over device-resident sources (at most
-    /// junction_product::MAX_SOURCES_PER_LAUNCH); first and last mark the launches of one product.
-    void launch_junction_product(int stream, CuDeviceData<T>* d_q,
-                                 const std::vector<std::pair<const CuDeviceData<T>*, double>>& sources,
-                                 bool first, bool last);
+    /// q = Π_i q_i^{n_i} over device-resident sources or checkpoints (junction_product())
+    template <typename Source>
+    void multiply_sources(int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
 
     /// Destroy the solver, then the streams and events it runs on (the device

@@ -401,8 +401,10 @@ representative). This choice is group-invariant by construction — rotations
 permute alias classes and preserve the minimal value — so the discretized
 diffusion and stress operators recover exact point-group symmetry. The
 minimal-form search runs only when the cell is actually oblique, detected by
-a *relative* tolerance on the off-diagonal metric elements
-($`|G^{*}_{ij}| > 10^{-12} \cdot \max_d G^{*}_{dd}`$); orthogonal cells use the
+a *relative* tolerance on each off-diagonal metric element against the lengths
+of its own pair of axes
+($`|G^{*}_{ij}| / \sqrt{G^{*}_{ii} G^{*}_{jj}} > 10^{-12}`$, so a short third axis
+cannot hide an oblique plane); orthogonal cells use the
 principal-zone representative unchanged (both conventions coincide there).
 The same representative is used in the k-space Boltzmann tables, the stress
 tables, and the CrysFFT ObliqueZ generators (`src/common/MinimalFormAlias.h`).

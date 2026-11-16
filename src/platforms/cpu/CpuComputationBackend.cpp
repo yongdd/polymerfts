@@ -207,7 +207,7 @@ void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pai
     if constexpr (!std::is_same_v<T, double>)
     {
         for (const auto& source : sources)
-            if (!is_integer_power(source.second))
+            if (!junction_product::integer_power(source.second))
                 throw_with_line_number(complex_real_power_message(source.second));
     }
     for (int i = 0; i < n_basis; i++)

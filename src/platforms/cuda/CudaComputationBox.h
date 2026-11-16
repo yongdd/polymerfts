@@ -135,17 +135,6 @@ public:
      */
     void set_space_group(SpaceGroup* sg) override;
 
-    /// Device quadrature weights and their common multiplier. These are the
-    /// same weights used by integral_device(), including masks and orbit counts.
-    const double* device_integration_weights() const
-    {
-        return this->space_group_ != nullptr ? d_basis_weights_.get() : d_dv.get();
-    }
-    double integration_weight_scale() const
-    {
-        return this->space_group_ != nullptr ? this->volume / this->total_grid : 1.0;
-    }
-
     /// @name Device-Side Operations
     /// @{
 
@@ -191,6 +180,22 @@ public:
      * @return Weighted inner product
      */
     T inner_product_inverse_weight_device(const CuDeviceData<T> *d_g, const CuDeviceData<T> *d_h, const CuDeviceData<T> *d_w);
+
+    /**
+     * @brief Integral of an absolute product.
+     *
+     * Calculates: Σᵢ |g[i] * h[i] / d[i]| * dV with the weights of integral_device()
+     * (Σᵢ |g[i] * h[i]| * dV without a divisor); a masked point adds zero whatever
+     * its values. The scale of a partition integral that need not vanish when a
+     * complex partition cancels.
+     *
+     * @param d_g       First device array
+     * @param d_h       Second device array
+     * @param d_divisor Divisor array, or nullptr
+     * @return Integral value
+     */
+    double absolute_inner_product_device(const CuDeviceData<T> *d_g, const CuDeviceData<T> *d_h,
+                                         const CuDeviceData<T> *d_divisor = nullptr);
 
     /**
      * @brief Compute multiple inner products in one kernel.

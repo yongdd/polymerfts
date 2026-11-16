@@ -84,7 +84,7 @@ class ContourLengthMapping;
  */
 /// Largest block multiplicity. The extended-range junction products (JunctionProduct.h)
 /// then keep exact binary exponents in a double, and complex fields take every integer
-/// multiplicity (is_integer_power in ComputationBackend.h).
+/// multiplicity (junction_product::integer_power).
 constexpr double MAX_BLOCK_MULTIPLICITY = 1.0e6;
 
 struct BlockInput{

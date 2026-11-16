@@ -35,46 +35,6 @@ CuDeviceData<T> to_device_scalar(T value)
 /// Segment pairs added to a concentration in one launch (passed as kernel parameters)
 constexpr int MAX_PAIRS_PER_LAUNCH = 32;
 
-__global__ void ker_absolute_partition_product(
-    double* out, const double* a, const double* b, const double* divisor,
-    const double* weights, const double* mask, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n)
-    {
-        if (mask != nullptr && mask[i] == 0.0)
-            out[i] = 0.0;
-        else
-        {
-            double product = a[i] * b[i];
-            if (divisor != nullptr)
-                product /= divisor[i];
-            out[i] = fabs(product) * weights[i];
-        }
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_absolute_partition_product(
-    cuDoubleComplex* out, const cuDoubleComplex* a, const cuDoubleComplex* b,
-    const cuDoubleComplex* divisor, const double* weights, const double* mask, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n)
-    {
-        if (mask != nullptr && mask[i] == 0.0)
-            out[i] = make_cuDoubleComplex(0.0, 0.0);
-        else
-        {
-            cuDoubleComplex product = cuCmul(a[i], b[i]);
-            if (divisor != nullptr)
-                product = cuCdiv(product, divisor[i]);
-            out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
-        }
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 template <typename TD>
 struct SegmentProducts
 {
@@ -258,9 +218,6 @@ void CudaComputationBackend<T>::release()
     d_reduced_basis_indices.release();
     d_full_to_reduced_map.release();
     d_sum.release();
-    d_partition_sum.release();
-    h_partition_sum.release();
-    d_partition_temp.release();
     d_exp_dw_reduced.clear();
 
     for (int i = 0; i < MAX_STREAMS; i++)
@@ -451,22 +408,44 @@ void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendAr
 }
 
 template <typename T>
-void CudaComputationBackend<T>::launch_junction_product(int stream, CuDeviceData<T>* d_q,
-    const std::vector<std::pair<const CuDeviceData<T>*, double>>& sources, bool first, bool last)
+template <typename Source>
+void CudaComputationBackend<T>::multiply_sources(
+    int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources)
 {
+    // Complex fields take integer powers only; check them all before a launch changes q
+    if constexpr (!std::is_same_v<T, double>)
+        for (const auto& source : sources)
+            if (!junction_product::integer_power(source.second))
+                throw_with_line_number(complex_real_power_message(source.second));
+    // Device-resident sources: up to MAX_SOURCES_PER_LAUNCH per launch. Checkpoints: two per
+    // launch, staged in the first stress pair buffer, which is free while propagators are computed
+    constexpr bool staged = std::is_same_v<Source, CheckpointArray<T>>;
+    const size_t batch_size = staged ? 2 : junction_product::MAX_SOURCES_PER_LAUNCH;
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    junction_product::Sources<CuDeviceData<T>> batch{};
-    batch.n = static_cast<int>(sources.size());
-    for (int k = 0; k < batch.n; ++k)
+    for (size_t begin = 0; begin < sources.size(); begin += batch_size)
     {
-        batch.q[k] = sources[k].first;
-        batch.power[k] = sources[k].second;
+        junction_product::Sources<CuDeviceData<T>> batch{};
+        batch.n = static_cast<int>(std::min(batch_size, sources.size() - begin));
+        for (int k = 0; k < batch.n; ++k)
+        {
+            const auto& [source, power] = sources[begin + k];
+            if constexpr (staged)
+            {
+                CuDeviceData<T>* d_source = d_q_pair[stream][0].get() + k*n_basis;
+                CUDA_CHECK(cudaMemcpyAsync(d_source, raw(source), sizeof(T)*n_basis,
+                                           cudaMemcpyHostToDevice, streams[stream][0]));
+                batch.q[k] = d_source;
+            }
+            else
+                batch.q[k] = raw(source);
+            batch.power[k] = power;
+        }
+        // A product over several launches keeps its accumulator in q and in the second
+        // stress pair buffer
+        junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
+            raw(q), batch, d_q_pair[stream][1].get(), begin == 0, begin + batch.n == sources.size(), n_basis);
+        CUDA_CHECK_LAUNCH();
     }
-    // A product over several launches keeps its accumulator in q and in the second stress
-    // pair buffer, which is free while propagators are computed
-    junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-        d_q, batch, d_q_pair[stream][1].get(), first, last, n_basis);
-    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
@@ -490,26 +469,7 @@ template <typename T>
 void CudaComputationBackend<T>::junction_product(
     int stream, BackendArray<T>* q, const std::vector<std::pair<BackendArray<T>*, double>>& sources)
 {
-    // Complex fields take integer powers only; check them all before a launch changes q
-    if constexpr (!std::is_same_v<T, double>)
-        for (const auto& source : sources)
-            if (!is_integer_power(source.second))
-                throw_with_line_number(complex_real_power_message(source.second));
-    if (sources.empty())
-    {
-        set_unity(stream, q);
-        return;
-    }
-    // One launch takes up to MAX_SOURCES_PER_LAUNCH device-resident sources
-    const size_t batch_size = junction_product::MAX_SOURCES_PER_LAUNCH;
-    for (size_t begin = 0; begin < sources.size(); begin += batch_size)
-    {
-        const size_t end = std::min(begin + batch_size, sources.size());
-        std::vector<std::pair<const CuDeviceData<T>*, double>> batch;
-        for (size_t index = begin; index < end; ++index)
-            batch.push_back({raw(sources[index].first), sources[index].second});
-        launch_junction_product(stream, raw(q), batch, begin == 0, end == sources.size());
-    }
+    multiply_sources(stream, q, sources);
 }
 
 template <typename T>
@@ -537,32 +497,7 @@ template <typename T>
 void CudaComputationBackend<T>::junction_product(
     int stream, BackendArray<T>* q, const std::vector<std::pair<CheckpointArray<T>*, double>>& sources)
 {
-    // Complex fields take integer powers only; check them all before a launch changes q
-    if constexpr (!std::is_same_v<T, double>)
-        for (const auto& source : sources)
-            if (!is_integer_power(source.second))
-                throw_with_line_number(complex_real_power_message(source.second));
-    if (sources.empty())
-    {
-        set_unity(stream, q);
-        return;
-    }
-    // The first stress pair buffer is free while propagators are computed; it stages
-    // two checkpoints per launch (the second one holds the accumulator between launches)
-    CuDeviceData<T>* d_stage = d_q_pair[stream][0];
-    for (size_t begin = 0; begin < sources.size(); begin += 2)
-    {
-        const size_t end = std::min(begin + 2, sources.size());
-        std::vector<std::pair<const CuDeviceData<T>*, double>> batch;
-        for (size_t index = begin; index < end; ++index)
-        {
-            CuDeviceData<T>* d_source = d_stage + (index - begin)*n_basis;
-            CUDA_CHECK(cudaMemcpyAsync(d_source, raw(sources[index].first), sizeof(T)*n_basis,
-                                       cudaMemcpyHostToDevice, streams[stream][0]));
-            batch.push_back({d_source, sources[index].second});
-        }
-        launch_junction_product(stream, raw(q), batch, begin == 0, end == sources.size());
-    }
+    multiply_sources(stream, q, sources);
 }
 
 template <typename T>
@@ -604,40 +539,7 @@ template <typename T>
 double CudaComputationBackend<T>::absolute_inner_product(
     BackendArray<T>* a, BackendArray<T>* b, BackendArray<T>* divisor)
 {
-    const cudaStream_t stream = streams[0][0];
-    // Canonical-only computations never need this diagnostic workspace.
-    if (d_partition_sum.get() == nullptr)
-    {
-        CudaDeviceBuffer<CuDeviceData<T>> output(1);
-        CudaPinnedBuffer<T> host_output(1);
-        size_t bytes = 0;
-        CUDA_CHECK(cuda_reduce_sum(nullptr, bytes, d_sum.get(), output.get(), n_basis, stream));
-        CudaDeviceBuffer<unsigned char> temporary(bytes);
-        d_partition_sum = std::move(output);
-        h_partition_sum = std::move(host_output);
-        d_partition_temp = std::move(temporary);
-        partition_temp_bytes = bytes;
-    }
-    // Statistics follow all producers, including checkpoint copies. Reuse the
-    // existing events and scratch; no allocation or default-stream copy occurs.
-    for (int s = 0; s < n_streams; ++s)
-    {
-        CUDA_CHECK(cudaEventRecord(kernel_done[s], streams[s][0]));
-        CUDA_CHECK(cudaEventRecord(copy_done[s], streams[s][1]));
-        CUDA_CHECK(cudaStreamWaitEvent(stream, kernel_done[s], 0));
-        CUDA_CHECK(cudaStreamWaitEvent(stream, copy_done[s], 0));
-    }
-    const int threads = CudaCommon::get_instance().get_n_threads();
-    ker_absolute_partition_product<<<grid_blocks(n_basis, threads), threads, 0, stream>>>(
-        d_sum.get(), raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor),
-        cb->device_integration_weights(), d_q_mask.get(), n_basis);
-    CUDA_CHECK_LAUNCH();
-    CUDA_CHECK(cuda_reduce_sum(d_partition_temp.get(), partition_temp_bytes, d_sum.get(),
-                               d_partition_sum.get(), n_basis, stream));
-    CUDA_CHECK(cudaMemcpyAsync(h_partition_sum.get(), d_partition_sum.get(), sizeof(T),
-                               cudaMemcpyDeviceToHost, stream));
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    return std::real(h_partition_sum[0]) * cb->integration_weight_scale();
+    return cb->absolute_inner_product_device(raw(a), raw(b), divisor == nullptr ? nullptr : raw(divisor));
 }
 
 template <typename T>

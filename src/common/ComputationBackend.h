@@ -42,26 +42,16 @@
 
 #include <array>
 #include <climits>
-#include <cmath>
 #include <cstdlib>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-/// True if a junction power is an integer. The backends raise a propagator to an integer
-/// power with an integer exponent (std::pow on the CPU, repeated multiplication on CUDA),
-/// the same operation as for explicit arms; other powers come from non-integer block
-/// multiplicities and need real propagators.
-inline bool is_integer_power(double n)
-{
-    return n == std::floor(n) && std::abs(n) <= 1.0e6;
-}
-
 /// Error text for a junction that would raise complex propagators to a power that is not an
-/// integer of at most 10^6 (is_integer_power). The power is that of one branch: the multiplicity
-/// of its block, or one less for the propagator that enters a copy, summed over identical
-/// branches. Defined in ComputationCommon.cpp.
+/// integer of at most 10^6 (junction_product::integer_power). The power is that of one branch:
+/// the multiplicity of its block, or one less for the propagator that enters a copy, summed
+/// over identical branches. Defined in ComputationCommon.cpp.
 std::string complex_real_power_message(double power);
 
 /// One field in backend memory. Intentionally incomplete (see the file comment).
@@ -177,8 +167,9 @@ public:
     virtual void junction_sum(int stream, BackendArray<T>* q,
                               const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 
-    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction. A block
-    /// multiplicity makes n_i real; a real power needs real propagators and throws for complex ones.
+    /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction, which has at
+    /// least one branch, so sources is never empty. A block multiplicity makes n_i real; a real
+    /// power needs real propagators and throws for complex ones.
     virtual void junction_product(int stream, BackendArray<T>* q,
                                   const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 

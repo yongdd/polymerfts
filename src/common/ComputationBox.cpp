@@ -45,8 +45,6 @@
 namespace {
     /// Tolerance for comparing mask values to 0.0 or 1.0
     constexpr double MASK_TOLERANCE = 1e-7;
-    /// Tolerance for determining if lattice angles are orthogonal (90°)
-    constexpr double ANGLE_TOLERANCE = 1e-10;
     /// Minimum sin(gamma) value to avoid division by zero in lattice calculations
     constexpr double SIN_GAMMA_MIN = 1e-10;
 
@@ -73,7 +71,7 @@ namespace {
         }
         else if (angles.size() == 1)
         {
-            if (dim == 1 && std::isfinite(angles[0]) && std::abs(angles[0] - 90.0) <= ANGLE_TOLERANCE)
+            if (dim == 1 && std::isfinite(angles[0]) && std::abs(angles[0] - 90.0) <= FIXED_ANGLE_TOLERANCE)
                 return full_angles;
             // Single angle: gamma only (for 2D)
             if (dim != 2)
@@ -85,7 +83,7 @@ namespace {
         {
             // Angles involving absent axes must not enter the reciprocal metric.
             for (int i = 0; i < (dim == 1 ? 3 : dim == 2 ? 2 : 0); ++i)
-                if (!std::isfinite(angles[i]) || std::abs(angles[i] - 90.0) > ANGLE_TOLERANCE)
+                if (!std::isfinite(angles[i]) || std::abs(angles[i] - 90.0) > FIXED_ANGLE_TOLERANCE)
                     throw_with_line_number("A 1D box requires all angles to be 90 degrees; "
                         "a 2D box requires alpha and beta to be 90 degrees.");
             return angles;
@@ -354,7 +352,7 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
             angles_[d] = full_angles[d] * deg_to_rad;
 
         // Check if orthogonal (all angles are 90 degrees within tolerance)
-        const double angle_tolerance = ANGLE_TOLERANCE;
+        const double angle_tolerance = FIXED_ANGLE_TOLERANCE;
         is_orthogonal_ = (std::abs(angles_[0] - std::numbers::pi/2.0) < angle_tolerance &&
                           std::abs(angles_[1] - std::numbers::pi/2.0) < angle_tolerance &&
                           std::abs(angles_[2] - std::numbers::pi/2.0) < angle_tolerance);
@@ -777,9 +775,8 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
         validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
             "angles[" + std::to_string(i) + "]");
     }
-    const auto right_angle = [](double a) {
-        return std::abs(a * std::numbers::pi / 180.0 - std::numbers::pi / 2.0) < ANGLE_TOLERANCE; };
-    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), right_angle);
+    const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), [](double a) {
+        return std::abs(a * std::numbers::pi / 180.0 - std::numbers::pi / 2.0) < FIXED_ANGLE_TOLERANCE; });
     require_orthogonal_with_walls(bc, orthogonal);
     if (orthogonal_cell_holders_ > 0 && !orthogonal)
         throw_with_line_number("A computation of this box uses a numerical method that requires an "
@@ -798,7 +795,7 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
         angles_[d] = full_angles[d] * deg_to_rad;
 
     // Check if orthogonal
-    const double angle_tolerance = ANGLE_TOLERANCE;
+    const double angle_tolerance = FIXED_ANGLE_TOLERANCE;
     is_orthogonal_ = (std::abs(angles_[0] - std::numbers::pi/2.0) < angle_tolerance &&
                       std::abs(angles_[1] - std::numbers::pi/2.0) < angle_tolerance &&
                       std::abs(angles_[2] - std::numbers::pi/2.0) < angle_tolerance);
@@ -1050,25 +1047,32 @@ T ComputationBox<T>::inner_product(const T *g, const T *h)
 template <typename T>
 T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const T *w)
 {
-    T sum{0.0};
+    // A masked point adds nothing, whatever w is there; the mask is tested once, outside the sums
     const double* active_mask = get_mask();
+    auto sum = [active_mask](int n, auto term)
+    {
+        T total{0.0};
+        if (active_mask == nullptr)
+            for (int i = 0; i < n; i++)
+                total += term(i);
+        else
+            for (int i = 0; i < n; i++)
+                if (active_mask[i] != 0.0)
+                    total += term(i);
+        return total;
+    };
 
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
         double dv_base = volume / total_grid;
-        for (int i = 0; i < n_basis_; i++)
-            if (active_mask == nullptr || active_mask[i] != 0.0)
-                sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i];
-        return sum * static_cast<T>(dv_base);
+        return sum(n_basis_, [&](int i) { return static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i]; })
+               * static_cast<T>(dv_base);
     }
     else
     {
         // Full grid mode
-        for (int i = 0; i < total_grid; i++)
-            if (active_mask == nullptr || active_mask[i] != 0.0)
-                sum += dv[i] * g[i] * h[i] / w[i];
-        return sum;
+        return sum(total_grid, [&](int i) { return dv[i] * g[i] * h[i] / w[i]; });
     }
 }
 

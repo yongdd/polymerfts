@@ -72,7 +72,8 @@ SCFT.run (src/python/scft/scft.py)
 │   │     advance_propagator n times → solver: e^{-w ds/2} F⁻¹[ e^{-b²k²ds/6} F[ e^{-w ds/2} q ] ] (+ RQM4 extrapolation)
 │   │   synchronize
 │   └─ Q = inner_product(q, q†) / V
-├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs), normalize_concentration; then solvents
+├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs); then solvents (the getters
+│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: normalize_concentration)
 ├─ compute_stress, per block: block_stress (segment pairs) → solver segment stress; sum the blocks; lattice derivatives
 └─ AndersonMixing.calculate_new_fields(w, w_out - w)
 ```

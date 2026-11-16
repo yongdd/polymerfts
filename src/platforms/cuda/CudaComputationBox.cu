@@ -9,6 +9,7 @@
  *
  * - integral_device(): Volume-weighted sum on GPU
  * - inner_product_device(): <f,g> = ∫ f(r)g(r) dv
+ * - absolute_inner_product_device(): ∫ |f(r)g(r)/d(r)| dv
  * - zero_mean_device(): Remove mean from field
  *
  * **CUB Reductions:**
@@ -41,6 +42,46 @@
 #include "CudaCommon.h"
 #include "CudaTypeDispatch.h"
 #include "SpaceGroup.h"
+
+namespace {
+
+/// out = |a b / divisor| weight (|a b| weight without a divisor); zero where the weight
+/// is zero (a masked point), whatever a, b and the divisor are there
+__global__ void ker_absolute_product(double* out, const double* a, const double* b, const double* divisor,
+                                     const double* weights, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if (weights[i] == 0.0)
+            out[i] = 0.0;
+        else
+        {
+            double product = a[i] * b[i];
+            if (divisor != nullptr)
+                product /= divisor[i];
+            out[i] = fabs(product) * weights[i];
+        }
+    }
+}
+
+__global__ void ker_absolute_product(cuDoubleComplex* out, const cuDoubleComplex* a, const cuDoubleComplex* b,
+                                     const cuDoubleComplex* divisor, const double* weights, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+    {
+        if (weights[i] == 0.0)
+            out[i] = make_cuDoubleComplex(0.0, 0.0);
+        else
+        {
+            cuDoubleComplex product = cuCmul(a[i], b[i]);
+            if (divisor != nullptr)
+                product = cuCdiv(product, divisor[i]);
+            out[i] = make_cuDoubleComplex(cuCabs(product) * weights[i], 0.0);
+        }
+    }
+}
+
+} // namespace
 
 /**
  * @brief Construct CUDA computation box with device memory.
@@ -236,6 +277,23 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
         sum = reduce_sum_to_host(this->total_grid);
         return sum;
     }
+}
+//-----------------------------------------------------------
+template <typename T>
+double CudaComputationBox<T>::absolute_inner_product_device(
+    const CuDeviceData<T>* d_g, const CuDeviceData<T>* d_h, const CuDeviceData<T>* d_divisor)
+{
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+
+    // The weights of integral_device(): orbit counts times the mask in the reduced basis
+    const bool reduced = this->space_group_ != nullptr;
+    const int N = reduced ? this->n_basis_ : this->total_grid;
+    const double* d_weight = reduced ? d_basis_weights_.get() : d_dv.get();
+
+    ker_absolute_product<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_g, d_h, d_divisor, d_weight, N);
+    CUDA_CHECK_LAUNCH();
+    const double sum = std::real(reduce_sum_to_host(N));
+    return reduced ? sum * (this->volume / this->total_grid) : sum;
 }
 //-----------------------------------------------------------
 template <typename T>

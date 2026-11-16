@@ -7,7 +7,8 @@ check, with real and complex fields on every platform and in both memory modes;
 SCFT (TestScftAbsentPolymer.py) and CL-FTS (TestClftsGrandCanonical.py) check their
 own observables of these states on one CPU platform. A zero fugacity gives exactly
 zero density, also when the unused raw density of the chain is not finite, and
-still validates its polymer and monomer arguments.
+still validates its polymer and monomer arguments. Only a zero population gives
+zero density: an occupied polymer whose Q overflows has no finite density.
 """
 
 import contextlib
@@ -129,8 +130,30 @@ def zero_fugacity(platform, reduced, method, field_type):
             raise AssertionError("Zero fugacity bypassed polymer/monomer validation")
 
 
+def overflow(platform, reduced, model):
+    """An occupied polymer whose Q overflows has no finite density, never a zero one."""
+    x = np.linspace(-1.0, 1.0, 8)
+    with contextlib.redirect_stdout(io.StringIO()):
+        solver = PropagatorSolver(
+            nx=[8], lx=[2.0], bc=["periodic"] * 2, ds=0.0625,
+            bond_lengths={"A": 1.0, "B": 1.0}, chain_model=model,
+            platform=platform, reduce_memory=reduced, aggregate_propagator_computation=False,
+        )
+        solver.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
+        # q reaches e^{1300 s}: Q = inf
+        solver.compute_propagators({"A": -1300.0 + x, "B": -1300.0 - x})
+        solver.compute_concentrations()
+    assert solver.get_partition_function(0) == np.inf, (platform, reduced, model)
+    for phi in (solver.get_concentration("A"), solver.propagator_computation.get_total_concentration(0, "B"),
+                solver.propagator_computation.get_block_concentration(0)):
+        assert not np.isfinite(phi).any(), (platform, reduced, model)
+
+
 def main():
     for platform in PlatformSelector.avail_platforms():
+        for model in ("continuous", "discrete"):
+            for reduced in (False, True):
+                overflow(platform, reduced, model)
         for method in ("ps", "rs"):
             for field_type in ("real", "complex"):
                 for reduced in (False, True):

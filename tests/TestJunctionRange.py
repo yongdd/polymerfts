@@ -3,7 +3,9 @@
 Stars of identical arms (aggregated or not, with integer and real multiplicities) in
 fields of +-500 per arm, and a star of five arms with distinct initial conditions whose
 partial products overflow: its junctions take several sources, which the reduced-memory
-CUDA path multiplies over several launches. Full and reduced memory agree bit for bit.
+CUDA path multiplies over several launches. Full and reduced memory agree bit for bit, and
+so do one and four streams (CUDA streams or CPU threads; OMP_NUM_THREADS when a solver is
+created) for the stars of distinct arms, whose junctions run concurrently.
 """
 
 import os
@@ -85,7 +87,9 @@ def check_distinct_sources(platform, model, field_type, amplitudes):
     n_arms = len(amplitudes)
     dtype = np.complex128 if field_type == "complex" else np.float64
     results = []
-    for reduced in (False, True):
+    # Full memory with one and with four streams; reduced memory takes one stream
+    for reduced, streams in ((False, "1"), (True, "1"), (False, "4")):
+        os.environ["OMP_NUM_THREADS"] = streams
         factory = PlatformSelector.create_factory(platform, reduced, field_type)
         box = factory.create_computation_box([8], [3.0])
         molecules = factory.create_molecules_information(model, 0.05, {"A": 1.0})
@@ -94,19 +98,21 @@ def check_distinct_sources(platform, model, field_type, amplitudes):
         optimizer = factory.create_propagator_computation_optimizer(molecules, False)
         solver = factory.create_propagator_computation(box, molecules, optimizer,
                                                        "rqm4" if model == "continuous" else "ps")
+        os.environ["OMP_NUM_THREADS"] = "1"
         initial = {str(i): np.full(8, amplitude, dtype=dtype) for i, amplitude in enumerate(amplitudes, 1)}
         solver.compute_propagators({"A": np.zeros(8, dtype=dtype)}, q_init=initial)
         partition = np.asarray(solver.get_total_partition(0))
         # The product of the amplitudes is 3, although partial products overflow
         np.testing.assert_allclose(partition, 3.0, rtol=3e-12, atol=0.0,
-                                   err_msg=str((platform, model, field_type, n_arms, reduced)))
+                                   err_msg=str((platform, model, field_type, n_arms, reduced, streams)))
         solver.compute_concentrations()
         phi = solver.get_total_concentration("A")
-        assert np.isfinite(phi).all(), (platform, model, field_type, n_arms, reduced)
+        assert np.isfinite(phi).all(), (platform, model, field_type, n_arms, reduced, streams)
         np.testing.assert_allclose(box.mean(phi), 1.0, rtol=0.0, atol=3e-11)
         results.append((partition, phi))
-    for a, b in zip(*results):
-        assert a.tobytes() == b.tobytes(), (platform, model, field_type, n_arms, "full and reduced memory differ")
+    for name, result in zip(("reduced memory", "four streams"), results[1:]):
+        for a, b in zip(results[0], result):
+            assert a.tobytes() == b.tobytes(), (platform, model, field_type, n_arms, f"full memory and {name} differ")
 
 
 def main():

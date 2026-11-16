@@ -613,8 +613,8 @@ void CudaSolverPseudoBase<T>::init_crysfft()
     const auto angles = cb->get_angles();
     const bool z_axis_orthogonal =
         (angles.size() >= 3 &&
-         std::abs(angles[0] - M_PI / 2.0) < 1e-10 &&
-         std::abs(angles[1] - M_PI / 2.0) < 1e-10);
+         std::abs(angles[0] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE &&
+         std::abs(angles[1] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE);
     // Engine choice and its basis map, shared with the CPU solver
     const CrysFFTPlan plan = plan_crysfft(
         space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), z_axis_orthogonal);

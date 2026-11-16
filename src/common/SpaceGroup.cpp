@@ -4,6 +4,7 @@
  */
 
 #include "SpaceGroup.h"
+#include "ComputationBox.h"
 #include "GridLimits.h"
 #include "Exception.h"
 #include "CrysFFTSelector.h"
@@ -1341,13 +1342,14 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
     if (lx.size() != 3 || angles_deg.size() != 3)
         return;
     // Lengths and free angles agree to a relative 1e-6. An angle the group fixes
-    // passes the orthogonality test of ComputationBox, |angle - exact| < 1e-10 rad,
-    // in the same arithmetic: a solver chooses its CrysFFT engine for the angles of
-    // its box once, and every cell accepted later keeps the angles that engine needs.
+    // passes the orthogonality test of ComputationBox, |angle - exact| <
+    // FIXED_ANGLE_TOLERANCE (1e-10 rad), in the same arithmetic: a solver chooses its
+    // CrysFFT engine for the angles of its box once, and every cell accepted later
+    // keeps the angles that engine needs.
     auto same = [](double a, double b) { return std::abs(a - b) <= 1e-6 * std::max({std::abs(a), std::abs(b), 1.0}); };
     auto fixed = [](double degrees, double radians) {
         const double deg_to_rad = std::numbers::pi / 180.0;
-        return std::abs(degrees * deg_to_rad - radians) < 1e-10; };
+        return std::abs(degrees * deg_to_rad - radians) < FIXED_ANGLE_TOLERANCE; };
     const double right = std::numbers::pi / 2.0;
     const bool right_angles = fixed(angles_deg[0], right) && fixed(angles_deg[1], right) && fixed(angles_deg[2], right);
     const bool z_right = fixed(angles_deg[0], right) && fixed(angles_deg[1], right);

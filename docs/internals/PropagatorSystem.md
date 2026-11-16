@@ -172,15 +172,20 @@ For a propagator at a junction (e.g., `(A3B2)C+0`):
 q(\mathbf{r}, 0) = \prod_{i} \left[ q_i(\mathbf{r}, N_i) \right]^{n_i}
 ```
 
-where $`n_i`$ is the repetition count (from `:n` notation, default 1). While the factors and
-the product stay between $`2^{-64}`$ and $`2^{64}`$ and the powers are small, an integer power keeps
-an integer exponent (`pow(q, n)` on the CPU, n successive multiplications on CUDA), so an
-integer block multiplicity gives the same junction products and partition functions as explicit
-arms on the same backend; concentrations and stress agree to round-off. A non-integer power
-(block multiplicity) is computed with the real `pow` and needs real propagators, so the backends
-refuse it for complex fields. Outside that range the product continues as a mantissa and one
-binary exponent (one for both parts of a complex number, `JunctionProduct.h`): in a star with
-$`n`$ arms in a strong field $`q_A^{n-1}`$ can overflow while the whole product is finite. Block
+where $`n_i`$ is the repetition count (from `:n` notation, default 1). Identical arms and the
+copies of a block with a multiplicity enter as one factor with this power, so an integer block
+multiplicity gives the same junction products and partition functions as explicit arms on the
+same backend; concentrations and stress agree to round-off. For real fields, while the partial
+product stays between $`2^{-64}`$ and $`2^{64}`$ and each factor either lies in that range with a
+power of at most 4 or has a power between $`2^{-256}`$ and $`2^{256}`$, the product uses the
+ordinary arithmetic: `pow(q, n)` on the CPU; on CUDA n successive multiplications for an integer
+power of at most 4 and `pow` for every other power. For complex fields the ordinary arithmetic
+needs both parts of the product and of the factor between $`2^{-64}`$ and $`2^{64}`$ and an integer
+power of at most 4 (`std::pow` on the CPU, successive multiplications on CUDA). A non-integer power
+(block multiplicity) needs real propagators, so the backends refuse it for complex fields. Outside that range the product
+continues as a mantissa and one binary exponent (one for both parts of a complex number,
+`JunctionProduct.h`): in a star with $`n`$ arms in a strong field $`q_A^{n-1}`$ can overflow
+while the whole product is finite. Block
 multiplicities are at most $`10^6`$, so these exponents stay exact in a double. On CUDA one
 kernel launch multiplies up to 32 device-resident sources with the product in registers; the
 reduced-memory mode stages two checkpoints per launch and keeps the partial product between
