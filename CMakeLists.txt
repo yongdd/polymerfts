@@ -110,7 +110,7 @@ ELSE()
     # MSVC's default /fp:precise does not contract. A floating-point model chosen in
     # the flags is kept: Clang and icpx reject a later -ffp-contract under -Werror.
     STRING(TOUPPER "${CMAKE_BUILD_TYPE}" _fp_config)
-    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|fast-math|-Ofast")
+    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|-ffast-math|-Ofast")
         MESSAGE(STATUS "Floating-point contraction is left to the -fp-model, -ffp-contract, -ffast-math "
                        "or -Ofast flags given; full and reduced memory may then differ in the last bits")
     ELSE()

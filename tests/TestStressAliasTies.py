@@ -23,14 +23,12 @@ Checks (discrete chains, whose stress is the exact derivative of their ln Q):
    dH/dalpha equal their central differences (relative to the largest, 1e-7).
 """
 
-import io
 import sys
-import contextlib
 
 import numpy as np
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
-from fts_checks import quiet
+from fts_checks import quiet, silenced
 
 n_pass = 0
 n_fail = 0
@@ -95,7 +93,7 @@ def central_difference(s, w, lx, angles, direction):
 
 
 def hexagonal_field(nx):
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sg = _core.SpaceGroup(nx, "P6_3/mmc", 488)
     rng = np.random.default_rng(3)
     raw = rng.normal(0.0, 1.0, size=(2, int(np.prod(nx))))
@@ -119,7 +117,7 @@ def main():
     total = st[0] * lx[0] + st[1] * lx[1]
     check(abs(total - fd_ab) < 1e-8 * abs(fd_ab),
           f"P6_3/mmc 18x18x16: a dH/da + b dH/db = d/dt at a = b ({abs(total - fd_ab) / abs(fd_ab):.1e})")
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sg_on = _core.SpaceGroup(nx, "P6_3/mmc", 488)
         s_on = solver(nx, lx, angles, sg_on)
         st_on = stress(s_on, {"A": sg_on.to_reduced_basis(sym[:1])[0], "B": sg_on.to_reduced_basis(sym[1:])[0]})

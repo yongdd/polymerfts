@@ -1,12 +1,12 @@
 """Input aliases, serialized graft nodes and exact parameter-name continuation."""
 
-import contextlib
 import copy
-import io
 import json
 import os
 from pathlib import Path
 import tempfile
+
+os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
@@ -16,8 +16,7 @@ from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
 from polymerfts.utils.mat_fields import decode_mat_fields
 from polymerfts.utils.validation import normalize_params, validate_lfts_params
-from TestFtsReliability import parameters, fields, expect_error
-from TestParams import base_params
+from fts_checks import diblock_fields, diblock_parameters, expect_error, scft_parameters, silenced
 
 
 def legacy_params(params):
@@ -59,7 +58,7 @@ def compare_output(first, second):
 
 
 def check_aliases(root):
-    params = parameters(root / "aliases")
+    params = diblock_parameters(root / "aliases")
     params.update(relax_cell=False, stress_scale=0.5,
                   space_group={"symbol": "Im-3m", "hall_number": 529},
                   wtmd={"recording_period": 100})
@@ -198,7 +197,7 @@ def check_graft_files(root):
 
 
 def check_scft(root):
-    params = base_params()
+    params = scft_parameters()
     params.update(relax_cell=True, stress_scale=0.5, max_iter=2,
                   space_group={"symbol": "Im-3m", "hall_number": 529})
     old = legacy_params(params)
@@ -219,7 +218,7 @@ def check_scft(root):
 
     # A keyword override must win even when its spelling differs from the file.
     for cls in (SCFT, LFTS, CLFTS):
-        config = parameters(root / (cls.__name__ + "config"))
+        config = diblock_parameters(root / (cls.__name__ + "config"))
         config.update(relax_cell=True, stress_scale=0.5, optimizer=params["optimizer"])
         path = root / (cls.__name__ + ".json")
         path.write_text(json.dumps(legacy_params(config)))
@@ -230,17 +229,17 @@ def check_scft(root):
 
 def check_checkpoint(root, cls):
     output = root / (cls.__name__ + "full")
-    params = parameters(output)
+    params = diblock_parameters(output)
     params["polymers"][0]["volume_fraction"] = 0.6
     params["polymers"].append({"volume_fraction": 0.4, "blocks": [
         {"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.3, "B": 0.7}}]})
     full = cls(params, random_seed=11)
-    assert full.run(fields())["status"] == "completed"
+    assert full.run(diblock_fields())["status"] == "completed"
     full.prop_solver.check_total_partition()
     old_params = legacy_params(params)
     old_params["recording"]["dir"] = str(root / (cls.__name__ + "old-input"))
     legacy = cls(old_params, random_seed=11)
-    assert legacy.run(fields())["status"] == "completed"
+    assert legacy.run(diblock_fields())["status"] == "completed"
     assert legacy.random_bg.state == full.random_bg.state
     compare_output(output, Path(legacy.recording["dir"]))
 
@@ -293,7 +292,7 @@ def main():
         root, previous = Path(directory), Path.cwd()
         os.chdir(root)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 check_aliases(root)
                 check_graft_keys()
                 check_graft_files(root)

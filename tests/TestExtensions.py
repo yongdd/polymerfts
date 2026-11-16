@@ -1,8 +1,6 @@
 """Extension contracts: stochastic moments, isolation, multistage forces and restart."""
-import contextlib
 import copy
 import importlib.util
-import io
 import itertools
 import json
 import os
@@ -18,9 +16,9 @@ from polymerfts import (LFTS, CLFTS, PropagatorSolver, PlatformSelector,
                         LeimkuhlerMatthews, EulerMaruyama, ValidationError, SaddlePointError)
 from polymerfts.utils.common import atomic_savemat, settings_json, input_hash
 from polymerfts.fts.integrators import checked_fields
-from TestFtsReliability import parameters, fields, expect_error, FailingLFTS
 from cuda_part import cuda_part_missing
-from fts_checks import compare_files, exact_restart, recording_dir
+from fts_checks import (FailingLFTS, compare_files, diblock_fields, diblock_parameters, exact_restart,
+                        expect_error, recording_dir, silenced)
 
 example_path = Path(__file__).resolve().parents[1] / "examples/tools/CustomExtensions.py"
 spec = importlib.util.spec_from_file_location("custom_fts_extensions", example_path)
@@ -92,11 +90,11 @@ def check_observers_and_restart(root):
             expect_error(lambda: sample["phi"]["A"].__setitem__(0, 0), ValueError)
             expect_error(lambda: sample.__setitem__("step", -1), AttributeError)
 
-        baseline = cls(parameters(root / (prefix + "baseline")), random_seed=11)
-        baseline.run(fields())
-        monitored = cls(parameters(root / (prefix + "monitored")), random_seed=11,
+        baseline = cls(diblock_parameters(root / (prefix + "baseline")), random_seed=11)
+        baseline.run(diblock_fields())
+        monitored = cls(diblock_parameters(root / (prefix + "monitored")), random_seed=11,
                         callbacks={"monitor": observer, "sparse": sparse})
-        monitored.run(fields())
+        monitored.run(diblock_fields())
         assert seen == [1, 2, 3, 4]
         assert sparse_steps == [3]
         assert baseline.random_bg.state == monitored.random_bg.state
@@ -108,10 +106,10 @@ def check_observers_and_restart(root):
             def create(name, steps, seed):
                 integral = example.PredictorCorrector() if method == "heun" else "euler"
                 observables[name] = example.CompositionVariance(every=2)
-                return cls(parameters(root / (prefix + method + name), steps), random_seed=seed,
+                return cls(diblock_parameters(root / (prefix + method + name), steps), random_seed=seed,
                            integrator=integral, callbacks={"variance": observables[name]})
 
-            sims = exact_restart(create, lambda sim: sim.run(fields()), 4, 1, {"fields_000004.mat": FIELD_KEYS})
+            sims = exact_restart(create, lambda sim: sim.run(diblock_fields()), 4, 1, {"fields_000004.mat": FIELD_KEYS})
             full, continued = sims["full"], sims["continued"]
             checkpoint = recording_dir(sims["partial"]) / "fields_000001.mat"
             assert observables["full"].state_dict() == observables["continued"].state_dict()
@@ -129,7 +127,7 @@ def check_observers_and_restart(root):
                 expect_error(lambda: bad.continue_run(root / "bad-state.mat"), ValidationError)
                 assert bad.random_bg.state == before_rng and obs.count == 0
                 assert bad.integrator.force_evaluations == 0
-            incompatible = cls(parameters(root / "incompatible"), random_seed=99)
+            incompatible = cls(diblock_parameters(root / "incompatible"), random_seed=99)
             rng = copy.deepcopy(incompatible.random_bg.state)
             expect_error(lambda: incompatible.continue_run(checkpoint), ValidationError)
             assert incompatible.random_bg.state == rng
@@ -142,23 +140,23 @@ def check_observers_and_restart(root):
                    checkpoint_settings_hash=input_hash(settings))
         old.pop("extension_state_json")
         atomic_savemat(root / "version1.mat", {k: v for k, v in old.items() if not k.startswith("__")})
-        legacy = cls(parameters(root / (prefix + "version1")), random_seed=99)
+        legacy = cls(diblock_parameters(root / (prefix + "version1")), random_seed=99)
         legacy.continue_run(root / "version1.mat")
         compare_files(root / (prefix + "baseline"), root / (prefix + "version1"), "fields_000004.mat", FIELD_KEYS)
 
     # Failed proposals never reach observers; resampling rolls method state back.
     seen = []
     FailingLFTS.fail_calls = tuple(range(3, 30))
-    failing = FailingLFTS(parameters(root / "failed"), random_seed=11,
+    failing = FailingLFTS(diblock_parameters(root / "failed"), random_seed=11,
                          callbacks={"seen": lambda sample: seen.append(sample["step"])})
-    expect_error(lambda: failing.run(fields()), SaddlePointError)
+    expect_error(lambda: failing.run(diblock_fields()), SaddlePointError)
     assert seen == [1]
     FailingLFTS.fail_calls = (3,)
-    params = parameters(root / "resampled")
+    params = diblock_parameters(root / "resampled")
     params["saddle"]["failure_policy"] = "resample"
     method = example.PredictorCorrector()
     resampled = FailingLFTS(params, random_seed=11, integrator=method)
-    resampled.run(fields())
+    resampled.run(diblock_fields())
     assert method.force_evaluations == 4 and resampled.run_status["noise_resamples"] == 1
 
 
@@ -219,7 +217,7 @@ class ResponseScaledEuler:
 
 def check_prepared_method_state(root):
     def create(name, steps, seed):
-        params = parameters(root / name, steps)
+        params = diblock_parameters(root / name, steps)
         params["langevin"]["dt"] = 0.001
         original = ResponseScaledEuler()
         sim = CLFTS(params, random_seed=seed, integrator=original)
@@ -229,12 +227,12 @@ def check_prepared_method_state(root):
         return sim
 
     sims = exact_restart(lambda name, steps, seed: create("prepared-" + name, steps, seed),
-                         lambda sim: sim.run(fields()), 4, 2, {"fields_000004.mat": FIELD_KEYS})
+                         lambda sim: sim.run(diblock_fields()), 4, 2, {"fields_000004.mat": FIELD_KEYS})
     full, continued = sims["full"], sims["continued"]
     assert full.integrator.state_dict() == continued.integrator.state_dict()
     assert full.integrator.steps == 4
     # A new run resets evolving state but retains the prepared response.
-    full.run(fields())
+    full.run(diblock_fields())
     assert full.integrator.steps == 4
 
 
@@ -246,7 +244,7 @@ def main():
         previous = Path.cwd()
         os.chdir(directory)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 check_observers_and_restart(Path(directory))
                 check_method_registry()
                 check_prepared_method_state(Path(directory))

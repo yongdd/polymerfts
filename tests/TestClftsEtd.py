@@ -30,9 +30,7 @@ force_jacobian.py).
    grid, of real fields or of a box with walls; a copy of a prepared integrator keeps its
    settings but has no linear response.
 """
-import contextlib
 import copy
-import io
 import os
 import tempfile
 from pathlib import Path
@@ -45,7 +43,7 @@ from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
 from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
-from fts_checks import exact_restart, quiet
+from fts_checks import exact_restart, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -303,7 +301,7 @@ def runs(root):
         sim = quiet(lambda: CLFTS(params, random_seed=5, callbacks={"psi": record}))
         es, n_grid = sim.electrostatics, int(np.prod(NX))
         holder["es"] = es
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim.run(initial_fields={m: np.zeros(n_grid) for m in ("A", "B", "C")})
         scale = sim.prop_solver.get_volume() * np.sqrt(sim.langevin["nbar"]) * es.screened_k_sq / es.coupling / n_grid ** 2
         modes = es.screened_k_sq > 0
@@ -328,7 +326,7 @@ def runs(root):
     x = np.linspace(0, 4.0, 32, endpoint=False)
     w_a = 5.0 * np.cos(4 * np.pi * x / 4.0)
     sim = quiet(lambda: CLFTS(params, random_seed=1))
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields={"A": w_a, "B": -w_a, "C": np.zeros(32)})
     assert np.max(np.abs(sim.electrostatics.psi)) < 1.0, "ordered charged lamella with etd"
 
@@ -358,7 +356,7 @@ def runs(root):
     sim = quiet(lambda: CLFTS(params, random_seed=5))
     dropped = sim.mpt.aux_fields_dropped_idx
     assert dropped, "polyampholyte without chi has a dropped field"
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     w_aux = loadmat(root / "dropped" / "fields_000003.mat", squeeze_me=True)["w_aux"]
     expected = sim.mpt._vector_large_s[dropped[0]] / 2

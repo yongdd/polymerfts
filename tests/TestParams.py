@@ -16,34 +16,11 @@ import contextlib
 import numpy as np
 
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError, PlatformSelector
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
-
-
-def base_params():
-    return {
-        "nx": [8, 8, 8],
-        "lx": [4.0, 4.0, 4.0],
-        "chain_model": "continuous",
-        "ds": 1/10,
-        "segment_lengths": {"A": 1.0, "B": 1.0},
-        "chi_n": {"A,B": 15.0},
-        "polymers": [{
-            "volume_fraction": 1.0,
-            "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}],
-        }],
-        "platform": cpu_platform(),
-        "relax_cell": False,
-        "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
-    }
+from fts_checks import cpu_platform, scft_parameters, silenced
 
 
 def lfts_params():
-    params = base_params()
+    params = scft_parameters()
     params.update({
         "langevin": {"nbar": 10000, "dt": 8.0, "max_step": 10},
         "compressor": {"name": "am", "max_hist": 20, "start_error": 1e-1, "mix_min": 0.1, "mix_init": 0.1},
@@ -56,7 +33,7 @@ def lfts_params():
 
 def build(cls, params):
     """Construct quietly (the constructors print the simulation summary)."""
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         return cls(params)
 
 
@@ -91,12 +68,12 @@ def main():
     except ValidationError:
         pass
     for nx, angles in (([16], [90, 90, 60]), ([8, 8], [120, 90, 90])):
-        p = base_params(); p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
+        p = scft_parameters(); p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
         ok &= expect_error(SCFT, p, "angles involving absent dimensions")
     # L-FTS and CL-FTS refuse bad angles with the message of SCFT (validate_system_params)
     for nx, angles in (([8, 8], [120, 90, 90]), ([8, 8, 8], [90, 90])):
         messages = []
-        for cls, p in ((SCFT, base_params()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
+        for cls, p in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
             p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
             try:
                 build(cls, p)
@@ -107,7 +84,7 @@ def main():
             print(f"FAILED: angles {angles} for nx {nx}: {messages}")
             ok = False
     for angles in (None, []):
-        p = base_params(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
+        p = scft_parameters(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
         assert build(SCFT, p).cell.crystal_system == "Orthorhombic"
 
     # NaN mass errors must raise, rather than pass the comparison to tolerance.
@@ -115,7 +92,7 @@ def main():
         sim = build(cls, lfts_params())
         sim.prop_solver.mean = lambda value: np.nan
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 sim.compute_concentrations(np.zeros((2, sim.prop_solver.n_grid)))
             raise AssertionError(f"{cls.__name__} accepted NaN mass error")
         except ValidationError:
@@ -128,7 +105,7 @@ def main():
         sim.run(initial_fields={m: np.zeros(sim.prop_solver.n_grid) for m in ("A", "B")})
     assert not any(line.startswith("Langevin step:") for line in output.getvalue().splitlines())
 
-    p = base_params(); p["chain_model"] = "discrete"
+    p = scft_parameters(); p["chain_model"] = "discrete"
     assert build(SCFT, p).prop_solver.numerical_method == "ps"
 
     # A fully absent composition mode must have a finite zero step size and
@@ -148,7 +125,7 @@ def main():
         return compute(w_aux)
     sim.compute_concentrations = capture
     rng = np.random.default_rng(51)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields={m: rng.normal(0, 5, sim.prop_solver.n_grid) for m in ("A", "B")})
     assert len(snapshots) == 3
     for w_aux in snapshots:
@@ -156,7 +133,7 @@ def main():
             np.testing.assert_allclose(w_aux[i], sim.mpt._vector_large_s[i]/2, rtol=0, atol=1e-12)
 
     # ---- SCFT defaults
-    calc = build(SCFT, base_params())
+    calc = build(SCFT, scft_parameters())
     checks = {
         "max_iter": calc.max_iter == 2000,
         "tolerance": calc.tolerance == 1e-8,
@@ -177,7 +154,7 @@ def main():
             ok = False
 
     # ---- explicit options reach the solver
-    params = base_params()
+    params = scft_parameters()
     params.update({"max_iter": 10, "tolerance": 1e-5, "stress_interval": "adaptive", "stress_scale": 2.0,
                    "zeta_n": 100.0, "numerical_method": "rk2",
                    "crystal_system": "Cubic", "relax_cell": True})
@@ -200,7 +177,7 @@ def main():
         ok = False
 
     # ---- random copolymer: effective segment length and fractions
-    params = base_params()
+    params = scft_parameters()
     params["segment_lengths"] = {"A": 1.0, "B": 2.0}
     params["polymers"] = [{
         "volume_fraction": 1.0,
@@ -214,7 +191,7 @@ def main():
         ok = False
 
     # ---- the user's dictionary is left unchanged
-    for cls, params in ((SCFT, base_params()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
         snapshot = copy.deepcopy(params)
         build(cls, params)
         if params != snapshot:
@@ -240,21 +217,21 @@ def main():
         ok = False
 
     # ---- invalid input raises ValidationError
-    params = base_params(); params["polymers"][0]["volume_fraction"] = 0.5
+    params = scft_parameters(); params["polymers"][0]["volume_fraction"] = 0.5
     ok &= expect_error(SCFT, params, "volume fractions not summing to 1")
-    params = base_params(); params["chi_n"] = {"A,Z": 1.0}
+    params = scft_parameters(); params["chi_n"] = {"A,Z": 1.0}
     ok &= expect_error(SCFT, params, "chi_n with unknown monomer")
-    params = base_params(); del params["chain_model"]
+    params = scft_parameters(); del params["chain_model"]
     ok &= expect_error(SCFT, params, "missing chain_model")
-    params = base_params(); params["lx"] = [4.0, 4.0]
+    params = scft_parameters(); params["lx"] = [4.0, 4.0]
     ok &= expect_error(SCFT, params, "nx/lx length mismatch")
-    params = base_params(); params["ds"] = -0.1
+    params = scft_parameters(); params["ds"] = -0.1
     ok &= expect_error(SCFT, params, "negative ds")
     params = lfts_params(); del params["langevin"]
     ok &= expect_error(LFTS, params, "LFTS without langevin")
     params = lfts_params(); del params["saddle"]
     ok &= expect_error(LFTS, params, "LFTS without saddle")
-    params = base_params(); del params["optimizer"]
+    params = scft_parameters(); del params["optimizer"]
     ok &= expect_error(SCFT, params, "SCFT without optimizer")
     # SCFT numeric options with which the iteration cannot converge
     for change, what in ((lambda p: p.update(tolerance=float("nan")), "NaN tolerance"),
@@ -263,7 +240,7 @@ def main():
                          (lambda p: p["optimizer"].update(mix_min=float("nan")), "NaN optimizer.mix_min"),
                          (lambda p: p["optimizer"].update(max_hist=2.5), "non-integer optimizer.max_hist"),
                          (lambda p: p["optimizer"].update(name="adam"), "unknown optimizer")):
-        params = base_params(); change(params)
+        params = scft_parameters(); change(params)
         ok &= expect_error(SCFT, params, what)
     # L-FTS and CL-FTS take no q_init: grafted chains are rejected at construction
     for cls in (LFTS, CLFTS):
@@ -278,32 +255,32 @@ def main():
                 ok = False
 
     # ---- solver options: defaults and explicit values reach the propagator solver
-    calc = build(SCFT, base_params())
+    calc = build(SCFT, scft_parameters())
     if not (calc.prop_solver.bc == ["periodic"] * 6 and calc.prop_solver.angles is None
             and calc.prop_solver.reduce_memory is False
             and calc.prop_solver.aggregate_propagator_computation is True
             and calc.smearing.enabled is False):
         print("FAILED: SCFT solver defaults")
         ok = False
-    params = base_params()
+    params = scft_parameters()
     params.update({"bc": ["reflecting"] * 6, "reduce_memory": True, "aggregate_propagator_computation": False})
     calc = build(SCFT, params)
     if not (calc.prop_solver.bc == ["reflecting"] * 6 and calc.prop_solver.reduce_memory is True
             and calc.prop_solver.aggregate_propagator_computation is False):
         print("FAILED: SCFT solver options (bc, reduce_memory, aggregation)")
         ok = False
-    params = base_params(); params["angles"] = [90.0, 90.0, 90.0]
+    params = scft_parameters(); params["angles"] = [90.0, 90.0, 90.0]
     if build(SCFT, params).prop_solver.angles != [90.0, 90.0, 90.0]:
         print("FAILED: SCFT angles")
         ok = False
-    params = base_params(); params["space_group"] = {"symbol": "Im-3m"}
+    params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}
     calc = build(SCFT, params)
     if not (calc.sg is not None and calc.cell.crystal_system == "Cubic" and calc.cell.lx_reduced_indices == [0]):
         print("FAILED: SCFT space group")
         ok = False
 
     # ---- hall_number None means no Hall number (the symbol alone)
-    params = base_params(); params["space_group"] = {"symbol": "Im-3m", "hall_number": None}
+    params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m", "hall_number": None}
     if build(SCFT, params).sg.get_hall_number() != 529:
         print("FAILED: space_group with hall_number None")
         ok = False
@@ -313,46 +290,46 @@ def main():
                         ({"symbol": "Im-3m", "hall_number": 529.0}, "a float hall_number"),
                         ({"symbol": "Im-3m", "hall_number": True}, "a boolean hall_number"),
                         ({"symbol": "Im-3m", "hall_number": 531}, "hall_number 531")):
-        params = base_params(); params["space_group"] = group
+        params = scft_parameters(); params["space_group"] = group
         ok &= expect_error(SCFT, params, what)
 
     # ---- box relaxation needs the stress, which the real-space method does not compute
-    params = base_params(); params.update(numerical_method="cn-adi2", relax_cell=True)
+    params = scft_parameters(); params.update(numerical_method="cn-adi2", relax_cell=True)
     ok &= expect_error(SCFT, params, "relax_cell with cn-adi2")
 
     # ---- the cell must match the crystal system of the space group
-    params = base_params(); params["space_group"] = {"symbol": "Im-3m"}; params["lx"] = [4.0, 4.0, 3.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}; params["lx"] = [4.0, 4.0, 3.0]
     ok &= expect_error(SCFT, params, "cubic space group with unequal box lengths")
-    params = base_params(); params["space_group"] = {"symbol": "Im-3m"}; params["angles"] = [90.0, 90.0, 120.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}; params["angles"] = [90.0, 90.0, 120.0]
     ok &= expect_error(SCFT, params, "cubic space group with a 120-degree angle")
-    params = base_params(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}
+    params = scft_parameters(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}
     ok &= expect_error(SCFT, params, "hexagonal space group without a 120-degree angle")
-    params = base_params(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}
+    params = scft_parameters(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}
     params["angles"] = [90.0, 90.0, 120.0]
     if build(SCFT, params).cell.crystal_system != "Hexagonal":
         print("FAILED: SCFT hexagonal space group with a hexagonal cell")
         ok = False
-    params = base_params(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}; params["angles"] = [120.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "P6_3/mmc", "hall_number": 488}; params["angles"] = [120.0]
     ok &= expect_error(SCFT, params, "3D box with a single angle")
     # trigonal groups: the axes setting of the group decides which cell is valid
-    params = base_params(); params["space_group"] = {"symbol": "P-3m1"}
+    params = scft_parameters(); params["space_group"] = {"symbol": "P-3m1"}
     ok &= expect_error(SCFT, params, "hexagonal-axes trigonal group on a cube")
-    params = base_params(); params["space_group"] = {"symbol": "P-3m1"}; params["angles"] = [90.0, 90.0, 120.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "P-3m1"}; params["angles"] = [90.0, 90.0, 120.0]
     if build(SCFT, params).cell.crystal_system != "Trigonal":
         print("FAILED: SCFT hexagonal-axes trigonal group with a hexagonal cell")
         ok = False
-    params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [90.0, 90.0, 120.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [90.0, 90.0, 120.0]
     ok &= expect_error(SCFT, params, "rhombohedral-axes group on a hexagonal cell")
-    params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
     if build(SCFT, params).cell.crystal_system != "Trigonal":
         print("FAILED: SCFT rhombohedral-axes group on a rhombohedral cell")
         ok = False
-    params = base_params(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
+    params = scft_parameters(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
     params["relax_cell"] = True
     ok &= expect_error(SCFT, params, "box relaxation with a rhombohedral-axes setting")
 
     # ---- changing the user's dictionary after construction does not affect the object
-    params = base_params()
+    params = scft_parameters()
     calc = build(SCFT, params)
     params["max_iter"] = 1
     params["chi_n"]["A,B"] = 0.0
@@ -363,14 +340,14 @@ def main():
         ok = False
 
     # ---- platform "auto" is accepted
-    params = base_params(); params["platform"] = "auto"
+    params = scft_parameters(); params["platform"] = "auto"
     if build(SCFT, params).prop_solver.platform not in PlatformSelector.avail_platforms():
         print("FAILED: platform auto")
         ok = False
 
     # ---- SCFT accepts a singular chi N matrix (a missing pair) and rejects a single
     #      monomer type in the incompressible model
-    params = base_params()
+    params = scft_parameters()
     params["segment_lengths"] = {"A": 1.0, "B": 1.0, "C": 1.0}
     params["chi_n"] = {"A,B": 15.0, "A,C": 5.0}
     try:
@@ -378,14 +355,14 @@ def main():
     except ValidationError as e:
         print(f"FAILED: SCFT with a singular chi matrix (missing B,C pair) raised: {e}")
         ok = False
-    params = base_params()
+    params = scft_parameters()
     params["segment_lengths"] = {"A": 1.0}
     params["chi_n"] = {}
     params["polymers"] = [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 1.0}]}]
     ok &= expect_error(SCFT, params, "SCFT with a single monomer type")
 
     # ---- mean concentrations from the chain compositions (random copolymer, alpha != 1)
-    params = base_params()
+    params = scft_parameters()
     params["polymers"] = [
         {"volume_fraction": 0.3, "blocks": [{"type": "A", "length": 0.7}]},
         {"volume_fraction": 0.7, "blocks": [{"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.5, "B": 0.5}}]},
@@ -396,7 +373,7 @@ def main():
         ok = False
 
     # ---- crystal systems are checked against the dimension
-    params = base_params(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["crystal_system"] = "Cubic"
+    params = scft_parameters(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["crystal_system"] = "Cubic"
     try:
         build(SCFT, params)
         print("FAILED: Cubic accepted for a 2D box")
@@ -409,7 +386,7 @@ def main():
                                ([4.0, 4.0, 6.0], [90.0, 100.0, 120.0], "Hexagonal"),
                                ([4.0, 4.0, 4.0], [80.0, 100.0, 90.0], "Monoclinic"),
                                ([4.0, 5.0], [120.0], None), ([4.0, 4.0], None, "Hexagonal2D")):
-        params = base_params(); params.update(nx=[8] * len(lx), lx=lx, relax_cell=True)
+        params = scft_parameters(); params.update(nx=[8] * len(lx), lx=lx, relax_cell=True)
         if angles is not None:
             params["angles"] = angles
         if system is not None:
@@ -423,7 +400,7 @@ def main():
     for lx, angles, system in (([4.0, 4.0, 6.0], [90.0, 90.0, 120.0], "Hexagonal"), ([4.0, 4.0, 6.0], None, "Tetragonal"),
                                ([4.0, 5.0, 6.0], [90.0, 100.0, 90.0], "Monoclinic"),
                                ([4.0, 5.0, 6.0], [80.0, 100.0, 70.0], "Triclinic")):
-        params = base_params(); params.update(nx=[8, 8, 8], lx=lx, relax_cell=True, crystal_system=system)
+        params = scft_parameters(); params.update(nx=[8, 8, 8], lx=lx, relax_cell=True, crystal_system=system)
         if angles is not None:
             params["angles"] = angles
         if build(SCFT, params).cell.crystal_system != system:
@@ -432,13 +409,13 @@ def main():
     # A fixed cell is not checked: the crystal system only matters for relaxation
     for lx, angles, system in (([4.0, 5.0], [120.0], None), ([4.0, 5.0, 6.0], None, "Cubic"),
                                ([3.0, 4.0], [60.0], "Orthorhombic")):
-        params = base_params(); params.update(nx=[8] * len(lx), lx=lx, relax_cell=False)
+        params = scft_parameters(); params.update(nx=[8] * len(lx), lx=lx, relax_cell=False)
         if angles is not None:
             params["angles"] = angles
         if system is not None:
             params["crystal_system"] = system
         build(SCFT, params)
-    params = base_params(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["angles"] = [90.0, 90.0, 120.0]
+    params = scft_parameters(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["angles"] = [90.0, 90.0, 120.0]
     params["relax_cell"] = True
     calc = build(SCFT, params)
     if not (calc.cell.crystal_system == "Hexagonal2D" and calc.cell.lx_reduced_indices == [0]):
@@ -449,7 +426,7 @@ def main():
     for key in ("compressor", "recording", "verbose_level"):
         params = lfts_params(); del params[key]
         ok &= expect_error(LFTS, params, f"LFTS without {key}")
-    params = base_params(); del params["relax_cell"]
+    params = scft_parameters(); del params["relax_cell"]
     ok &= expect_error(SCFT, params, "SCFT without relax_cell")
     params = lfts_params(); del params["langevin"]
     ok &= expect_error(CLFTS, params, "CLFTS without langevin")
@@ -486,7 +463,7 @@ def main():
     params = lfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
     for value in (0, -1, 1.5, "fast"):
-        params = base_params(); params["stress_interval"] = value
+        params = scft_parameters(); params["stress_interval"] = value
         ok &= expect_error(SCFT, params, f"stress_interval {value!r}")
 
     if ok:

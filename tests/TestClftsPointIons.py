@@ -24,8 +24,6 @@ An AB diblock with charged A blocks (discrete chains, N = 20) in a salt of point
    is refused, and the option is checked (a bool, CL-FTS only).
 """
 
-import contextlib
-import io
 import os
 import tempfile
 from pathlib import Path
@@ -38,7 +36,7 @@ from polymerfts import CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import _measurement_key
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
-from fts_checks import exact_restart, quiet
+from fts_checks import exact_restart, quiet, silenced
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -185,7 +183,7 @@ def records(root):
     mu = es.ion_chemical_potentials()
     assert np.allclose(mu, [np.log(N * ion["concentration"]) for ion in es.ions], rtol=0, atol=1e-14), "mu at psi = 0"
     rng = np.random.default_rng(3)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, n_grid) for m in "AB"})
     data = loadmat(root / "records" / "dH_000002.mat", squeeze_me=True)
     recorded = np.atleast_2d(data["chemical_potential_history_real"] + 1j * data["chemical_potential_history_imag"])
@@ -294,7 +292,7 @@ def debye_hueckel(root):
         sim = quiet(lambda: CLFTS(params, random_seed=5, callbacks={"psi": record}))
         es, n_grid = sim.electrostatics, int(np.prod(NX))
         holder["es"] = es
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim.run(initial_fields={m: np.zeros(n_grid) for m in "AB"})
         operator = es.screened_k_sq / es.coupling + sum(
             ion["valence"] ** 2 * ion["concentration"] * ion["gamma"] ** 2 for ion in es.ions) / N
@@ -320,7 +318,7 @@ def concentrations(root):
 
     def run(directory, steps, continue_from=None, **recording):
         sim = quiet(lambda: CLFTS(options(directory, steps, **recording), random_seed=7))
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             if continue_from is None:
                 sim.run(initial_fields=fields())
             else:
@@ -344,7 +342,7 @@ def concentrations(root):
             for name, value in parts.items():
                 totals[name] = totals.get(name, 0.0) + value
         sim = quiet(lambda: CLFTS(params, random_seed=7, callbacks={"collect": collect}))
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim.run(initial_fields=fields())
         data = stored(directory, 4)
         assert sorted(totals) == (["A", "B", "Cl", "Na"] if charged else ["A", "B"]), sorted(totals)

@@ -10,9 +10,7 @@ its keys through its files and an exact continuation, and CL-FTS (fields w_<type
 continues with a type 'aux'.
 """
 
-import contextlib
 import copy
-import io
 import itertools
 import os
 import tempfile
@@ -26,7 +24,7 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, SCFT, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
-from fts_checks import exact_restart, python_platform
+from fts_checks import exact_restart, python_platform, silenced
 
 
 def read_mat(path):
@@ -175,7 +173,7 @@ def main():
         previous = Path.cwd()
         os.chdir(root)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 refused(root, platform)
                 for cls in (LFTS, CLFTS):
                     check_statistics(root, platform, cls)

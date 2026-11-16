@@ -20,19 +20,19 @@ reports values; the simulation loops reject accepted states:
   negating Q) raise ValidationError naming the partition function.
 """
 
-import contextlib
-import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import numpy as np
 from polymerfts import SCFT, LFTS, PropagatorSolver, PlatformSelector, ValidationError
 from polymerfts.utils.common import check_partition_functions
-from TestFtsReliability import parameters, fields
 from cuda_part import cuda_part_missing
+from fts_checks import diblock_fields, diblock_parameters, silenced
 
 N, NZ, LZ = 50, 704, 6.0
 Z = (np.arange(NZ) + 0.5) * LZ / NZ
@@ -41,7 +41,7 @@ GRAFT = np.exp(-(Z - 1 / np.sqrt(N)) ** 2 / (2 * 0.2 ** 2))
 
 def solve(platform, strength):
     """The solver after computing the propagators of the grafted chain."""
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         solver = PropagatorSolver(nx=[NZ], lx=[LZ], ds=1 / N, bond_lengths={"A": 1.0}, bc=["absorbing"] * 2,
                                   chain_model="discrete", platform=platform)
         solver.add_polymer(1.0, [["A", 1.0, 0, 1]], grafting_points={0: "G"})
@@ -74,7 +74,7 @@ def negate_partition_functions(sim):
 
 def expect_partition_error(run, state):
     try:
-        with np.errstate(invalid="ignore"), contextlib.redirect_stdout(io.StringIO()):
+        with np.errstate(invalid="ignore"), silenced():
             run()
     except ValidationError as exc:
         return "partition function of polymer 0" in str(exc) and state in str(exc)
@@ -84,21 +84,21 @@ def expect_partition_error(run, state):
 def check_simulations(root):
     """SCFT and L-FTS reject a non-positive Q at their accepted states."""
     failures = []
-    params = parameters(root / "lfts")
-    with contextlib.redirect_stdout(io.StringIO()):
+    params = diblock_parameters(root / "lfts")
+    with silenced():
         lfts = LFTS(params, random_seed=11)
     negate_partition_functions(lfts)
-    if not expect_partition_error(lambda: lfts.run(fields()), "the initial saddle point"):
+    if not expect_partition_error(lambda: lfts.run(diblock_fields()), "the initial saddle point"):
         failures.append("L-FTS accepted a saddle point with a negative Q")
 
     for key in ("langevin", "compressor", "saddle", "recording"):
         params.pop(key)
     params.update(optimizer={"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
                   max_iter=3, tolerance=1e-8, relax_cell=False)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         scft = SCFT(params)
     negate_partition_functions(scft)
-    if not expect_partition_error(lambda: scft.run(fields()), "the end of the SCFT iteration"):
+    if not expect_partition_error(lambda: scft.run(diblock_fields()), "the end of the SCFT iteration"):
         failures.append("SCFT accepted final fields with a negative Q")
     return failures
 

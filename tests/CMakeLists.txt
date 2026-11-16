@@ -4,7 +4,9 @@
 
 # Basic tests for verification (label "basic"), which the Windows CI job runs:
 # about one and a half minutes in a CPU-only build run one test at a time with one
-# OpenMP thread. Tests that take longer carry only the "numerical" label.
+# OpenMP thread. The "numerical" label below marks the physical and numerical
+# regressions, some of them basic too. Many tests carry neither label, longer
+# ones among them, so only a run without -L covers the whole suite.
 # Run with: ctest -L basic -j 4
 SET(BASIC_TESTS
     # Parameter handling of the simulation classes and array handling of the

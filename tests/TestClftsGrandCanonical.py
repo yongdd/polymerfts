@@ -24,8 +24,6 @@ grand-canonical B homopolymer of length 0.5 and grand-canonical Na+ and Cl- poin
 6. Restarts are bitwise.
 """
 
-import contextlib
-import io
 import os
 import tempfile
 import warnings
@@ -38,7 +36,7 @@ from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
 from polymerfts.utils.validation import validate_scft_params
-from fts_checks import exact_restart, quiet, recording_dir
+from fts_checks import exact_restart, quiet, recording_dir, silenced
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 CHI, ZETA, Z_A = 2.0, 50.0, 0.2
@@ -252,7 +250,7 @@ def mean_field(root):
                 averages["phi_h"].append(np.mean(sample["phi"]["B"]) - phi_a)
         sim = quiet(lambda: CLFTS(params, random_seed=3, callbacks={"mean": record}))
         holder["sim"] = sim
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim.run(initial_fields={m: np.zeros(int(np.prod(NX))) for m in "AB"})
         data = loadmat(directory / f"dH_{steps:06d}.mat", squeeze_me=True)
         last = slice(-50, None)
