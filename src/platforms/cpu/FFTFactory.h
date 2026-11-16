@@ -23,8 +23,10 @@
 
 #include <array>
 #include <memory>
+#include <vector>
 #include "FFT.h"
 #include "ComputationBox.h"
+#include "MakhoulTransform.h"
 
 #ifdef USE_CPU_FFTW
 #include "FftwFFT.h"
@@ -92,6 +94,34 @@ std::unique_ptr<FFT<T>> createFFT(std::array<int, DIM> nx, FFTBackend backend)
     std::array<BoundaryCondition, DIM> bc;
     bc.fill(BoundaryCondition::PERIODIC);
     return createFFT<T, DIM>(nx, bc, backend);
+}
+
+/**
+ * @brief Create the unnormalized real FFT of a grid that runs under MakhoulTransform.
+ *
+ * @param nx      Grid dimensions (one to three axes)
+ * @param backend FFT backend to use (FFTW or MKL)
+ *
+ * @return Owning pointer to FftwRealFFT or MklRealFFT
+ *
+ * @throws Exception if the requested backend is not available
+ */
+inline std::unique_ptr<MakhoulTransform::RealFFT> createRealFFT(const std::vector<int>& nx, FFTBackend backend)
+{
+#ifdef USE_CPU_MKL
+    if (backend == FFTBackend::MKL)
+        return std::make_unique<MklRealFFT>(nx);
+#endif
+
+#ifdef USE_CPU_FFTW
+    if (backend == FFTBackend::FFTW)
+        return std::make_unique<FftwRealFFT>(nx);
+#endif
+
+    (void)nx;
+    (void)backend;
+    throw_with_line_number("Requested FFT backend is not available. "
+        "Compile with POLYMERFTS_USE_FFTW=ON or POLYMERFTS_USE_MKL=ON.");
 }
 
 #endif  // FFT_FACTORY_H_

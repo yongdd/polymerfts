@@ -26,7 +26,7 @@
 #include "CudaCrysFFTObliqueZ.h"
 #include "CudaCrysFFTRecursive3m.h"
 #include "FftwCrysFFTObliqueZ.h"
-#include "FftwCrysFFTPmmm.h"
+#include "CrysFFTPmmm.h"
 #include "FftwCrysFFTRecursive3m.h"
 #include "SpaceGroup.h"
 
@@ -406,7 +406,7 @@ int main(int argc, char** argv)
         // Pmmm (FFTW DCT-II/III)
         std::vector<double> cpu_pmmm_in = h_phys;
         std::vector<double> cpu_pmmm_out(M_phys, 0.0);
-        FftwCrysFFTPmmm crys_cpu_pmmm({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
+        CrysFFTPmmm crys_cpu_pmmm({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, FFTBackend::FFTW);
         crys_cpu_pmmm.set_contour_step(coeff);
 
         for (int i = 0; i < warmup; ++i)

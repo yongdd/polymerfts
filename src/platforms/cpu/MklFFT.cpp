@@ -283,11 +283,9 @@ void MklFFT<T, DIM>::initPeriodicFFT()
 template <typename T, int DIM>
 void MklFFT<T, DIM>::initNonPeriodicFFT()
 {
-    std::vector<bool> sine(DIM);
-    for (int d = 0; d < DIM; ++d)
-        sine[d] = bc_[d] == BoundaryCondition::ABSORBING;
     const std::vector<int> nx(nx_.begin(), nx_.end());
-    makhoul_ = std::make_unique<MakhoulTransform>(nx, sine, std::make_unique<MklRealFFT>(nx));
+    const std::vector<BoundaryCondition> bc(bc_.begin(), bc_.end());
+    makhoul_ = std::make_unique<MakhoulTransform>(nx, bc, std::make_unique<MklRealFFT>(nx));
 }
 
 //------------------------------------------------------------------------------

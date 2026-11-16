@@ -596,7 +596,7 @@ void bind_anderson_mixing(py::module &m, const std::string &type_name) {
  * "FourierMultiplier_{Real|Complex}":
  * - coefficient_shape, complex_coefficients: Layout of the coefficients of a field
  * - field_type: "real" or "complex", the fields the transform takes; periodic: every axis periodic
- *   (FFT); mixed: periodic and wall axes (transformed through the mirror image)
+ *   (FFT); mixed: periodic and wall axes (one real FFT of the grid on the CPU, the mirror image on CUDA)
  * - k_squared(): |k|² in the coefficient shape, from the current box
  * - set_multiplier(values): Store a multiplier of shape coefficient_shape
  *   (diagonal: applied to each field) or (n_out, n_in) + coefficient_shape

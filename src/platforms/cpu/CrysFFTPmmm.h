@@ -1,32 +1,31 @@
 /**
- * @file CrysFFTPmmmBase.h
- * @brief Base class for crystallographic FFT with Pmmm symmetry.
+ * @file CrysFFTPmmm.h
+ * @brief Crystallographic FFT with Pmmm symmetry on the CPU (FFTW or MKL).
  *
- * Provides the DCT-based Pmmm symmetry FFT. Derived classes (FFTW, MKL) supply
- * the periodic real FFT under the DCT (MakhoulTransform).
+ * The DCT-II/III of the physical grid run through MakhoulTransform over the
+ * periodic real FFT of the selected library (FftwRealFFT or MklRealFFT).
  *
- * **Common Functionality:**
+ * **Functionality:**
  *
  * - Grid dimension validation and setup
  * - Boltzmann factors shared by the calling threads (CrysFFTSharedTables.h)
  * - Cell parameter management
  * - Contour step management
- *
- * @see FftwCrysFFTPmmm for FFTW implementation
- * @see MklCrysFFTPmmm for MKL implementation
  */
 
-#ifndef CRYS_FFT_PMMM_BASE_H_
-#define CRYS_FFT_PMMM_BASE_H_
+#ifndef CRYS_FFT_PMMM_H_
+#define CRYS_FFT_PMMM_H_
 
 #include <array>
 #include <cstring>
 #include <cmath>
 #include <memory>
 #include <numbers>
+#include <vector>
 
 #include "CrysFFTSharedTables.h"
 #include "Exception.h"
+#include "FFTFactory.h"
 #include "MakhoulTransform.h"
 
 #ifndef M_PI
@@ -34,12 +33,12 @@
 #endif
 
 /**
- * @class CrysFFTPmmmBase
- * @brief Base class for Pmmm crystallographic FFT.
+ * @class CrysFFTPmmm
+ * @brief Pmmm crystallographic FFT: diffusion through the DCT-II/III of the physical grid.
  */
-class CrysFFTPmmmBase
+class CrysFFTPmmm
 {
-protected:
+private:
     std::array<int, 3> nx_logical_;    ///< Logical grid dimensions (Nx, Ny, Nz)
     std::array<int, 3> nx_physical_;   ///< Physical grid: (Nx/2, Ny/2, Nz/2)
     int M_logical_;                     ///< Total logical grid size
@@ -54,9 +53,8 @@ protected:
     /// Boltzmann factors per ds, shared by the threads that call the engine
     SharedTableCache<double, std::unique_ptr<double[]>> boltzmann_;
 
-    /// DCT-II (FFTW's REDFT10) and DCT-III (REDFT01) of the physical grid; the
-    /// derived class sets it. Their round trip gains 2n per dimension, which
-    /// norm_factor_ removes.
+    /// DCT-II (FFTW's REDFT10) and DCT-III (REDFT01) of the physical grid. Their
+    /// round trip gains 2n per dimension, which norm_factor_ removes.
     std::unique_ptr<MakhoulTransform> dct_;
 
     /// Generate Boltzmann factors for given ds.
@@ -106,14 +104,16 @@ protected:
 
 public:
     /**
-     * @brief Construct CrysFFTPmmmBase for given grid.
+     * @brief Construct CrysFFTPmmm for given grid.
      *
      * @param nx_logical Logical grid dimensions (must be even)
      * @param cell_para  Cell parameters [Lx, Ly, Lz, alpha, beta, gamma]
+     * @param backend    Library of the real FFT under the DCT (FFTW or MKL)
      */
-    CrysFFTPmmmBase(
+    CrysFFTPmmm(
         std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para)
+        std::array<double, 6> cell_para,
+        FFTBackend backend)
         : nx_logical_(nx_logical),
           cell_para_(cell_para)
     {
@@ -143,10 +143,11 @@ public:
 
         // DCT-II/III normalization: 1 / M_logical for round-trip
         norm_factor_ = 1.0 / static_cast<double>(M_logical_);
-    }
 
-    /// Virtual destructor.
-    virtual ~CrysFFTPmmmBase() = default;
+        const std::vector<int> nx(nx_physical_.begin(), nx_physical_.end());
+        const std::vector<BoundaryCondition> cosine(3, BoundaryCondition::REFLECTING);
+        dct_ = std::make_unique<MakhoulTransform>(nx, cosine, createRealFFT(nx, backend));
+    }
 
     /// Update cell parameters.
     void set_cell_para(const std::array<double, 6>& cell_para)
@@ -206,4 +207,4 @@ public:
     int get_M_physical() const { return M_physical_; }
 };
 
-#endif  // CRYS_FFT_PMMM_BASE_H_
+#endif  // CRYS_FFT_PMMM_H_

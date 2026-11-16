@@ -25,14 +25,17 @@
  * cos(πm(j+½)/N) or sin(π(m+1)(j+½)/N) per axis, and backward() includes the
  * normalization, so backward(forward(f)) = f.
  *
- * A box that mixes periodic and wall axes is transformed through its mirror
- * image: every wall axis of N points is extended to 2N points by the even
- * (cosine) or odd (sine) reflection f_{2N-1-j} = ±f_j, the extended field is
- * transformed with the complex FFT of a periodic box, and along each wall axis
- * the mode m of the extension is 2 e^{iπm/2N} times the cosine coefficient m, or
- * -2i e^{iπm/2N} times the sine coefficient m - 1. Real fields take the real part
- * of backward(), the field of the Hermitian part of the coefficients, so a
- * multiplier acts as (M(k) + conj M(-k))/2, -k reversing the periodic indices.
+ * A box that mixes periodic and wall axes has the coefficients of its mirror
+ * image (the CPU computes them with one real FFT of the grid, MakhoulTransform; CUDA
+ * transforms the image itself): every wall axis of N points is extended to 2N points by the even
+ * (cosine) or odd (sine) reflection f_{2N-1-j} = ±f_j, and along each wall axis
+ * the mode m of the complex FFT of the extension is 2 e^{iπm/2N} times the
+ * cosine coefficient m, or -2i e^{iπm/2N} times the sine coefficient m - 1. The
+ * CUDA version transforms the image so; the CPU version gets the same
+ * coefficients from one real FFT of the grid (MakhoulTransform). Real fields take
+ * the real part of backward(), the field of the Hermitian part of the
+ * coefficients, so a multiplier acts as (M(k) + conj M(-k))/2, -k reversing the
+ * periodic indices.
  *
  * **Multipliers** are stored once (create_multiplier()) and applied with apply():
  *
@@ -158,7 +161,7 @@ public:
     const std::vector<BoundaryCondition>& get_boundary_conditions() const { return bc_; }
     /// Every axis is periodic
     bool is_periodic() const { return periodic_; }
-    /// Periodic and wall axes are mixed (transformed through the mirror image)
+    /// Periodic and wall axes are mixed (CUDA transforms the mirror image)
     bool is_mixed() const { return mixed_; }
 
     /// |k|² of every coefficient for the current box
@@ -201,7 +204,8 @@ public:
 
 protected:
     /**
-     * @brief One axis of the mirror image of a mixed box, padded to 3D in front.
+     * @brief One axis of the mirror image of a mixed box, padded to 3D in front
+     *        (the transform of the CUDA version).
      *
      * Grid index j of the extended axis takes the field at extend_source[j] times
      * extend_sign[j]; coefficient m is extract_factor[m] times the extended mode

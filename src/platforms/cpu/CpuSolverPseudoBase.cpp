@@ -113,13 +113,12 @@ template <typename T>
 void CpuSolverPseudoBase<T>::reset_crysfft()
 {
     crysfft_mode_ = CrysFFTMode::None;
+    crysfft_pmmm_.reset();
 #ifdef USE_CPU_FFTW
-    crysfft_pmmm_fftw_.reset();
     crysfft_recursive_fftw_.reset();
     crysfft_oblique_fftw_.reset();
 #endif
 #ifdef USE_CPU_MKL
-    crysfft_pmmm_mkl_.reset();
     crysfft_recursive_mkl_.reset();
     crysfft_oblique_mkl_.reset();
 #endif
@@ -209,14 +208,7 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     }
     else if (plan.mode == CrysFFTChoice::PmmmDct)
     {
-#ifdef USE_CPU_MKL
-        if (fft_backend_ == FFTBackend::MKL)
-            crysfft_pmmm_mkl_ = std::make_unique<MklCrysFFTPmmm>(nx_logical, cell_para);
-#endif
-#ifdef USE_CPU_FFTW
-        if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_pmmm_fftw_ = std::make_unique<FftwCrysFFTPmmm>(nx_logical, cell_para);
-#endif
+        crysfft_pmmm_ = std::make_unique<CrysFFTPmmm>(nx_logical, cell_para, fft_backend_);
         crysfft_mode_ = CrysFFTMode::PmmmDct;
     }
     else if (plan.mode == CrysFFTChoice::ObliqueZ)
@@ -358,19 +350,17 @@ void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, do
 template <typename T>
 int CpuSolverPseudoBase<T>::get_crysfft_physical_size() const
 {
+    if (use_crysfft_pmmm() && crysfft_pmmm_)
+        return crysfft_pmmm_->get_M_physical();
 #ifdef USE_CPU_MKL
     if (use_crysfft_recursive() && crysfft_recursive_mkl_)
         return crysfft_recursive_mkl_->get_M_physical();
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-        return crysfft_pmmm_mkl_->get_M_physical();
     if (use_crysfft_oblique() && crysfft_oblique_mkl_)
         return crysfft_oblique_mkl_->get_M_physical();
 #endif
 #ifdef USE_CPU_FFTW
     if (use_crysfft_recursive() && crysfft_recursive_fftw_)
         return crysfft_recursive_fftw_->get_M_physical();
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-        return crysfft_pmmm_fftw_->get_M_physical();
     if (use_crysfft_oblique() && crysfft_oblique_fftw_)
         return crysfft_oblique_fftw_->get_M_physical();
 #endif
@@ -380,19 +370,17 @@ int CpuSolverPseudoBase<T>::get_crysfft_physical_size() const
 template <typename T>
 void CpuSolverPseudoBase<T>::crysfft_set_cell_para(const std::array<double, 6>& cell_para)
 {
+    if (use_crysfft_pmmm() && crysfft_pmmm_)
+        crysfft_pmmm_->set_cell_para(cell_para);
 #ifdef USE_CPU_MKL
     if (use_crysfft_recursive() && crysfft_recursive_mkl_)
         crysfft_recursive_mkl_->set_cell_para(cell_para);
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-        crysfft_pmmm_mkl_->set_cell_para(cell_para);
     if (use_crysfft_oblique() && crysfft_oblique_mkl_)
         crysfft_oblique_mkl_->set_cell_para(cell_para);
 #endif
 #ifdef USE_CPU_FFTW
     if (use_crysfft_recursive() && crysfft_recursive_fftw_)
         crysfft_recursive_fftw_->set_cell_para(cell_para);
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-        crysfft_pmmm_fftw_->set_cell_para(cell_para);
     if (use_crysfft_oblique() && crysfft_oblique_fftw_)
         crysfft_oblique_fftw_->set_cell_para(cell_para);
 #endif
@@ -401,15 +389,15 @@ void CpuSolverPseudoBase<T>::crysfft_set_cell_para(const std::array<double, 6>& 
 template <typename T>
 void CpuSolverPseudoBase<T>::crysfft_set_contour_step(double coeff)
 {
+    if (use_crysfft_pmmm() && crysfft_pmmm_)
+    {
+        crysfft_pmmm_->set_contour_step(coeff);
+        return;
+    }
 #ifdef USE_CPU_MKL
     if (use_crysfft_recursive() && crysfft_recursive_mkl_)
     {
         crysfft_recursive_mkl_->set_contour_step(coeff);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->set_contour_step(coeff);
         return;
     }
     if (use_crysfft_oblique() && crysfft_oblique_mkl_)
@@ -424,11 +412,6 @@ void CpuSolverPseudoBase<T>::crysfft_set_contour_step(double coeff)
         crysfft_recursive_fftw_->set_contour_step(coeff);
         return;
     }
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->set_contour_step(coeff);
-        return;
-    }
     if (use_crysfft_oblique() && crysfft_oblique_fftw_)
     {
         crysfft_oblique_fftw_->set_contour_step(coeff);
@@ -441,15 +424,15 @@ void CpuSolverPseudoBase<T>::crysfft_set_contour_step(double coeff)
 template <typename T>
 void CpuSolverPseudoBase<T>::crysfft_diffusion(double* q_in, double* q_out) const
 {
+    if (use_crysfft_pmmm() && crysfft_pmmm_)
+    {
+        crysfft_pmmm_->diffusion(q_in, q_out);
+        return;
+    }
 #ifdef USE_CPU_MKL
     if (use_crysfft_recursive() && crysfft_recursive_mkl_)
     {
         crysfft_recursive_mkl_->diffusion(q_in, q_out);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->diffusion(q_in, q_out);
         return;
     }
     if (use_crysfft_oblique() && crysfft_oblique_mkl_)
@@ -464,11 +447,6 @@ void CpuSolverPseudoBase<T>::crysfft_diffusion(double* q_in, double* q_out) cons
         crysfft_recursive_fftw_->diffusion(q_in, q_out);
         return;
     }
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->diffusion(q_in, q_out);
-        return;
-    }
     if (use_crysfft_oblique() && crysfft_oblique_fftw_)
     {
         crysfft_oblique_fftw_->diffusion(q_in, q_out);
@@ -481,14 +459,7 @@ void CpuSolverPseudoBase<T>::crysfft_diffusion(double* q_in, double* q_out) cons
 template <typename T>
 void CpuSolverPseudoBase<T>::update_crysfft_k_cache()
 {
-    bool has_pmmm = false;
-#ifdef USE_CPU_MKL
-    has_pmmm = has_pmmm || crysfft_pmmm_mkl_;
-#endif
-#ifdef USE_CPU_FFTW
-    has_pmmm = has_pmmm || crysfft_pmmm_fftw_;
-#endif
-    if (!use_crysfft_pmmm() || !has_pmmm)
+    if (!use_crysfft_pmmm() || !crysfft_pmmm_)
         return;
 
     if (dim_ != 3 || !is_periodic_ || !cb->is_orthogonal())
@@ -618,22 +589,9 @@ void CpuSolverPseudoBase<T>::crysfft_pmmm_axis_multiplier(
                             + ((axes & 4) ? crysfft_kz2_[i] : 0.0);
         weighted[i] = (boltz != nullptr) ? boltz[i] * k_axes : k_axes;
     }
-    const double* multiplier = weighted.data();
-#ifdef USE_CPU_MKL
-    if (crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->apply_multiplier(phys_in, phys_out, multiplier);
-        return;
-    }
-#endif
-#ifdef USE_CPU_FFTW
-    if (crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->apply_multiplier(phys_in, phys_out, multiplier);
-        return;
-    }
-#endif
-    throw_with_line_number("Pmmm CrysFFT requested but it is not initialized.");
+    if (!crysfft_pmmm_)
+        throw_with_line_number("Pmmm CrysFFT requested but it is not initialized.");
+    crysfft_pmmm_->apply_multiplier(phys_in, phys_out, weighted.data());
 }
 
 // Recursive 3m multiplier type for an axis mask (1: x, 2: y, 4: z, 3: x+y, 7: all)

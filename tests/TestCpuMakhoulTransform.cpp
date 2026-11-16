@@ -21,18 +21,33 @@
  * - forward: REDFT10 or RODFT10 / 2 per axis
  * - backward: REDFT01 or RODFT01 / n per axis
  *
- * Forward and backward transforms also run in place (CrysFFTPmmmBase relies on
+ * Forward and backward transforms also run in place (CrysFFTPmmm relies on
  * it) and concurrently, with their thread-local scratch, on one object, and must
  * give the same results as out of place and serially. The error maxima keep a NaN
  * (TestNanSafe.h).
+ *
+ * Boxes that mix periodic axes and walls (CpuFourierTransform) run
+ * MakhoulTransform over the real FFT of either library with periodic axes. For
+ * every mix of periodic, reflecting and absorbing axes on grids of two and three
+ * axes with at least one periodic axis and one wall, with even, odd and unit
+ * lengths, real and complex fields of standard deviation 5 must match the
+ * definition axis by axis:
+ *
+ * - forward: the DFT exp(-2 pi i m j / n) along periodic axes, REDFT10 or RODFT10 / 2 along walls
+ * - backward: the inverse DFT / n along periodic axes, REDFT01 or RODFT01 / n along walls,
+ *   from random complex coefficients without symmetry; a real field is the real part
+ *
+ * and concurrent calls must give the serial results.
  */
 
 #include <array>
 #include <cmath>
 #include <complex>
 #include <iostream>
+#include <memory>
 #include <numbers>
 #include <random>
+#include <string>
 #include <vector>
 
 #ifdef _OPENMP
@@ -212,6 +227,203 @@ int check_library(const char* name, std::mt19937& rng)
     return (worst_real < tolerance && worst_complex < tolerance) ? 0 : 1;
 }
 
+//------------------------------------------------------------------------------
+// Boxes that mix periodic axes and walls
+//------------------------------------------------------------------------------
+using Complex = std::complex<double>;
+
+/// The definition axis by axis: the DFT along periodic axes, apply_axis() on the parts along walls
+std::vector<Complex> mixed_definition(std::vector<Complex> data, const std::vector<int>& nx,
+                                      const std::vector<BoundaryCondition>& bc, bool forward)
+{
+    const double pi = std::numbers::pi;
+    const int size = static_cast<int>(data.size());
+    for (int axis = 0; axis < static_cast<int>(nx.size()); ++axis)
+    {
+        if (bc[axis] != BoundaryCondition::PERIODIC)
+        {
+            // The series are real: the real and imaginary parts in turn
+            std::vector<double> re(size), im(size);
+            for (int i = 0; i < size; ++i)
+            {
+                re[i] = data[i].real();
+                im[i] = data[i].imag();
+            }
+            const bool sine = bc[axis] == BoundaryCondition::ABSORBING;
+            apply_axis(re, nx, axis, sine, forward);
+            apply_axis(im, nx, axis, sine, forward);
+            for (int i = 0; i < size; ++i)
+                data[i] = Complex(re[i], im[i]);
+            continue;
+        }
+        const int n = nx[axis];
+        int stride = 1;
+        for (size_t d = axis + 1; d < nx.size(); ++d)
+            stride *= nx[d];
+        std::vector<Complex> line(n);
+        for (int i = 0; i < size; ++i)
+        {
+            if ((i / stride) % n != 0)
+                continue;
+            for (int j = 0; j < n; ++j)
+                line[j] = data[i + j * stride];
+            for (int k = 0; k < n; ++k)
+            {
+                Complex sum = 0.0;
+                for (int j = 0; j < n; ++j)
+                    sum += line[j] * std::polar(1.0, (forward ? -2.0 : 2.0) * pi * static_cast<double>(j * k % n) / n);
+                data[i + k * stride] = forward ? sum : sum / static_cast<double>(n);
+            }
+        }
+    }
+    return data;
+}
+
+double max_difference(const std::vector<Complex>& a, const std::vector<Complex>& b)
+{
+    double worst = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        worst = max_or_nan(worst, std::abs(a[i] - b[i]));
+    return worst;
+}
+
+double max_abs(const std::vector<Complex>& a)
+{
+    double worst = 0.0;
+    for (const Complex& x : a)
+        worst = max_or_nan(worst, std::abs(x));
+    return worst;
+}
+
+/// Largest error relative to the largest value, of a real or complex field on one mixed grid
+template <typename RealFFT>
+double check_mixed_grid(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc, bool complex_field,
+                        std::mt19937& rng)
+{
+    int total = 1;
+    int walls = 0;
+    for (size_t d = 0; d < nx.size(); ++d)
+    {
+        total *= nx[d];
+        walls += bc[d] != BoundaryCondition::PERIODIC;
+    }
+    const MakhoulTransform transform(nx, bc, std::make_unique<RealFFT>(nx));
+    // As CpuFourierTransform: REDFT10 and RODFT10 are twice the series
+    const double forward_scale = 1.0 / (1 << walls);
+    const double backward_scale = 1.0 / total;
+
+    // A real field is stored in the real parts; the coefficients have no symmetry
+    std::normal_distribution<double> normal(0.0, 5.0);
+    std::vector<Complex> field(total), coefficients(total);
+    for (Complex& x : field)
+        x = complex_field ? Complex(normal(rng), normal(rng)) : Complex(normal(rng), 0.0);
+    for (Complex& x : coefficients)
+        x = Complex(normal(rng), normal(rng));
+
+    auto forward = [&](const std::vector<Complex>& in, std::vector<Complex>& out) {
+        if (complex_field)
+        {
+            transform.forward(in.data(), out.data(), forward_scale);
+            return;
+        }
+        std::vector<double> real(total);
+        for (int i = 0; i < total; ++i)
+            real[i] = in[i].real();
+        transform.forward(real.data(), out.data(), forward_scale);
+    };
+    auto backward = [&](const std::vector<Complex>& in, std::vector<Complex>& out) {
+        if (complex_field)
+        {
+            transform.backward(in.data(), out.data(), backward_scale);
+            return;
+        }
+        std::vector<double> real(total);
+        transform.backward(in.data(), real.data(), backward_scale);
+        for (int i = 0; i < total; ++i)
+            out[i] = real[i];
+    };
+
+    std::vector<Complex> result(total), round_trip(total);
+    forward(field, result);
+    std::vector<Complex> expected = mixed_definition(field, nx, bc, true);
+    double worst = max_difference(result, expected) / max_abs(expected);
+
+    backward(result, round_trip);
+    worst = max_or_nan(worst, max_difference(round_trip, field) / max_abs(field));
+
+    backward(coefficients, result);
+    expected = mixed_definition(coefficients, nx, bc, false);
+    if (!complex_field)
+        for (Complex& x : expected)
+            x = x.real();
+    worst = max_or_nan(worst, max_difference(result, expected) / max_abs(expected));
+
+#ifdef _OPENMP
+    // Concurrent transforms of one object, one field per thread
+    const int threads = 4;
+    std::vector<std::vector<Complex>> fields(threads, std::vector<Complex>(total));
+    std::vector<std::vector<Complex>> serial(threads, std::vector<Complex>(total));
+    std::vector<std::vector<Complex>> parallel(threads, std::vector<Complex>(total));
+    for (int t = 0; t < threads; ++t)
+    {
+        for (Complex& x : fields[t])
+            x = complex_field ? Complex(normal(rng), normal(rng)) : Complex(normal(rng), 0.0);
+        std::vector<Complex> modes(total);
+        forward(fields[t], modes);
+        backward(modes, serial[t]);
+    }
+    #pragma omp parallel for num_threads(threads) schedule(static, 1)
+    for (int t = 0; t < threads; ++t)
+    {
+        std::vector<Complex> modes(total);
+        for (int repeat = 0; repeat < 20; ++repeat)
+        {
+            forward(fields[t], modes);
+            backward(modes, parallel[t]);
+        }
+    }
+    for (int t = 0; t < threads; ++t)
+        worst = max_or_nan(worst, max_difference(parallel[t], serial[t]) / max_abs(serial[t]));
+#endif
+    return worst;
+}
+
+template <typename RealFFT>
+int check_mixed(const char* name, std::mt19937& rng)
+{
+    const double tolerance = 1e-13;
+    const BoundaryCondition kinds[3] = {BoundaryCondition::PERIODIC, BoundaryCondition::REFLECTING,
+                                        BoundaryCondition::ABSORBING};
+    double worst_real = 0.0;
+    double worst_complex = 0.0;
+    int grids = 0;
+    for (const std::vector<int>& nx : std::vector<std::vector<int>>{
+             {2, 3}, {4, 6}, {5, 7}, {8, 1}, {1, 8}, {6, 6}, {7, 2},
+             {4, 6, 8}, {5, 7, 9}, {3, 4, 5}, {2, 3, 1}, {1, 5, 6}, {9, 8, 7}, {6, 5, 4}})
+    {
+        const int dim = static_cast<int>(nx.size());
+        const int mixes = dim == 2 ? 9 : 27;
+        for (int mix = 0; mix < mixes; ++mix)
+        {
+            std::vector<BoundaryCondition> bc(dim);
+            int periodic = 0;
+            for (int d = 0, m = mix; d < dim; ++d, m /= 3)
+            {
+                bc[d] = kinds[m % 3];
+                periodic += bc[d] == BoundaryCondition::PERIODIC;
+            }
+            if (periodic == 0 || periodic == dim)
+                continue;
+            worst_real = max_or_nan(worst_real, check_mixed_grid<RealFFT>(nx, bc, false, rng));
+            worst_complex = max_or_nan(worst_complex, check_mixed_grid<RealFFT>(nx, bc, true, rng));
+            ++grids;
+        }
+    }
+    std::cout << name << " with periodic axes (" << grids << " grids): real " << worst_real
+              << ", complex " << worst_complex << std::endl;
+    return (worst_real < tolerance && worst_complex < tolerance) ? 0 : 1;
+}
+
 int main()
 {
     try
@@ -223,6 +435,12 @@ int main()
 #endif
 #ifdef USE_CPU_MKL
         failures += check_library<MklFFT>("MklFFT", rng);
+#endif
+#ifdef USE_CPU_FFTW
+        failures += check_mixed<FftwRealFFT>("MakhoulTransform over FftwRealFFT", rng);
+#endif
+#ifdef USE_CPU_MKL
+        failures += check_mixed<MklRealFFT>("MakhoulTransform over MklRealFFT", rng);
 #endif
         return failures == 0 ? 0 : -1;
     }

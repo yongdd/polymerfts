@@ -76,7 +76,7 @@ so the N-point saving of the type-1 rows applies to 1D transforms only.
 
 ### 2.4 DCT and DST of a Whole Grid (CPU)
 
-`MakhoulTransform` runs the DCT-2/3 and DST-2/3 of a grid of one to three axes, with any mix of cosine and sine axes, through one periodic real FFT of the grid. Both CPU libraries share this code over their own real FFT (`FftwRealFFT`, `MklRealFFT`), the transform they run fastest, and `FftwCrysFFTPmmm` and `MklCrysFFTPmmm` use it as well.
+`MakhoulTransform` runs the DCT-2/3 and DST-2/3 of a grid of one to three axes, with any mix of cosine and sine axes, through one periodic real FFT of the grid. Both CPU libraries share this code over their own real FFT (`FftwRealFFT`, `MklRealFFT`), the transform they run fastest, and `CrysFFTPmmm` uses it as well, over the real FFT of the selected library.
 
 Makhoul's reordering [1] stores the even samples of every axis forward and the odd samples backward. With $`V`$ the real FFT of the reordered grid and $`W_N^k = e^{-i\pi k/(2N)}`$ on an axis of $`N`$ points, one axis gives
 
@@ -97,6 +97,18 @@ where mode 0 gains 2 and mode $`N/2`$ gains $`\sqrt{2}`$. The last axis, which h
 ```
 
 so it changes only the tables that place the samples and the coefficients. The real FFT runs unnormalized on per-thread scratch of `MakhoulTransform`, which starts on a 64-byte boundary and which it may overwrite, so the transform adds no copy and no 1/N pass. Complex fields transform their real and imaginary parts in turn, read from and written to every second value.
+
+### 2.5 Boxes that Mix Periodic Axes and Walls (CPU)
+
+The Fourier transform of a box that mixes periodic axes and walls (`FourierTransform.h`) has complex coefficients: the DFT along the periodic axes and the cosine or sine series along the walls; `PropagatorSolver.fourier` takes the cosine series along every wall. On the CPU, `MakhoulTransform` runs this transform as well. A periodic axis is neither reordered nor combined, so the same real FFT of the grid leaves the DFT on it. The coefficients $`Y`$ of a real field are conjugate under $`\mathbf{k}_p \to -\mathbf{k}_p`$ on the periodic axes, with the wall coefficients unchanged, so the half of the last axis that the real FFT does not hold is $`Y(\mathbf{k}_p, -k) = \overline{Y(-\mathbf{k}_p, k)}`$. A wall as the last axis then gives the cosine transform of a complex line,
+
+```math
+X_k = a + b, \qquad X_{N-k} = i\,(a - b), \qquad a = W_N^k\, Y(\mathbf{k}_p, k), \qquad b = W_N^{-k}\, \overline{Y(-\mathbf{k}_p, k)},
+```
+
+and a periodic last axis takes $`\overline{Y(-\mathbf{k}_p, N-k)}`$ for its upper half. The backward transform reads the Hermitian part $`\left(C(\mathbf{k}) + \overline{C(-\mathbf{k})}\right)/2`$ of the coefficients, which holds the coefficients of the real part of the field, and runs these steps backward. A complex field has $`C = C[\mathrm{Re}\, f] + i\, C[\mathrm{Im}\, f]`$ and is restored from the Hermitian parts of $`C`$ and of $`-iC`$.
+
+The CUDA version transforms the mirror image of the box: every wall axis is extended to twice its length by the even or odd reflection, the complex FFT of this periodic grid gives its modes, and a phase factor per wall axis turns them into the series coefficients. The CPU transform runs one real FFT of the grid instead of a complex FFT of a grid two or four times larger (one or two walls in 3D), with scratch of about two grids of doubles, one grid of complex values (Section 8.6).
 
 ---
 
@@ -326,7 +338,6 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
 **FFTW backend** (`POLYMERFTS_USE_FFTW`):
 
 - `FftwFFT<T, DIM>`: Standard FFT using FFTW3, DCT/DST through `MakhoulTransform` (Section 2.4)
-- `FftwCrysFFTPmmm`: Pmmm DCT through `MakhoulTransform`
 - `FftwCrysFFTRecursive3m`: Recursive 3m algorithm
 - `FftwCrysFFTObliqueZ`: DCT-z + FFT-xy
 
@@ -334,13 +345,19 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
 
 - `MklFFT<T, DIM>`: Standard FFT using MKL DFTI, DCT/DST through `MakhoulTransform` (Section 2.4)
 - `MklRealTransform1D/2D/3D`: DCT/DST of all types (FFT-based algorithms + MKL TT interface, see Section 8.2)
-- `MklCrysFFTPmmm`: Pmmm DCT through `MakhoulTransform`
 - `MklCrysFFTRecursive3m`: Recursive 3m algorithm
 - `MklCrysFFTObliqueZ`: DCT-z through a real FFT of the same length (Makhoul) + FFT-xy on contiguous z planes
 
-`CpuSolverPseudoBase` holds CrysFFT members for both backends (`crysfft_*_fftw_` and `crysfft_*_mkl_`) and uses the library of the selected platform (`cpu-mkl` or `cpu-fftw`).
+**Both backends**:
+
+- `CrysFFTPmmm`: Pmmm DCT through `MakhoulTransform` over the real FFT of the selected library (`createRealFFT()` in `FFTFactory.h`)
+- `CpuFourierTransform`: the transforms of `PropagatorSolver.fourier`; boxes that mix periodic axes and walls run `MakhoulTransform` with periodic axes (Section 2.5)
+
+`CpuSolverPseudoBase` holds one `CrysFFTPmmm` and the recursive 3m and ObliqueZ engines of both backends (`crysfft_*_fftw_` and `crysfft_*_mkl_`), and uses the library of the selected platform (`cpu-mkl` or `cpu-fftw`).
 
 **Threading**: FFTW/MKL multithreading is disabled; concurrency is handled at the solver level (OpenMP over propagators). Thread-local buffers are used to avoid race conditions.
+
+**Arrays of the periodic FFTW transforms**: `FftwFFT` plans on `fftw_malloc` arrays, which it frees after planning, and runs its plans on the caller's arrays through FFTW's new-array execute functions when these have the alignment of the planning arrays (`fftw_alignment_of()` is 0) and the input and output do not overlap. An array 8 bytes off, such as a packed field after an odd number of grid points, goes through thread-local scratch that starts on a 64-byte boundary, and so does the input of the complex-to-real transform, which FFTW overwrites. The same plan thus runs on one alignment class, and the result does not depend on where the caller's arrays lie (`TestCpuFFTAddressIndependence`).
 
 ### 7.2 CUDA
 
@@ -408,7 +425,7 @@ transform.execute(d_data);
 
 ### 8.1 DCT/DST Numerical Accuracy
 
-Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (all types) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `FftwFFT` and `MklFFT` agree with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`).
+Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (all types) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `FftwFFT` and `MklFFT` agree with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`). With periodic axes among the walls (Section 2.5), `MakhoulTransform` over either library agrees with the DFT and the series to 3×10⁻¹⁵ on 154 grids of two and three axes with every mix of periodic, cosine and sine axes, real fields taking the real part of the inverse of coefficients without symmetry.
 
 ### 8.2 FFTW vs MKL Benchmark (CPU)
 
@@ -416,16 +433,16 @@ Relative error against FFTW (maximum absolute difference divided by the largest 
 
 | Boundary | Processor, library | 32³ | 64³ | 96³ |
 |----------|--------------------|-----|-----|-----|
-| Periodic | AMD EPYC 7543, FFTW | 0.21 ms | 2.2 ms | 10.5 ms |
+| Periodic | AMD EPYC 7543, FFTW | 0.19 ms | 2.0 ms | 8.5 ms |
 | Periodic | AMD EPYC 7543, MKL | 0.31 ms | 2.9 ms | 11.4 ms |
-| Periodic | Intel Xeon 6737P, FFTW | 0.19 ms | 2.1 ms | 9.6 ms |
+| Periodic | Intel Xeon 6737P, FFTW | 0.16 ms | 1.7 ms | 7.9 ms |
 | Periodic | Intel Xeon 6737P, MKL | 0.14 ms | 1.4 ms | 5.6 ms |
 | Walls | AMD EPYC 7543, FFTW | 0.33 ms | 3.2 ms | 12.1 ms |
 | Walls | AMD EPYC 7543, MKL | 0.47 ms | 3.9 ms | 15.1 ms |
 | Walls | Intel Xeon 6737P, FFTW | 0.28 ms | 2.6 ms | 12.4 ms |
 | Walls | Intel Xeon 6737P, MKL | 0.26 ms | 2.4 ms | 10.8 ms |
 
-The processor decides which library leads. On the Intel Xeon 6737P MKL loads its AVX-512 kernels (`libmkl_avx512`). On the AMD EPYC 7543 it reports processor type 0 and loads its generic kernels (`libmkl_def`), whose DFT kernels use 128-bit vectors (a sample of the disassembly); `MKL_ENABLE_INSTRUCTIONS` and `MKL_CBWR` do not change this. One call of `compute_propagators` (AB diblock, `rqm4`, ds = 0.01, 64³, no space group, one thread) takes 1.5 s with FFTW and 1.8 s with MKL on the AMD processor and 1.5 s and 1.1 s on the Intel processor; with reflecting walls 2.2 s and 2.7 s on the AMD processor and 1.9 s and 1.8 s on the Intel processor. Among the CPU backends, `platform="auto"` takes `cpu-fftw` when a build has both libraries.
+The processor decides which library leads. On the Intel Xeon 6737P MKL loads its AVX-512 kernels (`libmkl_avx512`). On the AMD EPYC 7543 it reports processor type 0 and loads its generic kernels (`libmkl_def`), whose DFT kernels use 128-bit vectors (a sample of the disassembly); `MKL_ENABLE_INSTRUCTIONS` and `MKL_CBWR` do not change this. One call of `compute_propagators` (AB diblock, `rqm4`, ds = 0.01, 64³, no space group, one thread) takes 1.4 s with FFTW and 1.8 s with MKL on the AMD processor and 1.3 s and 1.1 s on the Intel processor; with reflecting walls 2.2 s and 2.7 s on the AMD processor and 1.9 s and 1.8 s on the Intel processor. Among the CPU backends, `platform="auto"` takes `cpu-fftw` when a build has both libraries.
 
 `MakhoulTransform` beats the r2r transforms of FFTW on the whole grid (one plan with `fftw_plan_r2r`, `FFTW_MEASURE`). The same transforms in a standalone program, round trip without the Python layer:
 
@@ -476,9 +493,9 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 
 | Engine (space group, physical basis) | CUDA, 4 streams | CUDA, 1 stream | CPU-FFTW | CPU-MKL |
 |--------------------------------------|-----------------|----------------|----------|---------|
-| Recursive 3m (Im-3m and Ia-3d, m3) | 3.4-4.0x | 2.4-2.5x | 5.0-5.2x | 4.9-5.0x |
-| Pmmm DCT (Im-3m and Pmmm, Pmmm) | 1.9-2.2x | 1.6x | 6.3-6.5x | 5.6-5.9x |
-| ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.4-1.5x | 1.3-1.4x |
+| Recursive 3m (Im-3m and Ia-3d, m3) | 3.4-4.0x | 2.4-2.5x | 4.8-5.2x | 4.9-5.0x |
+| Pmmm DCT (Im-3m and Pmmm, Pmmm) | 1.9-2.2x | 1.6x | 5.9-6.3x | 5.6-5.9x |
+| ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.3-1.5x | 1.3-1.4x |
 
 The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 
@@ -492,6 +509,23 @@ A space group therefore saves no time with CUDA below about 48³: the Gyroid exa
 Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
 
 Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
+
+### 8.6 Boxes that Mix Periodic Axes and Walls (CPU)
+
+**Setup**: forward and backward transform of one real field through the Fourier transform of a box with periodic x and y and a reflecting z wall (P/P/R), or periodic x, a reflecting y wall and an absorbing z wall (P/R/A), in double precision, cubic grids, one thread, best of five runs of five round trips. `MakhoulTransform` with periodic axes (Section 2.5) against, in parentheses, the complex FFT of the mirror image of the box, the transform of the CUDA version, with the same library.
+
+| Box | Processor, library | 32³ | 64³ | 96³ |
+|-----|--------------------|-----|-----|-----|
+| P/P/R | AMD EPYC 7543, FFTW | 0.34 ms (1.2 ms) | 3.1 ms (15 ms) | 13 ms (57 ms) |
+| P/P/R | AMD EPYC 7543, MKL | 0.47 ms (1.6 ms) | 4.0 ms (22 ms) | 17 ms (65 ms) |
+| P/P/R | Intel Xeon 6737P, FFTW | 0.27 ms (1.1 ms) | 2.7 ms (15 ms) | 16 ms (68 ms) |
+| P/P/R | Intel Xeon 6737P, MKL | 0.26 ms (0.85 ms) | 2.5 ms (12 ms) | 13 ms (52 ms) |
+| P/R/A | AMD EPYC 7543, FFTW | 0.38 ms (2.8 ms) | 3.4 ms (31 ms) | 15 ms (116 ms) |
+| P/R/A | AMD EPYC 7543, MKL | 0.51 ms (3.2 ms) | 4.4 ms (33 ms) | 18 ms (127 ms) |
+| P/R/A | Intel Xeon 6737P, FFTW | 0.30 ms (2.5 ms) | 2.8 ms (35 ms) | 16 ms (145 ms) |
+| P/R/A | Intel Xeon 6737P, MKL | 0.28 ms (2.0 ms) | 2.8 ms (26 ms) | 14 ms (117 ms) |
+
+One real FFT of the grid replaces a complex FFT of twice (one wall) or four times (two walls) as many points: 3.3-5.7x and 6-12x faster. A complex field takes two real FFTs, one for its real and one for its imaginary part, and gains about half as much (1.6-2.8x with one wall, 3-5.7x with two). The per-thread scratch holds about two grids of doubles instead of two complex mirror images, 4 or 8 times less.
 
 ---
 

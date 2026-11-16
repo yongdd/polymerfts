@@ -59,9 +59,11 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 ### Added
 
 - Electrostatics in boxes that mix periodic axes and walls (2026-11-09): the platform Fourier
-  transform handles such a box through its mirror image. Each wall axis is extended to twice its
-  length by the even (cosine) or odd (sine) reflection, the extended grid is transformed with the
-  complex FFT of FFTW, MKL or cuFFT, and a phase factor per wall axis gives the series coefficients.
+  transform gives such a box the coefficients of its mirror image, in which each wall axis is
+  extended to twice its length by the even (cosine) or odd (sine) reflection. The CPU computes them
+  with one real FFT of the grid (`MakhoulTransform` with periodic axes, 2026-11-16), CUDA with the
+  complex cuFFT of the image and a phase factor per wall axis (docs/internals/FFTImplementation.md,
+  Section 2.5).
   The coefficients are complex, the full FFT spectrum along the periodic axes and the cosine or sine
   series along the walls, also for real fields, which take the real part of `backward`.
   `PropagatorSolver.fourier` takes the cosine series along every wall, absorbing ones included, so
@@ -838,6 +840,16 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- The periodic transforms of `FftwFFT` run their FFTW plans on the caller's arrays through FFTW's
+  new-array execute functions when these have the alignment of the planning arrays (2026-11-16).
+  Only the input of the complex-to-real transform, which FFTW overwrites, arrays 8 bytes off (packed
+  fields after an odd number of grid points) and overlapping input and output go through per-thread
+  scratch of that alignment; before, every transform copied its input, those of real fields also
+  their output, and each object kept its planning arrays. With the same plans a round trip on one thread of an AMD EPYC 7543 takes 10-26 % less time
+  on 32³-128³ (complex fields 12-25 %), and `compute_propagators` (rqm4, 64³, one thread) takes 1.4 s
+  instead of 1.55 s there and 1.3 s instead of 1.5 s on an Intel Xeon 6737P. Results are bitwise
+  unchanged. The FFTW and MKL Pmmm CrysFFT engines are one class, `CrysFFTPmmm`, over the real FFT of
+  the selected library.
 - On CUDA a junction takes one kernel launch over up to 32 device-resident sources and their
   powers, with the product in registers, instead of one launch per factor (2026-11-08, 2026-11-16);
   the reduced-memory mode stages two checkpoints per launch. An integer power of at most 4 (up to
@@ -941,6 +953,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- `TestCpuFFTAddressIndependence` also checks the periodic FFTW transforms at every 8-byte offset
+  within a 64-byte line, on even and odd grids, real and complex fields, in place, with unchanged
+  inputs; `TestCpuMakhoulTransform` compares the mixed-box transform with the O(N^2) definitions on
+  154 grids per library (2026-11-16).
 - `TestJunctionProduct` computes the reference of the ordinary junction arithmetic at run time
   (2026-11-15). GCC 13 and later at `-O3` folded the constant complex reference with another
   rounding, one ulp off the run-time product, and the test failed although the junction was right.

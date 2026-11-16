@@ -15,10 +15,9 @@
 #include "CudaCommon.h"
 #include "CudaCrysFFT.h"
 #include "CudaCrysFFTRecursive3m.h"
-#include "FftwCrysFFTPmmm.h"
+#include "CrysFFTPmmm.h"
 #include "FftwCrysFFTRecursive3m.h"
 #ifdef USE_CPU_MKL
-#include "MklCrysFFTPmmm.h"
 #include "MklCrysFFTRecursive3m.h"
 #endif
 #include "SpaceGroup.h"
@@ -175,8 +174,7 @@ __global__ void ker_apply_boltzmann(
 // Test functions
 //==============================================================================
 
-template <typename Engine>
-bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
+bool test_cpu_engine(const char* label, FFTBackend backend, int Nx, int Ny, int Nz, double ds)
 {
     double Lx = 4.0, Ly = 4.0, Lz = 4.0;
     int M_logical = Nx * Ny * Nz;
@@ -202,7 +200,7 @@ bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
     }
     expand_pmmm(q_phys.data(), q_logical.data(), Nx, Ny, Nz);
 
-    Engine crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
+    CrysFFTPmmm crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, backend);
     crys.set_contour_step(ds);
     crys.diffusion(q_phys.data(), q_phys_out.data());
 
@@ -229,14 +227,14 @@ bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
 
 bool test_cpu(int Nx, int Ny, int Nz, double ds)
 {
-    return test_cpu_engine<FftwCrysFFTPmmm>("CPU-FFTW:", Nx, Ny, Nz, ds);
+    return test_cpu_engine("CPU-FFTW:", FFTBackend::FFTW, Nx, Ny, Nz, ds);
 }
 
 #ifdef USE_CPU_MKL
 // The MKL Pmmm engine against the same full-grid reference
 bool test_cpu_mkl(int Nx, int Ny, int Nz, double ds)
 {
-    return test_cpu_engine<MklCrysFFTPmmm>("CPU-MKL:", Nx, Ny, Nz, ds);
+    return test_cpu_engine("CPU-MKL:", FFTBackend::MKL, Nx, Ny, Nz, ds);
 }
 #endif
 

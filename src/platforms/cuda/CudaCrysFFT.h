@@ -151,7 +151,7 @@ public:
      *
      * Round-trip normalization (1/M_logical) is applied internally, so the
      * multiplier array must contain raw (unnormalized) values, mirroring the
-     * CPU CrysFFTPmmmBase::apply_multiplier convention.
+     * CPU CrysFFTPmmm::apply_multiplier convention.
      * The input array is preserved when d_q_in != d_q_out.
      *
      * @param d_q_in       Input field on device (physical grid)

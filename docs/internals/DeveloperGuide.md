@@ -143,7 +143,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
 | Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `{Fftw,Mkl}CrysFFT{Pmmm,Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
 
 ### Platform Selection
@@ -451,11 +451,13 @@ coefficients given to `backward` are made Hermitian on the planes of the half sp
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
 the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
-is transformed through its mirror image: each wall axis is extended to twice its length by
-the even (cosine) or odd (sine) reflection, the complex FFT of the extended periodic grid
-(FFTW, MKL or cuFFT) gives its modes, and a phase factor per wall axis turns them into the
-series coefficients; the coefficients are complex, with the full spectrum on the periodic
-axes, and real fields take the real part of `backward`. `PropagatorSolver.fourier` uses the
+has complex coefficients, with the full spectrum on the periodic axes, and real fields take
+the real part of `backward`. The CUDA version transforms its mirror image: each wall axis is
+extended to twice its length by the even (cosine) or odd (sine) reflection, the complex cuFFT
+of the extended periodic grid gives its modes, and a phase factor per wall axis turns them
+into the series coefficients. The CPU version gets the same coefficients from one real FFT
+of the grid, `MakhoulTransform` with periodic axes ([FFTImplementation.md](FFTImplementation.md),
+Section 2.5). `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
 (osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls
@@ -676,8 +678,9 @@ and destroyed with `release_cufft_plan()`, `release_cuda_stream()` and
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. Events used
 only for profiling are `CudaEvent` objects. The CPU FFT classes keep their FFTW/MKL
-plans and descriptors and the `fftw_malloc`-aligned buffers of `FftwFFT`/`FftwCrysFFT*`
-in hand-written `release()` functions, which their destructors call.
+plans and descriptors in hand-written `release()` functions, which their destructors call;
+the `fftw_malloc` arrays FFTW plans on are freed after planning, and the plans run on the
+caller's arrays or on per-thread scratch of the same alignment.
 
 Every owned CUDA allocation (the buffers and the backends' propagator and checkpoint
 arrays) goes through `counted_cuda_allocate()`/`counted_cuda_release()`, which keep exact

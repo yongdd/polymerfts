@@ -74,6 +74,18 @@ public:
  * FFTW plan execution is thread-safe, but plan creation/destruction is not.
  * All plans are created in the constructor and destroyed in the destructor.
  *
+ * **Arrays of the periodic transforms:**
+ *
+ * The plans run on the caller's arrays through FFTW's new-array execute
+ * functions when FFTW allows it: the array has the alignment of the planning
+ * arrays (fftw_alignment_of() is 0) and the input and output do not overlap.
+ * Otherwise, as for a packed field after an odd number of grid points, the
+ * array goes through thread-local scratch that starts on a 64-byte boundary,
+ * which has that alignment too. The input of the complex-to-real transform
+ * always goes through the scratch, since that transform overwrites it. The
+ * same plan thus always runs on arrays of one alignment class, and the result
+ * does not depend on where the caller's arrays lie.
+ *
  * **Normalization:**
  *
  * Backward transforms include 1/N scaling so forward(backward(x)) = x.
@@ -88,19 +100,21 @@ private:
     int total_complex_grid_;                       ///< Total "complex" grid size
     bool is_all_periodic_;                         ///< True if all BCs are periodic
 
-    // FFTW plans for periodic FFT
-    fftw_plan plan_forward_ = nullptr;             ///< Forward (r2c) transform
-    fftw_plan plan_backward_ = nullptr;            ///< Backward (c2r) transform
+    // FFTW plans for periodic FFT, made on fftw_malloc arrays that are freed after planning
+    fftw_plan plan_forward_ = nullptr;             ///< Forward (r2c or c2c); keeps its input
+    fftw_plan plan_backward_ = nullptr;            ///< Backward (c2r, which overwrites its input, or c2c)
 
     /// DCT/DST of the grid through one real FFT (non-periodic BC only)
     std::unique_ptr<MakhoulTransform> makhoul_;
 
-    // Buffers for FFTW (FFTW requires aligned memory)
-    double* work_buffer_ = nullptr;                ///< Work buffer for transforms
-    fftw_complex* complex_buffer_ = nullptr;       ///< Complex buffer for r2c/c2r
-
-    /// Destroy the plans and free the buffers (also after a failed construction); idempotent.
+    /// Destroy the plans (also after a failed construction); idempotent.
     void release();
+
+    /// Periodic forward transform: modes = FFT of field (half spectrum for a real field)
+    void periodic_forward(const T* field, std::complex<double>* modes) const;
+
+    /// Periodic backward transform with the 1/N normalization: field = IFFT of modes
+    void periodic_backward(const std::complex<double>* modes, T* field) const;
 
     /// Initialize FFTW plans for periodic FFT.
     void initPeriodicFFT();
@@ -129,7 +143,7 @@ public:
      */
     FftwFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc);
 
-    /// Destructor. Frees FFTW plans and buffers.
+    /// Destructor. Frees the FFTW plans.
     ~FftwFFT();
 
     /**

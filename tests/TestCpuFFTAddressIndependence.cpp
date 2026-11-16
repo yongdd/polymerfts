@@ -5,22 +5,29 @@
  * and the stress transforms write into arrays allocated per call), and they
  * must agree bit for bit on the same backend.
  *
- * Only the periodic MKL transforms run on the caller's arrays: MklFFT passes
- * them to DftiCompute, and MKL may pick a code path by their alignment. FftwFFT
- * copies into its own buffers, and the DCT/DST of the walls (MakhoulTransform)
- * runs on per-thread scratch that starts on a 64-byte boundary, with either
- * library.
+ * The periodic transforms run on the caller's arrays: MklFFT passes them to
+ * DftiCompute, and MKL may pick a code path by their alignment; FftwFFT runs its
+ * plans on them through FFTW's new-array execute functions when they have the
+ * alignment of the planning arrays, and on per-thread scratch of that alignment
+ * when they do not (an array 8 bytes off, as a packed field after an odd number
+ * of grid points) or when FFTW cannot run on them (the input of the
+ * complex-to-real transform, which FFTW overwrites). The DCT/DST of the walls
+ * (MakhoulTransform) runs on per-thread scratch that starts on a 64-byte
+ * boundary, with either library.
  *
- * Each periodic MKL transform runs from and into arrays placed 0, 16, 32 and
- * 48 bytes after a 64-byte boundary (the placements of heap arrays), for real
- * and complex fields, through the real-coefficient and the complex-coefficient
- * interface (the mirror image of a mixed box runs through the latter on
- * per-thread buffers). Every placement must give the values of the first one.
- * A failure prints which placements of the input (rows) and the output
- * (columns) give which result. MKL runs one thread inside each transform, as
- * MklFactory sets it for the solvers. A build without MKL skips the test.
+ * Each periodic transform runs from and into arrays placed 0, 16, 32 and 48
+ * bytes after a 64-byte boundary (the placements of heap arrays), and for FFTW
+ * also 8, 24, 40 and 56 bytes after it, for real and complex fields on even and
+ * odd grids, through the real-coefficient and the complex-coefficient interface.
+ * Every placement must give the values of the first one, and the input must stay
+ * unchanged. A failure prints which placements of the input (rows) and the
+ * output (columns) give which result. FftwFFT must also give these values when
+ * its input and output overlap. MKL runs one thread inside each transform, as
+ * MklFactory sets it for the solvers. A build without either library skips its
+ * part, and a build without both skips the test.
  ******************************************************************************/
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
@@ -33,13 +40,17 @@
 #include <utility>
 #include <vector>
 
+#include "ComputationBox.h"
 #ifdef USE_CPU_MKL
 #include "MklFFT.h"
+#endif
+#ifdef USE_CPU_FFTW
+#include "FftwFFT.h"
+#endif
 
+#if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
 namespace
 {
-
-const std::array<int, 4> OFFSETS_BYTES = {0, 16, 32, 48};
 
 // Doubles from a 64-byte boundary, with room for the largest offset
 class PlacedArray
@@ -59,28 +70,34 @@ private:
 
 struct Placements
 {
+    std::vector<int> offsets;
     // Result class of each (input, output) placement; class 0 is the first placement
-    std::array<std::array<int, 4>, 4> result_class{};
+    std::vector<std::vector<int>> result_class;
     int n_results = 1;
     double max_diff = 0.0;
+    bool input_kept = true;
 };
 
 // Runs transform(in, out) for every placement, with the input copied from source
 // each time (a backward transform may overwrite its input)
 template <typename Transform>
-Placements run_placements(const std::vector<double>& source, int n_out, Transform transform)
+Placements run_placements(const std::vector<int>& offsets, const std::vector<double>& source, int n_out,
+                          Transform transform)
 {
     const int n_in = static_cast<int>(source.size());
+    const int n_offsets = static_cast<int>(offsets.size());
     PlacedArray in(n_in), out(n_out);
     std::vector<std::vector<double>> results;
     Placements p;
+    p.offsets = offsets;
+    p.result_class.assign(n_offsets, std::vector<int>(n_offsets, 0));
 
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < n_offsets; i++)
     {
-        for (int o = 0; o < 4; o++)
+        for (int o = 0; o < n_offsets; o++)
         {
-            double* in_ptr = in.at(OFFSETS_BYTES[i]);
-            double* out_ptr = out.at(OFFSETS_BYTES[o]);
+            double* in_ptr = in.at(offsets[i]);
+            double* out_ptr = out.at(offsets[o]);
             for (int k = 0; k < n_in; k++)
                 in_ptr[k] = source[k];
             for (int k = 0; k < n_out; k++)
@@ -88,6 +105,8 @@ Placements run_placements(const std::vector<double>& source, int n_out, Transfor
 
             transform(in_ptr, out_ptr);
 
+            for (int k = 0; k < n_in; k++)
+                p.input_kept = p.input_kept && (in_ptr[k] == source[k]);
             std::vector<double> result(out_ptr, out_ptr + n_out);
             int found = -1;
             for (size_t r = 0; r < results.size() && found < 0; r++)
@@ -117,26 +136,29 @@ Placements run_placements(const std::vector<double>& source, int n_out, Transfor
     return p;
 }
 
-bool report(const std::string& label, const Placements& p)
+bool report(const std::string& label, const Placements& p, bool check_input)
 {
-    const bool ok = (p.n_results == 1);
-    std::cout << (ok ? "    [PASS] " : "    [FAIL] ") << label << ": 16 placements, "
+    const int n_offsets = static_cast<int>(p.offsets.size());
+    const bool ok = p.n_results == 1 && (!check_input || p.input_kept);
+    std::cout << (ok ? "    [PASS] " : "    [FAIL] ") << label << ": " << n_offsets * n_offsets << " placements, "
               << p.n_results << (p.n_results == 1 ? " result" : " results");
-    if (!ok)
+    if (p.n_results != 1)
         std::cout << ", max |diff| " << std::scientific << std::setprecision(1) << p.max_diff
                   << std::defaultfloat;
+    if (check_input && !p.input_kept)
+        std::cout << ", the input changed";
     std::cout << std::endl;
-    if (!ok)
+    if (p.n_results != 1)
     {
         std::cout << "        result by input offset (rows) and output offset (columns), bytes:"
                   << std::endl << "              ";
-        for (int o = 0; o < 4; o++)
-            std::cout << std::setw(4) << OFFSETS_BYTES[o];
+        for (int o = 0; o < n_offsets; o++)
+            std::cout << std::setw(4) << p.offsets[o];
         std::cout << std::endl;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < n_offsets; i++)
         {
-            std::cout << "          " << std::setw(4) << OFFSETS_BYTES[i];
-            for (int o = 0; o < 4; o++)
+            std::cout << "          " << std::setw(4) << p.offsets[i];
+            for (int o = 0; o < n_offsets; o++)
                 std::cout << std::setw(4) << p.result_class[i][o];
             std::cout << std::endl;
         }
@@ -144,10 +166,33 @@ bool report(const std::string& label, const Placements& p)
     return ok;
 }
 
-template <typename T, int DIM>
-bool check_grid(std::array<int, DIM> nx)
+// The same values in place: input and output start at one 8-byte-aligned address
+template <typename Transform>
+bool report_in_place(const std::string& label, const std::vector<double>& source, const std::vector<double>& expected,
+                     Transform transform)
+{
+    std::vector<double> data(std::max(source.size(), expected.size()) + 1, 0.0);
+    bool ok = true;
+    for (int shift : {0, 1})
+    {
+        double* ptr = data.data() + shift;
+        std::copy(source.begin(), source.end(), ptr);
+        transform(ptr, ptr);
+        for (size_t k = 0; k < expected.size(); k++)
+            ok = ok && (ptr[k] == expected[k]);
+    }
+    std::cout << (ok ? "    [PASS] " : "    [FAIL] ") << label << ": in place" << std::endl;
+    return ok;
+}
+
+// Library: MklFFT or FftwFFT; the FFTW plans also run on arrays 8 bytes off and in place
+template <template <typename, int> class Library, typename T, int DIM>
+bool check_grid(const std::string& library, std::array<int, DIM> nx)
 {
     constexpr bool IS_COMPLEX = std::is_same<T, std::complex<double>>::value;
+    const bool fftw = library == "fftw";
+    const std::vector<int> offsets = fftw ? std::vector<int>{0, 8, 16, 24, 32, 40, 48, 56}
+                                          : std::vector<int>{0, 16, 32, 48};
     std::array<BoundaryCondition, DIM> bc;
     bc.fill(BoundaryCondition::PERIODIC);
 
@@ -169,36 +214,53 @@ bool check_grid(std::array<int, DIM> nx)
     for (double& v : field)
         v = normal(rng);
 
-    MklFFT<T, DIM> fft(nx, bc);
-    const std::string label = std::string("mkl") + (IS_COMPLEX ? " complex " : " real ") + "periodic " + grid_name;
+    Library<T, DIM> fft(nx, bc);
+    const std::string label = library + (IS_COMPLEX ? " complex " : " real ") + "periodic " + grid_name;
 
-    std::vector<double> coeff(n_coeff);
+    std::vector<double> coeff(n_coeff), back(n_field);
     fft.forward(reinterpret_cast<T*>(field.data()), coeff.data());
+    fft.backward(coeff.data(), reinterpret_cast<T*>(back.data()));
 
+    // MKL keeps the input of its out-of-place transforms (mkl_c2r, review of 2026-11-16);
+    // FftwFFT copies the input that FFTW would overwrite
     bool ok = true;
-    ok &= report(label + " forward", run_placements(field, n_coeff,
-        [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); }));
-    ok &= report(label + " backward", run_placements(coeff, n_field,
-        [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); }));
-    ok &= report(label + " forward, complex interface", run_placements(field, n_coeff,
+    ok &= report(label + " forward", run_placements(offsets, field, n_coeff,
+        [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); }), fftw);
+    ok &= report(label + " backward", run_placements(offsets, coeff, n_field,
+        [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); }), fftw);
+    ok &= report(label + " forward, complex interface", run_placements(offsets, field, n_coeff,
         [&](double* in, double* out)
-        { fft.forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }));
-    ok &= report(label + " backward, complex interface", run_placements(coeff, n_field,
+        { fft.forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }), fftw);
+    ok &= report(label + " backward, complex interface", run_placements(offsets, coeff, n_field,
         [&](double* in, double* out)
-        { fft.backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }));
+        { fft.backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }), fftw);
+    if (fftw)
+    {
+        ok &= report_in_place(label + " forward", field, coeff,
+            [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); });
+        ok &= report_in_place(label + " backward", coeff, back,
+            [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); });
+    }
     return ok;
 }
 
-template <typename T>
-bool check_type()
+template <template <typename, int> class Library, typename T>
+bool check_type(const std::string& library)
 {
     bool ok = true;
     // The grid of TestBlockMultiplicity, then odd, larger and lower-dimensional grids
-    ok &= check_grid<T, 3>({12, 10, 8});
-    ok &= check_grid<T, 3>({15, 9, 7});
-    ok &= check_grid<T, 3>({32, 32, 32});
-    ok &= check_grid<T, 2>({24, 20});
-    ok &= check_grid<T, 1>({64});
+    ok &= check_grid<Library, T, 3>(library, {12, 10, 8});
+    ok &= check_grid<Library, T, 3>(library, {15, 9, 7});
+    ok &= check_grid<Library, T, 3>(library, {32, 32, 32});
+    ok &= check_grid<Library, T, 2>(library, {24, 20});
+    ok &= check_grid<Library, T, 1>(library, {64});
+    if (library == "fftw")
+    {
+        // Odd grids, whose packed real fields alternate between the two alignments
+        ok &= check_grid<Library, T, 3>(library, {5, 5, 5});
+        ok &= check_grid<Library, T, 2>(library, {9, 7});
+        ok &= check_grid<Library, T, 1>(library, {33});
+    }
     return ok;
 }
 
@@ -207,14 +269,23 @@ bool check_type()
 
 int main()
 {
-#ifdef USE_CPU_MKL
+#if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
     try
     {
+        bool ok = true;
+#ifdef USE_CPU_MKL
         mkl_set_num_threads(1);  // As MklFactory does: no threading inside a transform
         std::cout << "Periodic MKL transforms from and into arrays 0, 16, 32 and 48 bytes after a 64-byte boundary"
                   << std::endl;
-        bool ok = check_type<double>();
-        ok &= check_type<std::complex<double>>();
+        ok &= check_type<MklFFT, double>("mkl");
+        ok &= check_type<MklFFT, std::complex<double>>("mkl");
+#endif
+#ifdef USE_CPU_FFTW
+        std::cout << "Periodic FFTW transforms from and into arrays 0, 8, ..., 56 bytes after a 64-byte boundary"
+                  << std::endl;
+        ok &= check_type<FftwFFT, double>("fftw");
+        ok &= check_type<FftwFFT, std::complex<double>>("fftw");
+#endif
         std::cout << (ok ? "All placements give the same result" : "Some placements give different results")
                   << std::endl;
         return ok ? 0 : 1;
@@ -225,7 +296,7 @@ int main()
         return 1;
     }
 #else
-    std::cout << "This build has no MKL backend: skipped" << std::endl;
+    std::cout << "This build has neither MKL nor FFTW: skipped" << std::endl;
     return 77;
 #endif
 }

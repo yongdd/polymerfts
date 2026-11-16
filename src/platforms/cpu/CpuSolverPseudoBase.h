@@ -51,15 +51,14 @@
 #include "FFTFactory.h"
 #include "SpaceGroup.h"
 #include "CrysFFTBasisMapping.h"
+#include "CrysFFTPmmm.h"
 
 #ifdef USE_CPU_FFTW
-#include "FftwCrysFFTPmmm.h"
 #include "FftwCrysFFTRecursive3m.h"
 #include "FftwCrysFFTObliqueZ.h"
 #endif
 
 #ifdef USE_CPU_MKL
-#include "MklCrysFFTPmmm.h"
 #include "MklCrysFFTRecursive3m.h"
 #include "MklCrysFFTObliqueZ.h"
 #endif
@@ -154,13 +153,12 @@ protected:
         ObliqueZ
     };
 
+    std::unique_ptr<CrysFFTPmmm> crysfft_pmmm_;   ///< Pmmm DCT on the real FFT of the selected library
 #ifdef USE_CPU_FFTW
-    std::unique_ptr<FftwCrysFFTPmmm> crysfft_pmmm_fftw_;
     std::unique_ptr<FftwCrysFFTRecursive3m> crysfft_recursive_fftw_;
     std::unique_ptr<FftwCrysFFTObliqueZ> crysfft_oblique_fftw_;
 #endif
 #ifdef USE_CPU_MKL
-    std::unique_ptr<MklCrysFFTPmmm> crysfft_pmmm_mkl_;
     std::unique_ptr<MklCrysFFTRecursive3m> crysfft_recursive_mkl_;
     std::unique_ptr<MklCrysFFTObliqueZ> crysfft_oblique_mkl_;
 #endif
