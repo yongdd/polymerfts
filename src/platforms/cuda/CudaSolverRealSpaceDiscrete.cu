@@ -186,8 +186,6 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     {
         if (molecules->get_model_name() != "discrete")
             throw_with_line_number("The rs method is for discrete chains.");
-        if (!cb->is_orthogonal())
-            throw_with_line_number("The rs method requires an orthogonal computation box.");
 
         for (int i = 0; i < n_streams; ++i)
         {
@@ -239,30 +237,15 @@ void CudaSolverRealSpaceDiscrete<T>::set_space_group(
 }
 
 template <typename T>
-void CudaSolverRealSpaceDiscrete<T>::upload(const RealSpaceBond::Kernels& kernels, DeviceKernels& device)
+void CudaSolverRealSpaceDiscrete<T>::upload(const RealSpaceBond::Kernel& stencil, const RealSpaceBond::Folded& folded,
+                                            DeviceAxis& device)
 {
-    std::vector<double> weights;
-    std::vector<double> folded;
-    for (int d = 0; d < 3; ++d)
-    {
-        device.offset[d] = static_cast<int>(weights.size());
-        if (kernels.folded[d].empty())
-        {
-            device.half[d] = static_cast<int>(kernels[d].size()) - 1;
-            weights.insert(weights.end(), kernels[d].begin(), kernels[d].end());
-            device.folded_offset[d] = -1;
-        }
-        else
-        {
-            device.half[d] = 0;
-            weights.push_back(1.0);
-            device.folded_offset[d] = static_cast<long>(folded.size());
-            folded.insert(folded.end(), kernels.folded[d].begin(), kernels.folded[d].end());
-        }
-    }
-    if (device.weights.size() != weights.size())
-        device.weights.allocate(weights.size());
-    CUDA_CHECK(cudaMemcpy(device.weights, weights.data(), sizeof(double) * weights.size(), cudaMemcpyHostToDevice));
+    // A folded axis needs no stencil
+    const std::size_t stencil_size = folded.empty() ? stencil.size() : 0;
+    if (device.stencil.size() != stencil_size)
+        device.stencil.allocate(stencil_size);
+    if (stencil_size > 0)
+        CUDA_CHECK(cudaMemcpy(device.stencil, stencil.data(), sizeof(double) * stencil_size, cudaMemcpyHostToDevice));
     if (device.folded.size() != folded.size())
         device.folded.allocate(folded.size());
     if (!folded.empty())
@@ -277,9 +260,7 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
     refusal_ = "The rs operator update has not completed. Call update_laplacian_operator() successfully before computing again.";
     try
     {
-        if (!cb->is_orthogonal())
-            throw_with_line_number("The rs method requires an orthogonal computation box.");
-
+        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles.
         // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
         const std::vector<double> dx = cb->get_dx();
         const auto nx = cb->get_nx();
@@ -288,7 +269,7 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
         const double ds = mapping.get_ds_from_index(0);
         std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
         std::map<std::string, RealSpaceBond::Kernels> bond_half;
-        std::map<std::string, std::array<RealSpaceBond::Kernels, 3>> bond_dlength, bond_half_dlength;
+        std::map<std::string, std::vector<RealSpaceBond::Derivative>> bond_dlength, bond_half_dlength;
         std::vector<const RealSpaceBond::Kernels*> all;
         for (const auto& [monomer_type, b] : molecules->get_bond_lengths())
         {
@@ -321,16 +302,21 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
             }
         }
 
+        // The kernel of each axis of the box; a derivative holds that of its own axis only
+        const int dim = cb->get_dim();
         for (const auto& [ds_idx, kernels] : bond)
             for (const auto& [monomer_type, k] : kernels)
-                upload(k, d_bond[ds_idx][monomer_type]);
+                for (int d = 0; d < dim; ++d)
+                    upload(k[d], k.folded[d], d_bond[ds_idx][monomer_type][d]);
         for (const auto& [monomer_type, k] : bond_half)
         {
-            upload(k, d_bond_half[monomer_type]);
-            for (int a = 0; a < 3; ++a)
+            for (int d = 0; d < dim; ++d)
             {
-                upload(bond_dlength.at(monomer_type)[a], d_bond_dlength[monomer_type][a]);
-                upload(bond_half_dlength.at(monomer_type)[a], d_bond_half_dlength[monomer_type][a]);
+                const RealSpaceBond::Derivative& full = bond_dlength.at(monomer_type)[d];
+                const RealSpaceBond::Derivative& half = bond_half_dlength.at(monomer_type)[d];
+                upload(k[d], k.folded[d], d_bond_half[monomer_type][d]);
+                upload(full.stencil, full.folded, d_bond_dlength[monomer_type][d]);
+                upload(half.stencil, half.folded, d_bond_half_dlength[monomer_type][d]);
             }
         }
         halo = ghosts.halo;
@@ -423,7 +409,7 @@ void CudaSolverRealSpaceDiscrete<T>::update_dw(std::string device, std::map<std:
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::convolve(
     int STREAM, const CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, const DeviceKernels& kernels,
-    const CuDeviceData<T>* d_factor, const double* d_mask)
+    const CuDeviceData<T>* d_factor, const double* d_mask, int derivative_axis, const DeviceAxis* derivative)
 {
     using D = CuDeviceData<T>;
     if (!refusal_.empty())
@@ -456,15 +442,16 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
             factor = d_factor;
             mask = d_mask;
         }
-        if (kernels.folded_offset[axis] >= 0)
+        const DeviceAxis& kernel = axis == derivative_axis ? *derivative : kernels[axis];
+        if (!kernel.folded.empty())
         {
             ker_folded_bond_pass<<<grid_blocks(M, 256), 256, 0, stream>>>(src, dst, n, inner, M,
-                kernels.folded.get() + kernels.folded_offset[axis], factor, mask);
+                kernel.folded.get(), factor, mask);
         }
         else
         {
-            const double* g = kernels.weights.get() + kernels.offset[axis];
-            const int H = kernels.half[axis];
+            const double* g = kernel.stencil.get();
+            const int H = static_cast<int>(kernel.stencil.size()) - 1;
             const int* index = d_ghost_index[axis].get() + halo[axis];
             const double* sign = d_ghost_sign[axis].get() + halo[axis];
             // The tile fits: update_laplacian_operator() refuses kernels that do not.
@@ -571,7 +558,9 @@ void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         // V_aa = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2), as in CpuSolverRealSpaceDiscrete
         const long M = cb->get_total_grid();
         const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-        const auto& kernels = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
+        // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
+        const DeviceKernels& kernels = is_half_bond_length ? d_bond_half.at(monomer_type) : d_bond.at(0).at(monomer_type);
+        const auto& derivatives = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
         cudaStream_t stream = streams[STREAM][0];
         // The pair is [q_1 | q_2] in the basis of the propagators; with a space group on the full grid
         const CuDeviceData<T>* q_1 = d_q_pair;
@@ -589,7 +578,7 @@ void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         }
         for (int a = 0; a < cb->get_dim(); ++a)
         {
-            convolve(STREAM, q_2, d_work_stress[STREAM], kernels[a], nullptr, nullptr);
+            convolve(STREAM, q_2, d_work_stress[STREAM], kernels, nullptr, nullptr, a, &derivatives[a]);
             ker_dot_partial<<<reduce_blocks, reduce_threads, 0, stream>>>(
                 q_1, d_work_stress[STREAM].get(), d_partial_sums[STREAM].get(), M);
             CUDA_CHECK_LAUNCH();

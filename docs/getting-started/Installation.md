@@ -187,6 +187,17 @@ defaults are those of a plain CMake configuration; `pyproject.toml` turns
 CMake defaults to a Release build. For the full configuration, see
 [CMakeLists.txt](../../CMakeLists.txt).
 
+Outside MSVC the host C++ sources are compiled with `-ffp-contract=off`: the
+compiler does not fuse `a*b + c` into one multiply-add. Full- and reduced-memory
+computations add the same terms in different groupings and agree bit for bit
+only when every product is rounded on its own. This matters when the target has
+FMA instructions (`-march=x86-64-v3`, `-march=native`, or a compiler whose default
+target has them); plain x86-64 has none. MKL, FFTW and the nvcc-compiled `.cu`
+files are not affected, and MSVC's default `/fp:precise` does not contract. A
+floating-point model given in `CMAKE_CXX_FLAGS` or the flags of the build type
+(`-ffp-model`, `-fp-model`, `-ffp-contract`, `-ffast-math`) is kept instead, with a
+configuration message; full and reduced memory may then differ in the last bits.
+
 </details>
 
 <details>

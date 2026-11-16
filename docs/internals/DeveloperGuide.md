@@ -321,7 +321,10 @@ every propagator, at the segments other propagators start from, and every
 checkpoint before them. The solvers are deterministic and the classes use the
 same segment pairs, weights and summation order as full storage, so both
 modes give bit-for-bit identical results. Propagators are computed one at a
-time on one stream.
+time on one stream. The host C++ code is built with `-ffp-contract=off`
+(CMakeLists.txt): on targets with FMA, fused multiply-adds would round the
+differently grouped sums of the two modes differently (see
+[Installation](../getting-started/Installation.md), CMake Options).
 
 **Chain Models:**
 

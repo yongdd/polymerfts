@@ -46,6 +46,16 @@ namespace RealSpaceBond
         const Kernel& operator[](std::size_t d) const { return stencil[d]; }
     };
 
+    /// The kernel of a bond along one axis differentiated with respect to the box length of that
+    /// axis: a stencil, or the folded matrix on a narrow absorbing axis. A convolution with it takes
+    /// the kernels of the bond along the other axes.
+    struct Derivative
+    {
+        int axis = 0;
+        Kernel stencil;
+        Folded folded;
+    };
+
     /// Source and sign of the points -halo..n-1+halo of each axis
     struct Ghosts
     {
@@ -58,11 +68,11 @@ namespace RealSpaceBond
     Kernels gaussian(double variance, const std::vector<double>& dx,
                      const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc);
 
-    /// For each axis a, the kernels of the bond with the one of axis a replaced by its derivative with
-    /// respect to the box length L_a (the grid points move with the box; the variance stays fixed)
-    std::array<Kernels, 3> length_derivatives(double variance, const std::vector<double>& dx,
-                                              const std::vector<double>& lx, const std::vector<int>& nx,
-                                              const std::vector<BoundaryCondition>& bc);
+    /// For each axis a of the box, the derivative of the bond's kernel along a with respect to the
+    /// box length L_a (the grid points move with the box; the variance stays fixed)
+    std::vector<Derivative> length_derivatives(double variance, const std::vector<double>& dx,
+                                               const std::vector<double>& lx, const std::vector<int>& nx,
+                                               const std::vector<BoundaryCondition>& bc);
 
     /// Tables for halos as wide as the longest kernel of each axis
     Ghosts ghosts(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,

@@ -18,6 +18,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   without CUDA): a missing `override` is added and an unused member of the MKL trigonometric
   transform is removed; the unused variables of eight C++ tests are removed or marked
   `[[maybe_unused]]`.
+- Outside MSVC the host C++ code is compiled with `-ffp-contract=off` (2026-11-09). With FMA in the
+  target (`-march=x86-64-v3`, `native`, or a compiler whose default target has it, as on the CI
+  runners) GCC fused products into additions, and full- and reduced-memory computations, which
+  group the same additions differently, differed in the last bit: the stress of
+  `TestBlockMultiplicity` with MKL in CI. MKL, FFTW and the `.cu` files are unaffected. A
+  floating-point model given in the flags (`-ffp-model`, `-fp-model`, `-ffp-contract`,
+  `-ffast-math`, `-Ofast`) is kept, with a configuration message (docs/getting-started/Installation.md).
 - The GitHub repository is renamed from `langevin-fts` to `polymerfts`, the name of the
   package and its import (2026-10-27); GitHub redirects the old URLs.
 - The Conda environment and CI use conda-forge (Miniforge) instead of Anaconda's
@@ -102,8 +109,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   Like `cn-adi2` it mixes periodic and non-periodic axes and takes a different wall at each end of an
   axis, and it needs an orthogonal cell; with a space group its propagators stay in the reduced
   basis. Its stress is the derivative of its own free energy, so the box lengths relax and the
-  CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees
-  (docs/theory/NumericalMethods.md, Section 4.3).
+  CL-FTS pressure works as with `"ps"`; angles stay at 90 degrees. A narrow absorbing axis, where
+  the images of the walls would cancel, multiplies by the dense n × n matrix of its folded kernel,
+  summed once per box from a compact sine/cosine expansion: n multiply-adds per point and n² stored
+  values per kernel along that axis (docs/theory/NumericalMethods.md, Section 4.3).
 - `compute_stress()` takes complex fields with reflecting and absorbing walls (2026-11-06): the
   pseudo-spectral methods multiply the cosine and sine coefficients of the real and imaginary
   parts of the propagators as complex numbers, on the CPU and for `"ps"` on CUDA, and `"rs"` sums
@@ -804,17 +813,6 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
-- The CPU DCT and DST run the real FFT of the grid directly on the scratch arrays of
-  `MakhoulTransform` (2026-11-16). With FFTW the transform went through `FftwFFT`, which copied the
-  reordered samples, copied the modes before the complex-to-real transform and divided by N, which
-  the transform then multiplied back; complex fields are transformed by `MakhoulTransform` itself
-  instead of a real/imaginary split in `FftwFFT` and in `MklFFT`. A round trip with walls through
-  `PropagatorSolver.fourier` (FFTW, one thread of an AMD EPYC 7543) takes 3.2 instead of 3.4 ms on
-  64³ and 11.9 instead of 14.5 ms on 96³; MKL is unchanged. Results change at round-off.
-- `rs` stores the folded kernel of a narrow absorbing axis as its dense matrix, built once per box
-  (2026-11-16), instead of forming every entry from the eigenfunction expansion at each point of
-  each bond; CPU and CUDA now use the same entries. A folded contiguous axis takes 2.4 times less
-  time (`compute_propagators` 62 → 26 ms on 32×32×16, FFTW, one thread of an AMD EPYC 7543).
 - On CUDA a junction takes one kernel launch over up to 32 device-resident sources and their
   powers, with the product in registers, instead of one launch per factor (2026-11-08, 2026-11-16);
   the reduced-memory mode stages two checkpoints per launch. An integer power of at most 4 (up to
@@ -831,14 +829,16 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   of 49.2 s at Ns = 1000. The per-stream Thomas workspaces of the size of the grid are gone.
 - The DCT and DST of the CPU backends run as one reordered real FFT of the whole grid
   (`MakhoulTransform`, 2026-11-02), the same code on FFTW and MKL; it replaces `MklDctLines.h`. Both
-  took each line in turn with a copy per line and per axis. On 64³, one thread, double precision, a
-  round trip with walls takes 3.5 ms instead of 16 ms with FFTW and 4.1 ms instead of 12 ms with MKL
-  on an AMD EPYC 7543, and 3.0 ms and 2.4 ms on an Intel Xeon 6737P; `compute_propagators` gains
+  took each line in turn with a copy per line and per axis. The real FFT of the grid runs directly
+  on the scratch arrays of `MakhoulTransform`, which also splits complex fields (2026-11-16). On
+  64³, one thread, double precision, a round trip with walls takes 3.2 ms instead of 16 ms with FFTW
+  and 3.9 ms instead of 12 ms with MKL on an AMD EPYC 7543, and 2.6 ms and 2.4 ms on an Intel Xeon
+  6737P; `compute_propagators` gains
   4-6x on the AMD and 3-4x on the Intel processor. The 1D FFTW plans came out twice as slow in some
   processes; 32 repeated runs show no such run now. The new path is also 1.6-2.1x faster on AMD,
   1.2-1.7x on Intel, than one `fftw_plan_r2r` of the grid. The Pmmm CrysFFT runs on the same
-  transform and gains 5.9-6.2x with FFTW instead of 3.8-4.0x and 5.5-5.7x with MKL instead of 2.2x,
-  and its stress on a cell of three different lengths gains 1.7-2.1x, where MKL lost time before.
+  transform and gains 6.3-6.5x with FFTW instead of 3.8-4.0x and 5.6-5.9x with MKL instead of 2.2x,
+  and its stress on a cell of three different lengths gains 1.6-2.1x, where MKL lost time before.
   Results change at round-off: Q agrees with the previous code to 7e-14 on grids up to 96³, and all
   space groups agree with the full grid to 1.2e-13 on both libraries.
 - The MKL ObliqueZ CrysFFT takes its z DCT through a real FFT of the same length instead of a
@@ -908,8 +908,7 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   contour coefficients and eight threads this saves about 0.9 GB and seven of eight table
   builds after every cell change. The FFTW ObliqueZ and Pmmm engines free their planning
   arrays after planning. The tables are the same, so results are unchanged.
-- Code shared between backends, results unchanged (2026-10-26): MklFFT and the MKL Pmmm
-  engine share one DCT-II/III implementation (`MklDctLines.h`); the CPU and CUDA
+- Code shared between backends, results unchanged (2026-10-26): the CPU and CUDA
   recursive 3m engines share the fold, twiddle and multiplier helpers
   (`src/common/Recursive3mHelpers.h`), and the CPU and CUDA ObliqueZ engines the
   reciprocal metric (`src/common/ReciprocalMetric.h`); both solvers choose their CrysFFT
@@ -952,7 +951,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   branch of the MKL ObliqueZ z-DCT, which only a CUDA-built test reached before.
 - `TestCpuMakhoulTransform` compares the DCT and DST of `FftwFFT` and `MklFFT` with their O(N^2)
   definitions on grids of one to three axes with even, odd and unit lengths, every mix of cosine and
-  sine axes, real and complex fields of standard deviation 5, and concurrent calls (2026-11-02).
+  sine axes, real and complex fields of standard deviation 5, in-place and concurrent calls
+  (2026-11-02, 2026-11-16).
 - `TestCrysFFTBench` runs its full-FFT baseline as the solvers do (2026-11-02). It evaluated `exp()`
   in a CUDA kernel at every step and planned FFTW with `FFTW_ESTIMATE`, which overstated the gains in
   `docs/internals/FFTImplementation.md`: CUDA recursive 3m 3.1x is 2.3x, Pmmm 2.0x is 1.5x. That page

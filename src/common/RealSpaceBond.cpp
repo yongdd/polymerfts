@@ -219,19 +219,19 @@ RealSpaceBond::Kernels RealSpaceBond::gaussian(double variance, const std::vecto
     return kernels;
 }
 
-std::array<RealSpaceBond::Kernels, 3> RealSpaceBond::length_derivatives(
+std::vector<RealSpaceBond::Derivative> RealSpaceBond::length_derivatives(
     double variance, const std::vector<double>& dx, const std::vector<double>& lx,
     const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc)
 {
-    const Kernels kernels = gaussian(variance, dx, nx, bc);
-    std::array<Kernels, 3> derivatives = {kernels, kernels, kernels};
+    std::vector<Derivative> derivatives(dx.size());
     for (std::size_t d = 0; d < dx.size(); ++d)
     {
         // The grid spacing is L/n, so d/dL = (dx/L) d/ddx
         Axis axis = gaussian_axis(variance, dx[d]);
-        derivatives[d][d] = axis.dg_ddx;
-        derivatives[d].folded[d] = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1], true);
-        for (double& v : derivatives[d][d])
+        derivatives[d].axis = static_cast<int>(d);
+        derivatives[d].stencil = axis.dg_ddx;
+        derivatives[d].folded = folded_axis(axis, dx[d], lx[d], nx[d], bc[2*d], bc[2*d+1], true);
+        for (double& v : derivatives[d].stencil)
             v *= dx[d] / lx[d];
     }
     return derivatives;

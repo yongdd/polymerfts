@@ -55,8 +55,8 @@ public:
     void diffusion(double* q_in, double* q_out);
     void apply_multiplier(const double* q_in, double* q_out, const double* multiplier);
 
-    /// Elements of this thread's z work arrays {reordered real, spectrum}, as sized
-    /// by the last transform on the thread (tests check them against the grid).
+    /// Elements of this thread's z work arrays {reordered real, spectrum}, the most
+    /// the transforms on the thread have needed (tests check them against the grid).
     static std::array<size_t, 2> thread_z_work_sizes();
 };
 

@@ -32,7 +32,6 @@
 #ifndef CPU_SOLVER_REAL_SPACE_DISCRETE_H_
 #define CPU_SOLVER_REAL_SPACE_DISCRETE_H_
 
-#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -55,14 +54,16 @@ private:
     std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
     /// Kernels of the half bonds at chain ends and junctions (global ds)
     std::map<std::string, RealSpaceBond::Kernels> bond_half;
-    /// For the stress: the full and half bonds with the kernel of one axis differentiated
-    /// with respect to the box length, per monomer type and axis (global ds)
-    std::map<std::string, std::array<RealSpaceBond::Kernels, 3>> bond_dlength, bond_half_dlength;
+    /// For the stress: the kernels of the full and half bonds (global ds) differentiated with respect
+    /// to the box length, per monomer type and axis
+    std::map<std::string, std::vector<RealSpaceBond::Derivative>> bond_dlength, bond_half_dlength;
     /// Source and sign of the points beyond each end of each axis
     RealSpaceBond::Ghosts ghosts;
 
-    /// q_out = g * q_in, one axis after another, on the full grid
-    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels) const;
+    /// q_out = g * q_in, one axis after another, on the full grid; a derivative replaces the kernel
+    /// of its axis
+    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
+                  const RealSpaceBond::Derivative* derivative = nullptr) const;
     /// q on the full grid: q itself, or with a space group its expansion into buffer
     const T* expanded(const T* q, std::vector<T>& buffer) const;
     /// The full-grid q_full in the basis of the propagators (a copy of the reduced points with a space group)

@@ -21,9 +21,10 @@
  * - forward: REDFT10 or RODFT10 / 2 per axis
  * - backward: REDFT01 or RODFT01 / n per axis
  *
- * Forward and backward transforms also run concurrently, with their thread-local
- * scratch, on one object and must give the same results as serially. The error
- * maxima keep a NaN (TestNanSafe.h).
+ * Forward and backward transforms also run in place (CrysFFTPmmmBase relies on
+ * it) and concurrently, with their thread-local scratch, on one object, and must
+ * give the same results as out of place and serially. The error maxima keep a NaN
+ * (TestNanSafe.h).
  */
 
 #include <array>
@@ -149,6 +150,13 @@ double check_grid(std::array<int, DIM> nx, int sine_mask, std::mt19937& rng)
     fft.forward(reinterpret_cast<T*>(field.data()), coefficient.data());
     fft.backward(coefficient.data(), reinterpret_cast<T*>(result.data()));
     worst = max_or_nan(worst, max_difference(result, field) / max_abs_or_nan(field));
+
+    // The same round trip in place
+    std::vector<double> in_place = field;
+    fft.forward(reinterpret_cast<T*>(in_place.data()), in_place.data());
+    worst = max_or_nan(worst, max_difference(in_place, coefficient) / max_abs_or_nan(coefficient));
+    fft.backward(in_place.data(), reinterpret_cast<T*>(in_place.data()));
+    worst = max_or_nan(worst, max_difference(in_place, result) / max_abs_or_nan(result));
 
 #ifdef _OPENMP
     // Concurrent transforms of one object, one field per thread

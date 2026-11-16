@@ -412,20 +412,20 @@ Relative error against FFTW (maximum absolute difference divided by the largest 
 
 ### 8.2 FFTW vs MKL Benchmark (CPU)
 
-**Setup**: forward and backward transform of one real field through `PropagatorSolver.fourier` in double precision, cubic grids, one thread, best of five runs of ten round trips; FFTW 3.3.11 and MKL 2025.0. Reflecting and absorbing boundaries take the same time (`MakhoulTransform`, Section 2.4).
+**Setup**: forward and backward transform of one real field through `PropagatorSolver.fourier` in double precision, cubic grids, one thread, best of ten runs of ten round trips; FFTW 3.3.11 and MKL 2025.0. Reflecting and absorbing boundaries take the same time (`MakhoulTransform`, Section 2.4).
 
 | Boundary | Processor, library | 32³ | 64³ | 96³ |
 |----------|--------------------|-----|-----|-----|
-| Periodic | AMD EPYC 7543, FFTW | 0.21 ms | 2.2 ms | 10.3 ms |
-| Periodic | AMD EPYC 7543, MKL | 0.32 ms | 2.7 ms | 13.7 ms |
-| Periodic | Intel Xeon 6737P, FFTW | 0.19 ms | 2.0 ms | 10.0 ms |
-| Periodic | Intel Xeon 6737P, MKL | 0.13 ms | 1.3 ms | 5.4 ms |
-| Walls | AMD EPYC 7543, FFTW | 0.36 ms | 3.5 ms | 14.1 ms |
-| Walls | AMD EPYC 7543, MKL | 0.48 ms | 4.1 ms | 15.5 ms |
-| Walls | Intel Xeon 6737P, FFTW | 0.32 ms | 3.0 ms | 14.6 ms |
-| Walls | Intel Xeon 6737P, MKL | 0.29 ms | 2.4 ms | 10.2 ms |
+| Periodic | AMD EPYC 7543, FFTW | 0.21 ms | 2.2 ms | 10.5 ms |
+| Periodic | AMD EPYC 7543, MKL | 0.31 ms | 2.9 ms | 11.4 ms |
+| Periodic | Intel Xeon 6737P, FFTW | 0.19 ms | 2.1 ms | 9.6 ms |
+| Periodic | Intel Xeon 6737P, MKL | 0.14 ms | 1.4 ms | 5.6 ms |
+| Walls | AMD EPYC 7543, FFTW | 0.33 ms | 3.2 ms | 12.1 ms |
+| Walls | AMD EPYC 7543, MKL | 0.47 ms | 3.9 ms | 15.1 ms |
+| Walls | Intel Xeon 6737P, FFTW | 0.28 ms | 2.6 ms | 12.4 ms |
+| Walls | Intel Xeon 6737P, MKL | 0.26 ms | 2.4 ms | 10.8 ms |
 
-The processor decides which library leads. On the Intel Xeon 6737P MKL loads its AVX-512 kernels (`libmkl_avx512`). On the AMD EPYC 7543 it reports processor type 0 and loads its generic kernels (`libmkl_def`), whose DFT kernels use 128-bit vectors (a sample of the disassembly); `MKL_ENABLE_INSTRUCTIONS` and `MKL_CBWR` do not change this. One call of `compute_propagators` (AB diblock, `rqm4`, ds = 0.01, 64³, no space group, one thread) takes 1.5 s with FFTW and 1.8 s with MKL on the AMD processor and about 1.5 s and 1.1-1.4 s on the Intel processor; with walls 2.3 s and 2.7 s on the AMD processor and 2.3-2.5 s and 1.9 s on the Intel processor. Among the CPU backends, `platform="auto"` takes `cpu-fftw` when a build has both libraries.
+The processor decides which library leads. On the Intel Xeon 6737P MKL loads its AVX-512 kernels (`libmkl_avx512`). On the AMD EPYC 7543 it reports processor type 0 and loads its generic kernels (`libmkl_def`), whose DFT kernels use 128-bit vectors (a sample of the disassembly); `MKL_ENABLE_INSTRUCTIONS` and `MKL_CBWR` do not change this. One call of `compute_propagators` (AB diblock, `rqm4`, ds = 0.01, 64³, no space group, one thread) takes 1.5 s with FFTW and 1.8 s with MKL on the AMD processor and 1.5 s and 1.1 s on the Intel processor; with reflecting walls 2.2 s and 2.7 s on the AMD processor and 1.9 s and 1.8 s on the Intel processor. Among the CPU backends, `platform="auto"` takes `cpu-fftw` when a build has both libraries.
 
 `MakhoulTransform` beats the r2r transforms of FFTW on the whole grid (one plan with `fftw_plan_r2r`, `FFTW_MEASURE`). The same transforms in a standalone program, round trip without the Python layer:
 
@@ -459,7 +459,7 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 | Platform | Standard FFT | 3m physical | Pmmm physical |
 |----------|-------------|-------------|---------------|
 | CUDA | 0.131 ms | 0.056 ms (2.3x) | 0.090 ms (1.5x) |
-| CPU | 1.87 ms | 0.43 ms (4.3x) | 0.36 ms (5.2x) |
+| CPU | 1.86 ms | 0.43 ms (4.3x) | 0.33 ms (5.6x) |
 
 ### 8.4 ObliqueZ Benchmark (64³, Hexagonal P6/mmm)
 
@@ -477,7 +477,7 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 | Engine (space group, physical basis) | CUDA, 4 streams | CUDA, 1 stream | CPU-FFTW | CPU-MKL |
 |--------------------------------------|-----------------|----------------|----------|---------|
 | Recursive 3m (Im-3m and Ia-3d, m3) | 3.4-4.0x | 2.4-2.5x | 5.0-5.2x | 4.9-5.0x |
-| Pmmm DCT (Im-3m and Pmmm, Pmmm) | 1.9-2.2x | 1.6x | 5.9-6.2x | 5.5-5.7x |
+| Pmmm DCT (Im-3m and Pmmm, Pmmm) | 1.9-2.2x | 1.6x | 6.3-6.5x | 5.6-5.9x |
 | ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.4-1.5x | 1.3-1.4x |
 
 The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
@@ -489,7 +489,7 @@ The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 
 A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine and 1.2-2.0x with ObliqueZ).
 
-Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x), and the CPU gains 1.7-2.1x. With ObliqueZ it takes about the same time (0.9x).
+Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
 
 Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
 

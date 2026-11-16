@@ -36,15 +36,15 @@ template <typename T>
 class CudaSolverRealSpaceDiscrete : public CudaSolver<T>
 {
 private:
-    /// Kernels of the three axes on the device, one after another
-    struct DeviceKernels
+    /// The kernel of one axis on the device: a stencil, or the n x n folded matrix of a narrow
+    /// absorbing axis
+    struct DeviceAxis
     {
-        CudaDeviceBuffer<double> weights;
-        CudaDeviceBuffer<double> folded;              ///< the n x n folded matrices of the narrow absorbing axes
-        std::array<int, 3> offset{};
-        std::array<int, 3> half{};
-        std::array<long, 3> folded_offset{-1, -1, -1};   ///< start of an axis's folded matrix; -1 for a stencil
+        CudaDeviceBuffer<double> stencil;   ///< g_0..g_H; empty with a folded matrix
+        CudaDeviceBuffer<double> folded;    ///< empty with a stencil
     };
+    /// The kernels of a bond, one per axis of the box
+    using DeviceKernels = std::array<DeviceAxis, 3>;
 
     ComputationBox<T>* cb;
     Molecules* molecules;
@@ -57,8 +57,9 @@ private:
 
     std::map<int, std::map<std::string, DeviceKernels>> d_bond;   ///< full bonds per ds index and monomer type
     std::map<std::string, DeviceKernels> d_bond_half;             ///< half bonds per monomer type
-    /// Full and half bonds with the kernel of one axis differentiated with respect to the box length
-    std::map<std::string, std::array<DeviceKernels, 3>> d_bond_dlength, d_bond_half_dlength;
+    /// The kernels of the full and half bonds (global ds) along axis a differentiated with respect to
+    /// the box length L_a, per monomer type and axis of the box; the other axes keep the bond's kernels
+    std::map<std::string, std::array<DeviceAxis, 3>> d_bond_dlength, d_bond_half_dlength;
     std::array<int, 3> halo{};
     std::string refusal_;   ///< Why the current operators are unavailable; empty only after a complete update
     std::array<CudaDeviceBuffer<int>, 3> d_ghost_index;
@@ -71,10 +72,12 @@ private:
     CudaDeviceBuffer<CuDeviceData<T>> d_work_stress[MAX_STREAMS];   ///< dG/dL q_2 (allocated by prepare_stress())
     CudaDeviceBuffer<CuDeviceData<T>> d_partial_sums[MAX_STREAMS];  ///< partial sums of the stress
 
-    static void upload(const RealSpaceBond::Kernels& kernels, DeviceKernels& device);
-    /// q_out = g * q_in, one axis after another; the last pass multiplies by d_factor and d_mask when given
+    static void upload(const RealSpaceBond::Kernel& stencil, const RealSpaceBond::Folded& folded, DeviceAxis& device);
+    /// q_out = g * q_in, one axis after another; the last pass multiplies by d_factor and d_mask when given.
+    /// A derivative replaces the kernel of axis derivative_axis.
     void convolve(int STREAM, const CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, const DeviceKernels& kernels,
-                  const CuDeviceData<T>* d_factor, const double* d_mask);
+                  const CuDeviceData<T>* d_factor, const double* d_mask,
+                  int derivative_axis = -1, const DeviceAxis* derivative = nullptr);
 
 public:
     CudaSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules, int n_streams,

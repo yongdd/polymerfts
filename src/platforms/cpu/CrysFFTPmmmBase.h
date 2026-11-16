@@ -24,7 +24,6 @@
 #include <cmath>
 #include <memory>
 #include <numbers>
-#include <vector>
 
 #include "CrysFFTSharedTables.h"
 #include "Exception.h"
@@ -105,15 +104,6 @@ protected:
         boltzmann_.invalidate();
     }
 
-    /// DCT coefficients of the physical grid, one array per thread.
-    double* thread_buffer() const
-    {
-        thread_local std::vector<double> io;
-        if (static_cast<int>(io.size()) < M_physical_)
-            io.resize(M_physical_);
-        return io.data();
-    }
-
 public:
     /**
      * @brief Construct CrysFFTPmmmBase for given grid.
@@ -191,33 +181,22 @@ public:
             throw_with_line_number("CrysFFTPmmm::set_contour_step must be called before diffusion().");
         }
 
-        double* io_local = thread_buffer();
-
-        // Step 1: Forward DCT-II
-        dct_->forward(q_in, io_local, 1.0);
-
-        // Step 2: Apply Boltzmann factor
+        // DCT-II into q_out, the Boltzmann factor, then DCT-III with normalization in place
+        // (MakhoulTransform reads its whole input before it writes)
+        dct_->forward(q_in, q_out, 1.0);
         for (int i = 0; i < M_physical_; ++i)
-            io_local[i] *= (*boltz)[i];
-
-        // Step 3: Backward DCT-III with normalization
-        dct_->backward(io_local, q_out, norm_factor_);
+            q_out[i] *= (*boltz)[i];
+        dct_->backward(q_out, q_out, norm_factor_);
     }
 
-    /// Apply custom multiplier in Fourier space.
+    /// Apply custom multiplier in Fourier space (multiplier must not be q_out).
     void apply_multiplier(const double* q_in, double* q_out, const double* multiplier)
     {
-        double* io_local = thread_buffer();
-
-        // Step 1: Forward DCT-II
-        dct_->forward(q_in, io_local, 1.0);
-
-        // Step 2: Apply multiplier
+        // As in diffusion(), on q_out
+        dct_->forward(q_in, q_out, 1.0);
         for (int i = 0; i < M_physical_; ++i)
-            io_local[i] *= multiplier[i];
-
-        // Step 3: Backward DCT-III with normalization
-        dct_->backward(io_local, q_out, norm_factor_);
+            q_out[i] *= multiplier[i];
+        dct_->backward(q_out, q_out, norm_factor_);
     }
 
     // Accessors

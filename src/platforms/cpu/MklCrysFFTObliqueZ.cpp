@@ -27,21 +27,21 @@
 namespace
 {
 /// Work arrays of the z DCT steps, one set per thread and shared by every
-/// instance on that thread. Each array is sized from its own requirement: two
+/// instance on that thread. Each array grows to its own requirement: two
 /// grids with the same Nx*Ny*Nz but a different Nz need the same real size and
 /// different spectrum sizes.
 struct ZWork
 {
-    std::vector<double> z_reordered;              ///< reordered columns, howmany * N
-    std::vector<std::complex<double>> z_freq;     ///< their spectra, howmany * (N/2 + 1)
+    std::vector<double> z_reordered;              ///< reordered columns, at least howmany * N
+    std::vector<std::complex<double>> z_freq;     ///< their spectra, at least howmany * (N/2 + 1)
 };
 thread_local ZWork z_work;
 
 ZWork& z_work_for(size_t n_reordered, size_t n_freq)
 {
-    if (z_work.z_reordered.size() != n_reordered)
+    if (z_work.z_reordered.size() < n_reordered)
         z_work.z_reordered.resize(n_reordered);
-    if (z_work.z_freq.size() != n_freq)
+    if (z_work.z_freq.size() < n_freq)
         z_work.z_freq.resize(n_freq);
     return z_work;
 }

@@ -132,8 +132,6 @@ CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb,
     {
         if (molecules->get_model_name() != "discrete")
             throw_with_line_number("The rs method is for discrete chains.");
-        if (!cb->is_orthogonal())
-            throw_with_line_number("The rs method requires an orthogonal computation box.");
 
         const int M = cb->get_total_grid();
         molecules->finalize_contour_length_mapping();
@@ -185,9 +183,7 @@ void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
     try
     {
-        if (!cb->is_orthogonal())
-            throw_with_line_number("The rs method requires an orthogonal computation box.");
-
+        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles.
         // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
         const std::vector<double> dx = cb->get_dx();
         const auto nx = cb->get_nx();
@@ -238,7 +234,8 @@ void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_
 }
 
 template <typename T>
-void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels) const
+void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
+                                             const RealSpaceBond::Derivative* derivative) const
 {
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
@@ -269,12 +266,15 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
             dst = q_out;
         const int* index = ghosts.index[axis].data() + ghosts.halo[axis];
         const double* sign = ghosts.sign[axis].data() + ghosts.halo[axis];
-        if (!kernels.folded[axis].empty())
-            pass_folded(src, dst, n, inner, outer, kernels.folded[axis]);
+        const bool differentiated = derivative != nullptr && derivative->axis == axis;
+        const RealSpaceBond::Kernel& stencil = differentiated ? derivative->stencil : kernels[axis];
+        const RealSpaceBond::Folded& folded = differentiated ? derivative->folded : kernels.folded[axis];
+        if (!folded.empty())
+            pass_folded(src, dst, n, inner, outer, folded);
         else if (inner == 1)
-            pass_contiguous(src, dst, n, outer, kernels[axis], index, sign, line);
+            pass_contiguous(src, dst, n, outer, stencil, index, sign, line);
         else
-            pass_strided(src, dst, n, inner, outer, kernels[axis], index, sign);
+            pass_strided(src, dst, n, inner, outer, stencil, index, sign);
         src = dst;
         dst = (dst == work_a.data()) ? work_b.data() : work_a.data();
     }
@@ -349,7 +349,10 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         const int M = cb->get_total_grid();
         const int dim = cb->get_dim();
         const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-        const auto& kernels = (is_half_bond_length ? bond_half_dlength : bond_dlength).at(monomer_type);
+        // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
+        const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bond_half.at(monomer_type)
+                                                                    : bond.at(0).at(monomer_type);
+        const auto& derivatives = (is_half_bond_length ? bond_half_dlength : bond_dlength).at(monomer_type);
         thread_local std::vector<T> dq, full_1, full_2;
         dq.resize(M);
         const T* full_q_1 = expanded(q_1, full_1);
@@ -357,7 +360,7 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
-            convolve(full_q_2, dq.data(), kernels[a]);
+            convolve(full_q_2, dq.data(), kernels, &derivatives[a]);
             T sum = 0.0;
             for (int i = 0; i < M; ++i)
                 sum += full_q_1[i] * dq[i];
