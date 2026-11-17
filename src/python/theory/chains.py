@@ -1,8 +1,9 @@
 """The polymer chains of a simulation: reading them from the input, their concentrations, their drawings.
 
-read_chains() reads the input. chain_fields() and solve_chains() give the concentrations of the monomer
-types in given fields, with what SCFT, LFTS and CLFTS have in common; each of them adds to this what
-is its own, such as the electrostatic potential or the grand-canonical chains.
+read_chains() reads the input and chain_solver() creates the PropagatorSolver of the chains.
+chain_fields() and solve_chains() give the concentrations of the monomer types in given fields, with
+what SCFT, LFTS and CLFTS have in common; each of them adds to this what is its own, such as the
+electrostatic potential or the grand-canonical chains.
 """
 
 import copy
@@ -15,7 +16,8 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 
 from ..utils.common import report_partition_consistency
-from ..utils.validation import ValidationError, parse_chi_n
+from ..utils.validation import ValidationError, NumericalError, parse_chi_n
+from .propagator_solver import PropagatorSolver
 
 DEFAULT_MONOMER_COLORS: List[str] = [
     "red", "blue", "green", "cyan", "magenta", "yellow"
@@ -129,6 +131,35 @@ def read_chains(params):
     return monomer_types, segment_lengths, polymers, chi_n, random_fraction
 
 
+def chain_solver(params, segment_lengths, polymers, **options):
+    """The PropagatorSolver of the chains, with the polymers of read_chains() added.
+
+    The grid, the box, the boundary conditions (default: periodic), the chain model, the numerical
+    method and the other solver options come from the input; `options` (space_group, field_type)
+    are passed to PropagatorSolver as well. Grand-canonical polymers
+    (chemical_potential βμ_p, CL-FTS) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
+    reference chain, come from get_concentration_gce.
+    """
+    bc = params.get("bc", None)
+    if bc is None:
+        bc = ["periodic"] * (2 * len(params["nx"]))
+    arguments = dict(
+        nx=params["nx"], lx=params["lx"], ds=params["ds"],
+        bond_lengths=segment_lengths, bc=bc,
+        chain_model=params["chain_model"],
+        numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
+        platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
+        reduce_memory=params.get("reduce_memory", False),
+        angles=params.get("angles", None),
+        aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
+    )
+    solver = PropagatorSolver(**(arguments | options))
+    for polymer in polymers:
+        solver.add_polymer(polymer.get("volume_fraction", 0.0), polymer["blocks_input"],
+                           polymer.get("initial_conditions", None))
+    return solver
+
+
 def chain_fields(sim, w):
     """The field of each monomer type in w and of each random copolymer, the mean of its monomer types."""
     w_input = {sim.monomer_types[i]: w[i] for i in range(len(sim.monomer_types))}
@@ -169,12 +200,16 @@ def solve_chains(sim, w_input, q_init=None):
     return phi, elapsed_time
 
 
-def check_partition_once(sim):
-    """Partition consistency check (forward vs backward propagators), once per run."""
+def check_partition_once(sim, fields):
+    """Partition consistency check (forward vs backward propagators), once per run (NumericalError).
+
+    `fields` is a function that returns the monomer fields of the state for NumericalError.fields;
+    it is called only when the check fails.
+    """
     if not getattr(sim, "_partition_checked", False):
         sim._partition_checked = True
         if not report_partition_consistency(sim.prop_solver):
-            raise ValidationError("Partition consistency check failed (forward/backward mismatch).")
+            raise NumericalError("Partition consistency check failed (forward/backward mismatch).", fields())
 
 
 def mean_concentrations(sim):

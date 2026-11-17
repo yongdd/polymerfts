@@ -4,7 +4,9 @@
 Complex values, values that are not finite at float64 precision, strings (also of
 numbers), ragged lists, integers beyond float64, invalid sizes and missing monomers
 fail with ValidationError before the optimizer or propagators are touched, including
-axis and space-group conversions. Valid real arrays remain unchanged and preserve
+axis and space-group conversions. Python integers beyond 64 bits within float64 are
+numbers like others: they reach the propagators as the same values given in float64.
+Valid real arrays remain unchanged and preserve
 their first iteration fields; a homogeneous control converges. The checks are
 Python: the first CPU platform runs them.
 """
@@ -89,6 +91,29 @@ def check_inputs(sim, shape):
     invalid(sim, {"B": zeros.copy()}, "missing monomer 'A'")
 
 
+class Reached(Exception):
+    """The run reached the propagators."""
+
+
+def check_python_integers(sim, shape):
+    """Python integers are numbers at any size within float64: those beyond 64 bits (NumPy keeps
+    them as objects) and 2**63 (uint64) give the working fields of the same values in float64."""
+    size = int(np.prod(shape))
+    for big in (10**20, -2**70, 2**63):
+        working = []
+        for values in ([big] + [0] * (size - 1), np.array([float(big)] + [0.0] * (size - 1))):
+            with patch.object(sim, "compute_concentrations", side_effect=Reached) as compute:
+                try:
+                    quiet(lambda: sim.run({"A": values, "B": [0] * size}))
+                except Reached:
+                    pass
+                else:
+                    raise AssertionError("The run did not reach the propagators")
+            working.append(compute.call_args.args[0])
+        assert np.all(np.isfinite(working[0])) and np.max(np.abs(working[0])) > 0, big
+        np.testing.assert_array_equal(working[0], working[1])
+
+
 def valid_run(sim, fields):
     for value in fields.values():
         value.setflags(write=False)
@@ -111,6 +136,7 @@ def check_branch(platform, group, permute):
             params[key] = [standard[key][i] for i in order]
     sim = quiet(lambda: SCFT(params))
     check_inputs(sim, tuple(params["nx"]))
+    check_python_integers(sim, tuple(params["nx"]))
 
     # A nonuniform real start survives conversion and only loses its mean,
     # as required by the incompressible pressure convention. Use a profile

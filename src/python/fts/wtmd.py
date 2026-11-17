@@ -5,16 +5,19 @@ in Langevin field-theoretic simulations of block copolymers.
 
 This implementation follows deep-langevin-fts, except for the half-spectrum weight
 of the last kz plane when nz is odd (see WTMD.__init__) and the deposition of the
-hills (see WTMD.update_statistics).
+hills (see WTMD.update_statistics). Ψ and its derivative are computed from scaled
+modes, which gives the same values without overflow, and the bias is zero where
+the formula of deep-langevin-fts divides zero by zero: at Ψ = 0 and, for ell < 2,
+at a zero mode (see WTMD.add_bias).
 """
 
 import numpy as np
 import scipy.signal
 
-from .._core import _periodic_metric
+from ..theory.smearing import periodic_transform
 from ..utils.common import atomic_savemat
 from ..utils.checkpoint import pair_suffix
-from ..utils.validation import ValidationError, _finite_number
+from ..utils.validation import ValidationError, _finite_number, right_angle
 
 
 class WTMD:
@@ -64,15 +67,11 @@ class WTMD:
 
         # Cell volume and metric (angles [alpha, beta, gamma] in degrees; None: orthogonal)
         cos_a, cos_b, cos_g = np.cos(np.deg2rad(angles)) if angles is not None else (0.0, 0.0, 0.0)
-        self.orthogonal = bool(np.allclose([cos_a, cos_b, cos_g], 0.0, rtol=0.0, atol=1e-12))
+        self.orthogonal = angles is None or all(right_angle(angle) for angle in angles)   # the test of the native box
         if self.orthogonal:
             self.V = lx[0] * lx[1] * lx[2]
         else:
             self.V = lx[0] * lx[1] * lx[2] * np.sqrt(1.0 - cos_a**2 - cos_b**2 - cos_g**2 + 2.0 * cos_a * cos_b * cos_g)
-            L = np.array(lx, dtype=np.float64)
-            self._metric_inv = np.linalg.inv(np.outer(L, L) * np.array([[1.0, cos_g, cos_b],
-                                                                         [cos_g, 1.0, cos_a],
-                                                                         [cos_b, cos_a, 1.0]]))
         self.CV = np.sqrt(nbar) * self.V
 
         # Choose one index of w_aux to use order parameter
@@ -133,10 +132,10 @@ class WTMD:
                 2 * np.pi / lx[2] * np.arange(nx[2] // 2 + 1), indexing='ij')
             mag_k = np.sqrt(space_kx**2 + space_ky**2 + space_kz**2)
         else:
-            # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form,
-            # from the same exact search as Smearing and the propagator solvers.
-            k_sq, _ = _periodic_metric(nx, self._metric_inv)
-            mag_k = np.sqrt(k_sq[:, :, :nx[2] // 2 + 1])
+            # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form, from the
+            # search of the propagator solvers: of the simulation's transform, or of a box of its own
+            transform = fourier if fourier is not None else periodic_transform(nx, lx, angles)[0]
+            mag_k = np.sqrt(transform.k_squared()[:, :, :nx[2] // 2 + 1])
         self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
         self._fk_root = np.power(self.fk, 1.0 / self.l)
 
@@ -152,53 +151,36 @@ class WTMD:
         self.order_parameter_history = []
         self.dH_history = {}
 
-    # Compute order parameter Ψ
-    def compute_order_parameter(self, langevin_step, w_aux):
-        if self._fourier is not None:
-            self.w_aux_k = self._fourier.forward(np.reshape(w_aux[self.exchange_idx], -1))
-        else:
-            self.w_aux_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))
-        # Absorb the cutoff before scaling: b_k = |w_k| f_k^(1/ell).
-        # Powers of b/max(b) cannot overflow, even for large ell. The half-
-        # spectrum weights are at least one, so b/||b||_ell also stays in [0, 1].
-        magnitude = np.absolute(self.w_aux_k) * self._fk_root
-        scale = np.max(magnitude)
-        if scale == 0.0:
-            return 0.0   # add_bias_to_langevin needs no modes at Ψ = 0
-        self._normalized_modes = magnitude / scale
-        norm = np.power(np.sum(np.power(self._normalized_modes, self.l) * self.wt), 1.0 / self.l)
-        self._normalized_modes /= norm
-        # norm/M <= 1 for ell >= 1; restore the scale without a large product
-        # or an intermediate scale/M that can underflow prematurely.
-        return scale * (norm / self.M)
+    def order_parameter(self, w_aux):
+        """The order parameter Ψ of the auxiliary fields w_aux."""
+        psi, _, _ = self._order_parameter(w_aux)
+        return psi
 
-    def store_order_parameter(self, psi, dH):
-        self.order_parameter_history.append(psi)
-        for key in dH:
-            if key not in self.dH_history:
-                self.dH_history[key] = []
-            self.dH_history[key].append(dH[key])
+    def add_bias(self, w_aux, forces):
+        """Computes Ψ of the auxiliary fields w_aux, adds the bias V U'(Ψ) dΨ/dw to the forces of the real
+        fields (rows in the order of real_fields_idx) and returns Ψ.
 
-    # Compute bias from psi and w_aux_k, and add it to the DH/DW
-    def add_bias_to_langevin(self, psi, langevin):
+        The bias is zero where U'(Ψ) = 0 and at Ψ = 0, which only a zero exchange field has and where
+        dΨ/dw (0/0) has no direction.
+        """
+        psi, w_k, modes = self._order_parameter(w_aux)
 
         # Calculate current value of U'(Ψ) using linear interpolation
         up_hat = np.interp(psi, self.psi_range, self.up)
         if up_hat == 0.0:
             print("\t[WTMD] Ψ:%8.5f, bias:0 (U'=0)" % psi)
-            return
+            return psi
         if psi == 0.0:
-            # Ψ = 0 only for a zero exchange field, where dΨ/dw (0/0) has no direction: no bias
             dpsi_dwr = np.zeros(self.M)
         else:
-            # Calculate derivative of order parameter with respect to w_aux_k
-            magnitude = np.absolute(self.w_aux_k)
-            direction = np.divide(self.w_aux_k, magnitude, out=np.zeros_like(self.w_aux_k), where=magnitude > 0)
+            # Derivative of Ψ with respect to the modes w_k
+            magnitude = np.absolute(w_k)
+            direction = np.divide(w_k, magnitude, out=np.zeros_like(w_k), where=magnitude > 0)
             # f_k^(1/ell) [b_k/||b||_ell]^(ell-1) is bounded and independent
             # of the field scale. Keep the zero subgradient for ell=1 and the
             # zero derivative at a zero coefficient for ell>1.
-            dpsi_dwk = self._fk_root * np.power(self._normalized_modes, self.l - 1.0) * direction
-            # Calculate derivative of order parameter with respect to w
+            dpsi_dwk = self._fk_root * np.power(modes, self.l - 1.0) * direction
+            # Derivative of Ψ with respect to the field on the grid
             if self._fourier is not None:
                 dpsi_dwr = self._fourier.backward(dpsi_dwk) * self.M / self.V
             else:
@@ -206,9 +188,38 @@ class WTMD:
 
         # Add bias
         bias = np.reshape(self.V * up_hat * dpsi_dwr, self.M)
-        langevin[self.langevin_idx] += bias
+        forces[self.langevin_idx] += bias
 
         print("\t[WTMD] Ψ:%8.5f, np.std(dΨ_dwr):%8.5e, np.std(bias):%8.5e" % (psi, np.std(dpsi_dwr), np.std(bias)))
+        return psi
+
+    def _order_parameter(self, w_aux):
+        """Ψ of w_aux, with the modes w_k of the exchange field (rfftn layout) and the scaled modes
+        b_k/||b||_ell that the derivative needs (None at Ψ = 0)."""
+        if self._fourier is not None:
+            w_k = self._fourier.forward(np.reshape(w_aux[self.exchange_idx], -1))
+        else:
+            w_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))
+        # Absorb the cutoff before scaling: b_k = |w_k| f_k^(1/ell).
+        # Powers of b/max(b) cannot overflow, even for large ell. The half-
+        # spectrum weights are at least one, so b/||b||_ell also stays in [0, 1].
+        magnitude = np.absolute(w_k) * self._fk_root
+        scale = np.max(magnitude)
+        if scale == 0.0:
+            return 0.0, w_k, None
+        modes = magnitude / scale
+        norm = np.power(np.sum(np.power(modes, self.l) * self.wt), 1.0 / self.l)
+        modes /= norm
+        # norm/M <= 1 for ell >= 1; restore the scale without a large product
+        # or an intermediate scale/M that can underflow prematurely.
+        return scale * (norm / self.M), w_k, modes
+
+    def store_order_parameter(self, psi, dH):
+        self.order_parameter_history.append(psi)
+        for key in dH:
+            if key not in self.dH_history:
+                self.dH_history[key] = []
+            self.dH_history[key].append(dH[key])
 
     def update_statistics(self):
 
@@ -254,16 +265,8 @@ class WTMD:
 
     def write_data(self, file_name):
         mdic = {
-            "l": self.l,
-            "kc": self.kc,
-            "sigma_psi": self.sigma_psi,
-            "dT": self.dT,
-            "psi_min": self.psi_min,
-            "psi_max": self.psi_max,
-            "dpsi": self.dpsi,
-            "bins": self.bins,
+            **self.settings(),
             "psi_range": self.psi_range,
-            "update_freq": self.update_freq,
             "nx": self.nx,
             "lx": self.lx,
             "volume": self.V,
@@ -287,3 +290,80 @@ class WTMD:
             mdic["dH_psi_" + suffix] = dH_psi
 
         atomic_savemat(file_name, mdic, long_field_names=True, do_compression=True)
+
+    # ---------------- Checkpoints: settings, state, checks and restore ----------------
+
+    def settings(self):
+        """Settings of the bias and its statistics, which define a continuation (checkpoint hash); the
+        checkpoints (wtmd_params) and the WTMD files (write_data) store them too."""
+        return {key: getattr(self, key) for key in
+                ("l", "kc", "dT", "sigma_psi", "psi_min", "psi_max", "dpsi", "bins", "update_freq")}
+
+    def checkpoint_data(self):
+        """The bias, the statistics and the pending samples, as a fields file stores them.
+
+        The bias arrays are stored with the factor CV, as in deep-langevin-fts, and without it
+        ("wtmd_unscaled_*"), which a continued run restores exactly: (x*CV)/CV can differ from x in
+        the last bit. I1 and the samples stored since the last update make a continued run carry the
+        same statistics as an uninterrupted one.
+        """
+        data = {"wtmd_u": self.u * self.CV, "wtmd_up": self.up * self.CV, "wtmd_I0": self.I0,
+                "wtmd_unscaled_u": self.u, "wtmd_unscaled_up": self.up}
+        for key, value in self.I1.items():
+            suffix = pair_suffix(key)
+            data["wtmd_I1_" + suffix] = value * self.CV
+            data["wtmd_unscaled_I1_" + suffix] = value
+        data["wtmd_order_parameter_history"] = np.array(self.order_parameter_history, dtype=np.float64)
+        for key, values in self.dH_history.items():
+            data["wtmd_dH_history_" + pair_suffix(key)] = np.array(values, dtype=np.float64)
+        data["wtmd_params"] = {**self.settings(), "recording_period": self.recording_period}
+        return data
+
+    def validate_checkpoint(self, data, pairs):
+        """Checks the WTMD state of a checkpoint (checkpoint_data) for the monomer pairs `pairs`
+        ("A,B" keys) before a continuation changes any state. A missing key raises KeyError, which
+        checkpoint.validate_checkpoint reports as an invalid checkpoint."""
+        def check_array(key):
+            if np.size(data[key]) != self.bins or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key]):
+                raise ValidationError(f"Invalid checkpoint WTMD array '{key}'")
+        # Newer checkpoints also hold the bias arrays without the factor CV ("wtmd_unscaled_*"), which
+        # restore() reads instead of the scaled ones
+        unscaled = "wtmd_unscaled_u" in data
+        for key in ("wtmd_u", "wtmd_up", "wtmd_I0") + (("wtmd_unscaled_u", "wtmd_unscaled_up") if unscaled else ()):
+            check_array(key)
+        pending = np.size(data["wtmd_order_parameter_history"])
+        if (pending >= self.update_freq or not np.all(np.isfinite(data["wtmd_order_parameter_history"])) or
+                np.iscomplexobj(data["wtmd_order_parameter_history"])):
+            raise ValidationError("Invalid checkpoint pending WTMD samples")
+        for pair in pairs:
+            suffix = pair_suffix(pair)
+            key = "wtmd_I1_" + suffix
+            if np.any(data["wtmd_I0"]) or key in data:
+                check_array(key)
+                if unscaled:
+                    check_array("wtmd_unscaled_I1_" + suffix)
+            key = "wtmd_dH_history_" + suffix
+            if pending and (np.size(data[key]) != pending or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key])):
+                raise ValidationError(f"Invalid checkpoint WTMD history '{key}'")
+
+    def restore(self, data, pairs):
+        """The bias, the statistics and the pending samples of a checkpoint that validate_checkpoint()
+        accepted, for the monomer pairs `pairs` ("A,B" keys). An unversioned checkpoint, which
+        validate_checkpoint() does not check, may lack the WTMD state, which then stays as it is, or the
+        pending samples. The arrays are restored without the factor CV, or for an older checkpoint from
+        the scaled ones divided by CV (as in deep-langevin-fts); I1 is absent before the first update."""
+        if "wtmd_u" not in data:
+            return
+        def bias(name):
+            if "wtmd_unscaled_u" in data:
+                return np.array(data["wtmd_unscaled_" + name])
+            return np.array(data["wtmd_" + name]) / self.CV
+        self.u = bias("u")
+        self.up = bias("up")
+        self.I0 = np.array(data["wtmd_I0"])
+        self.I1 = {key: bias("I1_" + pair_suffix(key)) for key in pairs if "wtmd_I1_" + pair_suffix(key) in data}
+        self.order_parameter_history = list(np.atleast_1d(data.get("wtmd_order_parameter_history", [])))
+        self.dH_history = {}
+        if self.order_parameter_history:
+            self.dH_history = {key: list(np.atleast_1d(data["wtmd_dH_history_" + pair_suffix(key)])) for key in pairs}
+        print("Restored WTMD state")

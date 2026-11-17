@@ -1,23 +1,27 @@
-"""What a Langevin run saves and restores: its measurements, checkpoints and the state of extensions.
+"""What a Langevin run saves and restores: its status, measurements, checkpoints and the state of extensions.
 
-RunRecord holds what a run has measured since its last statistics file. checkpoint_data() writes the
-settings and measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a
-continuation changes any state. The extension functions capture and restore the state of an integrator
-and of callbacks.
+recording_run_status() keeps the status of a run in run_status.json, from its start to its end, and
+prepare_run() gives a run the fields to start from, new or those of a checkpoint. RunRecord holds what
+a run has measured since its last statistics file. checkpoint_data() writes the settings and
+measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a continuation
+changes any state. The extension functions capture and restore the state of an integrator and of
+callbacks.
 """
 
+import contextlib
 import copy
 import hashlib
 import itertools
 import json
 import warnings
+from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat
 
-from .common import fields_hash, input_hash, json_ready, mat_ready, settings_json
+from .common import atomic_write_json, fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .mat_fields import decode_mat_fields
-from .validation import _rename_parameter, normalize_params, ValidationError
+from .validation import _rename_parameter, normalize_params, ValidationError, SaddlePointError
 
 
 def checkpoint_settings(sim):
@@ -42,10 +46,7 @@ def checkpoint_settings(sim):
         result["saddle"] = {**sim.saddle.settings, "failure_policy": sim.saddle.settings.get("failure_policy", "retry"),
                             "max_retries": sim.saddle.settings.get("max_retries", 5)}
         result["compressor"] = sim.params["compressor"]
-        wtmd = sim.wtmd
-        result["wtmd"] = None if wtmd is None else {
-            key: getattr(wtmd, key) for key in
-            ("l", "kc", "dT", "sigma_psi", "psi_min", "psi_max", "dpsi", "bins", "update_freq")}
+        result["wtmd"] = None if sim.wtmd is None else sim.wtmd.settings()
     else:
         result["dynamic_stabilization"] = sim.alpha_ds
     return json_ready(result)
@@ -83,6 +84,7 @@ def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
     """The system and the checkpoint of a fields file, without the fields of its model."""
     data = {"initial_params": mat_ready(sim.params),
             "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
+            "angles": list(sim.prop_solver.get_angles_degrees()),
             "monomer_types": sim.monomer_types, "chi_n": sim.chi_n, "chain_model": sim.chain_model, "ds": sim.ds,
             "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "eigenvalues": sim.mpt.eigenvalues,
@@ -129,8 +131,17 @@ def load_checkpoint(sim, file_name, allow_legacy=False):
     return data
 
 
-def start_run_status(sim, start_langevin_step, initial_fields, restart_data, **counters):
-    """The run status and metadata of a run that is about to start; `counters` carry over a restart."""
+@contextlib.contextmanager
+def recording_run_status(sim, start_langevin_step, initial_fields, restart_data, *, saddle_search, **counters):
+    """The status of a Langevin run, sim.run_status, which run_status.json holds with the metadata.
+
+    The run starts "running" from start_langevin_step, with the hash of its initial fields and the states
+    of its random-number streams in the metadata; `counters` start at their given values, or continue
+    those of a checkpoint (restart_data). The file is written when the run starts and again when it ends:
+    "completed", or stopped by an exception, which is raised again: "interrupted", "aborted_saddle_failure"
+    for a SaddlePointError of a run that solves saddle points (saddle_search, L-FTS), and "failed" with
+    the exception otherwise.
+    """
     first_step = 1 if start_langevin_step is None else start_langevin_step
     if isinstance(first_step, (bool, np.bool_)) or not isinstance(first_step, (int, np.integer)) or first_step < 1:
         raise ValidationError("start_langevin_step must be a positive integer")
@@ -142,6 +153,55 @@ def start_run_status(sim, start_langevin_step, initial_fields, restart_data, **c
         for key in counters:
             sim.run_status[key] = previous_status.get(key, 0)
     sim.metadata["initial_rng_state"] = sim.random_bg.state
+    if getattr(sim, "electrostatics", None) is not None:
+        sim.metadata["initial_psi_rng_state"] = sim.electrostatics.random_bg.state
+    _write_run_status(sim)
+
+    ended = {"status": "completed"}
+    try:
+        yield
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            ended = {"status": "interrupted", "reason": "Run interrupted"}
+        elif saddle_search and isinstance(exc, SaddlePointError):
+            ended = {"status": "aborted_saddle_failure", "reason": str(exc)}
+        else:
+            ended = {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+        raise
+    finally:
+        sim.run_status.update(ended)
+        _write_run_status(sim)
+
+
+def _write_run_status(sim):
+    """run_status.json in the recording directory: the status of the run and the metadata."""
+    directory = Path(sim.recording["dir"])
+    directory.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(directory / "run_status.json", {**sim.run_status, "metadata": sim.metadata})
+
+
+def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):
+    """The start that the runs of L-FTS and CL-FTS share; returns the auxiliary fields of the first step
+    and whether they come from the checkpoint.
+
+    The recording directory gets the drawings of the chain architectures (polymer_<id>.png), unless
+    sim.draw_architectures is False. The auxiliary fields are those of the monomer fields initial_fields
+    ({type: flat array of dtype}) with the dropped modes pinned, or those that the checkpoint of a
+    continued run (restart_data) stored: transforming its monomer fields would not reproduce them bit for
+    bit. The partition consistency is checked again on the first fields of the run (check_partition_once).
+    """
+    from ..theory.chains import draw_polymer_architectures
+    Path(sim.recording["dir"]).mkdir(parents=True, exist_ok=True)
+    if getattr(sim, "draw_architectures", True):
+        draw_polymer_architectures(sim.polymers, sim.ds, sim.segment_lengths, directory=sim.recording["dir"])
+    sim._partition_checked = False
+    saved = None if restart_data is None else restart_data.get("w_aux")
+    if saved is not None:
+        shape = (len(sim.monomer_types), sim.prop_solver.n_grid)
+        return np.asarray(saved, dtype=dtype).reshape(shape).copy(), True
+    w_aux = sim.mpt.to_aux_fields(np.array([initial_fields[m] for m in sim.monomer_types], dtype=dtype))
+    sim.mpt.pin_dropped_fields(w_aux)
+    return w_aux, False
 
 
 def _measurement_key(kind, pair):
@@ -164,6 +224,15 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
             raise ValidationError("Unversioned checkpoint: use allow_legacy=True to accept an unverified continuation")
         if sim.integrator.name != "lm" or sim.callbacks or getattr(sim.integrator, "settings", {}):
             raise ValidationError("Legacy checkpoints cannot restore custom integrators or callbacks")
+        # The electrostatic potential came after the versioned checkpoints
+        if getattr(sim, "electrostatics", None) is not None:
+            raise ValidationError("Legacy checkpoints hold no electrostatic potential: they cannot continue a "
+                                  "run with 'electrostatics'")
+        # WTMD checkpoints before 2026-02-03 hold the bias of the former implementation (no wtmd_I0);
+        # a run without WTMD ignores the bias
+        if getattr(sim, "wtmd", None) is not None and "wtmd_u" in data and "wtmd_I0" not in data:
+            raise ValidationError("This legacy checkpoint holds the WTMD bias of the implementation before "
+                                  "2026-02-03 (no wtmd_I0), which the current WTMD cannot continue")
         warnings.warn("Legacy checkpoint: settings are unverified and pending measurements cannot be recovered", RuntimeWarning)
         return
     if version not in (1, 2):
@@ -295,74 +364,12 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
             name = _measurement_key("sf", ",".join(pair))
             if np.size(data[name]) != sf_size or not np.all(np.isfinite(data[name])):
                 raise ValidationError(f"Invalid checkpoint structure function '{name}'")
-        electrostatics = getattr(sim, "electrostatics", None)
-        if electrostatics is not None:
-            # ψ, ψ(k), the previous noise and the stream of ψ (Electrostatics.checkpoint_data), the
-            # pending drifts of ψ and, with Coulomb coupling, the pending charge structure sums
-            missing = [key for key in electrostatics.CHECKPOINT_KEYS + ("record_psi_drift_history",) if key not in data]
-            if missing:
-                raise ValidationError(f"The checkpoint lacks electrostatic data: {', '.join(missing)}")
-            for key in ("psi_real", "psi_imag", "psi_k_real", "psi_k_imag", "psi_noise_prev"):
-                if (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))
-                        or np.iscomplexobj(data[key])):
-                    raise ValidationError(f"Invalid checkpoint electrostatic array '{key}'")
-            try:
-                np.random.PCG64(0).state = json.loads(str(data["psi_rng_state_json"]))
-            except (ValueError, TypeError, KeyError) as exc:
-                raise ValidationError("Invalid checkpoint random-number state of psi") from exc
-            psi_drift = data["record_psi_drift_history"]
-            if (np.size(psi_drift) != count or np.iscomplexobj(psi_drift) or not np.all(np.isfinite(psi_drift))
-                    or np.any(psi_drift < 0)):
-                raise ValidationError("Invalid checkpoint measurement 'record_psi_drift_history'")
-            # The settings keep the point ions by name; the columns of the pending chemical
-            # potentials and numbers follow their order (ion_names_json, absent in checkpoints
-            # of earlier versions)
-            if "ion_names_json" in data:
-                stored_ions = json.loads(str(data["ion_names_json"]))
-                if stored_ions != [ion["name"] for ion in electrostatics.ions]:
-                    raise ValidationError(f"'electrostatics.ions' lists the point ions in another order than "
-                                          f"the checkpoint ({', '.join(stored_ions)}); the recorded columns "
-                                          "follow that order")
-            # The charge structure function (with Coulomb coupling in a periodic box)
-            if electrostatics.coupling > 0 and electrostatics.periodic:
-                for key in electrostatics.CHARGE_SUMS:
-                    name = _measurement_key("sf", key)
-                    if (name not in data or np.size(data[name]) != int(np.prod(sim.prop_solver.nx))
-                            or not np.all(np.isfinite(data[name]))):
-                        raise ValidationError(f"Invalid checkpoint charge structure sum '{key}'")
-        wtmd = getattr(sim, "wtmd", None)
-        if wtmd is not None:
-            def check_wtmd_array(key):
-                if np.size(data[key]) != wtmd.bins or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key]):
-                    raise ValidationError(f"Invalid checkpoint WTMD array '{key}'")
-            def check_wtmd_copies(name):
-                # Both copies are written from one array; the restore uses the unscaled
-                # one, so a checkpoint whose scaled copy was edited is refused
-                check_wtmd_array("wtmd_unscaled_" + name)
-                if not np.allclose(np.ravel(data["wtmd_unscaled_" + name]) * wtmd.CV,
-                                   np.ravel(data["wtmd_" + name]), rtol=1e-12, atol=0):
-                    raise ValidationError(f"Checkpoint WTMD arrays 'wtmd_{name}' and 'wtmd_unscaled_{name}' disagree")
-            # Newer checkpoints also hold the bias arrays without the factor CV ("wtmd_unscaled_*")
-            unscaled = "wtmd_unscaled_u" in data
-            for key in ("wtmd_u", "wtmd_up", "wtmd_I0"):
-                check_wtmd_array(key)
-            if unscaled:
-                check_wtmd_copies("u")
-                check_wtmd_copies("up")
-            pending = np.size(data["wtmd_order_parameter_history"])
-            if (pending >= wtmd.update_freq or not np.all(np.isfinite(data["wtmd_order_parameter_history"])) or
-                    np.iscomplexobj(data["wtmd_order_parameter_history"])):
-                raise ValidationError("Invalid checkpoint pending WTMD samples")
-            for pair in sim.chi_n:
-                suffix = pair_suffix(pair)
-                key = "wtmd_I1_" + suffix
-                if np.any(data["wtmd_I0"]) or key in data:
-                    check_wtmd_array(key)
-                    if unscaled:
-                        check_wtmd_copies("I1_" + suffix)
-                key = "wtmd_dH_history_" + suffix
-                if pending and (np.size(data[key]) != pending or not np.all(np.isfinite(data[key])) or np.iscomplexobj(data[key])):
-                    raise ValidationError(f"Invalid checkpoint WTMD history '{key}'")
+        # ψ, its noise stream, the pending drifts of ψ and the charge structure sums (Electrostatics.checkpoint_data)
+        if getattr(sim, "electrostatics", None) is not None:
+            sim.electrostatics.validate_checkpoint(data, count)
+        # The bias, statistics and pending samples of WTMD (WTMD.checkpoint_data)
+        if getattr(sim, "wtmd", None) is not None:
+            sim.wtmd.validate_checkpoint(data, sim.chi_n)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValidationError(f"Invalid checkpoint: {exc}") from exc
 
@@ -464,7 +471,9 @@ class RunRecord:
         self.first_step = first_step - len(self.lists.get("drift_step_history", []))
 
 
-def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=True):
+def initialize_extensions(sim, integrator, callbacks):
+    """The integrator and the callbacks of sim, checked; the simulation records their state
+    (extension_state) as the last step of its setup, which a fresh run restores."""
     from ..fts.integrators import make_integrator
     sim.integrator = make_integrator(integrator)
     if callbacks is not None and not isinstance(callbacks, dict):
@@ -484,10 +493,6 @@ def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=T
         load = callable(getattr(obj, "load_state_dict", None))
         if save != load:
             raise ValidationError("Extensions must implement both state_dict and load_state_dict, or neither")
-    # CLFTS captures after preparing any linear response. Other simulations
-    # finish setup here and validate state before the first scheduled checkpoint.
-    if capture_initial_state:
-        sim._initial_extension_state = copy.deepcopy(extension_state(sim))
     sim.metadata["extensions"] = extension_settings(sim)
 
 

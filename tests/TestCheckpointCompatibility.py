@@ -25,7 +25,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, LFTS
-from fts_checks import python_platform, quiet
+from fts_checks import compare_files, python_platform, quiet
 
 DATA = Path(__file__).resolve().parent / "data" / "old_checkpoints"
 SEED = 11
@@ -56,19 +56,6 @@ def initial_fields():
     return {"A": w, "B": -w}
 
 
-def close_files(left, right, filename, rtol):
-    """The float and complex arrays of the files filename of two directories have the same keys and
-    shapes, and differ by at most rtol times the largest magnitude of each array."""
-    a, b = ({key: value for key, value in loadmat(Path(directory) / filename, squeeze_me=True).items()
-             if isinstance(value, np.ndarray) and value.dtype.kind in "fc"} for directory in (left, right))
-    assert a and a.keys() == b.keys(), f"{filename}: keys in one file only: {sorted(a.keys() ^ b.keys())}"
-    for key in sorted(a):
-        assert a[key].shape == b[key].shape, f"{filename}: {key} shapes {a[key].shape} {b[key].shape}"
-        scale = np.max(np.abs(a[key]), initial=0.0)
-        difference = np.max(np.abs(a[key] - b[key]), initial=0.0)
-        assert difference <= rtol * scale, f"{filename}: {key} differs by {difference:.2e} (scale {scale:.2e})"
-
-
 def check(cls, platform, root, chain_model="continuous"):
     name = cls.__name__.lower() + ("_discrete" if chain_model == "discrete" else "")
     full = quiet(cls, parameters(cls, root / f"{name}_full", platform, chain_model), random_seed=SEED)
@@ -80,7 +67,7 @@ def check(cls, platform, root, chain_model="continuous"):
     assert continued.random_bg.state == full.random_bg.state
     rtol = 1e-10 if cls is CLFTS else 100 * TOLERANCE
     for filename in ("fields_000004.mat", "dH_000004.mat", "structure_function_000004.mat"):
-        close_files(full.recording["dir"], continued.recording["dir"], filename, rtol)
+        compare_files(full.recording["dir"], continued.recording["dir"], filename, "", rtol=rtol)
     samples = loadmat(Path(continued.recording["dir"]) / "dH_000004.mat", squeeze_me=True)["sample_count"]
     assert samples == 4, f"the continued run recorded {samples} samples: the old checkpoint's pending ones are lost"
     print(f"[PASS] {platform}: {cls.__name__} ({chain_model}) continues the step-2 checkpoint of main to step 4")

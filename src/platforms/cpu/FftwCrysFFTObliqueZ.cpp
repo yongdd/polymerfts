@@ -3,10 +3,6 @@
  * @brief FFTW implementation of crystallographic FFT for z-mirror symmetry.
  */
 
-#include <atomic>
-#include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -15,11 +11,8 @@
 //------------------------------------------------------------------------------
 // Constructor / Destructor
 //------------------------------------------------------------------------------
-FftwCrysFFTObliqueZ::FftwCrysFFTObliqueZ(
-    std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
-    std::array<double, 9> trans_part)
-    : Base(nx_logical, cell_para, trans_part)
+FftwCrysFFTObliqueZ::FftwCrysFFTObliqueZ(std::array<int, 3> nx_logical)
+    : Base(nx_logical)
 {
     try
     {
@@ -117,8 +110,7 @@ void FftwCrysFFTObliqueZ::initFFTPlans()
 }
 
 //------------------------------------------------------------------------------
-// Thread-local work buffers and z-direction DCT helpers shared by
-// diffusion() and apply_multiplier()
+// Thread-local work buffers and z-direction DCT helpers of diffusion()
 //------------------------------------------------------------------------------
 FftwCrysFFTObliqueZ::ThreadBuffers& FftwCrysFFTObliqueZ::get_thread_buffers() const
 {
@@ -172,61 +164,10 @@ void FftwCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* 
 //------------------------------------------------------------------------------
 // Public API
 //------------------------------------------------------------------------------
-void FftwCrysFFTObliqueZ::diffusion(double* q_in, double* q_out)
+void FftwCrysFFTObliqueZ::diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const
 {
-    const double* boltz = current_boltzmann();
-    if (!boltz)
-        throw_with_line_number("FftwCrysFFTObliqueZ::set_contour_step must be called before diffusion().");
-
-    static const bool do_profile = (std::getenv("FTS_PROFILE_CRYSFFT_HEX_CPU_DETAIL") != nullptr);   // read once
-    static std::atomic<bool> prof_once{false};
-    const bool profile_this = do_profile && !prof_once.exchange(true);
-
-    if (profile_this)
-    {
-        ThreadBuffers& buffers = get_thread_buffers();
-
-        auto t0 = std::chrono::steady_clock::now();
-        std::memcpy(buffers.real_in.get(), q_in, sizeof(double) * M_physical_);
-        auto t1 = std::chrono::steady_clock::now();
-
-        dct2_execute(buffers.real_in.get(), buffers.real_tmp.get());
-        auto t2 = std::chrono::steady_clock::now();
-
-        fftw_execute_dft_r2c(plan_fft_forward_xy_, buffers.real_tmp.get(), buffers.complex.get());
-        auto t3 = std::chrono::steady_clock::now();
-
-        for (int i = 0; i < M_complex_; ++i)
-        {
-            buffers.complex.get()[i][0] *= boltz[i];
-            buffers.complex.get()[i][1] *= boltz[i];
-        }
-        auto t5 = std::chrono::steady_clock::now();
-
-        fftw_execute_dft_c2r(plan_fft_backward_xy_, buffers.complex.get(), buffers.real_tmp.get());
-        auto t6 = std::chrono::steady_clock::now();
-
-        dct3_execute(buffers.real_tmp.get(), buffers.real_in.get());
-        auto t7 = std::chrono::steady_clock::now();
-
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] = buffers.real_in.get()[i] * norm_factor_;
-        auto t8 = std::chrono::steady_clock::now();
-
-        auto ms = [](auto a, auto b) {
-            return std::chrono::duration<double, std::milli>(b - a).count();
-        };
-        std::printf("[CrysFFT-ObliqueZ CPU] copy(ms)=%.4f dct2(ms)=%.4f r2c(ms)=%.4f "
-                    "boltz(ms)=%.4f c2r(ms)=%.4f dct3(ms)=%.4f store(ms)=%.4f total(ms)=%.4f\n",
-                    ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t5),
-                    ms(t5, t6), ms(t6, t7), ms(t7, t8), ms(t0, t8));
-        return;
-    }
+    check_table(table, M_complex_);
+    const double* boltz = table.data();
 
     apply_spectral_multiplier(q_in, q_out, boltz);
-}
-
-void FftwCrysFFTObliqueZ::apply_multiplier(const double* q_in, double* q_out, const double* multiplier)
-{
-    apply_spectral_multiplier(q_in, q_out, multiplier);
 }

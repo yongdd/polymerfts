@@ -56,7 +56,9 @@
 #include <array>
 #include <vector>
 #include <cassert>
+#include <cmath>
 #include <complex>
+#include <numbers>
 
 #include "Exception.h"
 
@@ -67,6 +69,13 @@ class SpaceGroup;
 /// within this many radians of it: the box is then orthogonal (is_orthogonal()), a CrysFFT
 /// engine that needs the angle applies, and SpaceGroup::check_cell accepts the cell.
 constexpr double FIXED_ANGLE_TOLERANCE = 1e-10;
+
+/// Whether an angle given in degrees lies within FIXED_ANGLE_TOLERANCE of `radians`
+/// (false if it is not finite), the one test of a fixed angle
+inline bool angle_is_fixed_at(double degrees, double radians)
+{
+    return std::abs(degrees * (std::numbers::pi / 180.0) - radians) < FIXED_ANGLE_TOLERANCE;
+}
 
 /**
  * @enum BoundaryCondition
@@ -182,6 +191,10 @@ protected:
      * |k|² = kx² + ky² + kz² (no cross terms)
      */
     bool is_orthogonal_;
+
+    /// Whether alpha and beta are 90° (within FIXED_ANGLE_TOLERANCE): the c axis is
+    /// perpendicular to the a-b plane, whatever gamma is
+    bool is_z_axis_orthogonal_;
 
     /**
      * @brief Boundary conditions for each face.
@@ -484,6 +497,12 @@ public:
      */
     bool is_orthogonal() const;
 
+    /**
+     * @brief Check if the c axis is perpendicular to the a-b plane.
+     * @return True if alpha and beta are 90° (within FIXED_ANGLE_TOLERANCE); gamma is free
+     */
+    bool is_z_axis_orthogonal() const;
+
     // ==================== Space Group Methods ====================
 
     /**
@@ -578,6 +597,21 @@ public:
      * @return Weighted inner product
      */
     T inner_product_inverse_weight(const T *g, const T *h, const T *w);
+
+    /**
+     * @brief Integral of an absolute product.
+     *
+     * Computes: sum_i |g[i] * h[i] / d[i]| * dV[i] with the weights of integral()
+     * (no division without a divisor); a masked point adds zero whatever its
+     * values. The scale of a partition integral that need not vanish when a
+     * complex partition cancels.
+     *
+     * @param g       First field array (length: get_n_basis())
+     * @param h       Second field array (length: get_n_basis())
+     * @param divisor Divisor array, or nullptr
+     * @return Integral value
+     */
+    double absolute_inner_product(const T *g, const T *h, const T *divisor = nullptr);
 
     /**
      * @brief Compute inner product for multiple field components.

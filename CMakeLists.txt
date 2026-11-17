@@ -110,7 +110,7 @@ ELSE()
     # MSVC's default /fp:precise does not contract. A floating-point model chosen in
     # the flags is kept: Clang and icpx reject a later -ffp-contract under -Werror.
     STRING(TOUPPER "${CMAKE_BUILD_TYPE}" _fp_config)
-    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|fast-math|-Ofast")
+    IF("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_fp_config}}" MATCHES "fp-model|fp-contract|-ffast-math|-Ofast")
         MESSAGE(STATUS "Floating-point contraction is left to the -fp-model, -ffp-contract, -ffast-math "
                        "or -Ofast flags given; full and reduced memory may then differ in the last bits")
     ELSE()
@@ -376,7 +376,6 @@ ENDIF()
 IF(BUILD_CPU_FFTW_LIB)
     ADD_LIBRARY(cpu-fftw
         src/platforms/cpu/FftwFFT.cpp
-        src/platforms/cpu/FftwCrysFFTPmmm.cpp
         src/platforms/cpu/FftwCrysFFTRecursive3m.cpp
         src/platforms/cpu/FftwCrysFFTObliqueZ.cpp
         src/platforms/cpu/FftwFactory.cpp
@@ -390,7 +389,6 @@ IF(BUILD_CPU_MKL_LIB)
     ADD_LIBRARY(cpu-mkl
         src/platforms/cpu/MklFFT.cpp
         src/platforms/cpu/MklRealTransform.cpp
-        src/platforms/cpu/MklCrysFFTPmmm.cpp
         src/platforms/cpu/MklCrysFFTRecursive3m.cpp
         src/platforms/cpu/MklCrysFFTObliqueZ.cpp
         src/platforms/cpu/MklFactory.cpp
@@ -638,6 +636,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/PinnedCircularBuffer.cu
         src/platforms/cuda/CudaAndersonMixing.cu
         src/platforms/cuda/CudaAndersonMixingReduceMemory.cu
+        src/platforms/cuda/CudaMakhoulTransform.cu
         src/platforms/cuda/CudaFourierTransform.cu
         src/platforms/cuda/CudaFactory.cu
     )

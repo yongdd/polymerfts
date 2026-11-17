@@ -5,13 +5,16 @@
 #include <complex>
 #include <type_traits>
 
-#include "Polymer.h"   // MAX_BLOCK_MULTIPLICITY
-
 #ifdef __CUDACC__
 #define POLYMERFTS_JUNCTION_HD __host__ __device__
 #else
 #define POLYMERFTS_JUNCTION_HD
 #endif
+
+/// Largest block multiplicity (Polymer). The extended-range junction products below then
+/// keep exact binary exponents in a double, and complex fields take every integer
+/// multiplicity (junction_product::integer_power).
+constexpr double MAX_BLOCK_MULTIPLICITY = 1.0e6;
 
 // A junction is one product: in a star with n arms in a strong field q_A^(n-1) can
 // overflow while the product with the other arms is finite. An accumulator keeps the
@@ -61,7 +64,7 @@ POLYMERFTS_JUNCTION_HD inline double scale(double mantissa, double exponent)
 /// True if a junction power is an integer in [0, MAX_BLOCK_MULTIPLICITY]: an integer block
 /// multiplicity takes the same operation as explicit arms. Other powers (a non-integer
 /// multiplicity, or identical copied branches whose powers sum beyond the limit) need real
-/// propagators: complex fields refuse them (complex_real_power_message).
+/// propagators: a computation with complex fields refuses them when it is built (ComputationCommon).
 POLYMERFTS_JUNCTION_HD inline bool integer_power(double power)
 {
     return power >= 0.0 && power <= MAX_BLOCK_MULTIPLICITY && power == floor(power);

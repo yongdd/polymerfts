@@ -1,10 +1,10 @@
-"""Execute the cell of plot_2d_density.ipynb on synthetic 2D results.
+"""Execute the cells of plot_2d_density.ipynb on synthetic 2D results.
 
 Each value fills the grid cell around its point, which the solvers place at (i + 1/2)/n along each
 lattice vector (a along x, b in the xy plane at the angle gamma). The checks read what is drawn: the
 corners of the meshes, their values against the data written to the file, and the aspect. The
 concentrations are read from SCFT and L-FTS files, CL-FTS files (the real parts) and the phi structure
-of older files.
+of older files. The three density notebooks read files with the same first cell.
 """
 
 import json
@@ -21,7 +21,14 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 NOTEBOOK = Path(__file__).resolve().parents[2] / 'scripts/analysis/plot_2d_density.ipynb'
-CELL = ''.join(json.loads(NOTEBOOK.read_text(encoding='utf-8'))['cells'][0]['source'])
+
+
+def code_cells(notebook):
+    return [''.join(cell['source']) for cell in json.loads(notebook.read_text(encoding='utf-8'))['cells']
+            if cell['cell_type'] == 'code']
+
+
+CODE = '\n'.join(code_cells(NOTEBOOK))
 
 
 def draw(tmp_path, monkeypatch, nx, lx, layout='plain', **extra):
@@ -49,7 +56,7 @@ def draw(tmp_path, monkeypatch, nx, lx, layout='plain', **extra):
             # fig.show() with Agg warns where a display could exist
             warnings.filterwarnings('ignore', message='.*non-interactive', category=UserWarning)
             namespace = {}
-            exec(compile(CELL, str(NOTEBOOK) + ':cell0', 'exec'), namespace)
+            exec(compile(CODE, str(NOTEBOOK), 'exec'), namespace)
         drawn = {}
         for ax in namespace['axes']:
             mesh = ax.collections[0]
@@ -95,21 +102,63 @@ def test_concentrations_of_every_file_layout(tmp_path, monkeypatch, layout):
 
 
 def test_every_monomer_type_of_the_file(tmp_path, monkeypatch):
-    # Types A and C: one plot for each type the file lists
+    # Types A and BB: one plot for each type the file lists. MATLAB stores the names as rows of
+    # one character array, padded with spaces ('A ')
     nx = [5, 3]
-    phi = {name: np.random.default_rng(9).random(15) + i for i, name in enumerate(('A', 'C'))}
+    phi = {name: np.random.default_rng(9).random(15) + i for i, name in enumerate(('A', 'BB'))}
     (tmp_path / 'phases').mkdir()
     savemat(tmp_path / 'phases' / 'C2D.mat', {'nx': np.array(nx), 'lx': np.array([1.0, 1.2]), 'angles': np.array([90.0, 90.0, 90.0]),
-                                              'monomer_types': ['A', 'C'], 'phi_A': phi['A'], 'phi_C': phi['C']})
+                                              'monomer_types': ['A', 'BB'], 'phi_A': phi['A'], 'phi_BB': phi['BB']})
     monkeypatch.chdir(tmp_path)
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', message='.*non-interactive', category=UserWarning)
             namespace = {}
-            exec(compile(CELL, str(NOTEBOOK) + ':cell0', 'exec'), namespace)
+            exec(compile(CODE, str(NOTEBOOK), 'exec'), namespace)
         drawn = {ax.get_title(): np.asarray(ax.collections[0].get_array()) for ax in namespace['axes']}
     finally:
         plt.close('all')
-    assert sorted(drawn) == ['phi_A', 'phi_C']
-    for name in ('A', 'C'):
+    assert sorted(drawn) == ['phi_A', 'phi_BB']
+    for name in ('A', 'BB'):
         np.testing.assert_array_equal(drawn['phi_' + name].reshape(nx), phi[name].reshape(nx))
+
+
+@pytest.mark.parametrize('suffix', ['.json', '.yaml'])
+def test_json_and_yaml_results(tmp_path, monkeypatch, suffix):
+    # SCFT saves .json and .yaml results with lists, the angles and uses_hexagonal_axes
+    nx, lx, gamma = [5, 3], [1.0, 1.2], 110.0
+    phi = {name: np.random.default_rng(3).random(15) + i for i, name in enumerate(('X', 'Y'))}
+    data = {'nx': nx, 'lx': lx, 'angles': [90.0, 90.0, gamma], 'uses_hexagonal_axes': False,
+            'monomer_types': ['X', 'Y'], 'initial_params': {'angles': [90.0, 90.0, 60.0]},
+            **{'phi_' + name: value.tolist() for name, value in phi.items()}}
+    (tmp_path / 'phases').mkdir()
+    text = json.dumps(data) if suffix == '.json' else pytest.importorskip('yaml').safe_dump(data)
+    (tmp_path / 'phases' / ('C2D' + suffix)).write_text(text)
+    monkeypatch.chdir(tmp_path)
+    code = CODE.replace('"phases/C2D.mat"', f'"phases/C2D{suffix}"', 1)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='.*non-interactive', category=UserWarning)
+            namespace = {}
+            exec(compile(code, str(NOTEBOOK), 'exec'), namespace)
+        drawn = {ax.get_title(): (np.asarray(ax.collections[0].get_coordinates()), np.asarray(ax.collections[0].get_array()))
+                 for ax in namespace['axes']}
+    finally:
+        plt.close('all')
+    assert sorted(drawn) == ['phi_X', 'phi_Y']
+    for name in ('X', 'Y'):
+        corners, values = drawn['phi_' + name]
+        np.testing.assert_array_equal(values.reshape(nx), phi[name].reshape(nx))
+        b = corners[0, -1] - corners[0, 0]      # the edge along b, at the saved angle gamma
+        assert np.isclose(np.degrees(np.arctan2(b[1], b[0])), gamma)
+
+
+def test_the_density_notebooks_read_files_with_the_same_cell():
+    # Only the file name differs, so the checks of each notebook cover the reader of all three:
+    # JSON and YAML here, hexagonal axes and SCFT results in TestSlicePlot and TestIsodensityPlot
+    readers = []
+    for name in ('plot_2d_density', 'plot_2d_slice', 'plot_3d_isodensity'):
+        lines = code_cells(NOTEBOOK.with_name(name + '.ipynb'))[0].split('\n')
+        assert sum(line.startswith('file_name = "') for line in lines) == 1
+        readers.append([line for line in lines if not line.startswith('file_name = "')])
+    assert readers[0] == readers[1] == readers[2]

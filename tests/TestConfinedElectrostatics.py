@@ -25,8 +25,6 @@ With walls the transforms are cosine series: psi has no normal derivative at the
    equal central differences of H in that box.
 """
 
-import contextlib
-import io
 import os
 import tempfile
 from pathlib import Path
@@ -37,7 +35,7 @@ import numpy as np
 from scipy.fft import dct, idct
 from scipy.optimize import root as solve_root
 from polymerfts import CLFTS, SCFT, PlatformSelector, ValidationError
-from fts_checks import exact_restart, quiet
+from fts_checks import exact_restart, quiet, silenced
 
 N, E = 20, 200.0
 
@@ -145,7 +143,7 @@ def poisson_boltzmann(root):
     params = parameters(nx, lx, **clfts_options(root / "pb", 400))
     params["electrostatics"]["psi_dt_scaling"] = 5.0
     sim = quiet(lambda: CLFTS(params, random_seed=1))
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run({"A": np.zeros(64), "B": np.zeros(64)})
     error = np.max(np.abs(sim.electrostatics.psi - psi))
     assert error < 1e-5 * np.max(np.abs(psi)), f"CL-FTS mean field: max |psi - PB| = {error:.2e}"

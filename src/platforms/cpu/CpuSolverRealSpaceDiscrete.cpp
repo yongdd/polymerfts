@@ -183,27 +183,8 @@ void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
     try
     {
-        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles.
-        // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
-        const std::vector<double> dx = cb->get_dx();
-        const auto nx = cb->get_nx();
-        const auto bc = cb->get_boundary_conditions();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        const double ds = mapping.get_ds_from_index(0);
-        std::vector<const RealSpaceBond::Kernels*> all;
-        for (const auto& [monomer_type, b] : molecules->get_bond_lengths())
-        {
-            for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            {
-                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx, nx, bc);
-                all.push_back(&bond[ds_idx][monomer_type]);
-            }
-            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx, nx, bc);
-            all.push_back(&bond_half[monomer_type]);
-            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx(), nx, bc);
-            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx(), nx, bc);
-        }
-        ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
+        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles
+        bonds = RealSpaceBond::bonds(*molecules, *cb);
     }
     catch (std::exception& exc)
     {
@@ -235,7 +216,7 @@ void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
-                                             const RealSpaceBond::Derivative* derivative) const
+                                             int derivative_axis, const RealSpaceBond::Derivative* derivative) const
 {
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
@@ -264,9 +245,9 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
             outer *= nx[d];
         if (axis == 0)
             dst = q_out;
-        const int* index = ghosts.index[axis].data() + ghosts.halo[axis];
-        const double* sign = ghosts.sign[axis].data() + ghosts.halo[axis];
-        const bool differentiated = derivative != nullptr && derivative->axis == axis;
+        const int* index = bonds.ghosts.index[axis].data() + bonds.ghosts.halo[axis];
+        const double* sign = bonds.ghosts.sign[axis].data() + bonds.ghosts.halo[axis];
+        const bool differentiated = derivative != nullptr && axis == derivative_axis;
         const RealSpaceBond::Kernel& stencil = differentiated ? derivative->stencil : kernels[axis];
         const RealSpaceBond::Folded& folded = differentiated ? derivative->folded : kernels.folded[axis];
         if (!folded.empty())
@@ -297,7 +278,7 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
             full_out.resize(M);
             out = full_out.data();
         }
-        convolve(expanded(q_in, full_in), out, bond.at(ds_index).at(monomer_type));
+        convolve(expanded(q_in, full_in), out, bonds.full.at(ds_index).at(monomer_type));
         for (int i = 0; i < M; ++i)
             out[i] *= exp_dw[i];
         reduced(out, q_out);
@@ -318,11 +299,11 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T
     {
         thread_local std::vector<T> full_in, full_out;
         if (space_group_ == nullptr)
-            convolve(q_in, q_out, bond_half.at(monomer_type));
+            convolve(q_in, q_out, bonds.half.at(monomer_type));
         else
         {
             full_out.resize(cb->get_total_grid());
-            convolve(expanded(q_in, full_in), full_out.data(), bond_half.at(monomer_type));
+            convolve(expanded(q_in, full_in), full_out.data(), bonds.half.at(monomer_type));
             reduced(full_out.data(), q_out);
         }
     }
@@ -350,9 +331,9 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         const int dim = cb->get_dim();
         const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
         // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
-        const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bond_half.at(monomer_type)
-                                                                    : bond.at(0).at(monomer_type);
-        const auto& derivatives = (is_half_bond_length ? bond_half_dlength : bond_dlength).at(monomer_type);
+        const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
+                                                                    : bonds.full.at(0).at(monomer_type);
+        const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
         thread_local std::vector<T> dq, full_1, full_2;
         dq.resize(M);
         const T* full_q_1 = expanded(q_1, full_1);
@@ -360,7 +341,7 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
-            convolve(full_q_2, dq.data(), kernels, &derivatives[a]);
+            convolve(full_q_2, dq.data(), kernels, a, &derivatives[a]);
             T sum = 0.0;
             for (int i = 0; i < M; ++i)
                 sum += full_q_1[i] * dq[i];

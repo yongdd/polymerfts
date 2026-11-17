@@ -189,7 +189,7 @@ def intermediate_force(root, platform):
                 integrator=ProbeEmptyForce(), callbacks={"observations": observer})
     status = quiet(sim.run, {name: np.zeros(4) for name in FRACTIONS})
     assert status["status"] == "completed" and observer.steps == [1]
-    assert sim.saddle.iterations == sim._intermediate_saddle_iterations == 0
+    assert sim.saddle.iterations == 0   # the final and the intermediate saddle points need no iteration
 
 
 def main():

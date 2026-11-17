@@ -139,7 +139,7 @@ def test_wtmd_cell():
     for nx, lx in (([6, 6, 6], [2.0] * 3), ([6, 6, 5], [2.0] * 3), ([12, 12, 9], [4.0] * 3)):
         wt = quiet(WTMD, nx, lx, 10000, np.array([-12.0, 200.0]), [0])
         w = rng.normal(0, 5, nx)
-        psi = wt.compute_order_parameter(0, np.array([w.ravel(), np.zeros(w.size)]))
+        psi = wt.order_parameter(np.array([w.ravel(), np.zeros(w.size)]))
         k = np.meshgrid(*[2 * np.pi / lx[d] * np.fft.fftfreq(nx[d], 1.0 / nx[d]) for d in range(3)], indexing="ij")
         fk = 1.0 / (1.0 + np.exp(12.0 * (np.sqrt(sum(kd**2 for kd in k)) - wt.kc) / wt.kc))
         psi_full = np.sum(np.abs(np.fft.fftn(w))**4 * fk)**0.25 / np.prod(nx)
@@ -147,9 +147,8 @@ def test_wtmd_cell():
 
     # A zero exchange field (Ψ = 0, as in a start from w = 0) gets no bias, not 0 * inf = NaN
     wt.up[:] = 1.0
-    psi = wt.compute_order_parameter(0, np.zeros([2, int(np.prod(nx))]))
     langevin = np.zeros([1, int(np.prod(nx))])
-    quiet(wt.add_bias_to_langevin, psi, langevin)
+    psi = quiet(wt.add_bias, np.zeros([2, int(np.prod(nx))]), langevin)
     check(psi == 0.0 and np.array_equal(langevin, np.zeros_like(langevin)), "WTMD: no bias at a zero exchange field")
 
     # The constructor scales copies of the given statistics, not the caller's arrays

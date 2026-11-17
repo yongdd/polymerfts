@@ -7,15 +7,18 @@ from typing import Dict, Optional, Callable, Union
 from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..theory.propagator_solver import PropagatorSolver
-from ..utils.validation import (normalize_params, validate_scft_params, ValidationError,
-                         point_ion_concentrations, open_charges, reference_segments)
+from ..theory.chains import chain_solver
+from ..utils.validation import (normalize_params, validate_scft_params, ValidationError, NumericalError,
+                         point_ion_concentrations, open_charges, reference_segments, finite_values,
+                         initial_field_values)
 from ..utils.common import (
     report_partition_consistency,
     display_system,
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
-from .scft_results import SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results
+from .scft_results import (SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results,
+                           ion_chemical_potentials, chemical_potentials)
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
@@ -24,22 +27,6 @@ from ..theory.electrostatics import MeanFieldElectrostatics
 # OpenMP environment variables
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
 os.environ.setdefault("OMP_STACKSIZE", "1G")
-
-
-def real_values(values, label):
-    """values as a new flat float64 array (the caller's array stays as it is); ValidationError unless they
-    are booleans, integers or real numbers that are finite at float64 precision."""
-    try:
-        array = np.asarray(values)   # a ragged list raises ValueError
-        # Not complex numbers, strings or objects (such as Python integers beyond 64 bits)
-        if array.dtype.kind in "biuf":
-            with np.errstate(over="ignore"):
-                array = array.astype(np.float64).reshape(-1)   # a long double beyond float64 becomes inf
-            if np.all(np.isfinite(array)):
-                return array
-    except (TypeError, ValueError, OverflowError):
-        pass
-    raise ValidationError(f"{label} must contain real, finite values at float64 precision")
 
 
 class SCFT:
@@ -139,23 +126,8 @@ class SCFT:
             draw_polymer_architectures(self.polymers, params["ds"], self.segment_lengths,
                                        directory=params["polymer_figure_dir"])
 
-        # Boundary conditions (default: periodic) and lattice angles [alpha, beta, gamma] in degrees
-        bc = params.get("bc", None)
-        if bc is None:
-            bc = ["periodic"] * (2 * len(params["nx"]))
+        # Lattice angles [alpha, beta, gamma] in degrees
         angles = params.get("angles", None)
-        if angles is not None and np.ndim(angles) != 1:
-            raise ValidationError("angles must be a list of angles in degrees.")
-        if angles is not None and len(params["nx"]) == 3 and len(angles) != 3:
-            raise ValidationError("angles must be [alpha, beta, gamma] (three entries) for a 3D box.")
-        if angles is not None and len(params["nx"]) < 3:
-            dim = len(params["nx"])
-            if len(angles) not in (0, 1, 3):
-                raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
-            fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
-            if not np.all(np.isclose(fixed, 90.0, rtol=0.0, atol=1e-10)):
-                raise ValidationError("A 1D box requires all angles to be 90 degrees; "
-                                      "a 2D box requires alpha and beta to be 90 degrees.")
 
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, zeta_n=self.zeta_n)
@@ -181,24 +153,11 @@ class SCFT:
         # Create space group object early (before PropagatorSolver) if specified
         self.sg = self._create_space_group(params, angles) if params.get("space_group", None) is not None else None
 
-        # Propagator solver: the C++ computation box, molecules and solver live inside it
-        self.prop_solver = PropagatorSolver(
-            nx=params["nx"], lx=params["lx"], ds=params["ds"],
-            bond_lengths=self.segment_lengths, bc=bc,
-            chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
-            platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
-            reduce_memory=params.get("reduce_memory", False),
-            space_group=self.sg,
-            angles=angles,
-            aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
-        )
+        # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg)
         # Box relaxation needs the stress, which cn-adi2 does not compute
         if params["relax_cell"] and not PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
             raise ValidationError(f"'relax_cell' needs the stress; '{self.prop_solver.numerical_method}' computes none")
-        for polymer in self.polymers:
-            self.prop_solver.add_polymer(polymer["volume_fraction"], polymer["blocks_input"],
-                                         polymer.get("initial_conditions", None))
 
         # Computation box as a public attribute (this creates the C++ objects)
         self.cb = self.prop_solver.computation_box
@@ -206,14 +165,7 @@ class SCFT:
         # Display factory info
         self.prop_solver.display_platform_info()
 
-        # Initialize smearing (must be after self.cb is set)
-        if params.get("smearing", None) is not None and self.sg is not None:
-            # Smearing operates on full-grid fields, but with a space group the
-            # fields live in the reduced basis; Smearing.apply would reshape a
-            # reduced-basis array to the full grid and crash (or corrupt data).
-            raise NotImplementedError(
-                "'smearing' is not supported together with 'space_group'. "
-                "Disable one of the two options.")
+        # Smearing of the interactions, on full-grid fields (validate_scft_params refuses it with a space group)
         self.smearing = smearing_of(params, self.prop_solver)
 
         # Electrostatics: the charged types feel z_i ψ, and ψ solves the Poisson equation with the
@@ -245,10 +197,6 @@ class SCFT:
         self.ds = params["ds"]
         self.relax_cell = params["relax_cell"]
 
-        # Stress computation interval: an integer (every N iterations) or
-        # "adaptive" (more often while the error is high, see run()).
-        self.stress_interval = params.get("stress_interval", 1)
-
         self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
         if self.max_iter < 1:
             raise ValidationError(f"'max_iter' must be at least 1, got {self.max_iter}")
@@ -267,49 +215,12 @@ class SCFT:
             sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"], params["space_group"]["hall_number"])
         else:
             sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"])
-        # Auto-enable physical basis when possible (m3 → pmmm → z-mirror).
-        # NOTE: reuse the (possibly axis_ordering-reordered) local `angles`;
-        # missing angles means an orthogonal cell for classification, while
-        # `angles` itself stays None so the computation box is not
-        # needlessly recreated below.
-        alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)   # a space group is 3D
-        # The test of the native box and solvers (1e-10 rad): a looser one could enable a
-        # basis whose CrysFFT the solver then refuses
-        def right_angle(angle):
-            return abs(angle * (np.pi / 180.0) - np.pi / 2.0) < 1e-10
-        is_orthogonal = right_angle(alpha) and right_angle(beta) and right_angle(gamma)
-        z_axis_orthogonal = right_angle(alpha) and right_angle(beta)
-
-        if is_orthogonal:
-            # Fall back down the basis hierarchy when a basis is not
-            # applicable to this group/grid (the C++ side throws
-            # RuntimeError). Other exception types indicate real bugs
-            # and must propagate.
-            # (the m3 basis needs the recursive 3m CrysFFT: even grid, nz >= 16
-            # and a compatible translation parity)
-            try:
-                if not sg.m3_crysfft_feasible():
-                    raise RuntimeError("recursive 3m CrysFFT is not feasible on this grid")
-                sg.enable_m3_physical_basis()
-            except RuntimeError:
-                try:
-                    sg.enable_pmmm_physical_basis()
-                except RuntimeError:
-                    pass  # keep the irreducible (full-group) basis
-        elif z_axis_orthogonal:
-            # Hexagonal/trigonal (hexagonal-axes) space groups use a hybrid
-            # orbit convention (node-centered x,y; cell-centered z), making
-            # all in-plane symmetry maps exact on the grid. The z-mirror
-            # physical basis (cell-centered z fold) remains valid.
-            try:
-                sg.enable_z_mirror_physical_basis()
-            except RuntimeError:
-                pass  # keep the irreducible (full-group) basis
 
         # The cell must belong to the crystal system of the space group. Otherwise
         # the symmetry operations are not isometries of the box and the run would
         # silently converge to a constrained, unphysical state. The native check
         # (SpaceGroup::check_cell) is the one the computation box applies later.
+        # `angles` (reordered by axis_ordering) is None for an orthogonal cell.
         lx_sg = [float(v) for v in params["lx"]]
         angles_sg = [float(v) for v in angles] if angles is not None else [90.0, 90.0, 90.0]
         try:
@@ -321,6 +232,28 @@ class SCFT:
             # a = b = c and alpha = beta = gamma would have to vary together
             raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
                                   "use the hexagonal-axes setting of the space group.")
+
+        # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
+        # test of the box, and keeps them during box relaxation): with all three at 90 degrees m3, else
+        # Pmmm, else z-mirror; with alpha and beta at 90 degrees z-mirror (hexagonal-axes groups too:
+        # their hybrid grid is cell-centered along z); otherwise the irreducible basis. A basis that does
+        # not apply to the group or the grid raises RuntimeError, and the next one is tried; other
+        # exceptions are real bugs and propagate. The m3 basis needs the recursive 3m CrysFFT (even
+        # grid, nz >= 16 and a compatible translation parity).
+        alpha, beta, gamma = sg.fixed_angles()
+        bases = []
+        if alpha == beta == gamma == 90.0:
+            if sg.m3_crysfft_feasible():
+                bases.append(sg.enable_m3_physical_basis)
+            bases.append(sg.enable_pmmm_physical_basis)
+        if alpha == beta == 90.0:
+            bases.append(sg.enable_z_mirror_physical_basis)
+        for enable in bases:
+            try:
+                enable()
+                break
+            except RuntimeError:
+                pass
         sg.display_info()
         return sg
 
@@ -406,16 +339,15 @@ class SCFT:
                 Time (seconds) for concentration integration.
         """
         # Field optimizer operates on irreducible grid when space group is set.
-        if self.sg is not None:
-            w = self.sg.irreducible_to_reduced(w)
+        w_reduced = w if self.sg is None else self.sg.irreducible_to_reduced(w)
 
         # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ (self.psi)
-        w_input = chain_fields(self, w)
+        w_input = chain_fields(self, w_reduced)
         if self.electrostatics is not None:
             self.electrostatics.add_potential(w_input, self.psi)
 
         phi, elapsed_time = solve_chains(self, w_input, q_init)
-        check_partition_once(self)
+        check_partition_once(self, lambda: self._full_grid_fields(w))
 
         # Convert concentrations back to irreducible grid for optimizer.
         if self.sg is not None:
@@ -605,16 +537,23 @@ class SCFT:
             Final convergence error (L2 norm of field residuals).
         iter : int
             Number of iterations performed.
-        """
 
-        M = len(self.monomer_types)
+        Raises
+        ------
+        ValidationError
+            Invalid initial_fields, q_init or initial_psi, before the run changes any state.
+        NumericalError
+            A non-finite residual or error level, a failed partition consistency check, or a final
+            partition function that is not positive and finite; its `fields` are the fields of
+            that iteration.
+        """
 
         # ψ of SCFT is real (the mean field of the Coulomb interaction)
         if initial_psi is not None:
             if self.electrostatics is None:
                 raise ValidationError("initial_psi needs 'electrostatics'")
-            if np.size(initial_psi) != self.prop_solver.n_grid or np.iscomplexobj(initial_psi) \
-                    or not np.all(np.isfinite(initial_psi)):
+            initial_psi = finite_values(initial_psi, "initial_psi")
+            if initial_psi.size != self.prop_solver.n_grid:
                 raise ValidationError("initial_psi must hold one real, finite value per grid point")
 
         # Reject invalid input before resetting the optimizer or changing the run state.
@@ -641,7 +580,6 @@ class SCFT:
         self._partition_checked = False
 
         # ---- 2. Iteration ----
-        stress_array = None
         self._homogeneous_state(energy_electrostatic_homogeneous)
 
         time_iter_start = time.time()
@@ -669,32 +607,16 @@ class SCFT:
             w_diff = self._field_residual(w, phi_array)
             psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
             if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
-                raise ValidationError(f"Non-finite SCFT residual at iteration {iter}")
+                raise NumericalError(f"Non-finite SCFT residual at iteration {iter}", self._full_grid_fields(w))
             old_error_level = error_level
-            error_level = self._error_level(w, w_diff, psi_diff)
-            field_error_level = error_level
+            field_error_level = self._error_level(w, w_diff, psi_diff)
             mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
 
-            if self.relax_cell:
-                # The stress costs ~30 % of an iteration: compute it every stress_interval
-                # iterations ("adaptive": every 1, 2 or 4 as the error drops) and reuse it in between
-                if self.stress_interval == "adaptive":
-                    stress_interval = 1 if error_level > 1e-2 else (2 if error_level > 1e-4 else 4)
-                else:
-                    stress_interval = self.stress_interval
-                stress_is_current = (iter == 1) or (iter % stress_interval == 0) or iter == self.max_iter
-                if stress_is_current:
-                    stress_array = self.cell.stress(w, phi)
-                # The stress along the optimized lattice parameters counts towards the error
-                error_level += self.cell.error(stress_array)
-                # A cached stress can guide updates, but cannot certify convergence.
-                if not stress_is_current and error_level < self.tolerance:
-                    stress_array = self.cell.stress(w, phi)
-                    stress_is_current = True
-                    error_level = field_error_level + self.cell.error(stress_array)
-
+            # With relax_cell, the stress along the lattice parameters that relax counts towards the
+            # error (computed every stress_interval iterations: CellRelaxation.error_at)
+            error_level = field_error_level + self.cell.error_at(iter, w, phi, field_error_level)
             if not np.isfinite(error_level):
-                raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
+                raise NumericalError(f"Non-finite SCFT error level at iteration {iter}", self._full_grid_fields(w))
 
             # Print this iteration
             self._print_iteration(iter, mass_error, total_partitions, energy_total, error_level)
@@ -703,9 +625,8 @@ class SCFT:
             if on_iteration is not None:
                 keep_going = on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions))
                 if keep_going is not None and not keep_going:
-                    if self.relax_cell and not stress_is_current:
-                        stress_array = self.cell.stress(w, phi)
-                        error_level = field_error_level + self.cell.error(stress_array)
+                    # The final error with the stress of these fields, not a reused one
+                    error_level = field_error_level + self.cell.current_error(w, phi)
                     print(f"Iteration stopped by callback at iteration {iter}")
                     break
 
@@ -714,13 +635,14 @@ class SCFT:
                 break
 
             # New fields, ψ and cell
-            w = self._next_fields(w, w_diff, psi_diff, stress_array, old_error_level, error_level)
+            w = self._next_fields(w, w_diff, psi_diff, old_error_level, error_level)
 
-        self.cell.check_tied_lengths(stress_array, error_level)
+        self.cell.check_tied_lengths(error_level)
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
-        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
+        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)",
+                                  lambda: self._full_grid_fields(w))
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start
@@ -732,60 +654,23 @@ class SCFT:
         if not report_partition_consistency(self.prop_solver):
             print("Warning: Final partition consistency check failed.")
 
-        # Store phi and w
-        self.phi = phi
-        self.w = w
-        self.ion_chemical_potentials = None
-        if es is not None:
-            print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
-                  % es.poisson_error(self.smearing.apply_to_dict(phi), self.psi))
-            if es.ions:
-                self.ion_chemical_potentials = es.ion_chemical_potentials(self.psi)
-                print("Point ions: chemical potentials βμ", self.ion_chemical_potentials,
-                      "ions per reference chain", es.ion_number_densities(self.psi))
-
-        # Store free energy
-        self.free_energy = energy_total
-        self.free_energy_absolute = energy_absolute
-        self.error_level = error_level
-        self.iter = iter
+        # Keep the final state
+        self.phi, self.w = phi, w
+        self.free_energy, self.free_energy_absolute = energy_total, energy_absolute
+        self.error_level, self.iter = error_level, iter
         self.partition_functions = list(total_partitions)
-        self.chemical_potentials = None
-        self.grand_potential = None
-        if q_init is None and not any(p.get("initial_conditions") for p in self.polymers):
-            self.chemical_potentials = self.compute_chemical_potentials()
-            present = self.chain_densities > 0.0
-            self.grand_potential = float(energy_absolute - np.dot(self.chain_densities[present],
-                                                                 np.array(self.chemical_potentials)[present]))
-            # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
-            if es is not None:
-                for ion, mu in zip(es.ions, self.ion_chemical_potentials or []):
-                    if ion["concentration"] is not None and ion["concentration"] > 0:
-                        self.grand_potential -= es.n_segments * ion["concentration"] * mu
-            print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", self.chemical_potentials)
-            print("Grand potential in the same pressure convention: %.9f" % self.grand_potential)
+
+        # The chemical potentials of the point ions and of the chains, and the grand potential (scft_results.py)
+        self.ion_chemical_potentials = ion_chemical_potentials(self, phi)
+        self.chemical_potentials, self.grand_potential = chemical_potentials(self, q_init)
 
         # Return SCFTResult if requested
-        if return_result:
-            return scft_result(self, phi, w, energy_total, error_level, iter, total_partitions, stress_array)
-        return None
+        return scft_result(self) if return_result else None
 
     def _initial_fields(self, initial_fields, q_init):
         """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
         M = len(self.monomer_types)
-
-        if not isinstance(initial_fields, dict):
-            raise ValidationError("initial_fields must be a dict {monomer_type: field_array}")
-        prepared = {}
-        for name in self.monomer_types:
-            if name not in initial_fields:
-                raise ValidationError(f"initial_fields is missing monomer {name!r}")
-            field = real_values(initial_fields[name], f"initial_fields[{name!r}]")
-            if field.size != self.prop_solver.total_grid:
-                raise ValidationError(f"initial_fields[{name!r}] needs {self.prop_solver.total_grid} values, "
-                                      f"got {field.size}")
-            prepared[name] = field
-        initial_fields = prepared
+        initial_fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.total_grid)
 
         # With axis_ordering the arrays are given in the axis order of nx and lx and are
         # transposed to the standard [a, b, c] order (the results are in that order)
@@ -825,7 +710,7 @@ class SCFT:
         prepared = {}
         full_size, reduced_size = self.prop_solver.total_grid, self.prop_solver.n_grid
         for label, values in q_init.items():
-            profile = real_values(values, f"q_init[{label!r}]")
+            profile = finite_values(values, f"q_init[{label!r}]")
             is_full = profile.size == full_size
             if is_full:
                 if self._axis_perm is not None:
@@ -941,6 +826,10 @@ class SCFT:
             error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
         return np.sqrt(error_level/error_normal)
 
+    def _full_grid_fields(self, w):
+        """The fields w (M, n) of the working basis as {monomer type: array on the full grid}, as SCFTResult.w."""
+        return {name: self._to_full_grid(w[i]) for i, name in enumerate(self.monomer_types)}
+
     def _print_iteration(self, iter, mass_error, total_partitions, energy_total, error_level):
         print("%8d %12.3E " % (iter, mass_error), end=" [ ")
         for Q in total_partitions:
@@ -954,7 +843,7 @@ class SCFT:
         else:
             print("] %15.9f %15.7E " % (energy_total, error_level))
 
-    def _next_fields(self, w, w_diff, psi_diff, stress_array, old_error_level, error_level):
+    def _next_fields(self, w, w_diff, psi_diff, old_error_level, error_level):
         """Simple and Anderson mixing of the fields (irreducible basis with a space group), ψ and the cell."""
         M, es = len(self.monomer_types), self.electrostatics
         # Calculate new fields using simple and Anderson mixing, ψ after the fields
@@ -963,7 +852,7 @@ class SCFT:
         if es is not None:
             fields, fields_diff = np.concatenate((fields, self.psi)), np.concatenate((fields_diff, psi_diff))
         if self.relax_cell:
-            fields = self.cell.update(fields, fields_diff, stress_array, old_error_level, error_level)
+            fields = self.cell.update(fields, fields_diff, old_error_level, error_level)
         else:
             fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
         w = np.reshape(fields[:w.size], (M, -1))

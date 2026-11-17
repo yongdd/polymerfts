@@ -48,12 +48,6 @@
 #include <utility>
 #include <vector>
 
-/// Error text for a junction that would raise complex propagators to a power that is not an
-/// integer of at most 10^6 (junction_product::integer_power). The power is that of one branch:
-/// the multiplicity of its block, or one less for the propagator that enters a copy, summed
-/// over identical branches. Defined in ComputationCommon.cpp.
-std::string complex_real_power_message(double power);
-
 /// One field in backend memory. Intentionally incomplete (see the file comment).
 template <typename T>
 struct BackendArray;
@@ -169,7 +163,8 @@ public:
 
     /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction, which has at
     /// least one branch, so sources is never empty. A block multiplicity makes n_i real; a real
-    /// power needs real propagators and throws for complex ones.
+    /// power needs real propagators. For complex ones every n_i is an integer of at most 10^6,
+    /// which ComputationCommon checks when the computation is built.
     virtual void junction_product(int stream, BackendArray<T>* q,
                                   const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 

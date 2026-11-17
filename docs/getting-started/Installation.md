@@ -195,7 +195,7 @@ FMA instructions (`-march=x86-64-v3`, `-march=native`, or a compiler whose defau
 target has them); plain x86-64 has none. MKL, FFTW and the nvcc-compiled `.cu`
 files are not affected, and MSVC's default `/fp:precise` does not contract. A
 floating-point model given in `CMAKE_CXX_FLAGS` or the flags of the build type
-(`-ffp-model`, `-fp-model`, `-ffp-contract`, `-ffast-math`) is kept instead, with a
+(`-ffp-model`, `-fp-model`, `-ffp-contract`, `-ffast-math`, `-Ofast`) is kept instead, with a
 configuration message; full and reduced memory may then differ in the last bits.
 
 </details>

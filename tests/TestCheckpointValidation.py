@@ -1,7 +1,5 @@
 """Reject corrupt checkpoints before mutating RNG, extension or WTMD state."""
-import contextlib
 import copy
-import io
 import json
 import os
 import tempfile
@@ -14,7 +12,7 @@ from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import extension_state
 from polymerfts.utils.common import atomic_savemat
-from TestFtsReliability import parameters, fields, expect_error
+from fts_checks import diblock_fields, diblock_parameters, expect_error, silenced
 
 
 class Counter:
@@ -37,11 +35,11 @@ def read_checkpoint(path):
 
 def check_corruption(root, cls):
     original_dir = root / (cls.__name__ + "original")
-    original = cls(parameters(original_dir, 1), random_seed=11, callbacks={"count": Counter()})
-    original.run(fields())
+    original = cls(diblock_parameters(original_dir, 1, cls), random_seed=11, callbacks={"count": Counter()})
+    original.run(diblock_fields())
     data = read_checkpoint(original_dir / "fields_000001.mat")
     counter = Counter(7)
-    candidate = cls(parameters(root / (cls.__name__ + "candidate")), random_seed=99,
+    candidate = cls(diblock_parameters(root / (cls.__name__ + "candidate"), cls=cls), random_seed=99,
                     callbacks={"count": counter})
     monomer_key = "w_A" if cls is LFTS else "w_A_real"
     corruptions = [
@@ -80,7 +78,7 @@ def check_corruption(root, cls):
 
 def check_wtmd(root):
     output = root / "wtmd"
-    params = parameters(output)
+    params = diblock_parameters(output)
     params.update(nx=[4, 4, 4], lx=[3.0, 3.0, 3.0],
                   wtmd={"update_freq": 3, "recording_period": 100, "dpsi": 0.1})
     sim = LFTS(params, random_seed=11)
@@ -99,18 +97,29 @@ def check_wtmd(root):
     before_u = sim.wtmd.u.copy()
     before_I1 = copy.deepcopy(sim.wtmd.I1)
     for key in ("wtmd_u", "wtmd_up", "wtmd_I0", "wtmd_I1_A_B", "wtmd_unscaled_up", "wtmd_unscaled_I1_A_B",
-                "wtmd_order_parameter_history", "wtmd_dH_history_A_B", "edited wtmd_u", "edited wtmd_I1_A_B"):
+                "wtmd_order_parameter_history", "wtmd_dH_history_A_B"):
         bad = copy.deepcopy(data)
-        if key.startswith("edited "):   # the scaled copy no longer matches the unscaled one
-            bad[key[7:]] = 2.0 * bad[key[7:]]
-        else:
-            bad.pop(key)
-        path = root / (key.replace(" ", "_") + ".mat")
+        bad.pop(key)
+        path = root / (key + ".mat")
         atomic_savemat(path, bad)
         expect_error(lambda: sim.continue_run(path), ValidationError)
         assert sim.random_bg.state == before_rng
         assert np.array_equal(sim.wtmd.u, before_u)
         assert all(np.array_equal(sim.wtmd.I1[key], value) for key, value in before_I1.items())
+
+    # An unversioned checkpoint of the WTMD before 2026-02-03 (no wtmd_I0) is refused before any state changes
+    legacy = copy.deepcopy(data)
+    legacy.pop("checkpoint_format_version")
+    legacy.pop("wtmd_I0")
+    path = root / "legacy_wtmd.mat"
+    atomic_savemat(path, legacy)
+    try:
+        sim.continue_run(path, allow_legacy=True)
+        raise AssertionError("A legacy WTMD checkpoint without wtmd_I0 was accepted")
+    except ValidationError as exc:
+        assert "wtmd_I0" in str(exc), exc
+    assert sim.random_bg.state == before_rng
+    assert np.array_equal(sim.wtmd.u, before_u)
 
 
 def main():
@@ -120,7 +129,7 @@ def main():
         previous = Path.cwd()
         os.chdir(directory)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 for cls in (LFTS, CLFTS):
                     check_corruption(Path(directory), cls)
                 check_wtmd(Path(directory))

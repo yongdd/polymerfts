@@ -22,8 +22,7 @@ import yaml
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
 from polymerfts.utils.common import input_hash, json_ready, mat_ready, settings_json
-from TestSmallFieldCoefficients import parameters
-from fts_checks import exact_restart, python_platform, quiet
+from fts_checks import compressible_parameters, exact_restart, python_platform, quiet
 
 
 def scalar_encodings():
@@ -69,7 +68,7 @@ def scalar_encodings():
 
 
 def scft_outputs(root, platform):
-    params = parameters(root, platform, zeta=None)
+    params = compressible_parameters(root, platform, zeta=None)
     params.update(relax_cell=False, max_iter=1, tolerance=np.longdouble("1e-8"),
                   optimizer={"name": "am", "max_hist": 5, "start_error": 0.01,
                              "mix_min": 0.1, "mix_init": 0.1})
@@ -96,7 +95,7 @@ def fts_restart(root, platform):
         ("A", "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 4)))}
     for cls in (LFTS, CLFTS):
         def make(name, steps, seed):
-            params = parameters(root / cls.__name__ / name, platform, zeta=100.0, steps=steps)
+            params = compressible_parameters(root / cls.__name__ / name, platform, zeta=100.0, steps=steps, cls=cls)
             params["langevin"]["nbar"] = np.longdouble(10000.0)
             before = copy.deepcopy(params)
             sim = quiet(cls, params, random_seed=seed)

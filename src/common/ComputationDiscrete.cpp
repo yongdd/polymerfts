@@ -219,6 +219,8 @@ template <typename T>
 void ComputationDiscrete<T>::advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u)
 {
     this->check_box_space_group();
+    // The step uses the fields and the cell of the last compute_propagators()
+    this->require_propagators();
     try
     {
         const std::string monomer_type = this->molecules->get_polymer(p).get_block(v, u).monomer_type;
@@ -417,7 +419,7 @@ std::vector<double> ComputationDiscrete<T>::compute_partition_errors()
                 q, q_dagger, exp_dw)*(block.n_repeated/this->cb->get_volume());
             total_partition /= n_propagators;
             total_partitions[p].push_back(total_partition);
-            if (this->molecules->get_polymer(p).get_volume_fraction() == 0.0)
+            if (this->molecules->get_polymer(p).is_absent())
             {
                 double integral = this->backend->absolute_inner_product(q, q_dagger, exp_dw)
                                   *(block.n_repeated/this->cb->get_volume());

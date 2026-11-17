@@ -111,6 +111,13 @@ public:
         [[maybe_unused]] int n_basis) {}
 
     /**
+     * @brief Allocate the work of the path the solver takes, once the space group (if
+     *        any) is set and before the first computation (default: nothing; the
+     *        solvers that allocate all their work in the constructor need no call).
+     */
+    virtual void provide_work() {}
+
+    /**
      * @brief Update Laplacian operator for new box dimensions.
      *
      * Recomputes Fourier-space operators or finite difference coefficients.

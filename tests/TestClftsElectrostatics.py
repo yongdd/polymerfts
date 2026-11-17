@@ -31,8 +31,6 @@
    structure function (zero at k = 0) equal a recomputation with (k^2 + kappa^2)/E from the
    saved state.
 """
-import contextlib
-import io
 import json
 import os
 import tempfile
@@ -43,9 +41,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError
+from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError, NumericalError
 from polymerfts.utils.checkpoint import validate_checkpoint, _measurement_key
-from fts_checks import exact_restart, quiet
+from fts_checks import exact_restart, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -78,7 +76,7 @@ def initial_fields():
 
 
 def run(params, *, continue_from=None):
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params, random_seed=5)
         if continue_from is None:
             sim.run(initial_fields=initial_fields())
@@ -138,7 +136,7 @@ def hamiltonian(sim, w_aux):
 
 
 def forces(root):
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(parameters(root / "forces"), random_seed=5)
     es, n_grid, M = sim.electrostatics, int(np.prod(NX)), 3
     rng = np.random.default_rng(23)
@@ -182,7 +180,7 @@ def recorded_measurements(root):
     # Every step recorded, with unequal smearing lengths: Gamma_C differs from Gamma_A = Gamma_B
     params = parameters(root / "measured", steps=2)
     params["recording"].update(checkpoint_interval=1, sample_interval=1, statistics_save_interval=1)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params, random_seed=5)
     es, states = sim.electrostatics, []
 
@@ -190,7 +188,7 @@ def recorded_measurements(root):
         states.append((es.psi_k.copy(), np.array(c), es.previous_noise.copy()))
         step(c)
     es.step = step
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields=initial_fields())
 
     # S_ij = V Nbar^(1/2) mu_i(k) phi_j(-k) / Gamma_i(k), mu_i = sum_k A_ik Omega_k / lambda_k,
@@ -228,13 +226,13 @@ def recorded_measurements(root):
     # A second run() of the same object starts again without previous psi noise
     assert np.all(states[0][2] == 0.0) and np.any(states[1][2] != 0.0), "previous psi noise of the first run"
     states.clear()
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields=initial_fields())
     assert np.all(states[0][2] == 0.0), "a second run() starts without previous psi noise"
 
 
 def psi_step(root):
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(parameters(root / "step"), random_seed=5)
     es, n_grid = sim.electrostatics, int(np.prod(NX))
     dt, s = sim.langevin["dt"], es.psi_dt_scaling
@@ -280,7 +278,7 @@ def psi_step(root):
         params = parameters(root / "equipartition")
         params["langevin"].update(dt=dt, integrator=integrator)
         params["electrostatics"]["charges"] = {"A": 0.0, "C": 0.0}
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim = CLFTS(params, random_seed=5)
         es = sim.electrostatics
         rate = es.k_sq / es.coupling
@@ -307,7 +305,7 @@ def psi_step(root):
         def step(self, fields, force, **kwargs):
             return fields
     for integrator, averaged in (("lm", True), (Custom(), True), ("euler", False)):
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim = CLFTS(parameters(root / "integrators"), random_seed=5, integrator=integrator)
         assert sim.electrostatics.averaged_noise == averaged, f"averaged psi noise with the integrator {integrator}"
 
@@ -328,8 +326,11 @@ def restart(root):
     # psi draws from the jumped stream of the auxiliary fields, recorded in the run metadata
     metadata = json.loads(str(a["simulation_metadata_json"]))
     assert metadata["initial_psi_rng_state"] == np.random.PCG64(17).jumped().state
-    # A checkpoint without psi is rejected
-    expect_validation_error(lambda: sims["full"].electrostatics.restore({"psi_real": np.zeros(int(np.prod(NX)))}),
+    # A checkpoint without psi is rejected: an unversioned one, which validate_checkpoint does not check
+    # otherwise, holds none
+    legacy = mat(root / "partial", "fields_000003.mat")
+    legacy.pop("checkpoint_format_version")
+    expect_validation_error(lambda: validate_checkpoint(sims["full"], legacy, allow_legacy=True),
                             "no electrostatic potential")
 
     # A run continued by hand takes psi through initial_psi; without it psi restarts at zero
@@ -337,7 +338,7 @@ def restart(root):
     psi = fields["psi_real"] + 1j * fields["psi_imag"]
     initial = {m: fields["w_" + m + "_real"] + 1j * fields["w_" + m + "_imag"] for m in ("A", "B", "C")}
     for given in (psi, None):
-        with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings(record=True) as caught:
+        with silenced(), warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             sim = CLFTS(parameters(root / "manual", steps=4), random_seed=5)
             es, first = sim.electrostatics, []
@@ -349,8 +350,9 @@ def restart(root):
             sim.run(initial, normal_noise_prev=fields["normal_noise_prev"], start_langevin_step=4, initial_psi=given)
         assert np.array_equal(first[0], np.zeros_like(psi) if given is None else psi), "psi at the start of step 4"
         assert any("initial_psi" in str(w.message) for w in caught) == (given is None), "warning without initial_psi"
-    expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4)).run(
-        initial, start_langevin_step=4, initial_psi=np.zeros(3)), "initial_psi")
+    for values in (np.zeros(3), np.full(int(np.prod(NX)), "0.5"), [[0.0] * 3, [0.0]]):   # size, strings, ragged
+        expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4)).run(
+            initial, start_langevin_step=4, initial_psi=values), "initial_psi")
     expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4, electrostatics=False)).run(
         initial, initial_psi=psi), "needs 'electrostatics'")
     # Without Coulomb coupling psi does not move: a nonzero initial_psi is rejected
@@ -362,7 +364,7 @@ def restart(root):
     # A checkpoint must hold psi, psi(k), the previous noise, the stream of psi, the pending
     # drifts of psi and the pending charge structure sums
     data = loadmat(root / "partial" / "fields_000003.mat", squeeze_me=True)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(parameters(root / "partial"), random_seed=5)
     validate_checkpoint(sim, data)
     pending = np.size(data["record_psi_drift_history"])
@@ -379,9 +381,45 @@ def restart(root):
         expect_validation_error(lambda: validate_checkpoint(sim, modified), message)
 
 
+def numerical_failures(root):
+    """A failed computation raises NumericalError, not an error of the input (ValidationError): ψ that is not
+    finite after a step, and intermediate fields or forces that are not finite when the integrator
+    advances ψ with the fields."""
+    def expect_numerical(call, message):
+        try:
+            with silenced():
+                call()
+        except NumericalError as error:
+            assert not isinstance(error, ValidationError) and message in str(error), (message, str(error))
+            return
+        raise AssertionError(f"Expected NumericalError: {message}")
+
+    with silenced():
+        sim = CLFTS(parameters(root / "non_finite_psi", steps=1), random_seed=5)
+    es = sim.electrostatics
+
+    def non_finite_step(charge_density):
+        es.psi = np.full_like(es.psi, np.nan)
+    es.step = non_finite_step
+    expect_numerical(lambda: sim.run(initial_fields()), "Non-finite electrostatic potential at step 1")
+    status = json.loads((root / "non_finite_psi" / "run_status.json").read_text())
+    assert status["status"] == "failed" and status["reason"].startswith("NumericalError"), status
+
+    with silenced():
+        sim = CLFTS(parameters(root / "intermediate"), random_seed=5)
+    shape = (len(sim.monomer_types) + 1, sim.prop_solver.n_grid)
+    fields = np.zeros(shape, np.complex128)
+    fields[-1, 2] = np.nan
+    expect_numerical(lambda: sim._evaluate_force_with_psi(fields), "Intermediate CLFTS fields have non-finite values")
+    derivative = sim.mpt.compute_func_deriv
+    sim.mpt.compute_func_deriv = lambda w_aux, phi, indices: derivative(w_aux, phi, indices) * np.nan
+    expect_numerical(lambda: sim._evaluate_force_with_psi(np.zeros(shape, np.complex128)),
+                     "Non-finite intermediate CLFTS force")
+
+
 def expect_validation_error(make, message):
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             make()
     except ValidationError as exc:
         assert message in str(exc), (message, str(exc))
@@ -435,7 +473,7 @@ def input_checks(root):
     # The coupling of bjerrum_length: E = 4 pi (l_B/R0) N^2 Nbar^(1/2)
     params = parameters(root / "inputs")
     params["electrostatics"] = {"charges": {"A": Z_A, "C": -1.0}, "bjerrum_length": 0.01}
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params)
     assert np.isclose(sim.electrostatics.coupling, 4 * np.pi * 0.01 * 20 ** 2 * 100.0)
 
@@ -449,7 +487,7 @@ def input_checks(root):
                             "must declare averaged_noise")
     fresh = Undeclared()
     fresh.averaged_noise = False
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(parameters(root / "inputs"), integrator=fresh)
     assert sim.electrostatics.averaged_noise is False
 
@@ -458,7 +496,7 @@ def screening(root):
     screening_length = 0.3
     params = parameters(root / "screened")
     params["electrostatics"]["screening_length"] = screening_length
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params, random_seed=5)
     es, n_grid, M = sim.electrostatics, int(np.prod(NX)), 3
     assert np.isclose(es.kappa_sq, 1 / screening_length ** 2) and es.settings()["screening_length"] == screening_length
@@ -484,7 +522,7 @@ def screening(root):
     # V Nbar^(1/2) ((k^2 + kappa^2)/E) <|psi(k)/n|^2> = 1, without charges, at dt = 20
     params["electrostatics"]["charges"] = {"A": 0.0, "C": 0.0}
     params["langevin"]["dt"] = 20.0
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params, random_seed=5)
     es = sim.electrostatics
     rate = es.screened_k_sq / es.coupling
@@ -512,7 +550,7 @@ def screening(root):
     for screened in (True, False):
         if not screened:
             charged = parameters(root / "net_charge", steps=2)
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim = CLFTS(charged, random_seed=5)
             sim.run(initial_fields=initial_fields())
         assert (sim.electrostatics.psi_k[(0,) * len(NX)] != 0.0) == screened, "uniform mode of psi"
@@ -532,7 +570,7 @@ def screened_measurements(root):
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": t, "length": 0.25} for t in "EKEK"]}])
     params["electrostatics"] = {"charges": {"E": -1.0, "K": 0.6}, "coupling": 300.0, "screening_length": 0.3}
     params["recording"].update(checkpoint_interval=1, sample_interval=1, statistics_save_interval=1)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim = CLFTS(params, random_seed=5)
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     es, n_grid, types = sim.electrostatics, int(np.prod(NX)), ["E", "K"]
@@ -585,7 +623,8 @@ def main():
         root = Path(tmp)
         for name, check in (("neutral reductions", neutral_reductions), ("forces", forces),
                             ("recorded measurements", recorded_measurements), ("psi step", psi_step),
-                            ("restart", restart), ("input checks", input_checks), ("screening", screening),
+                            ("restart", restart), ("input checks", input_checks),
+                            ("numerical failures", numerical_failures), ("screening", screening),
                             ("screened measurements", screened_measurements)):
             check(root)
             print(f"[PASS] {name}")

@@ -33,7 +33,7 @@ class ThermodynamicOperators:
             self.electrostatics is not None and any(ion["concentration"] is None for ion in self.electrostatics.ions))
         self.record_pressure = bool(self.sim.recording.get("pressure", False))
         if self.record_pressure:
-            if any(b.lower() != "periodic" for b in self.prop_solver.bc):
+            if any(b != "periodic" for b in self.prop_solver.bc_lower):
                 raise ValidationError("'recording.pressure' needs a periodic box")
             if not self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
                 raise ValidationError(f"'recording.pressure' needs the stress; "

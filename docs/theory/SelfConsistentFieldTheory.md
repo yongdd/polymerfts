@@ -389,7 +389,7 @@ The SCFT class supports several advanced features not covered in the basic examp
 
 | Feature | Parameter | Description |
 |---------|-----------|-------------|
-| Space group symmetry | `"space_group": {"symbol": "Ia-3d"}` | Exploit crystallographic symmetry (beta) |
+| Space group symmetry | `"space_group": {"symbol": "Ia-3d"}` | Exploit crystallographic symmetry |
 | Smearing | `"smearing": {...}` | Finite-range interactions |
 | Random copolymers | `{"monomer_fractions": {"A": 0.3, "B": 0.7}}` | Statistical copolymer blocks |
 | Non-orthogonal cells | `"angles": [90, 90, 120]` | Monoclinic/triclinic unit cells |

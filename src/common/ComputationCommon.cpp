@@ -7,12 +7,19 @@
 #include <algorithm>
 #include <memory>
 #include <complex>
+#include <type_traits>
 
 #include "ComputationCommon.h"
 #include "JunctionProduct.h"
 #include "PropagatorCode.h"
 #include "ValidationUtils.h"
 
+namespace
+{
+/// Error text for a junction that would raise complex propagators to a power that is not an
+/// integer of at most 10^6 (junction_product::integer_power). The power is that of one branch:
+/// the multiplicity of its block, or one less for the propagator that enters a copy, summed
+/// over identical branches.
 std::string complex_real_power_message(double power)
 {
     return "A junction raises complex propagators to the power " + validation::shortest_text(power)
@@ -20,6 +27,7 @@ std::string complex_real_power_message(double power)
         "a non-integer block multiplicity, has no unique value for complex numbers. With complex fields "
         "use integer multiplicities and at most 10^6 identical branches at one junction.";
 }
+}  // namespace
 
 template <typename T>
 ComputationCommon<T>::ComputationCommon(
@@ -38,6 +46,20 @@ ComputationCommon<T>::ComputationCommon(
             throw_with_line_number("There is no propagator code. Add polymers first.");
         if (propagator_computation_optimizer->get_computation_blocks().size() == 0)
             throw_with_line_number("There is no block. Add polymers first.");
+
+        // Complex fields take only integer powers at the junctions of branches (keys "(..."),
+        // checked once here: the backends multiply complex junction products without a check
+        if constexpr (!std::is_same_v<T, double>)
+        {
+            for (const auto& [key, edge] : propagator_computation_optimizer->get_computation_propagators())
+            {
+                if (key[0] != '(')
+                    continue;
+                for (const auto& dep : edge.deps)
+                    if (!junction_product::integer_power(std::get<2>(dep)))
+                        throw_with_line_number(complex_real_power_message(std::get<2>(dep)));
+            }
+        }
 
         // The factory's SpaceGroupGuard attached the group for this construction.
         this->space_group_ = space_group;
@@ -188,7 +210,7 @@ std::vector<double> ComputationCommon<T>::partition_errors_from_contours(
     errors.reserve(this->single_polymer_partitions.size());
     for (size_t p = 0; p < this->single_polymer_partitions.size(); ++p)
     {
-        if (this->molecules->get_polymer(static_cast<int>(p)).get_volume_fraction() == 0.0)
+        if (this->molecules->get_polymer(static_cast<int>(p)).is_absent())
             errors.push_back(absolute_integrand_partition_error(values[p], this->single_polymer_partitions[p],
                                                                absolute_integrals[p]));
         else
@@ -371,7 +393,7 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
             // An absent species adds nothing, also when its unused propagators are not
             // finite; an occupied one whose Q overflows keeps its non-finite density
             if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-                && this->molecules->get_polymer(std::get<0>(key)).get_volume_fraction() != 0.0)
+                && !this->molecules->get_polymer(std::get<0>(key)).is_absent())
             {
                 arrays.push_back(phi_b);
                 weights.push_back(concentration_norm(key));
@@ -414,7 +436,7 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
             const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
             // An absent species adds nothing (see the overload above)
             if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-                && this->molecules->get_polymer(p).get_volume_fraction() != 0.0)
+                && !this->molecules->get_polymer(p).is_absent())
             {
                 arrays.push_back(phi_b);
                 weights.push_back(concentration_norm(key));
@@ -500,7 +522,7 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
             if (block_it == phi_block.end())
                 throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
             // An absent species has zero density, also when its unused propagators are not finite
-            if (pc.get_volume_fraction() == 0.0)
+            if (pc.is_absent())
             {
                 std::fill_n(&phi[b*N], N, T(0.0));
                 continue;

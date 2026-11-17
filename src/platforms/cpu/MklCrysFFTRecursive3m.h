@@ -28,14 +28,15 @@ private:
     void release();
 
 public:
-    MklCrysFFTRecursive3m(
+    explicit MklCrysFFTRecursive3m(
         std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para,
         std::array<double, 9> translational_part = {0,0,0, 0,0,0, 0,0,0});
 
     ~MklCrysFFTRecursive3m();
 
-    void apply_with_cache(const KCache& cache, const double* q_in, double* q_out) const;
+    /// q_out = F^-1[ table F[q_in] ] with a table of build_boltzmann() or
+    /// build_multiplier() (16 arrays, table_stride_ values apart); q_in is kept.
+    void apply_with_table(const double* table, const double* q_in, double* q_out) const;
 };
 
 #endif  // MKL_CRYS_FFT_RECURSIVE_3M_H_

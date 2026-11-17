@@ -10,6 +10,7 @@
 #include "Recursive3mFoldParity.h"
 #include "Recursive3mHelpers.h"
 
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 #include <stdexcept>
@@ -19,6 +20,12 @@
 using namespace crys_recursive_3m;
 
 namespace {
+
+/// True when p meets cuFFT's alignment (a cufftDoubleComplex, 16 bytes)
+bool cufft_aligned(const void* p)
+{
+    return reinterpret_cast<std::uintptr_t>(p) % alignof(cufftDoubleComplex) == 0;
+}
 
 __global__ void ker_apply_k_3m(
     cufftDoubleComplex* __restrict__ dst,
@@ -88,11 +95,9 @@ __global__ void ker_apply_k_3m(
 
 CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(
     std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
     std::array<double, 9> translational_part)
     : nx_logical_(nx_logical),
-      translational_part_(translational_part),
-      tables_(std::make_shared<CudaCrysFFTTables<KCacheDevice>>(cell_para))
+      translational_part_(translational_part)
 {
     try
     {
@@ -152,8 +157,7 @@ CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& oth
       M_complex_(other.M_complex_),
       translational_part_(other.translational_part_),
       fold_perm_(other.fold_perm_),
-      twiddles_(other.twiddles_),
-      tables_(other.tables_.shared())
+      twiddles_(other.twiddles_)
 {
     try
     {
@@ -168,7 +172,7 @@ CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& oth
     }
 }
 
-std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTRecursive3m::clone_sharing_tables() const
+std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTRecursive3m::clone() const
 {
     return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTRecursive3m(*this));
 }
@@ -181,9 +185,7 @@ CudaCrysFFTRecursive3m::~CudaCrysFFTRecursive3m()
 // Idempotent; tolerates a partly built object (null buffers, plans not created).
 void CudaCrysFFTRecursive3m::release()
 {
-    // The caches and buffers are owning; the cuFFT plans need the explicit free
-    k_current_ = nullptr;
-    tables_.reset();
+    // The buffers are owning; the cuFFT plans need the explicit free
     twiddles_.reset();
     d_step1_.release();
     d_step2_.release();
@@ -240,29 +242,30 @@ std::shared_ptr<const CudaCrysFFTRecursive3m::Twiddles> CudaCrysFFTRecursive3m::
     return twiddles;
 }
 
-CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::generate_k_cache(
-    double coeff, const std::array<double, 6>& cell, KCacheDevice cache)
+void CudaCrysFFTRecursive3m::build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
+                                             double coeff, cudaStream_t stream) const
 {
     const std::vector<double> tempmat = logical_k_table(nx_logical_, cell, [coeff](double kx2, double ky2, double kz2) {
         return std::exp(-(kx2 + ky2 + kz2) * coeff);
     });
-    return build_k_cache_from_tempmat(tempmat, std::move(cache));
+    build_table_from_tempmat(table, tempmat, stream);
 }
 
-CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::generate_k_cache_from_multiplier(
-    MultiplierType type, double coeff, const std::array<double, 6>& cell, KCacheDevice cache)
+void CudaCrysFFTRecursive3m::build_multiplier(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
+                                              int axes, double coeff, cudaStream_t stream) const
 {
-    const int axes = multiplier_axes(type);
-    const bool with_bond = multiplier_has_bond(type);
+    if (axes < 1 || axes > 7)
+        throw_with_line_number("CudaCrysFFTRecursive3m::build_multiplier: axes must be a mask of 1 (x), 2 (y), 4 (z).");
+    const bool with_bond = (coeff != 0.0);   // continuous chains: Σ k_d² alone
     const std::vector<double> tempmat = logical_k_table(nx_logical_, cell, [axes, with_bond, coeff](double kx2, double ky2, double kz2) {
         const double k_axes = ((axes & 1) ? kx2 : 0.0) + ((axes & 2) ? ky2 : 0.0) + ((axes & 4) ? kz2 : 0.0);
         return with_bond ? std::exp(-(kx2 + ky2 + kz2) * coeff) * k_axes : k_axes;
     });
-    return build_k_cache_from_tempmat(tempmat, std::move(cache));
+    build_table_from_tempmat(table, tempmat, stream);
 }
 
-CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::build_k_cache_from_tempmat(
-    const std::vector<double>& tempmat, KCacheDevice cache)
+void CudaCrysFFTRecursive3m::build_table_from_tempmat(
+    CudaDeviceBuffer<double>& table, const std::vector<double>& tempmat, cudaStream_t stream) const
 {
     std::array<std::vector<double>, 8> k_split;
     std::array<double*, 8> k_split_ptr{};
@@ -282,8 +285,8 @@ CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::build_k_cache_from_
     add_sub_by_seq(k_split_ptr, seq1, halfsize);
     add_sub_by_seq(k_split_ptr, seq2, halfsize);
 
-    std::array<std::vector<double>, 8> k_re_host;
-    std::array<std::vector<double>, 8> k_im_host;
+    // The table on the host: the eight real factor arrays, then the eight imaginary ones
+    std::vector<double> k_host(16 * static_cast<size_t>(M_physical_), 0.0);
     std::array<double*, 8> k_re_ptr{};
     std::array<double*, 8> k_im_ptr{};
     std::array<const double*, 8> r_re_ptr{};
@@ -292,10 +295,8 @@ CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::build_k_cache_from_
 
     for (int i = 0; i < 8; ++i)
     {
-        k_re_host[i].assign(M_physical_, 0.0);
-        k_im_host[i].assign(M_physical_, 0.0);
-        k_re_ptr[i] = k_re_host[i].data();
-        k_im_ptr[i] = k_im_host[i].data();
+        k_re_ptr[i] = k_host.data() + static_cast<size_t>(i) * M_physical_;
+        k_im_ptr[i] = k_host.data() + static_cast<size_t>(8 + i) * M_physical_;
         r_re_ptr[i] = twiddles_->re[i].data();
         r_im_ptr[i] = twiddles_->im[i].data();
         // Twiddle r_p pairs with S_{fold_perm_[p]} (translation-parity
@@ -307,113 +308,61 @@ CudaCrysFFTRecursive3m::KCacheDevice CudaCrysFFTRecursive3m::build_k_cache_from_
     constexpr std::array<std::pair<int, int>, 4> seq3{{{0,7},{6,1},{2,5},{4,3}}};
     mul_add_sub_by_seq(k_re_ptr, k_im_ptr, r_re_ptr, r_im_ptr, k_split_perm_ptr, seq3, halfsize);
 
-    // `cache` holds the buffers of a cache dropped by a cell change when one is
-    // left; allocating and copying on the default stream would stall the other
-    // streams. On failure the local cache releases its tables
-    for (int i = 0; i < 8; ++i)
+    upload_table(table, k_host, stream);
+}
+
+void CudaCrysFFTRecursive3m::diffusion(
+    double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
+{
+    use_stream(stream);
+    const size_t bytes = sizeof(double) * M_physical_;
+
+    // The out-of-place D2Z keeps d_q_in, and the Z2D reads only d_step2_, so an
+    // out-of-place call preserves its input without a copy; d_q_out may alias d_q_in.
+    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex. A field
+    // at an odd offset into a larger array (the second propagator of a stress pair of an
+    // odd basis size) is not: it is copied to d_q_out, or to d_step2_ (free until the
+    // kernel below writes it) when d_q_out is not aligned either, and transformed there
+    double* d_src = d_q_in;
+    if (!cufft_aligned(d_q_in))
     {
-        if (cache.re[i].empty())
-            cache.re[i].allocate(M_physical_);
-        if (cache.im[i].empty())
-            cache.im[i].allocate(M_physical_);
-        CUDA_CHECK(cudaMemcpyAsync(cache.re[i], k_re_host[i].data(), sizeof(double) * M_physical_,
-                                        cudaMemcpyHostToDevice, stream_));
-        CUDA_CHECK(cudaMemcpyAsync(cache.im[i], k_im_host[i].data(), sizeof(double) * M_physical_,
-                                        cudaMemcpyHostToDevice, stream_));
+        d_src = (d_q_out != d_q_in && cufft_aligned(d_q_out)) ? d_q_out : reinterpret_cast<double*>(d_step2_.get());
+        CUDA_CHECK(cudaMemcpyAsync(d_src, d_q_in, bytes, cudaMemcpyDeviceToDevice, stream_));
     }
-    // Complete before the host tables go away and before any stream uses the cache
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-
-    return cache;
-}
-
-void CudaCrysFFTRecursive3m::set_cell_para(const std::array<double, 6>& cell_para)
-{
-    // Changes the cell of every object sharing the caches (no-op for the current cell)
-    tables_.shared()->set_cell(cell_para);
-    if (tables_.refresh())
-        k_current_ = nullptr;
-}
-
-void CudaCrysFFTRecursive3m::set_contour_step(double coeff)
-{
-    if (tables_.refresh())   // another object changed the cell
-        k_current_ = nullptr;
-    if (k_current_ && coeff == coeff_current_)
-        return;
-
-    k_current_ = &tables_.get({kBoltzmann, 0, coeff},
-        [&](const std::array<double, 6>& cell, KCacheDevice cache) {
-            return generate_k_cache(coeff, cell, std::move(cache));
-        });
-    coeff_current_ = coeff;
-}
-
-void CudaCrysFFTRecursive3m::diffusion(double* d_q_in, double* d_q_out)
-{
-    diffusion(d_q_in, d_q_out, stream_);
-}
-
-void CudaCrysFFTRecursive3m::diffusion(double* d_q_in, double* d_q_out, cudaStream_t stream)
-{
-    if (tables_.refresh())   // another object changed the cell
-        k_current_ = nullptr;
-    if (!k_current_)
-        throw_with_line_number("CudaCrysFFTRecursive3m::set_contour_step must be called before diffusion() and after a cell change.");
-
-    apply_with_cache(*k_current_, d_q_in, d_q_out, stream);
-}
-
-void CudaCrysFFTRecursive3m::apply_with_cache(
-    const KCacheDevice& cache, double* d_q_in, double* d_q_out, cudaStream_t stream)
-{
-    set_stream(stream);
-
-    double* d_work = (d_q_in == d_q_out) ? d_q_in : d_q_out;
-    if (d_q_in != d_q_out)
-    {
-        CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_q_in, sizeof(double) * M_physical_, cudaMemcpyDeviceToDevice, stream_));
-    }
-
-    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_work, d_step1_));
+    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_src, d_step1_));
 
     const int threads = 256;
     const int blocks = grid_blocks(M_complex_, threads);
 
+    const double* k = table.get();
+    const size_t M = M_physical_;
     ker_apply_k_3m<<<blocks, threads, 0, stream_>>>(
         d_step2_, d_step1_,
-        cache.re[0], cache.re[1], cache.re[2], cache.re[3],
-        cache.re[4], cache.re[5], cache.re[6], cache.re[7],
-        cache.im[0], cache.im[1], cache.im[2], cache.im[3],
-        cache.im[4], cache.im[5], cache.im[6], cache.im[7],
+        k, k + M, k + 2 * M, k + 3 * M, k + 4 * M, k + 5 * M, k + 6 * M, k + 7 * M,
+        k + 8 * M, k + 9 * M, k + 10 * M, k + 11 * M, k + 12 * M, k + 13 * M, k + 14 * M, k + 15 * M,
         nx_physical_[0], nx_physical_[1], nx_physical_[2], nx_physical_[2] / 2 + 1);
     CUDA_CHECK_LAUNCH();
 
-    CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_work));
-}
-
-const CudaCrysFFTRecursive3m::KCacheDevice& CudaCrysFFTRecursive3m::multiplier_cache(MultiplierType type, double coeff)
-{
-    // Types without the bond factor do not depend on coeff; normalize the cache key
-    const double key_coeff = multiplier_has_bond(type) ? coeff : 0.0;
-    return tables_.get({kMultiplier, static_cast<int>(type), key_coeff},
-        [&](const std::array<double, 6>& cell, KCacheDevice cache) {
-            return generate_k_cache_from_multiplier(type, coeff, cell, std::move(cache));
-        });
+    // An output that is not aligned takes the result through d_step1_, free after the kernel
+    if (cufft_aligned(d_q_out))
+    {
+        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_q_out));
+    }
+    else
+    {
+        double* d_result = reinterpret_cast<double*>(d_step1_.get());
+        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_result));
+        CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_result, bytes, cudaMemcpyDeviceToDevice, stream_));
+    }
 }
 
 void CudaCrysFFTRecursive3m::apply_multiplier(
-    double* d_q_in, double* d_q_out, MultiplierType type, double coeff, cudaStream_t stream)
+    double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
 {
-    apply_with_cache(multiplier_cache(type, coeff), d_q_in, d_q_out, stream);
+    diffusion(d_q_in, d_q_out, table, stream);
 }
 
-void CudaCrysFFTRecursive3m::prepare_multiplier(MultiplierType type, double coeff)
-{
-    multiplier_cache(type, coeff);
-}
-
-void CudaCrysFFTRecursive3m::set_stream(cudaStream_t stream)
+void CudaCrysFFTRecursive3m::use_stream(cudaStream_t stream)
 {
     if (stream_ == stream)
         return;

@@ -37,7 +37,6 @@ private:
     std::unique_ptr<CpuSolver<T>> solver;
     int n_streams;
     int n_basis;
-    std::vector<T> absolute_product;  ///< Reused partition-diagnostic integrand
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis
     std::map<std::string, std::vector<T>> exp_dw_reduced;
@@ -45,8 +44,11 @@ private:
     static T* raw(BackendArray<T>* a) { return reinterpret_cast<T*>(a); }
     static T* raw(CheckpointArray<T>* a) { return reinterpret_cast<T*>(a); }
 
-    void sum_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
-    void multiply_sources(T* q, const std::vector<std::pair<const T*, double>>& sources);
+    /// q = Σ_i n_i q_i and q = Π_i q_i^{n_i} over sources or checkpoints (junction_sum/product())
+    template <typename Source>
+    void sum_sources(T* q, const std::vector<std::pair<Source*, double>>& sources);
+    template <typename Source>
+    void multiply_sources(T* q, const std::vector<std::pair<Source*, double>>& sources);
 
 public:
     /**
@@ -101,6 +103,7 @@ public:
                                   BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
+    void prepare_stress() override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;

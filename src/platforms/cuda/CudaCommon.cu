@@ -20,7 +20,7 @@
  * - Division: ker_divide (element-wise division)
  * - Linear combination: ker_lin_comb, ker_add_lin_comb
  * - Complex operations: ker_multi_complex_conjugate, ker_multi_complex_real
- * - Batched exp-dw: ker_multi_exp_dw_two, ker_multi_exp_dw_four
+ * - Batched exp-dw: ker_multi_exp_dw_two
  *
  * **Type Conversion:**
  *
@@ -108,8 +108,14 @@ CudaCommon::CudaCommon()
         // (grid-stride kernels and CUB reductions, so the results do not depend on it)
         this->n_blocks  = launch_variable("LFTS_GPU_NUM_BLOCKS", 1024);
         this->n_threads = launch_variable("LFTS_GPU_NUM_THREADS", 256);
-        check_launch(this->n_blocks, this->n_threads);
-
+        // The grid-stride kernels rely on at most MAX_GRID_THREADS threads (see
+        // GridLimits.h); 1024 threads per block and 2^20 blocks are within the
+        // limits of every supported device
+        if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
+            static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
+            throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
+                std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
+                std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
     }
     catch(std::exception& exc)
     {
@@ -123,36 +129,6 @@ int CudaCommon::get_n_blocks()
 int CudaCommon::get_n_threads()
 {
     return n_threads;
-}
-// The grid-stride kernels launched with n_blocks x n_threads rely on at most
-// MAX_GRID_THREADS threads (see GridLimits.h), within the limits of the current device
-void CudaCommon::check_launch(int n_blocks, int n_threads)
-{
-    if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
-        static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
-        throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
-            std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
-            std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
-
-    int device = 0, max_threads = 0, max_blocks = 0;
-    CUDA_CHECK(cudaGetDevice(&device));
-    CUDA_CHECK(cudaDeviceGetAttribute(&max_threads, cudaDevAttrMaxThreadsPerBlock, device));
-    CUDA_CHECK(cudaDeviceGetAttribute(&max_blocks, cudaDevAttrMaxGridDimX, device));
-    if (n_threads > max_threads || n_blocks > max_blocks)
-        throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
-            std::to_string(n_threads) + " threads exceeds the limits of device " + std::to_string(device) +
-            ": " + std::to_string(max_threads) + " threads per block and " + std::to_string(max_blocks) +
-            " blocks (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
-}
-void CudaCommon::set_n_blocks(int n_blocks)
-{
-    check_launch(n_blocks, this->n_threads);
-    this->n_blocks = n_blocks;
-}
-void CudaCommon::set_n_threads(int n_threads)
-{
-    check_launch(this->n_blocks, n_threads);
-    this->n_threads = n_threads;
 }
 
 __global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M)
@@ -616,58 +592,6 @@ __global__ void ker_multi_exp_dw_two(
     }
 }
 
-__global__ void ker_multi_exp_dw_four(
-    double* dst1, const double* src1, const double* exp_dw1,
-    double* dst2, const double* src2, const double* exp_dw2,
-    double* dst3, const double* src3, const double* exp_dw3,
-    double* dst4, const double* src4, const double* exp_dw4,
-    double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst1[i] = a * src1[i] * exp_dw1[i];
-        dst2[i] = a * src2[i] * exp_dw2[i];
-        dst3[i] = a * src3[i] * exp_dw3[i];
-        dst4[i] = a * src4[i] * exp_dw4[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_exp_dw_four(
-    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
-    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
-    cuDoubleComplex* dst3, const cuDoubleComplex* src3, const cuDoubleComplex* exp_dw3,
-    cuDoubleComplex* dst4, const cuDoubleComplex* src4, const cuDoubleComplex* exp_dw4,
-    double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Use temporary variables to avoid overwriting when dst and src share the same address
-        cuDoubleComplex temp_dst1, temp_dst2, temp_dst3, temp_dst4;
-
-        temp_dst1.x = a * (src1[i].x * exp_dw1[i].x - src1[i].y * exp_dw1[i].y);
-        temp_dst1.y = a * (src1[i].x * exp_dw1[i].y + src1[i].y * exp_dw1[i].x);
-
-        temp_dst2.x = a * (src2[i].x * exp_dw2[i].x - src2[i].y * exp_dw2[i].y);
-        temp_dst2.y = a * (src2[i].x * exp_dw2[i].y + src2[i].y * exp_dw2[i].x);
-
-        temp_dst3.x = a * (src3[i].x * exp_dw3[i].x - src3[i].y * exp_dw3[i].y);
-        temp_dst3.y = a * (src3[i].x * exp_dw3[i].y + src3[i].y * exp_dw3[i].x);
-
-        temp_dst4.x = a * (src4[i].x * exp_dw4[i].x - src4[i].y * exp_dw4[i].y);
-        temp_dst4.y = a * (src4[i].x * exp_dw4[i].y + src4[i].y * exp_dw4[i].x);
-
-        dst1[i] = temp_dst1;
-        dst2[i] = temp_dst2;
-        dst3[i] = temp_dst3;
-        dst4[i] = temp_dst4;
-
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_complex_real_multi_bond_two(
     cuDoubleComplex* dst1, const double* boltz_bond1,
     cuDoubleComplex* dst2, const double* boltz_bond2,
@@ -680,28 +604,6 @@ __global__ void ker_complex_real_multi_bond_two(
         dst1[i].y *= boltz_bond1[i];
         dst2[i].x *= boltz_bond2[i];
         dst2[i].y *= boltz_bond2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_complex_real_multi_bond_four(
-    cuDoubleComplex* dst1, const double* boltz_bond1,
-    cuDoubleComplex* dst2, const double* boltz_bond2,
-    cuDoubleComplex* dst3, const double* boltz_bond3,
-    cuDoubleComplex* dst4, const double* boltz_bond4,
-    const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst1[i].x *= boltz_bond1[i];
-        dst1[i].y *= boltz_bond1[i];
-        dst2[i].x *= boltz_bond2[i];
-        dst2[i].y *= boltz_bond2[i];
-        dst3[i].x *= boltz_bond3[i];
-        dst3[i].y *= boltz_bond3[i];
-        dst4[i].x *= boltz_bond4[i];
-        dst4[i].y *= boltz_bond4[i];
         i += blockDim.x * gridDim.x;
     }
 }
@@ -774,30 +676,6 @@ __global__ void ker_multi_map(
     while (i < n_phys)
     {
         dst[i] *= reduced_multiplier[phys_to_reduced_map[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_gather(
-    double* dst, const double* src, const int* reduced_basis_indices, double norm, const int n_basis)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_basis)
-    {
-        double val = src[reduced_basis_indices[i]];
-        dst[i] = val * val * norm;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_gather(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* reduced_basis_indices, cuDoubleComplex norm, const int n_basis)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_basis)
-    {
-        cuDoubleComplex val = src[reduced_basis_indices[i]];
-        dst[i] = cuCmul(cuCmul(val, val), norm);
         i += blockDim.x * gridDim.x;
     }
 }

@@ -26,9 +26,11 @@ models, propagator aggregation on and off and reduced memory on and off:
      real power at n = 5 + 1e-9 joins the integer power at n = 5 (< 1e-7).
   3. Input errors: multiplicity < 1 or above 10^6 (natively and in the validation of
      every method and of CL-FTS, which accept 10^6), two blocks replicating each
-     other, copies at a grafted end, a non-integer multiplicity with complex fields
-     (every platform and chain model, and CL-FTS validation), while an integer one
-     reproduces the explicit arms in complex fields; a
+     other, copies at a grafted end; a solver for complex fields refuses, when it is
+     built, a non-integer multiplicity and identical copies whose powers sum beyond
+     10^6 (every platform and chain model, aggregation on and off, full and reduced
+     memory; real fields take both), as does CL-FTS validation, while an integer
+     multiplicity reproduces the explicit arms in complex fields; a
      real power of a negative propagator (Crank-Nicolson next to absorbing walls)
      stops with an error naming the multiplicity on every platform, a near-integer
      one with all its digits; blocks numbered only in part give a
@@ -345,11 +347,37 @@ def check_input_errors(w, platforms):
         solver.compute_concentrations()
         return solver
 
+    # The junction powers of a solver for complex fields are checked when it is built: a real power
+    # (multiplicity 2.5), and integer powers of identical copied branches that sum beyond 10^6
+    # (2 x 10^6 - 1). Real fields take both.
+    beyond_limit = [(1.0, [["A", 0.5, 0, 1, 1.0e6], ["A", 0.5, 0, 2, 1.0e6]])]
+
+    def build(polymers, platform, chain_model, aggregate, reduce_memory, field_type):
+        solver = make_solver(platform, chain_model, aggregate, reduce_memory, field_type)
+        for volume_fraction, blocks in polymers:
+            solver.add_polymer(volume_fraction, blocks)
+        return solver.propagator_computation
+
+    for platform_c in platforms:
+        for chain_model in ["continuous", "discrete"]:
+            for aggregate in [True, False]:
+                for reduce_memory in [False, True]:
+                    tag = f"{platform_c}/{chain_model}, aggregation {aggregate}, reduced memory {reduce_memory}"
+                    # The power of the A or B branch at the centre of the star (n, or n - 1 for the
+                    # propagator that enters a copy); 10^6 + 10^6 - 1 for the identical copies
+                    for polymers, powers in [(star(2.5), ["2.5", "1.5"]), (beyond_limit, ["1999999"])]:
+                        message = raises(lambda: build(polymers, platform_c, chain_model, aggregate, reduce_memory,
+                                                       "complex"))
+                        named = message is not None and any(f"to the power {p}." in message for p in powers)
+                        check(named and "integer powers up to 10^6" in message,
+                              f"{tag}: building a solver for complex fields refuses the power {powers[0]} ({message})")
+                        message = raises(lambda: build(polymers, platform_c, chain_model, aggregate, reduce_memory,
+                                                       "real"))
+                        check(message is None, f"{tag}: real fields take the power {powers[0]} ({message})")
+
     for platform_c in platforms:
         for chain_model in ["continuous", "discrete"]:
             tag = f"{platform_c}/{chain_model}"
-            message = raises(lambda: complex_solve(star(2.5), platform_c, chain_model))
-            check(message is not None and "non-integer" in message, f"{tag}: complex fields reject a real power")
             c = complex_solve(star(2), platform_c, chain_model)
             e = complex_solve(explicit_a2b2, platform_c, chain_model)
             dq = abs(c.get_partition_function(0) / e.get_partition_function(0) - 1.0)

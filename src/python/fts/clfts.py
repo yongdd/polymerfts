@@ -12,29 +12,28 @@ examples/charged/clfts/ and examples/blend/clfts/GibbsEnsemble.py.
 
 import os
 import time
-import pathlib
 import warnings
 import copy
 import json
 import numpy as np
-from .integrators import checked_fields, force_jacobian, symmetric_jacobian
+from .integrators import checked_fields
+from .force_jacobian import force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import read_chains, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
+from ..theory.chains import read_chains, chain_solver, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from ..theory.electrostatics import Electrostatics
-from ..theory.propagator_solver import PropagatorSolver
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, point_ion_concentrations,
-                         open_charges, reference_segments)
+from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
+                         point_ion_concentrations, open_charges, reference_segments, finite_values,
+                         initial_field_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
     atomic_savemat,
     simulation_metadata,
-    write_run_status,
     notify_callbacks,
     DriftTailSummary,
     PartitionRatioSummary,
@@ -43,7 +42,8 @@ from ..utils.checkpoint import (
     RunRecord,
     fields_data,
     load_checkpoint,
-    start_run_status,
+    recording_run_status,
+    prepare_run,
     initialize_extensions,
     extension_state,
     restore_extensions,
@@ -111,34 +111,13 @@ class CLFTS:
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
 
-        # Boundary conditions (default: periodic)
-        bc = params.get("bc", None)
-        if bc is None:
-            bc = ["periodic"] * (2 * len(params["nx"]))
-
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, self.zeta_n)
 
-        # The number of monomer types
-        M = len(self.monomer_types)
-
-        # Complex-valued propagator solver (complex Langevin fields)
-        self.prop_solver = PropagatorSolver(
-            nx=params["nx"], lx=params["lx"], ds=params["ds"],
-            bond_lengths=self.segment_lengths, bc=bc,
-            chain_model=params["chain_model"],
-            numerical_method=params.get("numerical_method", None),   # None: "rqm4", or "ps" for discrete chains
-            platform=params.get("platform", "auto"),   # auto: CPU for 1D, CUDA for 2D/3D when available
-            reduce_memory=params.get("reduce_memory", False),
-            angles=params.get("angles", None),
-            aggregate_propagator_computation=params.get("aggregate_propagator_computation", True),
-            field_type="complex",
-        )
-        # Grand-canonical polymers (chemical_potential βμ_p) get the volume fraction 0: their chains,
-        # e^(βμ_p) Q_p per reference chain, come from get_concentration_gce (compute_concentrations)
-        for polymer in self.polymers:
-            self.prop_solver.add_polymer(polymer.get("volume_fraction", 0.0), polymer["blocks_input"],
-                                         polymer.get("initial_conditions", None))
+        # Complex-valued propagator solver (complex Langevin fields) with the polymers. Grand-canonical
+        # polymers (chemical_potential βμ_p) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
+        # reference chain, come from get_concentration_gce (compute_concentrations)
+        self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, field_type="complex")
         self.polymer_chemical_potentials = np.array(
             [polymer.get("chemical_potential", np.nan) for polymer in self.polymers], dtype=np.float64)
         # Fugacities e^(βμ_p), zero for canonical chains (validation.py bounds |βμ_p| so that they
@@ -169,11 +148,7 @@ class CLFTS:
         self.alpha_ds = params.get("dynamic_stabilization", 0.0)
 
         # dH/dw_aux[i] is scaled by dt_scaling[i]
-        self.dt_scaling = np.ones(M)
-        for i in range(M - 1):
-            if i not in self.mpt.aux_fields_dropped_idx:
-                self.dt_scaling[i] = np.abs(self.mpt.eigenvalues[i]) / np.max(np.abs(self.mpt.eigenvalues[:M-1]))
-        self.dt_scaling[self.mpt.aux_fields_dropped_idx] = 0.0
+        self.dt_scaling = self.mpt.dt_scaling()
 
         # Random bit generator of the noise (random_seed None: non-reproducible)
         self.random_bg = np.random.PCG64(random_seed)
@@ -201,7 +176,7 @@ class CLFTS:
 
         # Initialize smearing (must be after self.cb is set)
         self.smearing = smearing_of(params, self.prop_solver)
-        self._periodic_box = all(b.lower() == "periodic" for b in self.prop_solver.bc)   # S(k) transforms with fftn
+        self._periodic_box = all(b == "periodic" for b in self.prop_solver.bc_lower)   # S(k) transforms with fftn
 
         # Smeared Coulomb interactions (optional): the electrostatic potential ψ, felt by
         # charged types as z_i ψ, fluctuates next to the auxiliary fields (electrostatics.py)
@@ -224,16 +199,15 @@ class CLFTS:
             self.concentration_names = self.monomer_types + (
                 [ion["name"] for ion in self.electrostatics.ions] if self.electrostatics is not None else [])
         self.metadata = simulation_metadata(self, random_seed)
-        initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks,
-                              capture_initial_state=False)
+        initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks)
         self._prepare_integrator()
-        # A stateful method may save its prepared response. A fresh run must
-        # restore the completed setup, not the state before preparation.
-        self._initial_extension_state = copy.deepcopy(extension_state(self))
         self.run_status = {"status": "initialized", "last_completed_step": 0}
         # run() draws the chain architectures into the recording directory; a driver that runs the
         # same chains again (gibbs_ensemble.py) sets this to False after the first run
         self.draw_architectures = True
+        # The state of the integrator and the callbacks after the setup, which a fresh run restores: a
+        # stateful integrator may hold the response that _prepare_integrator gave it
+        self._initial_extension_state = extension_state(self)
 
     def _setup_electrostatics(self, params):
         """The electrostatic potential ψ and what the structure functions need of it."""
@@ -279,8 +253,9 @@ class CLFTS:
         # fraction, 1 without grand-canonical chains (a numerical blow-up shows up here first)
         mass_error = self.prop_solver.mean(sum(phi[m] for m in self.monomer_types) - self.canonical_fraction)
         if not abs(mass_error) <= 5e-8:
-            raise ValidationError("Material conservation failed: mean(sum(phi)) differs from the total volume "
-                                  f"fraction of the canonical chains by {mass_error:.3e}")
+            raise NumericalError("Material conservation failed: mean(sum(phi)) differs from the total volume "
+                                 f"fraction of the canonical chains by {mass_error:.3e}",
+                                 self.mpt.to_monomer_fields_dict(w_aux))
 
         # Grand-canonical chains: e^(βμ_p) times their unnormalized segment densities
         for p in self.grand_canonical:
@@ -288,7 +263,7 @@ class CLFTS:
                 phi[monomer_type] = phi[monomer_type] + self.prop_solver.get_concentration_gce(
                     self.fugacities[p], p, monomer_type)
 
-        check_partition_once(self)
+        check_partition_once(self, lambda: self.mpt.to_monomer_fields_dict(w_aux))
         return phi, elapsed_time
 
     def _prepare_integrator(self):
@@ -309,7 +284,7 @@ class CLFTS:
         # simulation, so each simulation keeps its own copy of the integrator
         self._joint_psi = False
         if getattr(self.integrator, "linear_response", False):
-            if any(b.lower() != "periodic" for b in self.prop_solver.bc):
+            if any(b != "periodic" for b in self.prop_solver.bc_lower):
                 raise ValidationError(f"The integrator '{self.integrator.name}' (linear_response) needs a periodic box")
             self.integrator = copy.deepcopy(self.integrator)
             self._joint_psi = self.electrostatics is not None and self.electrostatics.coupling > 0
@@ -332,27 +307,32 @@ class CLFTS:
     def evaluate_force(self, fields):
         """Intermediate complex dH/dw, including smearing and stabilization."""
         fields = np.asarray(fields, dtype=np.complex128)
-        if fields.shape != (len(self.monomer_types), self.prop_solver.n_grid) or not np.all(np.isfinite(fields)):
-            raise ValidationError("Intermediate CLFTS fields have an invalid shape or non-finite values")
+        if fields.shape != (len(self.monomer_types), self.prop_solver.n_grid):
+            raise ValidationError("Intermediate CLFTS fields have an invalid shape")
+        if not np.all(np.isfinite(fields)):
+            raise NumericalError("Intermediate CLFTS fields have non-finite values", self.mpt.to_monomer_fields_dict(fields))
         phi, _ = self.compute_concentrations(fields)
         force = self._forces(fields, self.smearing.apply_to_dict(phi))
         if not np.all(np.isfinite(force)):
-            raise ValidationError("Non-finite intermediate CLFTS force")
+            raise NumericalError("Non-finite intermediate CLFTS force", self.mpt.to_monomer_fields_dict(fields))
         return force
 
     def _evaluate_force_with_psi(self, fields):
         """Intermediate forces when the integrator advances ψ as the last field (-δH/δψ)."""
         fields = np.asarray(fields, dtype=np.complex128)
         M, es = len(self.monomer_types), self.electrostatics
-        if fields.shape != (M + 1, self.prop_solver.n_grid) or not np.all(np.isfinite(fields)):
-            raise ValidationError("Intermediate CLFTS fields have an invalid shape or non-finite values")
+        if fields.shape != (M + 1, self.prop_solver.n_grid):
+            raise ValidationError("Intermediate CLFTS fields have an invalid shape")
+        if not np.all(np.isfinite(fields)):
+            raise NumericalError("Intermediate CLFTS fields have non-finite values",
+                                 self.mpt.to_monomer_fields_dict(fields[:M]))
         with es.trial(fields[M]):
             phi, _ = self.compute_concentrations(fields[:M])
             phi_smeared = self.smearing.apply_to_dict(phi)
             psi_force = -es.force(es.charge_density(phi_smeared))
         force = np.vstack([self._forces(fields[:M], phi_smeared), psi_force])
         if not np.all(np.isfinite(force)):
-            raise ValidationError("Non-finite intermediate CLFTS force")
+            raise NumericalError("Non-finite intermediate CLFTS force", self.mpt.to_monomer_fields_dict(fields[:M]))
         return force
 
     def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):
@@ -422,38 +402,36 @@ class CLFTS:
     def run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, initial_psi=None,
             psi_noise_prev=None, _restart_data=None):
         """Run complex Langevin dynamics and return a status dict; errors are persisted and raised."""
+        # The initial fields and ψ (real or complex finite numbers) and the previous noises of the fields
+        # and ψ (real) are checked before the run starts
+        fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid, np.complex128)
         if initial_psi is not None:
             if self.electrostatics is None:
                 raise ValidationError("initial_psi needs 'electrostatics'")
-            if np.size(initial_psi) != self.prop_solver.n_grid or not np.all(np.isfinite(initial_psi)):
+            initial_psi = finite_values(initial_psi, "initial_psi", np.complex128)
+            if initial_psi.size != self.prop_solver.n_grid:
                 raise ValidationError("initial_psi must hold one finite value per grid point")
             # Without Coulomb coupling ψ does not move, so a nonzero ψ would be a fixed potential
-            if self.electrostatics.coupling <= 0 and np.any(np.asarray(initial_psi) != 0):
+            if self.electrostatics.coupling <= 0 and np.any(initial_psi != 0):
                 raise ValidationError("initial_psi must be zero without Coulomb coupling (coupling E = 0)")
         if psi_noise_prev is not None:
             if initial_psi is None:
                 raise ValidationError("psi_noise_prev needs initial_psi")
-            if np.size(psi_noise_prev) != self.prop_solver.n_grid or not np.all(np.isfinite(psi_noise_prev)) \
-                    or np.iscomplexobj(psi_noise_prev):
+            psi_noise_prev = finite_values(psi_noise_prev, "psi_noise_prev")
+            if psi_noise_prev.size != self.prop_solver.n_grid:
                 raise ValidationError("psi_noise_prev must hold one real, finite value per grid point")
-        start_run_status(self, start_langevin_step, initial_fields, _restart_data)
-        if self.electrostatics is not None:
-            self.metadata["initial_psi_rng_state"] = self.electrostatics.random_bg.state
-        write_run_status(self)
-        try:
+        # The previous noise of the fields: real, one value per auxiliary field and grid point
+        if normal_noise_prev is not None:
+            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
+            if normal_noise_prev.size != len(self.monomer_types) * self.prop_solver.n_grid:
+                raise ValidationError(f"normal_noise_prev needs {len(self.monomer_types)} x {self.prop_solver.n_grid} "
+                                      f"values (auxiliary fields x grid points), got {normal_noise_prev.size}")
+        # CL-FTS solves no saddle points: a SaddlePointError (of an extension) fails the run like other errors
+        with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=False):
             if _restart_data is None:
                 restore_extensions(self)
-            self._run(initial_fields, normal_noise_prev, start_langevin_step, initial_psi=initial_psi,
+            self._run(fields, normal_noise_prev, start_langevin_step, initial_psi=initial_psi,
                       psi_noise_prev=psi_noise_prev, _restart_data=_restart_data)
-            self.run_status["status"] = "completed"
-        except (KeyboardInterrupt, SystemExit):
-            self.run_status.update(status="interrupted", reason="Run interrupted")
-            raise
-        except Exception as exc:
-            self.run_status.update(status="failed", reason=f"{type(exc).__name__}: {exc}")
-            raise
-        finally:
-            write_run_status(self)
         return dict(self.run_status)
 
     def _run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, initial_psi=None,
@@ -482,26 +460,8 @@ class CLFTS:
         # The number of components
         M = len(self.monomer_types)
 
-        # Check the partition consistency on the first field of this run
-        self._partition_checked = False
-
-        # Simulation data directory, with the drawings of the chain architectures (polymer_<id>.png)
-        pathlib.Path(self.recording["dir"]).mkdir(parents=True, exist_ok=True)
-        if self.draw_architectures:
-            draw_polymer_architectures(self.polymers, self.ds, self.segment_lengths, directory=self.recording["dir"])
-
-        # Reshape initial fields (convert to complex if needed)
-        w = np.array([np.reshape(initial_fields[m], self.prop_solver.n_grid).astype(np.complex128)
-                      for m in self.monomer_types])
-
-        # Convert monomer chemical potential fields into auxiliary fields
-        w_aux = self.mpt.to_aux_fields(w)
-        self.mpt.pin_dropped_fields(w_aux)
-        saved_aux = None if _restart_data is None else _restart_data.get("w_aux")
-        if saved_aux is not None:
-            w_aux = np.asarray(saved_aux, dtype=np.complex128).reshape(M, self.prop_solver.n_grid).copy()
-        if not np.all(np.isfinite(w_aux)):
-            raise ValidationError("Initial fields must be finite")
+        # The recording directory and the complex auxiliary fields to start from (checkpoint.prepare_run)
+        w_aux, restored = prepare_run(self, initial_fields, _restart_data, np.complex128)
 
         if start_langevin_step is None:
             start_langevin_step = 1
@@ -522,12 +482,11 @@ class CLFTS:
         tail_labels = [f"auxiliary field {i} ({kinds.get(i, 'dropped')})" for i in range(M)]
         drift_tail = DriftTailSummary(tail_labels + (["psi"] if self.electrostatics is not None else []))
 
-        # Create an empty array for field update algorithm
-        # (a checkpoint loaded with squeeze_me drops the leading axis when M == 1)
+        # The previous noise of the Leimkuhler-Matthews step (run() has checked its values), zero without one
         if normal_noise_prev is None:
             normal_noise_prev = np.zeros([M, self.prop_solver.n_grid], dtype=np.float64)
         else:
-            normal_noise_prev = np.reshape(np.asarray(normal_noise_prev, dtype=np.float64), [M, self.prop_solver.n_grid])
+            normal_noise_prev = np.reshape(normal_noise_prev, [M, self.prop_solver.n_grid])
 
         # Init timers
         time_start = time.time()
@@ -540,7 +499,7 @@ class CLFTS:
         # the forces of the next step use the concentrations of the same fields.
         # Smearing implements finite-range interactions: φ_Γ = FFT⁻¹[FFT[φ]·Γ(k)]
         # Reference: Matsen et al., J. Chem. Phys. 164, 014905 (2026)
-        if saved_aux is not None:
+        if restored:
             phi = {m: (np.asarray(_restart_data["phi_" + m + "_real"]) +
                        1j * np.asarray(_restart_data["phi_" + m + "_imag"])).reshape(self.prop_solver.n_grid)
                    for m in self.monomer_types}
@@ -554,11 +513,15 @@ class CLFTS:
         charge_density = None if es is None else es.charge_density(phi_for_force)
         psi_force = None if es is None else es.force(charge_density)
 
+        # δH/δw of the current state (compute_func_deriv), for the forces of the next step and the
+        # progress line
+        h_deriv = self.mpt.compute_func_deriv(w_aux, phi_for_force, range(M))
+
         for langevin_step in range(start_langevin_step, self.langevin["max_step"] + 1):
             step_start = time.perf_counter()
 
             # Forces on all fields and the largest drift of each
-            w_lambda = self._forces(w_aux, phi_for_force)
+            w_lambda = self._stabilized(w_aux, h_deriv)
             field_drift_max = np.max(np.abs(w_lambda * self.dt_scaling[:, None]), axis=1)
             drift_max = float(np.max(field_drift_max))
             record.add("drift_step_history", field_drift_max)
@@ -584,7 +547,8 @@ class CLFTS:
             phi, _ = self.compute_concentrations(w_aux=w_aux)
             phi_for_force = self.smearing.apply_to_dict(phi)
             if not np.all(np.isfinite(w_aux)) or not all(np.all(np.isfinite(v)) for v in phi.values()):
-                raise ValidationError(f"Non-finite complex fields or concentrations at step {langevin_step}")
+                raise NumericalError(f"Non-finite complex fields or concentrations at step {langevin_step}",
+                                     self.mpt.to_monomer_fields_dict(w_aux))
             if es is not None:
                 charge_density = es.charge_density(phi_for_force)
                 psi_force = es.force(charge_density)
@@ -593,10 +557,11 @@ class CLFTS:
             total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
             hamiltonian = self._hamiltonian(w_aux, phi_for_force, total_partitions)
             if not np.isfinite(hamiltonian):
-                raise ValidationError(f"Non-finite Hamiltonian at step {langevin_step}")
+                raise NumericalError(f"Non-finite Hamiltonian at step {langevin_step}", self.mpt.to_monomer_fields_dict(w_aux))
             self.run_status["last_completed_step"] = langevin_step
 
-            # Print progress (functional derivatives with the smeared φ, for consistency)
+            # δH/δw of the updated fields and the progress line (functional derivatives with the smeared φ,
+            # for consistency)
             h_deriv = self.mpt.compute_func_deriv(w_aux, phi_for_force, range(M))
             error_level_array = np.std(h_deriv, axis=1)
             if self.verbose_level >= 1:
@@ -671,15 +636,20 @@ class CLFTS:
                              else np.asarray(psi_noise_prev, dtype=np.float64).reshape(-1).copy())
 
     def _forces(self, w_aux, phi_smeared):
-        """δH/δw of all auxiliary fields from the smeared concentrations.
+        """δH/δw of all auxiliary fields from the smeared concentrations, with the stabilization.
 
         compute_func_deriv transforms the concentrations through the matrix A: for an AB diblock
         the exchange field w- gets phi_A - phi_B and the pressure field w+ gets phi_A + phi_B
-        (Matsen et al., J. Chem. Phys. 164, 014905 (2026)). Dynamical stabilization (Willis & Matsen,
-        J. Chem. Phys. 161, 244903 (2024)) adds iαds·N·Im[W] to the real-type fields, against runaway
-        solutions in the imaginary direction; self.alpha_ds is the combined coefficient αds·N.
+        (Matsen et al., J. Chem. Phys. 164, 014905 (2026)).
         """
-        forces = self.mpt.compute_func_deriv(w_aux, phi_smeared, range(len(self.monomer_types)))
+        return self._stabilized(w_aux, self.mpt.compute_func_deriv(w_aux, phi_smeared, range(len(self.monomer_types))))
+
+    def _stabilized(self, w_aux, h_deriv):
+        """The forces of the fields w_aux from their δH/δw (compute_func_deriv). Dynamical stabilization
+        (Willis & Matsen, J. Chem. Phys. 161, 244903 (2024)) adds iαds·N·Im[W] to the real-type fields,
+        against runaway solutions in the imaginary direction; self.alpha_ds is the combined coefficient αds·N.
+        """
+        forces = h_deriv.copy()
         if self.alpha_ds > 0:
             for i in self.mpt.aux_fields_real_idx:
                 forces[i] += 1j * self.alpha_ds * np.imag(w_aux[i])
@@ -717,7 +687,8 @@ class CLFTS:
             else:
                 es.step(charge_density)
             if not np.all(np.isfinite(es.psi)):
-                raise ValidationError(f"Non-finite electrostatic potential at step {langevin_step}")
+                raise NumericalError(f"Non-finite electrostatic potential at step {langevin_step}",
+                                     self.mpt.to_monomer_fields_dict(proposed[:M]))
         return proposed[:M].copy()
 
     def _hamiltonian(self, w_aux, phi_smeared, total_partitions):

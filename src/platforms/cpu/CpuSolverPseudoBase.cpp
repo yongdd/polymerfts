@@ -9,7 +9,7 @@
  * - Laplacian operator updates
  * - Stress computation with chain-model-specific factors
  *
- * Transform dispatch goes through the FFT<T> interface (FftwFFT or MklFFT).
+ * Transform dispatch goes through the FFT<T> interface (FftwFFT, MklFFT or MakhoulFFT).
  *
  * @see CpuSolverPseudoBase.h for interface documentation
  */
@@ -20,13 +20,19 @@
 #include <cstring>
 #include <type_traits>
 #include <algorithm>
+#include <set>
 
 #include "CpuSolverPseudoBase.h"
 #include "CrysFFTSelector.h"
 #include "CrysFFTBasisMapping.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
+#include "CrysFFTPmmm.h"
+#ifdef USE_CPU_FFTW
+#include "FftwCrysFFTRecursive3m.h"
+#include "FftwCrysFFTObliqueZ.h"
+#endif
+#ifdef USE_CPU_MKL
+#include "MklCrysFFTRecursive3m.h"
+#include "MklCrysFFTObliqueZ.h"
 #endif
 
 //------------------------------------------------------------------------------
@@ -113,22 +119,11 @@ template <typename T>
 void CpuSolverPseudoBase<T>::reset_crysfft()
 {
     crysfft_mode_ = CrysFFTMode::None;
-#ifdef USE_CPU_FFTW
-    crysfft_pmmm_fftw_.reset();
-    crysfft_recursive_fftw_.reset();
-    crysfft_oblique_fftw_.reset();
-#endif
-#ifdef USE_CPU_MKL
-    crysfft_pmmm_mkl_.reset();
-    crysfft_recursive_mkl_.reset();
-    crysfft_oblique_mkl_.reset();
-#endif
+    crysfft_.reset();
+    crysfft_boltz_.clear();
+    crysfft_multipliers_.clear();
     crysfft_full_indices_.clear();
     crysfft_reduced_indices_.clear();
-    crysfft_kx2_.clear();
-    crysfft_ky2_.clear();
-    crysfft_kz2_.clear();
-    crysfft_k_cache_lx_ = {{-1.0, -1.0, -1.0}};
     crysfft_identity_map_ = false;
 }
 
@@ -180,57 +175,54 @@ void CpuSolverPseudoBase<T>::init_crysfft()
 {
     const auto nx = cb->get_nx();
     const std::array<int, 3> nx_logical = {nx[0], nx[1], nx[2]};
-    const auto angles = cb->get_angles();
-    const bool z_axis_orthogonal =
-        (angles.size() >= 3 &&
-         std::abs(angles[0] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE &&
-         std::abs(angles[1] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE);
     // Engine choice and its basis map, shared with the CUDA solver
     const CrysFFTPlan plan = plan_crysfft(
-        space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), z_axis_orthogonal);
+        space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), cb->is_z_axis_orthogonal());
     if (plan.mode == CrysFFTChoice::None)
         return;
 
-    const auto lx = cb->get_lx();
-    const std::array<double, 6> cell_para = {lx[0], lx[1], lx[2], angles[0], angles[1], angles[2]};
     adopt_crysfft_mapping(plan.map, plan.physical_basis);
 
     if (plan.mode == CrysFFTChoice::Recursive3m)
     {
 #ifdef USE_CPU_MKL
         if (fft_backend_ == FFTBackend::MKL)
-            crysfft_recursive_mkl_ = std::make_unique<MklCrysFFTRecursive3m>(nx_logical, cell_para, plan.m3_translations);
+            crysfft_ = std::make_unique<MklCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
 #endif
 #ifdef USE_CPU_FFTW
         if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_recursive_fftw_ = std::make_unique<FftwCrysFFTRecursive3m>(nx_logical, cell_para, plan.m3_translations);
+            crysfft_ = std::make_unique<FftwCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
 #endif
         crysfft_mode_ = CrysFFTMode::Recursive3m;
     }
     else if (plan.mode == CrysFFTChoice::PmmmDct)
     {
-#ifdef USE_CPU_MKL
-        if (fft_backend_ == FFTBackend::MKL)
-            crysfft_pmmm_mkl_ = std::make_unique<MklCrysFFTPmmm>(nx_logical, cell_para);
-#endif
-#ifdef USE_CPU_FFTW
-        if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_pmmm_fftw_ = std::make_unique<FftwCrysFFTPmmm>(nx_logical, cell_para);
-#endif
+        crysfft_ = std::make_unique<CrysFFTPmmm>(nx_logical, fft_backend_);
         crysfft_mode_ = CrysFFTMode::PmmmDct;
     }
     else if (plan.mode == CrysFFTChoice::ObliqueZ)
     {
 #ifdef USE_CPU_MKL
         if (fft_backend_ == FFTBackend::MKL)
-            crysfft_oblique_mkl_ = std::make_unique<MklCrysFFTObliqueZ>(nx_logical, cell_para);
+            crysfft_ = std::make_unique<MklCrysFFTObliqueZ>(nx_logical);
 #endif
 #ifdef USE_CPU_FFTW
         if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_oblique_fftw_ = std::make_unique<FftwCrysFFTObliqueZ>(nx_logical, cell_para);
+            crysfft_ = std::make_unique<FftwCrysFFTObliqueZ>(nx_logical);
 #endif
         crysfft_mode_ = CrysFFTMode::ObliqueZ;
     }
+    if (!crysfft_)
+        throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
+
+    // The Boltzmann tables of the steps of each block's monomer type and contour step
+    // (not of every combination: a recursive 3m table holds 16 physical-grid arrays)
+    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+    for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
+        for (const Block& block : molecules->get_polymer(p).get_blocks())
+            for (double coeff : crysfft_block_coeffs(block.monomer_type, mapping.get_ds_index(block.contour_length)))
+                crysfft_boltz_.try_emplace(coeff);
+    update_crysfft_tables();
 }
 
 //------------------------------------------------------------------------------
@@ -358,189 +350,38 @@ void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, do
 template <typename T>
 int CpuSolverPseudoBase<T>::get_crysfft_physical_size() const
 {
-#ifdef USE_CPU_MKL
-    if (use_crysfft_recursive() && crysfft_recursive_mkl_)
-        return crysfft_recursive_mkl_->get_M_physical();
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-        return crysfft_pmmm_mkl_->get_M_physical();
-    if (use_crysfft_oblique() && crysfft_oblique_mkl_)
-        return crysfft_oblique_mkl_->get_M_physical();
-#endif
-#ifdef USE_CPU_FFTW
-    if (use_crysfft_recursive() && crysfft_recursive_fftw_)
-        return crysfft_recursive_fftw_->get_M_physical();
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-        return crysfft_pmmm_fftw_->get_M_physical();
-    if (use_crysfft_oblique() && crysfft_oblique_fftw_)
-        return crysfft_oblique_fftw_->get_M_physical();
-#endif
-    throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
+    if (!crysfft_)
+        throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
+    return crysfft_->get_M_physical();
 }
 
 template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_set_cell_para(const std::array<double, 6>& cell_para)
+void CpuSolverPseudoBase<T>::crysfft_diffusion(const double* q_in, double* q_out, double coeff) const
 {
-#ifdef USE_CPU_MKL
-    if (use_crysfft_recursive() && crysfft_recursive_mkl_)
-        crysfft_recursive_mkl_->set_cell_para(cell_para);
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-        crysfft_pmmm_mkl_->set_cell_para(cell_para);
-    if (use_crysfft_oblique() && crysfft_oblique_mkl_)
-        crysfft_oblique_mkl_->set_cell_para(cell_para);
-#endif
-#ifdef USE_CPU_FFTW
-    if (use_crysfft_recursive() && crysfft_recursive_fftw_)
-        crysfft_recursive_fftw_->set_cell_para(cell_para);
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-        crysfft_pmmm_fftw_->set_cell_para(cell_para);
-    if (use_crysfft_oblique() && crysfft_oblique_fftw_)
-        crysfft_oblique_fftw_->set_cell_para(cell_para);
-#endif
+    const auto boltz = crysfft_boltz_.find(coeff);
+    if (boltz == crysfft_boltz_.end())
+        throw_with_line_number("No CrysFFT table was built for the step coefficient " + std::to_string(coeff) +
+            " (see crysfft_block_coeffs()).");
+    crysfft_->diffusion(q_in, q_out, boltz->second);
 }
 
 template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_set_contour_step(double coeff)
+std::array<double, 6> CpuSolverPseudoBase<T>::crysfft_cell() const
 {
-#ifdef USE_CPU_MKL
-    if (use_crysfft_recursive() && crysfft_recursive_mkl_)
-    {
-        crysfft_recursive_mkl_->set_contour_step(coeff);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->set_contour_step(coeff);
-        return;
-    }
-    if (use_crysfft_oblique() && crysfft_oblique_mkl_)
-    {
-        crysfft_oblique_mkl_->set_contour_step(coeff);
-        return;
-    }
-#endif
-#ifdef USE_CPU_FFTW
-    if (use_crysfft_recursive() && crysfft_recursive_fftw_)
-    {
-        crysfft_recursive_fftw_->set_contour_step(coeff);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->set_contour_step(coeff);
-        return;
-    }
-    if (use_crysfft_oblique() && crysfft_oblique_fftw_)
-    {
-        crysfft_oblique_fftw_->set_contour_step(coeff);
-        return;
-    }
-#endif
-    throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
+    const auto lx = cb->get_lx();
+    const auto angles = cb->get_angles();
+    return {lx[0], lx[1], lx[2], angles[0], angles[1], angles[2]};
 }
 
 template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_diffusion(double* q_in, double* q_out) const
+void CpuSolverPseudoBase<T>::update_crysfft_tables()
 {
-#ifdef USE_CPU_MKL
-    if (use_crysfft_recursive() && crysfft_recursive_mkl_)
-    {
-        crysfft_recursive_mkl_->diffusion(q_in, q_out);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->diffusion(q_in, q_out);
-        return;
-    }
-    if (use_crysfft_oblique() && crysfft_oblique_mkl_)
-    {
-        crysfft_oblique_mkl_->diffusion(q_in, q_out);
-        return;
-    }
-#endif
-#ifdef USE_CPU_FFTW
-    if (use_crysfft_recursive() && crysfft_recursive_fftw_)
-    {
-        crysfft_recursive_fftw_->diffusion(q_in, q_out);
-        return;
-    }
-    if (use_crysfft_pmmm() && crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->diffusion(q_in, q_out);
-        return;
-    }
-    if (use_crysfft_oblique() && crysfft_oblique_fftw_)
-    {
-        crysfft_oblique_fftw_->diffusion(q_in, q_out);
-        return;
-    }
-#endif
-    throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
-}
-
-template <typename T>
-void CpuSolverPseudoBase<T>::update_crysfft_k_cache()
-{
-    bool has_pmmm = false;
-#ifdef USE_CPU_MKL
-    has_pmmm = has_pmmm || crysfft_pmmm_mkl_;
-#endif
-#ifdef USE_CPU_FFTW
-    has_pmmm = has_pmmm || crysfft_pmmm_fftw_;
-#endif
-    if (!use_crysfft_pmmm() || !has_pmmm)
-        return;
-
-    if (dim_ != 3 || !is_periodic_ || !cb->is_orthogonal())
-        return;
-
-    auto lx = cb->get_lx();
-    if (crysfft_k_cache_lx_[0] == lx[0] &&
-        crysfft_k_cache_lx_[1] == lx[1] &&
-        crysfft_k_cache_lx_[2] == lx[2] &&
-        !crysfft_kx2_.empty())
-    {
-        return;
-    }
-
-    crysfft_k_cache_lx_[0] = lx[0];
-    crysfft_k_cache_lx_[1] = lx[1];
-    crysfft_k_cache_lx_[2] = lx[2];
-
-    const std::vector<int>& nx = cb->get_nx();
-    const int Nx2 = nx[0] / 2;
-    const int Ny2 = nx[1] / 2;
-    const int Nz2 = nx[2] / 2;
-    const int M_phys = get_crysfft_physical_size();
-
-    crysfft_kx2_.assign(M_phys, 0.0);
-    crysfft_ky2_.assign(M_phys, 0.0);
-    crysfft_kz2_.assign(M_phys, 0.0);
-
-    const double factor_x = 2.0 * M_PI / lx[0];
-    const double factor_y = 2.0 * M_PI / lx[1];
-    const double factor_z = 2.0 * M_PI / lx[2];
-
-    int idx = 0;
-    for (int ix = 0; ix < Nx2; ++ix)
-    {
-        double kx = ix * factor_x;
-        double kx2 = kx * kx;
-        for (int iy = 0; iy < Ny2; ++iy)
-        {
-            double ky = iy * factor_y;
-            double ky2 = ky * ky;
-            for (int iz = 0; iz < Nz2; ++iz)
-            {
-                double kz = iz * factor_z;
-                double kz2 = kz * kz;
-                crysfft_kx2_[idx] = kx2;
-                crysfft_ky2_[idx] = ky2;
-                crysfft_kz2_[idx] = kz2;
-                ++idx;
-            }
-        }
-    }
+    // In place, while no thread runs a propagator or stress loop
+    const std::array<double, 6> cell = crysfft_cell();
+    for (auto& [coeff, table] : crysfft_boltz_)
+        crysfft_->build_boltzmann(table, cell, coeff);
+    for (auto& [key, table] : crysfft_multipliers_)
+        crysfft_->build_multiplier(table, cell, key.first, key.second);
 }
 
 //------------------------------------------------------------------------------
@@ -567,15 +408,7 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
         if constexpr (std::is_same_v<T, double>)
         {
             if (use_crysfft())
-            {
-                auto lx = cb->get_lx();
-                auto angles = cb->get_angles();
-                crysfft_set_cell_para({lx[0], lx[1], lx[2], angles[0], angles[1], angles[2]});
-            }
-            if (use_crysfft_pmmm())
-            {
-                update_crysfft_k_cache();
-            }
+                update_crysfft_tables();
         }
     }
     catch (std::exception& exc)
@@ -587,91 +420,81 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 //------------------------------------------------------------------------------
 // Compute single segment stress
 //------------------------------------------------------------------------------
-/**
- * @brief Compute stress contribution from a single bond/segment.
- *
- * Uses v⊗v dyad product components stored in fourier_basis arrays, where
- * v = 2π g⁻¹ m is the deformation vector (units 1/L², NOT the Cartesian
- * wavevector — see Pseudo::update_weighted_fourier_basis_periodic):
- * - fourier_basis_x = v₁², fourier_basis_y = v₂², fourier_basis_z = v₃²
- * - fourier_basis_xy = v₁v₂, fourier_basis_xz = v₁v₃, fourier_basis_yz = v₂v₃
- *
- * Returns the accumulated sums [V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃] where
- * V_ij = Σ_k kernel(k)·v_i·v_j. The caller (compute_stress in the
- * computation classes) converts these to lattice-parameter derivatives
- * [dH/dL₁, dH/dL₂, dH/dL₃, dH/dγ, dH/dβ, dH/dα] via the metric tensor.
- *
- * @see docs/theory/StressTensor.md for the derivation
- */
 template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_pmmm_axis_multiplier(
-    double* phys_in, double* phys_out, int axes, const double* boltz)
+bool CpuSolverPseudoBase<T>::crysfft_stress_fast_path() const
 {
-    // Σ k_d² over the axes in the bit mask (1: x, 2: y, 4: z); discrete chains
-    // fold the bond factor ĝ(k) into the multiplier
-    std::vector<double>& weighted = work_arrays().multiplier;
-    const int M_phys = static_cast<int>(crysfft_kx2_.size());
-    weighted.resize(M_phys);
-    for (int i = 0; i < M_phys; ++i)
-    {
-        const double k_axes = ((axes & 1) ? crysfft_kx2_[i] : 0.0) + ((axes & 2) ? crysfft_ky2_[i] : 0.0)
-                            + ((axes & 4) ? crysfft_kz2_[i] : 0.0);
-        weighted[i] = (boltz != nullptr) ? boltz[i] * k_axes : k_axes;
-    }
-    const double* multiplier = weighted.data();
-#ifdef USE_CPU_MKL
-    if (crysfft_pmmm_mkl_)
-    {
-        crysfft_pmmm_mkl_->apply_multiplier(phys_in, phys_out, multiplier);
-        return;
-    }
-#endif
-#ifdef USE_CPU_FFTW
-    if (crysfft_pmmm_fftw_)
-    {
-        crysfft_pmmm_fftw_->apply_multiplier(phys_in, phys_out, multiplier);
-        return;
-    }
-#endif
-    throw_with_line_number("Pmmm CrysFFT requested but it is not initialized.");
-}
-
-// Recursive 3m multiplier type for an axis mask (1: x, 2: y, 4: z, 3: x+y, 7: all)
-template <typename MT>
-static MT recursive_multiplier_type(int axes, bool with_bond)
-{
-    switch (axes)
-    {
-        case 1: return with_bond ? MT::ExpKx2  : MT::Kx2;
-        case 2: return with_bond ? MT::ExpKy2  : MT::Ky2;
-        case 4: return with_bond ? MT::ExpKz2  : MT::Kz2;
-        case 3: return with_bond ? MT::ExpKxy2 : MT::Kxy2;
-        case 7: return with_bond ? MT::ExpK2   : MT::K2;
-    }
-    throw_with_line_number("Unsupported CrysFFT stress axis group " + std::to_string(axes) + ".");
+    // Only the Pmmm and recursive-3m modes have a stress fast path (ObliqueZ has
+    // none). The fast path computes the diagonal sums V₁₁, V₂₂, V₃₃ only, which is
+    // fine because the eligible crystal systems are orthogonal and never optimize
+    // angles. If angle derivatives are forced (force_off_diagonal_stress_), the
+    // standard path computes the cross terms instead of returning zeros for them.
+    return (use_crysfft_pmmm() || use_crysfft_recursive())
+        && space_group_ != nullptr && is_periodic_ && dim_ == 3 && cb->is_orthogonal()
+        && !this->force_off_diagonal_stress_;
 }
 
 template <typename T>
-bool CpuSolverPseudoBase<T>::crysfft_recursive_axis_multiplier(
-    double* phys_in, double* phys_out, int axes, bool with_bond, double coeff)
+double CpuSolverPseudoBase<T>::stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const
 {
-#ifdef USE_CPU_MKL
-    if (crysfft_recursive_mkl_)
+    const auto& bond_lengths = this->molecules->get_bond_lengths();
+    auto bond_it = bond_lengths.find(monomer_type);
+    if (bond_it == bond_lengths.end())
+        throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
+
+    double bond_length_sq = bond_it->second * bond_it->second;
+    if (is_half_bond_length)
+        bond_length_sq *= 0.5;
+    return bond_length_sq;
+}
+
+template <typename T>
+std::vector<std::pair<int, double>> CpuSolverPseudoBase<T>::crysfft_stress_keys(
+    double bond_length_sq, bool include_bond_factor) const
+{
+    // Discrete chains carry the bond factor ĝ(k) = exp(-b² k² Δs / 6)
+    const double coeff = include_bond_factor ? bond_length_sq * molecules->get_global_ds() / 6.0 : 0.0;
+    std::vector<std::pair<int, double>> keys;
+    for (int axes : crysfft_stress_axis_groups(space_group_->get_crystal_system()))
+        keys.emplace_back(axes, coeff);
+    return keys;
+}
+
+template <typename T>
+void CpuSolverPseudoBase<T>::prepare_stress()
+{
+    // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
+    if constexpr (std::is_same_v<T, double>)
     {
-        crysfft_recursive_mkl_->apply_multiplier(phys_in, phys_out,
-            recursive_multiplier_type<MklCrysFFTRecursive3m::MultiplierType>(axes, with_bond), with_bond ? coeff : 0.0);
-        return true;
+        if (!crysfft_stress_fast_path())
+            return;
+
+        // The multipliers of each block's monomer type, full and (discrete chains)
+        // half bonds, one per axis group for all threads: the missing ones are built
+        // here, before the stress loop, and update_crysfft_tables() rebuilds them
+        // for a new cell
+        const std::array<double, 6> cell = crysfft_cell();
+        std::set<std::string> monomer_types;
+        for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
+            for (const Block& block : molecules->get_polymer(p).get_blocks())
+                monomer_types.insert(block.monomer_type);
+        for (const std::string& monomer_type : monomer_types)
+        {
+            for (const bool half : {false, true})
+            {
+                const bool include_bond_factor = (get_stress_boltz_bond(monomer_type, half) != nullptr);
+                if (half && !include_bond_factor)
+                    continue;   // continuous chains: one multiplier per axis group
+                for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
+                {
+                    if (crysfft_multipliers_.contains(key))
+                        continue;
+                    std::vector<double> table;
+                    crysfft_->build_multiplier(table, cell, key.first, key.second);
+                    crysfft_multipliers_.emplace(key, std::move(table));
+                }
+            }
+        }
     }
-#endif
-#ifdef USE_CPU_FFTW
-    if (crysfft_recursive_fftw_)
-    {
-        crysfft_recursive_fftw_->apply_multiplier(phys_in, phys_out,
-            recursive_multiplier_type<FftwCrysFFTRecursive3m::MultiplierType>(axes, with_bond), with_bond ? coeff : 0.0);
-        return true;
-    }
-#endif
-    return false;
 }
 
 template <typename T>
@@ -686,15 +509,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
     }
     else
     {
-        // Only the Pmmm and recursive-3m modes have a stress fast path (ObliqueZ
-        // has none). The fast path computes the diagonal sums V₁₁, V₂₂, V₃₃
-        // only, which is fine because the eligible crystal systems are
-        // orthogonal and never optimize angles. If angle derivatives are forced
-        // (force_off_diagonal_stress_), fall back to the standard path, which
-        // can compute the cross terms, instead of returning zeros for them.
-        if (!(use_crysfft_pmmm() || use_crysfft_recursive())
-            || space_group_ == nullptr || !is_periodic_ || dim_ != 3 || !cb->is_orthogonal()
-            || this->force_off_diagonal_stress_)
+        if (!crysfft_stress_fast_path())
             return false;
 
         const int M_full = cb->get_total_grid();
@@ -707,7 +522,6 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         std::vector<double>& phys_q2 = work.phys_2;
         std::vector<double>& phys_tmp = work.phys_3;
         std::vector<double>& reduced_tmp = work.reduced;
-        std::vector<double>& boltz = work.boltz;
         if (static_cast<int>(phys_q1.size()) != M_phys)
         {
             phys_q1.resize(M_phys);
@@ -721,40 +535,19 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         fill_crysfft_from_reduced(q_1, phys_q1.data());
         fill_crysfft_from_reduced(q_2, phys_q2.data());
 
-        // Discrete chains carry the bond factor ĝ(k) = exp(-b² k² Δs / 6)
-        const bool with_bond = (boltz_bond != nullptr);
-        const double coeff = with_bond ? bond_length_sq * molecules->get_global_ds() / 6.0 : 0.0;
-        if (use_crysfft_pmmm())
-        {
-            // k-space tables of the DCT physical grid. This runs inside the
-            // OpenMP stress loop and a refill writes shared members, so it is
-            // serialized: the first thread fills the cache, the others return
-            // early once the tables are valid.
-            #pragma omp critical(crysfft_k_cache)
-            {
-                update_crysfft_k_cache();
-            }
-            if (with_bond)
-            {
-                boltz.resize(M_phys);
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const double k2 = crysfft_kx2_[i] + crysfft_ky2_[i] + crysfft_kz2_[i];
-                    boltz[i] = std::exp(-k2 * coeff);
-                }
-            }
-        }
-
         // sums[d] = Σ_r n_orbit(r) q1(r) [F⁻¹ k_d² ĝ F q2](r) over the reduced basis, one
         // multiplier Σ_{d in group} k_d² per group of equivalent axes, shared equally by
-        // the axes of the group (see crysfft_stress_axis_groups)
+        // the axes of the group (see crysfft_stress_axis_groups), built by prepare_stress()
+        // with the bond factor for discrete chains
         double sums[3] = {0.0, 0.0, 0.0};
-        for (const int axes : crysfft_stress_axis_groups(space_group_->get_crystal_system()))
+        for (const auto& key : crysfft_stress_keys(bond_length_sq, boltz_bond != nullptr))
         {
-            if (use_crysfft_pmmm())
-                crysfft_pmmm_axis_multiplier(phys_q2.data(), phys_tmp.data(), axes, with_bond ? boltz.data() : nullptr);
-            else if (!crysfft_recursive_axis_multiplier(phys_q2.data(), phys_tmp.data(), axes, with_bond, coeff))
-                return false;
+            const int axes = key.first;
+            const auto multiplier = crysfft_multipliers_.find(key);
+            if (multiplier == crysfft_multipliers_.end())
+                throw_with_line_number("The CrysFFT stress multipliers of b^2 = " + std::to_string(bond_length_sq) +
+                    " were not built (see prepare_stress()).");
+            crysfft_->apply_multiplier(phys_q2.data(), phys_tmp.data(), multiplier->second);
             reduce_crysfft_to_reduced(phys_tmp.data(), reduced_tmp.data());
             double sum = 0.0;
             for (int i = 0; i < M_reduced; ++i)
@@ -938,6 +731,22 @@ const double* CpuSolverPseudoBase<T>::get_stress_boltz_bond(
     return nullptr;   // continuous chains: the bond factor is already in the propagator
 }
 
+/**
+ * @brief Compute stress contribution from a single bond/segment.
+ *
+ * Uses v⊗v dyad product components stored in fourier_basis arrays, where
+ * v = 2π g⁻¹ m is the deformation vector (units 1/L², NOT the Cartesian
+ * wavevector — see Pseudo::update_weighted_fourier_basis_periodic):
+ * - fourier_basis_x = v₁², fourier_basis_y = v₂², fourier_basis_z = v₃²
+ * - fourier_basis_xy = v₁v₂, fourier_basis_xz = v₁v₃, fourier_basis_yz = v₂v₃
+ *
+ * Returns the accumulated sums [V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃] where
+ * V_ij = Σ_k kernel(k)·v_i·v_j. The caller (compute_stress in the
+ * computation classes) converts these to lattice-parameter derivatives
+ * [dH/dL₁, dH/dL₂, dH/dL₃, dH/dγ, dH/dβ, dH/dα] via the metric tensor.
+ *
+ * @see docs/theory/StressTensor.md for the derivation
+ */
 template <typename T>
 std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
     T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length)
@@ -946,14 +755,7 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
     {
         const int N_STRESS = 6;  // v⊗v dyad sums: V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃
         const int M_COMPLEX = pseudo->get_total_complex_grid();
-        const auto& bond_lengths = this->molecules->get_bond_lengths();
-        auto bond_it = bond_lengths.find(monomer_type);
-        if (bond_it == bond_lengths.end())
-            throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
-
-        double bond_length_sq = bond_it->second * bond_it->second;
-        if (is_half_bond_length)
-            bond_length_sq *= 0.5;
+        const double bond_length_sq = stress_bond_length_sq(monomer_type, is_half_bond_length);
 
         std::vector<T> stress(N_STRESS, 0.0);
 

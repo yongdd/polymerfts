@@ -3,7 +3,9 @@
 
 A computation box larger than MAX_GRID_POINTS, Anderson mixing of more than
 MAX_GRID_ARRAY variables, and a CUDA launch configuration of more than 2^20
-threads must be rejected with a clear message before anything is allocated.
+threads must be rejected with a clear message before anything is allocated, as
+must launch variables (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS) that are not
+integers.
 """
 
 import os
@@ -65,7 +67,8 @@ def main():
             if "32-bit" not in str(e):
                 failed.append(f"{platform}: Anderson mixing: unexpected error {e}")
 
-    # CUDA launch configuration of 2^21 threads
+    # CUDA launch configurations: 2^21 threads, 2048 threads per block, and values
+    # that are not integers (the last beyond the range of int)
     if "cuda" in avail:
         # The launch configuration is read when the first kernel runs
         code = ("import numpy as np\n"
@@ -75,11 +78,16 @@ def main():
                 "                     platform='cuda')\n"
                 "s.add_polymer(1.0, [['A', 1.0, 0, 1]])\n"
                 "s.compute_propagators({'A': np.zeros(512)})\n")
-        env = dict(os.environ, LFTS_GPU_NUM_BLOCKS="8192", LFTS_GPU_NUM_THREADS="256")
-        run = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
-                             encoding="utf-8", errors="replace")
-        if run.returncode == 0 or "threads in total" not in run.stdout + run.stderr:
-            failed.append("CUDA launch of 2^21 threads accepted or rejected without the message")
+        for blocks, threads, message in (("8192", "256", "threads in total"),
+                                         ("1", "2048", "at most 1024 threads per block"),
+                                         ("256", "128.5", "LFTS_GPU_NUM_THREADS must be an integer"),
+                                         ("99999999999", "256", "LFTS_GPU_NUM_BLOCKS must be an integer")):
+            env = dict(os.environ, LFTS_GPU_NUM_BLOCKS=blocks, LFTS_GPU_NUM_THREADS=threads)
+            run = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
+            if run.returncode == 0 or message not in run.stdout + run.stderr:
+                failed.append(f"CUDA launch of {blocks} x {threads} threads accepted or rejected "
+                              f"without \"{message}\"")
 
     for f in failed:
         print("FAILED:", f)

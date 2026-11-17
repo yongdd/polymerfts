@@ -7,6 +7,8 @@ The checks raise ValidationError (never assert, which disappears under
 import copy
 import itertools
 import math
+import numbers
+from collections.abc import Mapping
 from typing import Any, Dict
 from os import PathLike
 
@@ -18,8 +20,67 @@ class ValidationError(Exception):
     pass
 
 
-class SaddlePointError(RuntimeError):
-    """A Langevin run stopped before accepting a step; see ``sim.run_status``."""
+class NumericalError(RuntimeError):
+    """The computation of a run failed: a numerical failure, not an input error.
+
+    Non-finite residuals, fields, concentrations or Hamiltonians, lost material conservation and
+    partition functions that are not positive or not consistent raise it. ``fields`` holds the
+    monomer fields {type: array} of the failed state where the check has them, else None: SCFT
+    gives them on the full grid, as SCFTResult.w, L-FTS and CL-FTS on their grid (complex in
+    CL-FTS), the form run() takes as initial_fields.
+    """
+
+    def __init__(self, message, fields=None):
+        super().__init__(message)
+        self.fields = fields
+
+
+class SaddlePointError(NumericalError):
+    """A saddle-point search failed, and the Langevin run stopped before accepting the step;
+    see ``sim.run_status``."""
+
+
+def finite_values(values, label, dtype=np.float64):
+    """values as a new flat array of dtype, float64 or complex128 (the caller's array stays as it is).
+
+    Any number that converts to a finite float64 is accepted: booleans, integers of any size
+    and floats, and with complex128 also complex numbers with finite parts. Strings, ragged
+    lists, complex numbers for float64, NaN, infinities and numbers beyond float64 raise
+    ValidationError.
+    """
+    complex_values = np.dtype(dtype) == np.complex128
+    try:
+        # A long double beyond float64 becomes inf, which the last check refuses
+        with np.errstate(over="ignore"):
+            array = np.asarray(values)   # a ragged list raises ValueError
+            # Numbers that NumPy keeps as objects, such as Python integers beyond 64 bits (float() and
+            # complex() raise OverflowError beyond float64); strings are not numbers
+            number = numbers.Complex if complex_values else numbers.Real
+            if array.dtype.kind == "O" and all(isinstance(value, number) for value in array.flat):
+                array = np.array([complex(value) if complex_values else float(value) for value in array.flat])
+            if array.dtype.kind in ("biufc" if complex_values else "biuf"):
+                array = array.astype(dtype).reshape(-1)
+                if np.all(np.isfinite(array)):
+                    return array
+    except (TypeError, ValueError, OverflowError):
+        pass
+    kind = "finite real or complex" if complex_values else "real, finite"
+    raise ValidationError(f"{label} must contain {kind} values at float64 precision")
+
+
+def initial_field_values(fields, monomer_types, size, dtype=np.float64):
+    """The initial fields {monomer type: values} of a run as flat arrays of dtype with `size` values
+    each (finite_values; the caller's arrays stay as they are). Keys of other names are left out."""
+    if not isinstance(fields, Mapping):
+        raise ValidationError("initial_fields must be a dict {monomer_type: field_array}")
+    checked = {}
+    for name in monomer_types:
+        if name not in fields:
+            raise ValidationError(f"initial_fields is missing monomer {name!r}")
+        checked[name] = finite_values(fields[name], f"initial_fields[{name!r}]", dtype)
+        if checked[name].size != size:
+            raise ValidationError(f"initial_fields[{name!r}] needs {size} values, got {checked[name].size}")
+    return checked
 
 
 def _rename_parameter(mapping, old, new, path=""):
@@ -228,10 +289,38 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
                                                           polymer_block_copies(polymer)))
 
 
+# An angle the cell fixes lies within this many radians of its value: the orthogonality test of the
+# native box (FIXED_ANGLE_TOLERANCE in ComputationBox.h), which SpaceGroup.check_cell applies too
+FIXED_ANGLE_TOLERANCE = 1e-10
+
+
+def right_angle(degrees):
+    """Whether an angle in degrees is 90 degrees for the native box (within FIXED_ANGLE_TOLERANCE rad)."""
+    return abs(degrees * (math.pi / 180.0) - math.pi / 2.0) < FIXED_ANGLE_TOLERANCE
+
+
+def _check_angles(angles, dim: int) -> None:
+    """Lattice angles [alpha, beta, gamma] in degrees; a 2D box may give gamma alone, and the angles
+    of the axes that a 1D or 2D box lacks are 90 degrees (the native box checks the cell itself)."""
+    if angles is None:
+        return
+    if np.ndim(angles) != 1:
+        raise ValidationError("angles must be a list of angles in degrees.")
+    if dim == 3 and len(angles) != 3:
+        raise ValidationError("angles must be [alpha, beta, gamma] (three entries) for a 3D box.")
+    if dim < 3:
+        if len(angles) not in (0, 1, 3):
+            raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
+        fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
+        if not all(right_angle(angle) for angle in np.asarray(fixed, dtype=float)):
+            raise ValidationError("A 1D box requires all angles to be 90 degrees; "
+                                  "a 2D box requires alpha and beta to be 90 degrees.")
+
+
 def validate_system_params(params: Dict[str, Any]) -> None:
     """Check the parameters shared by SCFT, L-FTS and CL-FTS, with the names of normalize_params.
 
-    Required: nx, lx, ds, chain_model, segment_lengths, chi_n, polymers.
+    Required: nx, lx, ds, chain_model, segment_lengths, chi_n, polymers; optional: angles, platform, zeta_n.
     The first problem found raises ValidationError with a message naming the key.
     """
     for key in ("nx", "lx", "ds", "chain_model", "segment_lengths", "chi_n", "polymers"):
@@ -249,6 +338,8 @@ def validate_system_params(params: Dict[str, Any]) -> None:
         raise ValidationError(f"'lx' must have {len(nx)} elements, got {len(lx)}")
     for length in lx:
         _finite_number(length, "lx", positive=True)
+
+    _check_angles(params.get("angles"), len(nx))
 
     ds = params["ds"]
     _finite_number(ds, "ds", positive=True)
@@ -426,6 +517,11 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
         if hall is not None and (isinstance(hall, (bool, np.bool_)) or not isinstance(hall, (int, np.integer))
                                  or not 1 <= hall <= 530):
             raise ValidationError(f"'space_group.hall_number' must be an integer from 1 to 530, got {hall!r}")
+        # 'electrostatics' needs the smearing (validate_electrostatics), so this refuses it too
+        if params.get("smearing") is not None:
+            raise ValidationError("'smearing' (and 'electrostatics', which needs it) is not available with "
+                                  "'space_group': the smearing works on full-grid fields, the fields of a space "
+                                  "group live in its reduced basis")
     for key in ("optimizer", "relax_cell"):
         if key not in params:
             raise ValidationError(f"Missing required parameter for SCFT: '{key}'")
@@ -440,9 +536,6 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
                                   "(E = 4 pi l_B rho0 N R0^2)")
         if isinstance(electrostatics, dict) and "psi_dt_scaling" in electrostatics:
             raise ValidationError("'electrostatics.psi_dt_scaling' is a CL-FTS option")
-        if group is not None:
-            raise ValidationError("SCFT 'electrostatics' is not available with 'space_group': the Poisson "
-                                  "equation and the smearing it needs work on the full grid")
     # Before validate_electrostatics, which reads the smearing length of the charges
     _validate_smearing(params, complex_fields=False)
     if electrostatics is not None:
@@ -521,7 +614,14 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
             if "chemical_potential" in polymer and (polymer.get("initial_conditions") or _has_random_copolymer(
                     {"polymers": [polymer]})):
                 raise ValidationError(f"polymers[{i}]: grand-canonical polymers cannot be grafted or random copolymers")
-    if not complex_fields:
+    if complex_fields:
+        # All fields of CL-FTS fluctuate. Its input has neither key, so that tools (the PSCF converter)
+        # tell it apart from L-FTS input
+        for key in ("saddle", "compressor"):
+            if key in params:
+                raise ValidationError(f"'{key}' is supported in L-FTS only: CL-FTS solves no saddle point "
+                                      "(all its fields fluctuate); remove it")
+    else:
         saddle = params.get("saddle")
         if not isinstance(saddle, dict):
             raise ValidationError("Missing required dict: 'saddle'")
@@ -542,8 +642,17 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
         if polymer.get("initial_conditions"):
             raise ValidationError(f"polymers[{i}]: L-FTS and CL-FTS need free chains; grafted chains "
                                   "(initial_conditions) need q_init, which only SCFT takes")
+    # The keys that the other methods ignore: dynamical stabilization acts on the imaginary parts of the
+    # complex fields of CL-FTS, and the space group of SCFT has no counterpart in the full-grid
+    # simulations of L-FTS and CL-FTS
     if "dynamic_stabilization" in params:
+        if not complex_fields:
+            raise ValidationError("'dynamic_stabilization' (or 'alpha_ds') is supported in CL-FTS only: "
+                                  "the fields of L-FTS have no imaginary parts to stabilize; remove it")
         _finite_number(params["dynamic_stabilization"], "dynamic_stabilization", nonnegative=True)
+    if params.get("space_group") is not None:
+        raise ValidationError("'space_group' is supported in SCFT only: L-FTS and CL-FTS sample the fields "
+                              "on the full grid; remove it")
     _validate_smearing(params, complex_fields)
     if params.get("electrostatics") is not None:
         if not complex_fields:
@@ -564,8 +673,13 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
         lo, hi = wtmd.get("psi_min", 0.0), wtmd.get("psi_max", 10.0)
         _finite_number(lo, "wtmd.psi_min")
         _finite_number(hi, "wtmd.psi_max")
-        if hi <= lo or (hi - lo) / wtmd.get("dpsi", 1e-3) < 2:
+        bins = (hi - lo) / wtmd.get("dpsi", 1e-3)
+        if hi <= lo or bins < 2:
             raise ValidationError("WTMD range must contain at least two bins")
+        # The histogram, the Gaussian kernels and the integrals of the statistics all use the bin width
+        if abs(bins - round(bins)) > 1e-9 * bins:
+            raise ValidationError(f"wtmd.dpsi must divide psi_max - psi_min into a whole number of bins "
+                                  f"(dpsi = {wtmd.get('dpsi', 1e-3)!r}, psi_max - psi_min = {hi - lo!r})")
     for polymer in params["polymers"]:
         polymer_block_lengths(params, polymer)
     return params
@@ -823,6 +937,7 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
     nx, lx = params["nx"], params["lx"]
     if not isinstance(nx, (list, tuple, np.ndarray)) or not isinstance(lx, (list, tuple, np.ndarray)) or len(lx) != len(nx):
         raise ValidationError("'lx', the cell of both boxes, needs one length per dimension of 'nx'")
+    _check_angles(params.get("angles"), len(nx))   # before the volumes of the boxes are computed
     for length in lx:
         _finite_number(length, "lx", positive=True)
     boxes = gibbs.get("boxes")

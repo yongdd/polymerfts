@@ -1,9 +1,14 @@
-"""Checks shared by the Python tests of simulation runs.
+"""Checks and inputs shared by the Python tests of simulation runs.
 
-quiet() calls a function without what it prints. python_platform() picks the one platform
-that runs a test of a fix made in Python. compare_files() compares a file that two runs wrote
-key by key. exact_restart() checks that a run continued from the checkpoint of a shorter run
-ends where the uninterrupted run ends, bit for bit on the same backend.
+quiet() calls a function without what it prints, and silenced() discards what a with block
+prints. python_platform() picks the one platform that runs a test of a fix made in Python.
+compare_files() compares a file that two runs wrote key by key. exact_restart() checks that a
+run continued from the checkpoint of a shorter run ends where the uninterrupted run ends, bit for
+bit on the same backend. expect_error() expects an exception. The inputs that several tests run:
+diblock_parameters() and diblock_fields() (a 1D L-FTS or CL-FTS diblock melt), FailingLFTS (its
+saddle search fails at chosen calls), compressible_parameters() (a 4-point diblock with zeta_n)
+and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
+with the saddle and compressor entries, or of CL-FTS (cls=CLFTS), which refuses them.
 """
 
 import contextlib
@@ -13,13 +18,20 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import PlatformSelector
+from polymerfts import LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
+
+
+@contextlib.contextmanager
+def silenced():
+    """A with block whose printed output is discarded."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
 
 
 def quiet(function, *args, **kwargs):
     """function(*args, **kwargs) with its printed output discarded."""
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         return function(*args, **kwargs)
 
 
@@ -33,17 +45,43 @@ def python_platform():
     return next((name for name in platforms if name.startswith("cpu")), platforms[0])
 
 
-def compare_files(left, right, filename, prefixes, exclude=()):
+def cpu_platform():
+    """cpu-mkl if the build has it, else the first CPU platform, else None."""
+    avail = PlatformSelector.avail_platforms()
+    cpu = [p for p in avail if p.startswith("cpu")]
+    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+
+
+def expect_error(call, kind):
+    """call() raises an exception of type kind."""
+    try:
+        call()
+    except kind:
+        return
+    raise AssertionError(f"Expected {kind.__name__}")
+
+
+def compare_files(left, right, filename, prefixes, exclude=(), rtol=None):
     """The MAT files filename of the directories left and right hold the same keys starting
     with prefixes ("" takes every key) except those in exclude, and their values are equal bit
-    for bit. The entries that loadmat adds (__header__, __version__, __globals__) are left out."""
+    for bit. With rtol, only the float and complex arrays are compared: they have the same
+    shapes and differ by at most rtol times the largest magnitude of each array. The entries
+    that loadmat adds (__header__, __version__, __globals__) are left out."""
     a, b = (loadmat(Path(directory) / filename, squeeze_me=True) for directory in (left, right))
-    keys, other = ({key for key in data if key.startswith(prefixes) and not key.startswith("__")
-                    and key not in exclude} for data in (a, b))
+    keys, other = ({key for key, value in data.items() if key.startswith(prefixes) and not key.startswith("__")
+                    and key not in exclude
+                    and (rtol is None or isinstance(value, np.ndarray) and value.dtype.kind in "fc")}
+                   for data in (a, b))
     assert keys, f"{filename}: no key starts with {prefixes}"
     assert keys == other, f"{filename}: keys in one file only: {sorted(keys ^ other)}"
     for key in sorted(keys):
-        np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
+        if rtol is None:
+            np.testing.assert_array_equal(a[key], b[key], err_msg=f"{filename}: {key}")
+            continue
+        assert a[key].shape == b[key].shape, f"{filename}: {key} shapes {a[key].shape} {b[key].shape}"
+        scale = np.max(np.abs(a[key]), initial=0.0)
+        difference = np.max(np.abs(a[key] - b[key]), initial=0.0)
+        assert difference <= rtol * scale, f"{filename}: {key} differs by {difference:.2e} (scale {scale:.2e})"
 
 
 def recording_dir(sim):
@@ -79,3 +117,85 @@ def exact_restart(make, start, steps, split, files, inspect=None, exclude=(), sa
     for filename, prefixes in files.items():
         compare_files(recording_dir(sims["full"]), recording_dir(sims["continued"]), filename, prefixes, exclude)
     return sims
+
+
+def input_of(cls, params):
+    """params for the simulation class cls: CL-FTS takes no saddle and compressor entries."""
+    if issubclass(cls, CLFTS):
+        del params["compressor"], params["saddle"]
+    return params
+
+
+def diblock_parameters(directory, steps=4, cls=LFTS):
+    """An AB diblock melt in 1D (16 points), continuous chains, for L-FTS (the compressor and
+    saddle entries) or CL-FTS (cls=CLFTS), on the first CPU platform, recording into directory."""
+    return input_of(cls, {
+        "nx": [16], "lx": [3.0], "ds": 0.05, "chain_model": "continuous",
+        "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0},
+        "polymers": [{"volume_fraction": 1.0, "blocks": [
+            {"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}],
+        "platform": next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu")),
+        "langevin": {"nbar": 10000, "dt": 1.0, "max_step": steps},
+        "compressor": {"name": "am", "max_hist": 20, "start_error": 0.5, "mix_min": 0.01, "mix_init": 0.01},
+        "saddle": {"max_iter": 200, "tolerance": 1e-6},
+        "recording": {"dir": str(directory), "checkpoint_interval": 1, "sample_interval": 1, "statistics_save_interval": 2},
+        "verbose_level": 0,
+    })
+
+
+def diblock_fields():
+    """Random fields of standard deviation 5 for diblock_parameters."""
+    rng = np.random.default_rng(3)
+    return {m: rng.normal(0.0, 5.0, 16) for m in ("A", "B")}
+
+
+class FailingLFTS(LFTS):
+    """An L-FTS whose saddle search reports an infinite error at the calls in fail_calls."""
+    fail_calls = ()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        solve, self.calls = self.saddle.solve, 0
+
+        def failing_solve(w_aux):
+            self.calls += 1
+            phi, h, iterations, error = solve(w_aux)
+            return phi, h, iterations, np.inf if self.calls in self.fail_calls else error
+        self.saddle.solve = failing_solve
+
+
+def compressible_parameters(directory, platform, zeta=1e8, method="lm", steps=4, cls=LFTS):
+    """An AB diblock melt on 4 points with compressibility zeta_n, for L-FTS or CL-FTS (cls=CLFTS)."""
+    return input_of(cls, {
+        "nx": [4], "lx": [2.0], "ds": 0.25, "chain_model": "continuous",
+        "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0}, "zeta_n": zeta,
+        "polymers": [{"volume_fraction": 1.0, "blocks": [
+            {"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}],
+        "platform": platform,
+        "langevin": {"nbar": 10000.0, "dt": 0.01, "max_step": steps, "integrator": method},
+        "compressor": {"name": "am", "max_hist": 20, "start_error": 0.1,
+                       "mix_min": 0.1, "mix_init": 0.1},
+        "saddle": {"max_iter": 200, "tolerance": 1e-9},
+        "recording": {"dir": str(directory), "checkpoint_interval": 1,
+                      "sample_interval": 1, "statistics_save_interval": 4},
+        "verbose_level": 0,
+    })
+
+
+def scft_parameters():
+    """An AB diblock melt for SCFT on 8^3 points in a fixed cell, on cpu_platform()."""
+    return {
+        "nx": [8, 8, 8],
+        "lx": [4.0, 4.0, 4.0],
+        "chain_model": "continuous",
+        "ds": 1/10,
+        "segment_lengths": {"A": 1.0, "B": 1.0},
+        "chi_n": {"A,B": 15.0},
+        "polymers": [{
+            "volume_fraction": 1.0,
+            "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}],
+        }],
+        "platform": cpu_platform(),
+        "relax_cell": False,
+        "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
+    }

@@ -36,24 +36,25 @@ def zero_modes(fourier=None):
     for ell in (1, 1.5, 2, 4):
         wtmd = quiet(WTMD, nx, [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], l=ell, fourier=fourier)
         fields = np.stack([np.ones(n_grid), np.zeros(n_grid)])
-        psi = wtmd.compute_order_parameter(0, fields)
-        assert psi > 0 and np.any(wtmd.w_aux_k == 0), ell
+        modes = fourier.forward(fields[0]) if fourier is not None else np.fft.rfftn(np.reshape(fields[0], nx))
+        assert np.any(modes == 0), ell
         force = np.random.default_rng(7).normal(size=(1, n_grid))
         original = force.copy()
         with np.errstate(divide="raise", invalid="raise", over="raise"):
-            quiet(wtmd.add_bias_to_langevin, psi, force)
+            psi = quiet(wtmd.add_bias, fields, force)
+        assert psi > 0, ell
         np.testing.assert_array_equal(force, original)
 
         wtmd.up[:] = 0.7
         force[:] = 0
         with np.errstate(divide="raise", invalid="raise", over="raise"):
-            quiet(wtmd.add_bias_to_langevin, psi, force)
+            quiet(wtmd.add_bias, fields, force)
         expected = 0.7 * wtmd.fk[0, 0, 0]**(1 / ell)
         np.testing.assert_allclose(force, expected, rtol=1e-12, atol=1e-12)
 
-        psi = wtmd.compute_order_parameter(0, np.zeros_like(fields))
         force[:] = 0
-        quiet(wtmd.add_bias_to_langevin, psi, force)
+        psi = quiet(wtmd.add_bias, np.zeros_like(fields), force)
+        assert psi == 0.0
         np.testing.assert_array_equal(force, np.zeros_like(force))
 
 

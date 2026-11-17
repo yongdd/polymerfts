@@ -56,28 +56,7 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
                               /*complex_requires_periodic=*/true)
 {
     try{
-        const int M = cb->get_total_grid();
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
-        if (!is_periodic_)
-        {
-            // Real coefficient buffers for the DCT/DST path
-            for(int i=0; i<n_streams; i++)
-            {
-                d_rk_in_1_one[i].allocate(M_COMPLEX);
-                d_rk_in_2_one[i].allocate(M_COMPLEX);
-            }
-        }
-
-        // Allocate memory for pseudo-spectral: advance_propagator()
-        for(int i=0; i<n_streams; i++)
-        {
-            d_q_step_1_one[i].allocate(M);
-            d_q_step_2_one[i].allocate(M);
-            d_q_step_1_two[i].allocate(2*M);
-
-            d_qk_in_2_one[i].allocate(M_COMPLEX);
-            d_qk_in_1_two[i].allocate(2*M_COMPLEX);
-        }
+        // The work buffers follow in allocate_work(), for the path the space group chooses
         this->update_laplacian_operator();
     }
     catch(std::exception& exc)
@@ -87,6 +66,31 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
 }
 template <typename T>
 CudaSolverPseudoRQM4<T>::~CudaSolverPseudoRQM4() = default;
+
+template <typename T>
+void CudaSolverPseudoRQM4<T>::allocate_work(int n_field, bool full_grid)
+{
+    const int M = cb->get_total_grid();
+    const int M_COMPLEX = pseudo->get_total_complex_grid();
+    for(int i=0; i<n_streams; i++)
+    {
+        // The full step and the two half steps (both paths)
+        provide(d_q_step_1_one[i], n_field);
+        provide(d_q_step_2_one[i], n_field);
+        if (!full_grid)
+            continue;
+        // advance_propagator() on the full grid; the stress borrows the half-step workspaces
+        provide(d_q_step_1_two[i], 2*static_cast<size_t>(M));
+        provide(d_qk_in_2_one[i], M_COMPLEX);
+        provide(d_qk_in_1_two[i], 2*static_cast<size_t>(M_COMPLEX));
+        if (!is_periodic_)
+        {
+            // Real coefficient buffers for the DCT/DST path
+            provide(d_rk_in_1_one[i], M_COMPLEX);
+            provide(d_rk_in_2_one[i], M_COMPLEX);
+        }
+    }
+}
 
 template <typename T>
 void CudaSolverPseudoRQM4<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
@@ -111,9 +115,6 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
         CuDeviceData<T> *_d_exp_dw_half = this->d_exp_dw_half.at(ds_index).at(monomer_type);
-        const double* _d_boltz_bond      = pseudo->get_boltz_bond     (monomer_type, ds_index);
-        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, ds_index);
-
         const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
         if (use_crysfft)
         {
@@ -159,6 +160,10 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
                 return;
             }
         }
+
+        // Bond factors of the full grid (the Pseudo tables exist on this path only)
+        const double* _d_boltz_bond      = pseudo->get_boltz_bond     (monomer_type, ds_index);
+        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, ds_index);
 
         // Full-grid input/output (expanded from / reduced to the basis with a space group)
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);

@@ -25,13 +25,11 @@
  * cos(πm(j+½)/N) or sin(π(m+1)(j+½)/N) per axis, and backward() includes the
  * normalization, so backward(forward(f)) = f.
  *
- * A box that mixes periodic and wall axes is transformed through its mirror
- * image: every wall axis of N points is extended to 2N points by the even
- * (cosine) or odd (sine) reflection f_{2N-1-j} = ±f_j, the extended field is
- * transformed with the complex FFT of a periodic box, and along each wall axis
- * the mode m of the extension is 2 e^{iπm/2N} times the cosine coefficient m, or
- * -2i e^{iπm/2N} times the sine coefficient m - 1. Real fields take the real part
- * of backward(), the field of the Hermitian part of the coefficients, so a
+ * A box that mixes periodic and wall axes is transformed with one FFT of the
+ * grid whose wall axes are reordered and combined as in Makhoul's cosine
+ * transform (MakhoulTransform on the CPU, CudaMakhoulTransform on CUDA;
+ * docs/internals/FFTImplementation.md, Section 2.5). Real fields take the real
+ * part of backward(), the field of the Hermitian part of the coefficients, so a
  * multiplier acts as (M(k) + conj M(-k))/2, -k reversing the periodic indices.
  *
  * **Multipliers** are stored once (create_multiplier()) and applied with apply():
@@ -63,7 +61,6 @@
 #ifndef FOURIER_TRANSFORM_H_
 #define FOURIER_TRANSFORM_H_
 
-#include <array>
 #include <complex>
 #include <memory>
 #include <vector>
@@ -158,11 +155,14 @@ public:
     const std::vector<BoundaryCondition>& get_boundary_conditions() const { return bc_; }
     /// Every axis is periodic
     bool is_periodic() const { return periodic_; }
-    /// Periodic and wall axes are mixed (transformed through the mirror image)
+    /// Periodic and wall axes are mixed
     bool is_mixed() const { return mixed_; }
 
     /// |k|² of every coefficient for the current box
     std::vector<double> get_k_squared() const;
+    /// <v_a v_b>, v = g⁻¹u, over the least-|k|² aliases u of every coefficient
+    /// (tied_alias_moments), dim × dim arrays of the coefficient layout; periodic boxes
+    std::vector<double> get_alias_moments() const;
 
     /**
      * @brief Store a multiplier.
@@ -200,46 +200,23 @@ public:
     void backward(const double* coefficients, int n_fields, T* fields);
 
 protected:
-    /**
-     * @brief One axis of the mirror image of a mixed box, padded to 3D in front.
-     *
-     * Grid index j of the extended axis takes the field at extend_source[j] times
-     * extend_sign[j]; coefficient m is extract_factor[m] times the extended mode
-     * extract_source[m]; the extended mode j is fill_factor[j] times coefficient
-     * fill_source[j], or zero where fill_source[j] < 0. A periodic axis maps
-     * every index to itself with the factor 1.
-     */
-    struct MirrorAxis
-    {
-        int n = 1;            ///< grid points
-        int n_extended = 1;   ///< n, or 2n on a wall axis
-        std::vector<int> extend_source;
-        std::vector<double> extend_sign;
-        std::vector<int> extract_source;
-        std::vector<std::complex<double>> extract_factor;
-        std::vector<int> fill_source;
-        std::vector<std::complex<double>> fill_factor;
-    };
-
     ComputationBox<T>* cb_;
     std::vector<BoundaryCondition> bc_;
     int dim_;
     bool periodic_;   ///< every axis periodic
     bool mixed_;      ///< periodic and wall axes
-    std::array<MirrorAxis, 3> mirror_axes_;   ///< mixed boxes only
-    long long n_extended_ = 0;                ///< grid points of the mirror image (mixed boxes)
     int n_grid_;
     int n_coefficients_;
     std::vector<int> coefficient_shape_;
     bool complex_coefficients_;
     bool holds_orthogonal_cell_ = false;
+    /// Forward scale of a mixed box, 1/2 per wall axis: the cosine and sine series are half of
+    /// FFTW's REDFT10/RODFT10, which MakhoulTransform and CudaMakhoulTransform follow
+    double mixed_forward_scale_ = 1.0;
 
     /// Make n_blocks half spectra Hermitian on the planes that hold both k and -k
     /// (real fields with periodic axes only; see the class description)
     void make_hermitian(std::complex<double>* values, long long n_blocks) const;
-
-    /// Tables of the mirror image of a mixed box (mirror_axes_, n_extended_)
-    void set_mirror_axes(const std::vector<int>& nx);
 
     /// Doubles per field of coefficients (2·n_coefficients when complex)
     long long coefficient_stride() const

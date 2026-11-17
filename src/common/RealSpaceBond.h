@@ -19,15 +19,22 @@
  * cutoff; the absorbing folded rows need not sum to one. Their box-length
  * derivatives include the width correction as well. The expansion is summed
  * into the dense n x n matrix of the folded kernel once per box.
+ *
+ * bonds() builds all of this for the molecules in a box, once per box, for the
+ * CPU and CUDA solvers alike.
  */
 
 #ifndef REAL_SPACE_BOND_H_
 #define REAL_SPACE_BOND_H_
 
 #include <array>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "ComputationBox.h"
+
+class Molecules;
 
 namespace RealSpaceBond
 {
@@ -51,7 +58,6 @@ namespace RealSpaceBond
     /// the kernels of the bond along the other axes.
     struct Derivative
     {
-        int axis = 0;
         Kernel stencil;
         Folded folded;
     };
@@ -77,6 +83,25 @@ namespace RealSpaceBond
     /// Tables for halos as wide as the longest kernel of each axis
     Ghosts ghosts(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,
                   const std::vector<const Kernels*>& kernels);
+
+    /// The bonds of every monomer type in one box
+    struct Bonds
+    {
+        /// Kernels of the full bonds, per ds index and monomer type
+        std::map<int, std::map<std::string, Kernels>> full;
+        /// Kernels of the half bonds at chain ends and junctions (global ds), per monomer type
+        std::map<std::string, Kernels> half;
+        /// For the stress: the kernels of the full and half bonds (global ds) differentiated with
+        /// respect to the box length, per monomer type and axis
+        std::map<std::string, std::vector<Derivative>> full_dlength, half_dlength;
+        /// Source and sign of the points beyond each end of each axis, for the longest kernels
+        Ghosts ghosts;
+    };
+
+    /// The bonds of the molecules in an orthogonal box: a bond of contour ds has the variance
+    /// b^2 ds / 3 along each axis, a half bond half of it
+    template <typename T>
+    Bonds bonds(const Molecules& molecules, const ComputationBox<T>& box);
 }
 
 #endif

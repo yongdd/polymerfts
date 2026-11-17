@@ -13,7 +13,7 @@ import numpy as np
 from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
 from ..utils.common import check_partition_functions
-from ..utils.validation import ValidationError, SaddlePointError
+from ..utils.validation import ValidationError, SaddlePointError, NumericalError
 
 
 class LR:
@@ -27,8 +27,6 @@ class LR:
 
     Parameters
     ----------
-    nx : list of int
-        Grid dimensions [nx, ny, nz].
     jk : ndarray
         J(k) in the coefficient shape of fourier, measured by finite difference of δH/δw.
     fourier : FourierTransform
@@ -37,13 +35,10 @@ class LR:
 
     Attributes
     ----------
-    nx : list of int
-        Grid dimensions.
     jk : ndarray
         J(k), a copy of the given values.
     """
-    def __init__(self, nx, jk, fourier):
-        self.nx = nx
+    def __init__(self, jk, fourier):
         self.jk = jk.copy()
         self._fourier = fourier
         self._inverse = fourier.set_multiplier(1.0 / self.jk)
@@ -141,10 +136,8 @@ class LRAM:
         w_new : ndarray
             Updated field values after LR + AM, same shape as w_current.
         """
-        nx = self.lr.nx
-
-        w_lr_old = np.reshape(w_current, [1, np.prod(nx)])
-        w_lr_new = np.reshape(self.lr.calculate_new_fields(w_lr_old, negative_h_deriv, old_error_level, error_level), [1, np.prod(nx)])
+        w_lr_old = np.reshape(w_current, (1, -1))
+        w_lr_new = np.reshape(self.lr.calculate_new_fields(w_lr_old, negative_h_deriv, old_error_level, error_level), (1, -1))
         w_diff = w_lr_new - w_lr_old
         w_new = self.am.calculate_new_fields(w_lr_new, w_diff, old_error_level, error_level)
 
@@ -154,16 +147,17 @@ class LRAM:
 class SaddlePointSearch:
     """The saddle point of the imaginary fields of an LFTS simulation.
 
-    solve() finds the saddle point of given fields, first_point() that of the initial fields with
-    the retries of the input, and advance() takes one Langevin step of the real fields and finds
-    the saddle point of the result. `compressor` is Anderson mixing, LR or LRAM, and `settings`
-    the input "saddle".
+    solve() finds the saddle point of given fields, and solve_with_retries() goes on with a failed search
+    as the input allows. first_point() finds that of the initial fields, advance() takes one Langevin
+    step of the real fields and finds the saddle point of the result, and evaluate_force() gives the
+    forces at the intermediate fields of a step. `compressor` is Anderson mixing, LR or LRAM, `settings`
+    the input "saddle" and `iterations` the number of compressor iterations of the run.
     """
 
     def __init__(self, sim, params):
         self.sim = weakref.proxy(sim)   # no cycle: a dropped simulation frees its solver at once
         self.settings = params["saddle"].copy()
-        self.mpt, self.smearing = sim.mpt, sim.smearing
+        self.mpt, self.smearing, self.wtmd = sim.mpt, sim.smearing, sim.wtmd
         self.prop_solver, self.cb = sim.prop_solver, sim.cb
         self.monomer_types, self.zeta_n = sim.monomer_types, sim.zeta_n
         self.iterations = 0
@@ -194,7 +188,7 @@ class SaddlePointSearch:
             # reflecting walls (the box is half of a periodic box of twice its size, with the
             # mirror image of the kick). Next to an absorbing wall the concentrations at w = 0
             # are depleted, and no Fourier basis makes J diagonal
-            if any(b.lower() == "absorbing" for b in self.prop_solver.bc):
+            if "absorbing" in self.prop_solver.bc_lower:
                 raise ValidationError("compressor 'lr' and 'lram' need periodic axes or reflecting walls; "
                                       "use 'am' in a box with absorbing walls")
 
@@ -219,7 +213,7 @@ class SaddlePointSearch:
             # keeps 1/J finite, and the gauge fix of the saddle search removes the uniform mode
             if self.zeta_n is None:
                 jk_numeric.flat[0] = 1.0
-            lr = LR(self.prop_solver.nx, jk_numeric, fourier=fourier)
+            lr = LR(jk_numeric, fourier=fourier)
 
         if params["compressor"]["name"] == "am":
             return am
@@ -229,76 +223,93 @@ class SaddlePointSearch:
 
     def first_point(self, w_aux):
         """Saddle point of the initial fields, found in place; returns their concentrations."""
-        for attempt in range(self.settings.get("max_retries", 5) + 1):
-            phi, hamiltonian, _, error_level = self.solve(w_aux=w_aux)
-            if not np.isfinite(hamiltonian):
-                # H contains log Q: name a partition function that is not positive as the cause
-                check_partition_functions(self.prop_solver, "the initial saddle point")
-                raise ValidationError("Non-finite initial Hamiltonian")
-            if np.isfinite(error_level) and error_level < self.settings["tolerance"]:
-                break
-            self.sim.run_status["saddle_failures"] += 1
-            if self.settings.get("failure_policy", "retry") == "abort":
-                break
-        if not np.isfinite(error_level) or error_level >= self.settings["tolerance"]:
-            raise SaddlePointError(f"Initial saddle point failed after {attempt + 1} attempts (error={error_level})")
+        phi, _, _ = self.solve_with_retries(w_aux, "the initial saddle point")
         return phi
 
     def advance(self, w_aux_start, forces, noise_prev, langevin_step):
         """One Langevin step of the real fields, then the saddle point of the imaginary fields.
 
-        A failed saddle search goes on from where it stopped ("retry"), or the step is drawn again
-        ("resample", which can change the sampled distribution). Returns the new fields w_aux, their
-        concentrations and Hamiltonian, the error level and the noise of the step.
+        A failed saddle search goes on from where it stopped ("retry", solve_with_retries), or the step
+        is drawn again ("resample", which can change the sampled distribution). Returns the new fields
+        w_aux, their concentrations and Hamiltonian, the error level and the noise of the step.
         """
         R = len(self.mpt.aux_fields_real_idx)
+        real = self.mpt.aux_fields_real_idx
 
-        # Retrying the solver must not select the Langevin noise by convergence.
-        policy = self.settings.get("failure_policy", "retry")
+        # Retrying the solver must not select the Langevin noise by convergence: only "resample" draws
+        # the step again, each time from the state of the integrator before the step
+        resample = self.settings.get("failure_policy", "retry") == "resample"
+        draws = self.settings.get("max_retries", 5) + 1 if resample else 1
         integrator_state = extension_object_state(self.sim.integrator)
-        for attempt in range(self.settings.get("max_retries", 5) + 1):
-            if attempt == 0 or policy == "resample":
-                w_aux = w_aux_start.copy()
-                noise = self.sim.random.normal(0.0, self.sim.langevin["sigma"], [R, self.prop_solver.n_grid])
-                if attempt:
-                    self.sim.run_status["noise_resamples"] += 1
-                    warnings.warn("Saddle failure: resampling noise can change the sampled distribution", RuntimeWarning)
-                if hasattr(self.sim.integrator, "load_state_dict"):
-                    self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
-                active = w_aux[self.mpt.aux_fields_real_idx]
-                try:
-                    proposed = self.sim.integrator.step(
-                        active.copy(), forces.copy(), dt=self.sim.langevin["dt"],
-                        mobility=self.sim.dt_scaling[self.mpt.aux_fields_real_idx].copy(),
-                        noise=noise.copy(), previous_noise=noise_prev.copy(),
-                        noise_direction=np.ones(R),
-                        evaluate_force=lambda fields: self.sim.evaluate_force(fields, w_aux=w_aux_start, step=langevin_step))
-                except SaddlePointError:
-                    if hasattr(self.sim.integrator, "load_state_dict"):
-                        self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
-                    if policy == "resample" and attempt < self.settings.get("max_retries", 5):
-                        continue
-                    raise
-                w_aux[self.mpt.aux_fields_real_idx] = checked_fields(proposed, active)
-
-            # Find saddle point of the pressure field
-            phi, hamiltonian, saddle_iter, error_level = self.solve(w_aux=w_aux)
-            if not np.isfinite(hamiltonian):
-                # H contains log Q: name a partition function that is not positive as the cause
-                check_partition_functions(self.prop_solver, f"the saddle point of step {langevin_step}")
-                raise ValidationError(f"Non-finite Hamiltonian at step {langevin_step}")
-            self.iterations += saddle_iter
-            saddle_failed = not np.isfinite(error_level) or error_level >= self.settings["tolerance"]
-            if not saddle_failed:
-                break
-            self.sim.run_status["saddle_failures"] += 1
-            if policy == "abort" or not np.all(np.isfinite(w_aux)):
-                break
-        if saddle_failed:
+        for draw in range(draws):
+            noise = self.sim.random.normal(0.0, self.sim.langevin["sigma"], [R, self.prop_solver.n_grid])
+            if draw:
+                self.sim.run_status["noise_resamples"] += 1
+                warnings.warn("Saddle failure: resampling noise can change the sampled distribution", RuntimeWarning)
             if hasattr(self.sim.integrator, "load_state_dict"):
                 self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
-            raise SaddlePointError(f"Saddle point failed at step {langevin_step} after {attempt + 1} attempts (error={error_level})")
-        return w_aux, phi, hamiltonian, error_level, noise
+            try:
+                w_aux = w_aux_start.copy()
+                active = w_aux[real]
+                proposed = self.sim.integrator.step(
+                    active.copy(), forces.copy(), dt=self.sim.langevin["dt"],
+                    mobility=self.sim.dt_scaling[real].copy(),
+                    noise=noise.copy(), previous_noise=noise_prev.copy(),
+                    noise_direction=np.ones(R),
+                    evaluate_force=lambda fields: self.evaluate_force(fields, w_aux_start, langevin_step))
+                w_aux[real] = checked_fields(proposed, active)
+
+                # Find saddle point of the pressure field (one search per draw with "resample")
+                phi, hamiltonian, error_level = self.solve_with_retries(
+                    w_aux, f"the saddle point of step {langevin_step}", retry=not resample)
+                return w_aux, phi, hamiltonian, error_level, noise
+            except SaddlePointError:
+                if hasattr(self.sim.integrator, "load_state_dict"):
+                    self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
+                if draw == draws - 1:
+                    raise
+
+    def evaluate_force(self, fields, w_aux, langevin_step):
+        """dH/dw of the real fields at the intermediate fields of a step (the evaluate_force of the
+        integrator), with the saddle point of the imaginary fields found from those of w_aux and the
+        bias of WTMD as it stands. No noise is drawn and nothing is recorded."""
+        trial = w_aux.copy()
+        real = self.mpt.aux_fields_real_idx
+        trial[real] = checked_fields(fields, trial[real])
+        phi, _, _ = self.solve_with_retries(trial, f"an intermediate saddle point of step {langevin_step}")
+        force = self.mpt.compute_func_deriv(trial, self.smearing.apply_to_dict(phi), real)
+        if self.wtmd is not None:
+            self.wtmd.add_bias(trial, force)
+        if not np.all(np.isfinite(force)):
+            raise NumericalError("Non-finite intermediate LFTS force", self.mpt.to_monomer_fields_dict(trial))
+        return force
+
+    def solve_with_retries(self, w_aux, where, retry=True):
+        """The saddle point of w_aux, found in place; returns its concentrations, Hamiltonian and error level.
+
+        A search that does not converge goes on from where it stopped, saddle.max_retries times at most:
+        not with failure_policy "abort" or retry=False, nor from fields that are not finite. `where` names
+        the saddle point in the errors: a Hamiltonian that is not finite raises NumericalError, which names
+        a partition function that is not positive as its cause, and a search that fails SaddlePointError.
+        """
+        retries = self.settings.get("max_retries", 5)
+        if not retry or self.settings.get("failure_policy", "retry") == "abort":
+            retries = 0
+        for attempt in range(retries + 1):
+            phi, hamiltonian, iterations, error_level = self.solve(w_aux)
+            self.iterations += iterations
+            if not np.isfinite(hamiltonian):
+                # H contains log Q: name a partition function that is not positive as the cause
+                fields = self.mpt.to_monomer_fields_dict(w_aux)
+                check_partition_functions(self.prop_solver, where, fields)
+                raise NumericalError(f"Non-finite Hamiltonian at {where}", fields)
+            if np.isfinite(error_level) and error_level < self.settings["tolerance"]:
+                return phi, hamiltonian, error_level
+            self.sim.run_status["saddle_failures"] += 1
+            if not np.all(np.isfinite(w_aux)):
+                break
+        raise SaddlePointError(f"The search for {where} failed after {attempt + 1} attempts (error={error_level})",
+                               self.mpt.to_monomer_fields_dict(w_aux))
 
     def solve(self, w_aux):
         """Find saddle point of imaginary auxiliary fields.
@@ -387,7 +398,7 @@ class SaddlePointSearch:
             if self.sim.verbose_level == 2 or is_last:
                 total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
                 hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                          include_const_term=True, phi=self.smearing.apply_to_dict(phi))
+                                                          include_const_term=True, phi=phi_for_saddle)
 
             # Print iteration # and error levels
             if self.sim.verbose_level == 2 or (self.sim.verbose_level == 1 and is_last):

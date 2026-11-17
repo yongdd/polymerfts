@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import SCFT, ValidationError
+from polymerfts import SCFT, NumericalError
 from polymerfts.utils.common import check_partition_functions
 from fts_checks import python_platform, quiet
 
@@ -31,7 +31,7 @@ def check_guard_policy():
                 get_partition_function=lambda p: partition)
             try:
                 check_partition_functions(solver, "the test state")
-            except ValidationError as error:
+            except NumericalError as error:
                 assert fraction > 0.0, (fraction, partition, error)
                 assert "partition function of polymer 0" in str(error)
             else:
@@ -112,7 +112,7 @@ def check_scft(root, platform, model, reduced):
         try:
             quiet(occupied.run, {name: np.zeros(4) for name in ("A", "B")},
                   q_init={"G": np.zeros(4)}, return_result=True)
-        except ValidationError:
+        except NumericalError:
             pass
         else:
             raise AssertionError("SCFT accepted a zero partition for an occupied polymer")

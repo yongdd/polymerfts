@@ -11,7 +11,7 @@
 | Chain models | Continuous (Gaussian), Discrete (bead-spring) |
 | Dimensions | 1D, 2D, 3D |
 | Platforms | CPU (OpenMP), GPU (CUDA) |
-| Simulations | SCFT, L-FTS, CL-FTS (beta) |
+| Simulations | SCFT, L-FTS, CL-FTS |
 
 ---
 
@@ -21,7 +21,7 @@
 |------|-------------|
 | **SCFT** | Mean-field equilibrium with Anderson mixing, stress-based box optimization, space groups, and the mean field of smeared Coulomb interactions with point ions and fixed charges in periodic boxes, boxes with walls and boxes that mix both (Poisson equation, Donnan potential). |
 | **L-FTS** | Langevin dynamics (Leimkuhler-Matthews) with structure function calculations and Well-Tempered Metadynamics (WTMD). |
-| **CL-FTS** (beta) | Complex Langevin with dynamical stabilization, smeared Coulomb interactions, optionally screened by a background electrolyte (charged polymers, point ions with automatic counterions, fixed charges, periodic boxes, boxes with walls and boxes that mix both), grand-canonical polymers and ions (Donnan potential), an exponential-time-differencing integrator with the exact linear response, chemical potential and osmotic pressure operators, and a Gibbs-ensemble driver for coexisting phases. |
+| **CL-FTS** | Complex Langevin with dynamical stabilization, smeared Coulomb interactions, optionally screened by a background electrolyte (charged polymers, point ions with automatic counterions, fixed charges, periodic boxes, boxes with walls and boxes that mix both), grand-canonical polymers and ions (Donnan potential), an exponential-time-differencing integrator with the exact linear response, chemical potential and osmotic pressure operators, and a Gibbs-ensemble driver for coexisting phases. |
 
 ---
 
@@ -36,8 +36,8 @@
 | Custom initial conditions | Arbitrary initial conditions at chain ends (core library) |
 | Impenetrable regions | Masked regions where polymers cannot enter (core library) |
 | Boundary conditions | Periodic (FFT), reflecting (DCT), absorbing (DST) (core library) |
-| Space groups | All 230 space groups in the core `SpaceGroup` class (3D, via spglib); SCFT accepts the orthorhombic to cubic groups, numbers 16–230 (beta) |
-| CrysFFT | Symmetry-accelerated FFT: 3m recursive (BCC, FCC, Gyroid, DD), Pmmm DCT as fallback for groups with x/y/z mirror planes, ObliqueZ z-mirror (HCP, PL) (beta) |
+| Space groups | All 230 space groups in the core `SpaceGroup` class (3D, via spglib), in SCFT for every crystal system |
+| CrysFFT | Symmetry-accelerated FFT: 3m recursive (BCC, FCC, Gyroid, DD), Pmmm DCT as fallback for groups with x/y/z mirror planes, ObliqueZ z-mirror (HCP, PL) |
 | Non-orthogonal box | Monoclinic and triclinic unit cells with arbitrary angles |
 | Crystal system constraints | Orthorhombic, tetragonal, cubic, hexagonal, monoclinic, triclinic |
 | Well-Tempered Metadynamics | Enhanced sampling for phase transitions (L-FTS) |

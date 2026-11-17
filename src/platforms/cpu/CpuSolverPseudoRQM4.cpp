@@ -225,8 +225,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
                 }
 
                 double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_set_contour_step(coeff_full);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data());
+                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_full);
 
                 for (int i = 0; i < M_phys; ++i)
                 {
@@ -278,7 +277,6 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
                 }
 
                 double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
-                this->crysfft_set_contour_step(coeff_half);
 
                 // First half step
                 this->fill_crysfft_from_reduced(q_in, phys_in.data());
@@ -287,7 +285,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
                     const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
                     phys_in[i] *= _exp_dw_half[ridx];
                 }
-                this->crysfft_diffusion(phys_in.data(), phys_out.data());
+                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_half);
                 for (int i = 0; i < M_phys; ++i)
                 {
                     const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
@@ -295,7 +293,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
                 }
 
                 // Second half step
-                this->crysfft_diffusion(phys_out.data(), phys_in.data());
+                this->crysfft_diffusion(phys_out.data(), phys_in.data(), coeff_half);
                 for (int i = 0; i < M_phys; ++i)
                 {
                     const int ridx = identity ? i : this->crysfft_reduced_indices_[i];

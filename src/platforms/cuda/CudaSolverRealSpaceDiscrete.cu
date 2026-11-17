@@ -260,30 +260,10 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
     refusal_ = "The rs operator update has not completed. Call update_laplacian_operator() successfully before computing again.";
     try
     {
-        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles.
-        // A bond of contour ds has the variance b^2 ds / 3 along each axis, a half bond half of it
-        const std::vector<double> dx = cb->get_dx();
+        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles
+        const RealSpaceBond::Bonds bonds = RealSpaceBond::bonds(*molecules, *cb);
+        const RealSpaceBond::Ghosts& ghosts = bonds.ghosts;
         const auto nx = cb->get_nx();
-        const auto bc = cb->get_boundary_conditions();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        const double ds = mapping.get_ds_from_index(0);
-        std::map<int, std::map<std::string, RealSpaceBond::Kernels>> bond;
-        std::map<std::string, RealSpaceBond::Kernels> bond_half;
-        std::map<std::string, std::vector<RealSpaceBond::Derivative>> bond_dlength, bond_half_dlength;
-        std::vector<const RealSpaceBond::Kernels*> all;
-        for (const auto& [monomer_type, b] : molecules->get_bond_lengths())
-        {
-            for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            {
-                bond[ds_idx][monomer_type] = RealSpaceBond::gaussian(b * b * mapping.get_ds_from_index(ds_idx) / 3.0, dx, nx, bc);
-                all.push_back(&bond[ds_idx][monomer_type]);
-            }
-            bond_half[monomer_type] = RealSpaceBond::gaussian(b * b * ds / 6.0, dx, nx, bc);
-            all.push_back(&bond_half[monomer_type]);
-            bond_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 3.0, dx, cb->get_lx(), nx, bc);
-            bond_half_dlength[monomer_type] = RealSpaceBond::length_derivatives(b * b * ds / 6.0, dx, cb->get_lx(), nx, bc);
-        }
-        const RealSpaceBond::Ghosts ghosts = RealSpaceBond::ghosts(cb->get_nx(), cb->get_boundary_conditions(), all);
 
         // Every pass must fit the shared memory of a block: the longest kernel of an axis (its halo;
         // the derivatives have the lengths of the bonds) is checked before the solver changes. The box
@@ -304,16 +284,16 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 
         // The kernel of each axis of the box; a derivative holds that of its own axis only
         const int dim = cb->get_dim();
-        for (const auto& [ds_idx, kernels] : bond)
+        for (const auto& [ds_idx, kernels] : bonds.full)
             for (const auto& [monomer_type, k] : kernels)
                 for (int d = 0; d < dim; ++d)
                     upload(k[d], k.folded[d], d_bond[ds_idx][monomer_type][d]);
-        for (const auto& [monomer_type, k] : bond_half)
+        for (const auto& [monomer_type, k] : bonds.half)
         {
             for (int d = 0; d < dim; ++d)
             {
-                const RealSpaceBond::Derivative& full = bond_dlength.at(monomer_type)[d];
-                const RealSpaceBond::Derivative& half = bond_half_dlength.at(monomer_type)[d];
+                const RealSpaceBond::Derivative& full = bonds.full_dlength.at(monomer_type)[d];
+                const RealSpaceBond::Derivative& half = bonds.half_dlength.at(monomer_type)[d];
                 upload(k[d], k.folded[d], d_bond_half[monomer_type][d]);
                 upload(full.stencil, full.folded, d_bond_dlength[monomer_type][d]);
                 upload(half.stencil, half.folded, d_bond_half_dlength[monomer_type][d]);

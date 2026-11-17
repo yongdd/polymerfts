@@ -16,6 +16,14 @@
  *
  * Derived classes own only their propagator work buffers, because the number
  * and size of those buffers is what distinguishes the three methods.
+ *
+ * Nothing the chosen path does not use is allocated: the space group (set
+ * after construction) decides it. The backend calls provide_work() once the
+ * group is set, which allocates the buffers and plans of that path; update_dw()
+ * and prepare_stress() call it again before their loops, which allocates only
+ * what a later change of the path needs (the force-off-diagonal flag turns the
+ * stress to the full grid). With the Pmmm or recursive 3m CrysFFT and its stress
+ * fast path the solver holds no full-grid transform, work buffer or Pseudo table.
  */
 
 #ifndef CUDA_SOLVER_PSEUDO_BASE_H_
@@ -24,9 +32,9 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <map>
-#include <set>
 #include <cufft.h>
 
 #include "Exception.h"
@@ -55,13 +63,16 @@ protected:
     bool is_periodic_;            ///< True if all BCs are periodic
     cudaStream_t streams[MAX_STREAMS][2];  ///< CUDA streams [kernel, memcpy] per index
 
-    // Spectral transforms (created by init_fft(), released by release_base())
+    // Spectral transforms of the full-grid path (created by init_fft(), released by release_base())
     int max_fft_batch_;                      ///< Largest batch a derived solver transforms at once (1 or 2)
     cufftHandle plan_for_[MAX_STREAMS][2];   ///< Periodic BC: forward plans, index = batch - 1
     cufftHandle plan_bak_[MAX_STREAMS][2];   ///< Periodic BC: backward plans, index = batch - 1
     std::unique_ptr<CudaFFTBase<T>> fft_[MAX_STREAMS];       ///< Non-periodic BC: per-stream DCT/DST transform objects (issued on streams[i][0])
 
-    // Stress reduction workspace (per stream)
+    // Stress reduction workspace (per stream). The CrysFFT fast path sums its
+    // reduced-basis integrand in d_stress_sum with the CUB scratch d_temp_storage
+    // (allocated by prepare_stress()); the full-grid path forms the integrand in
+    // d_q_multi (see provide_work()) and sums it by blocks
     size_t temp_storage_bytes[MAX_STREAMS];
     CudaDeviceBuffer<unsigned char> d_temp_storage[MAX_STREAMS];
     CudaDeviceBuffer<CuDeviceData<T>> d_stress_sum[MAX_STREAMS];
@@ -75,8 +86,8 @@ protected:
     int* d_reduced_basis_indices_;                   ///< Device array: reduced -> full index mapping (lent by the backend)
     int* d_full_to_reduced_map_;                     ///< Device array: full -> reduced index mapping (lent by the backend)
     int n_basis_;                                    ///< Number of reduced basis points
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_in_[MAX_STREAMS];      ///< Work buffer: full grid input (per stream)
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out_[MAX_STREAMS];     ///< Work buffer: full grid output (per stream)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_in_[MAX_STREAMS];      ///< Work buffer: full grid input (per stream; full-grid path)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out_[MAX_STREAMS];     ///< Work buffer: full grid output (per stream; full-grid path)
     int q_full_in_factor_;                           ///< d_q_full_in_ holds this many full-grid fields (2 for discrete stress)
 
     // CrysFFT fast path (crystallographic FFT on the physical sub-grid)
@@ -90,8 +101,11 @@ protected:
     std::unique_ptr<CudaCrysFFTBase> crysfft_[MAX_STREAMS];   ///< Per-stream CrysFFT objects
     CudaDeviceBuffer<double> d_crysfft_in_[MAX_STREAMS];              ///< Per-stream physical grid input
     CudaDeviceBuffer<double> d_crysfft_out_[MAX_STREAMS];             ///< Per-stream physical grid output
-    std::set<double> crysfft_coeffs_;   ///< Step coefficients whose tables update_crysfft_tables() built
-    std::set<std::pair<double, bool>> crysfft_stress_keys_;   ///< (b², bond factor) of the stress multipliers prepare_stress() built
+    // k-space tables of the current cell, one per key for all streams: built before the
+    // propagator and stress loops, which only look them up, and rebuilt in place when
+    // the cell changes (update_crysfft_tables())
+    std::map<double, CudaDeviceBuffer<double>> crysfft_boltz_;   ///< Boltzmann factors per step coefficient
+    std::map<std::pair<int, double>, CudaDeviceBuffer<double>> crysfft_multipliers_;   ///< Stress multipliers per (axis group, bond coefficient)
 
     /**
      * @param max_fft_batch             Largest number of fields the derived solver
@@ -169,13 +183,36 @@ protected:
     virtual StressScratch stress_scratch(int STREAM) = 0;
 
     /**
-     * @brief Boltzmann bond factor multiplied into the stress integrand.
+     * @brief Boltzmann bond factor multiplied into the stress integrand (full-grid path).
      *
      * The default (continuous chains) returns nullptr; the discrete chain
      * overrides it with exp(-k^2 b^2 ds/6) (half-bond variant when requested).
      */
     virtual const double* get_stress_boltz_bond(
         const std::string& monomer_type, bool is_half_bond_length) const;
+
+    /**
+     * @brief True unless the Pmmm or recursive 3m CrysFFT takes the propagator
+     *        steps and its fast path the segment stress, so that no full-grid
+     *        transform, buffer or Pseudo table is used.
+     *
+     * ObliqueZ runs its stress on the full grid; the force-off-diagonal flag and
+     * a non-orthogonal cell turn the stress fast path off.
+     */
+    bool full_grid_path() const;
+
+    /**
+     * @brief Allocate the derived solver's work buffers that are missing or of another size.
+     *
+     * @param n_field   Values of a field in the propagator steps (n_basis_ on the
+     *                  CrysFFT path, the full grid otherwise)
+     * @param full_grid Also the buffers of the full-grid path (its FFT workspaces
+     *                  and the stress scratch of stress_scratch())
+     */
+    virtual void allocate_work(int n_field, bool full_grid) = 0;
+
+    /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
+    virtual bool stress_has_bond_factor() const { return false; }
 
     /**
      * @brief CrysFFT diffusion coefficient b²·Δs/divisor of one propagator step.
@@ -197,18 +234,25 @@ protected:
 private:
     bool plan_for_created_[MAX_STREAMS][2];  ///< plan_for_[i][b] exists (cufftHandle has no null value)
     bool plan_bak_created_[MAX_STREAMS][2];  ///< plan_bak_[i][b] exists
+    bool pseudo_current_ = false;            ///< pseudo's tables are those of the current cell (see update_pseudo())
 
     /// Free everything the base owns (idempotent; safe on a partly built object).
     void release_base();
-    /// Create the cuFFT plans (periodic BC) or the DCT/DST objects (non-periodic BC).
+    /// Create the missing cuFFT plans (periodic BC) or DCT/DST objects (non-periodic BC).
     void init_fft();
+    /// Recompute and upload the Pseudo tables (Boltzmann bond factors, Fourier basis) of the current cell.
+    void update_pseudo();
     /// Select and build the CrysFFT fast path for the current space group (3D periodic, real fields).
     void init_crysfft();
     /// Upload the index maps and create the per-stream CrysFFT objects for `mode`.
     void setup_crysfft(CudaCrysFFTMode mode, const CrysFFTBasisMapping& map,
                        const std::array<double, 9>& m3_translations);
-    /// Pass the current cell to the CrysFFT objects and build the Boltzmann tables of all steps.
+    /// Rebuild every CrysFFT table for the current cell.
     void update_crysfft_tables();
+    /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
+    std::array<double, 6> crysfft_cell() const;
+    /// Keys of the stress multipliers of a bond: per axis group, (axes, b²·ds/6 or 0 without the bond factor).
+    std::vector<std::pair<int, double>> crysfft_stress_keys(double bond_length_sq, bool include_bond_factor) const;
     /// True when the segment stress takes the CrysFFT fast path (Pmmm or 3m, orthogonal 3D cell).
     bool crysfft_stress_fast_path() const;
     /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).
@@ -247,9 +291,24 @@ public:
         int* d_full_to_reduced_map,
         int n_basis) override;
 
+    /**
+     * @brief Allocate what the path in use needs and is missing.
+     *
+     * The exp(-w ds) tables (reduced basis on the CrysFFT path, full grid
+     * otherwise) and, when full_grid_path(), the full-grid transforms, stress
+     * workspace, reduced-basis expansion buffers and Pseudo tables of the current
+     * cell; then the derived solver's buffers (allocate_work()). Buffers are kept
+     * once allocated; one of another size is replaced. Called by the backend
+     * after set_space_group(), and by update_dw() and prepare_stress() before
+     * their loops.
+     */
+    void provide_work() override;
+
+    /// A new cell: rebuilds the CrysFFT tables; the full-grid Pseudo tables follow in provide_work().
     void update_laplacian_operator() override;
 
-    /// Build the CrysFFT stress multipliers of every block before the segment loop.
+    /// Provide the stress path before the segment loop: the full-grid work, or the
+    /// fast-path workspace and the CrysFFT stress multipliers of every block.
     void prepare_stress() override;
 };
 

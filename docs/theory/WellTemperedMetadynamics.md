@@ -125,30 +125,45 @@ The cutoff $`k_c`$ is typically set to 1.4 times the peak position of the disord
 
 ### 3.5 Implementation
 
-The implementation matches [deep-langevin-fts](https://github.com/yongdd/deep-langevin-fts) with two exceptions. For odd $`n_z`$ the last `rfftn` plane has weight 2: deep-langevin-fts gives it weight 1. The hills are deposited as described in §4: deep-langevin-fts divides the histogram by the samples inside the $`\Psi`$ range and convolves it circularly.
+The implementation follows [deep-langevin-fts](https://github.com/yongdd/deep-langevin-fts), with four differences. For odd $`n_z`$ the last `rfftn` plane has weight 2: deep-langevin-fts gives it weight 1. The hills are deposited as described in §4: deep-langevin-fts divides the histogram by the samples inside the $`\Psi`$ range and convolves it circularly. $`\Psi`$ and its derivative are computed from scaled modes, which gives the same values without forming powers of large numbers, so they stay finite for any $`\ell`$ and field scale. The bias is zero where the formula of deep-langevin-fts divides zero by zero: at $`\Psi = 0`$ and, for $`\ell \lt 2`$, at a zero mode $`\tilde{W}_k = 0`$.
 
 **Order parameter:**
 ```math
-\Psi = \frac{1}{M} \left( \sum_k f_k |\tilde{W}_k|^\ell w_t \right)^{1/\ell}
+\Psi = \frac{1}{M} \left( \sum_k f_k |\tilde{W}_k|^\ell w_t \right)^{1/\ell} = \frac{\lVert b \rVert_\ell}{M}, \qquad b_k = f_k^{1/\ell} |\tilde{W}_k|, \qquad \lVert b \rVert_\ell = \left( \sum_k b_k^\ell w_t \right)^{1/\ell}
 ```
 
+The modes are divided by their largest value before the power is taken, and $`b_k / \lVert b \rVert_\ell`$ lies in $`[0, 1]`$ because the weights $`w_t`$ are at least one. $`\Psi = 0`$ only for a zero exchange field.
+
 ```python
-self.w_aux_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))
-psi = np.sum(np.power(np.absolute(self.w_aux_k), self.l) * self.fk * self.wt)
-psi = np.power(psi, 1.0 / self.l) / self.M
+w_k = np.fft.rfftn(np.reshape(w_aux[self.exchange_idx], self.nx))   # or the transform of the platform
+magnitude = np.absolute(w_k) * np.power(self.fk, 1.0 / self.l)        # b_k
+scale = np.max(magnitude)
+if scale == 0.0:
+    psi = 0.0
+else:
+    modes = magnitude / scale
+    norm = np.power(np.sum(np.power(modes, self.l) * self.wt), 1.0 / self.l)
+    modes /= norm                                                       # b_k / ||b||_ell
+    psi = scale * (norm / self.M)
 ```
 
 **Bias field:**
 ```math
-\text{bias} = V \cdot U'(\Psi) \cdot \frac{M^{2-\ell}}{V} \Psi^{1-\ell} \cdot \text{irfftn}\left[ f_k |\tilde{W}_k|^{\ell-2} \tilde{W}_k \right]
+\text{bias} = V \cdot U'(\Psi) \cdot \frac{M}{V} \cdot \text{irfftn}\left[ f_k^{1/\ell} \left( \frac{b_k}{\lVert b \rVert_\ell} \right)^{\ell-1} \frac{\tilde{W}_k}{|\tilde{W}_k|} \right]
 ```
+
+Since $`\lVert b \rVert_\ell = M\Psi`$, this is the form of deep-langevin-fts, $`V U'(\Psi) \frac{M^{2-\ell}}{V} \Psi^{1-\ell} \, \text{irfftn}[f_k |\tilde{W}_k|^{\ell-2} \tilde{W}_k]`$, wherever that is defined. The direction $`\tilde{W}_k / |\tilde{W}_k|`$ is taken as zero at a zero mode: the zero derivative for $`\ell \gt 1`$ and the zero subgradient for $`\ell = 1`$. At $`\Psi = 0`$, where the derivative has no direction, and where $`U'(\Psi) = 0`$, no bias is added.
 
 ```python
 up_hat = np.interp(psi, self.psi_range, self.up)
-dpsi_dwk = np.power(np.absolute(self.w_aux_k), self.l - 2.0) * np.power(psi, 1.0 - self.l) * self.w_aux_k * self.fk
-dpsi_dwr = np.fft.irfftn(dpsi_dwk, self.nx, axes=tuple(range(len(self.nx)))) * np.power(self.M, 2.0 - self.l) / self.V
+if psi == 0.0:
+    dpsi_dwr = np.zeros(self.M)
+else:
+    direction = np.divide(w_k, np.absolute(w_k), out=np.zeros_like(w_k), where=np.absolute(w_k) > 0)
+    dpsi_dwk = np.power(self.fk, 1.0 / self.l) * np.power(modes, self.l - 1.0) * direction
+    dpsi_dwr = np.fft.irfftn(dpsi_dwk, self.nx, axes=tuple(range(len(self.nx)))) * self.M / self.V
 bias = np.reshape(self.V * up_hat * dpsi_dwr, self.M)
-langevin[self.langevin_idx] += bias
+forces[self.langevin_idx] += bias
 ```
 
 ---
@@ -276,8 +291,8 @@ wtmd = WTMD(
 
 | Method | Description |
 |--------|-------------|
-| `compute_order_parameter(step, w_aux)` | Calculate order parameter $`\Psi`$ from auxiliary fields |
-| `add_bias_to_langevin(psi, langevin)` | Add bias force to Langevin dynamics |
+| `order_parameter(w_aux)` | Order parameter $`\Psi`$ of the auxiliary fields |
+| `add_bias(w_aux, forces)` | Compute $`\Psi`$ of the auxiliary fields, add the bias to the forces of the real fields and return $`\Psi`$ |
 | `store_order_parameter(psi, dH)` | Store $`\Psi`$ and $`dH/d\chi`$ for statistics |
 | `update_statistics()` | Update $`U(\Psi)`$, $`U'(\Psi)`$, $`I_0`$ and $`I_1`$ by linear convolution with the Gaussian hills |
 | `write_data(filename)` | Save statistics to .mat file |
@@ -325,14 +340,13 @@ The WTMD methods are called in the following order during the Langevin loop:
 # Before Langevin update
 w_aux_before = w_aux.copy()
 phi_before = phi            # concentrations of w_aux_before (smeared, when smearing is used)
-psi = wtmd.compute_order_parameter(langevin_step, w_aux)
-wtmd.add_bias_to_langevin(psi, w_lambda)
+psi = wtmd.add_bias(w_aux, w_lambda)   # Psi of w_aux; its bias is added to the forces w_lambda
 
 # ... Langevin update and saddle point ...
 
 # After successful saddle point convergence: dH/dχN of the fields at which psi
 # was computed (the fields before the update), so that psi and dH form one sample
-dH = mpt.compute_h_deriv_chin(w_aux=w_aux_before, phi=phi_before)
+dH = mpt.compute_h_deriv_chin(w_aux=w_aux_before, phi=phi_before, wtmd=True)
 wtmd.store_order_parameter(psi, dH)
 
 if langevin_step % wtmd.update_freq == 0:
@@ -368,7 +382,7 @@ if langevin_step % wtmd.recording_period == 0:
 |------------|---------------|---------|-------------|
 | `psi_min` | `psi_min` | 0.0 | Minimum $`\Psi`$ for bias histogram |
 | `psi_max` | `psi_max` | 10.0 | Maximum $`\Psi`$ for bias histogram |
-| `dpsi` | `dpsi` | 1e-3 | Bin width $`d\Psi`$ (number of bins = `(psi_max - psi_min) / dpsi`) |
+| `dpsi` | `dpsi` | 1e-3 | Bin width $`d\Psi`$ (number of bins = `(psi_max - psi_min) / dpsi`, a whole number) |
 
 ### 7.4 Parameter Selection Guidelines
 

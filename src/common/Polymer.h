@@ -62,6 +62,8 @@
 #include <vector>
 #include <map>
 
+#include "JunctionProduct.h"   // MAX_BLOCK_MULTIPLICITY
+
 // Forward declaration
 class ContourLengthMapping;
 
@@ -82,11 +84,6 @@ class ContourLengthMapping;
  * BlockInput block_B = {"B", 0.5, 1, 2};
  * @endcode
  */
-/// Largest block multiplicity. The extended-range junction products (JunctionProduct.h)
-/// then keep exact binary exponents in a double, and complex fields take every integer
-/// multiplicity (junction_product::integer_power).
-constexpr double MAX_BLOCK_MULTIPLICITY = 1.0e6;
-
 struct BlockInput{
     std::string monomer_type;   ///< Monomer type label, e.g., "A", "B", "C"
     double contour_length;      ///< Relative contour length (fraction of reference chain)
@@ -267,6 +264,10 @@ public:
      * @return Volume fraction (0 to 1)
      */
     double get_volume_fraction() const;
+
+    /// A species with volume fraction 0, present only to be computed alongside the others:
+    /// it has no concentration, stress or free-energy term, also where its propagators are not finite
+    bool is_absent() const { return volume_fraction == 0.0; }
 
     /**
      * @brief Get number of blocks in polymer.

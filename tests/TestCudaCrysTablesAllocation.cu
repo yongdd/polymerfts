@@ -13,26 +13,39 @@
  * @file TestCudaCrysTablesAllocation.cu
  * @brief The CUDA CrysFFT paths allocate no tables while computing propagators.
  *
- * The Boltzmann tables of the CrysFFT steps are built when the computation is
- * created and when the cell changes (update_laplacian_operator), not lazily in
- * the propagator loop. For each CrysFFT mode (recursive 3m, Pmmm DCT, ObliqueZ)
- * and each pseudo-spectral method:
+ * The solver owns the CrysFFT tables, one per coefficient for all streams. It
+ * builds the Boltzmann tables when the computation is created, the stress
+ * multipliers in the first compute_stress() before its segment loop, and
+ * rebuilds all of them in place when the cell changes (update_laplacian_operator);
+ * the loops only look them up. For each CrysFFT mode (recursive 3m, Pmmm DCT,
+ * ObliqueZ) and each pseudo-spectral method:
  *
  * - The first compute_propagators()/compute_concentrations() may make only the
  *   counted allocations that the same system makes with the group P1, which has
- *   no CrysFFT path (the device copies of the fields); the allocation test hook
- *   fails any further one.
- * - After a cell change, these calls may allocate nothing.
- * - Neither call builds a table (the table cache reuses the buffers of dropped
- *   tables, so only its build counter shows a build in the loop).
- * - compute_stress() builds the stress multipliers before its segment loop and
- *   only once per cell: a second call builds none and gives the same stress.
- * - After the change, the results equal those of a computation created for the
- *   new cell.
+ *   no CrysFFT path; the allocation test hook fails any further one. The solver
+ *   allocates its work with the computation, so the P1 call allocates only per
+ *   field: the device copy of each field and, for discrete chains, its Boltzmann
+ *   factor in the basis, at most two per monomer type, which is checked first so
+ *   that the budget cannot grow by solver work the reference does in that call.
+ * - A cell change keeps the device allocations (count and bytes), and after it
+ *   these calls may allocate nothing.
+ * - A second compute_stress() allocates nothing and gives the same stress.
+ * - After a second cell change, which rebuilds the stress multipliers too,
+ *   compute_stress() allocates nothing either.
+ * - After each change, the results (Q, and the stress after the second) equal
+ *   those of a computation created for the new cell.
+ *
+ * The tables are one per coefficient for all streams: a second bond length (B
+ * of 1.3 instead of 1.0, the same polymer) adds the tables of its coefficients
+ * (and, for discrete chains, stress multipliers), and these add the same device
+ * bytes with four streams as with one. Tables kept per stream would add four
+ * times as many.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <random>
@@ -40,7 +53,6 @@
 #include <vector>
 
 #include "CudaCommon.h"
-#include "CudaCrysFFTTables.h"
 #include "AbstractFactory.h"
 #include "ComputationBox.h"
 #include "Molecules.h"
@@ -73,8 +85,8 @@ struct Computation
     std::vector<double> w_a, w_b;
 };
 
-/// The computation of a case, or with p1 the same system with the group P1
-static Computation create(const Case& c, const std::vector<double>& lx, bool p1 = false)
+/// The computation of a case, or with p1 the same system with the group P1; b_B is the bond length of B
+static Computation create(const Case& c, const std::vector<double>& lx, bool p1 = false, double b_B = 1.3)
 {
     Computation s;
     s.factory = PlatformSelector::create_factory_real("cuda", false);
@@ -86,7 +98,7 @@ static Computation create(const Case& c, const std::vector<double>& lx, bool p1 
     s.cb = c.angles.empty()
         ? s.factory->create_computation_box(c.nx, lx, periodic)
         : s.factory->create_computation_box(c.nx, lx, periodic, c.angles);
-    s.molecules = s.factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", 1.3}});
+    s.molecules = s.factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", b_B}});
     s.molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
     s.optimizer = s.factory->create_propagator_computation_optimizer(s.molecules.get(), true);
     s.computation = s.factory->create_propagator_computation(
@@ -121,38 +133,95 @@ static long long count_allocations(Computation& s)
     return n;
 }
 
-/// compute(); false if it makes more than `allowed` counted allocations
-static bool compute_with_allocations(Computation& s, long long allowed)
+/// f(); false if it makes more than `allowed` counted allocations
+template <typename F>
+static bool with_allocations(const char* what, long long allowed, F&& f)
 {
     bool ok = true;
     cuda_buffer_fail_countdown().store(allowed);
     try
     {
-        compute(s);
+        f();
     }
     catch (std::exception& exc)
     {
-        printf("  %s\n", exc.what());
+        printf("  %s: %s\n", what, exc.what());
         ok = false;
     }
     cuda_buffer_fail_countdown().store(-1);
     return ok;
 }
 
-/// Number of CrysFFT tables built by f()
-template <typename F>
-static long long count_table_builds(F&& f)
+/// New box lengths and update_laplacian_operator(); false if the device allocations change
+static bool change_cell(Computation& s, const std::vector<double>& lx)
 {
-    const long long start = cuda_crysfft_table_build_counter().load();
-    f();
-    return cuda_crysfft_table_build_counter().load() - start;
+    const CudaBufferCounters& counters = CudaDeviceMemory::counters();
+    const long long count = counters.live_count.load(), bytes = counters.live_bytes.load();
+    s.cb->set_lx(lx);
+    s.computation->update_laplacian_operator();
+    const bool same = counters.live_count.load() == count && counters.live_bytes.load() == bytes;
+    if (!same)
+        printf("  The cell change changed the device allocations: %lld -> %lld (%lld -> %lld bytes)\n",
+               count, counters.live_count.load(), bytes, counters.live_bytes.load());
+    return same;
 }
 
-static bool no_builds(const char* what, long long builds)
+#ifdef _WIN32
+// The CRT environment that getenv reads; an empty value removes the variable
+static void set_env(const char* name, const char* value) { _putenv_s(name, value); }
+static void unset_env(const char* name) { _putenv_s(name, ""); }
+#else
+static void set_env(const char* name, const char* value) { setenv(name, value, 1); }
+static void unset_env(const char* name) { unsetenv(name); }
+#endif
+
+/// Device bytes held by a computation of the case with n_streams streams (OMP_NUM_THREADS when it is
+/// created) and bond length b_B after compute() and compute_stress()
+static long long device_bytes(const Case& c, int n_streams, double b_B)
 {
-    if (builds != 0)
-        printf("  %s built %lld CrysFFT tables\n", what, builds);
-    return builds == 0;
+    const char* previous = std::getenv("OMP_NUM_THREADS");
+    const std::string saved = previous ? previous : "";
+    set_env("OMP_NUM_THREADS", std::to_string(n_streams).c_str());
+    const long long start = CudaDeviceMemory::counters().live_bytes.load();
+    long long bytes = 0;
+    {
+        Computation s = create(c, c.lx, /*p1=*/false, b_B);
+        compute(s);
+        s.computation->compute_stress();
+        bytes = CudaDeviceMemory::counters().live_bytes.load() - start;
+    }
+    if (previous)
+        set_env("OMP_NUM_THREADS", saved.c_str());
+    else
+        unset_env("OMP_NUM_THREADS");
+    return bytes;
+}
+
+/// The tables of a second bond length add the same bytes with one stream and with four
+static bool tables_shared_by_streams(const Case& c)
+{
+    const long long added_1 = device_bytes(c, 1, 1.3) - device_bytes(c, 1, 1.0);
+    const long long added_4 = device_bytes(c, 4, 1.3) - device_bytes(c, 4, 1.0);
+    const bool ok = added_1 > 0 && added_4 == added_1;
+    if (!ok)
+        printf("  The tables of a second bond length take %lld bytes with one stream, %lld with four\n",
+               added_1, added_4);
+    return ok;
+}
+
+/// |a - b| <= 1e-13 |b| componentwise relative to the largest |b|
+static bool same_values(const char* what, const std::vector<double>& a, const std::vector<double>& b)
+{
+    double diff = 0.0, scale = 0.0;
+    for (size_t i = 0; i < b.size(); ++i)
+    {
+        diff = std::max(diff, std::abs(a[i] - b[i]));
+        scale = std::max(scale, std::abs(b[i]));
+    }
+    const bool same = a.size() == b.size() && diff <= 1e-13 * scale;
+    if (!same)
+        printf("  %s: difference %.3e (scale %.3e)\n", what, diff, scale);
+    return same;
 }
 
 int main()
@@ -173,27 +242,27 @@ int main()
         {
             Computation p1 = create(c, c.lx, /*p1=*/true);
             const long long first_call = count_allocations(p1);
+            const long long per_field = 2 * 2;   // two monomer types
+            bool ok = first_call <= per_field;
+            if (!ok)
+                printf("  The first call with P1 makes %lld allocations, more than the %lld of its fields\n",
+                       first_call, per_field);
 
             Computation s = create(c, c.lx);
-            bool ok = true;
-            long long builds = count_table_builds([&] { ok = compute_with_allocations(s, first_call); });
-            ok = no_builds("The first call", builds) && ok;
+            ok = with_allocations("The first call", first_call, [&] { compute(s); }) && ok;
 
-            // A new cell: the tables are rebuilt by update_laplacian_operator()
+            // A new cell: the tables are rebuilt in place by update_laplacian_operator()
             std::vector<double> new_lx = c.lx;
             for (double& l : new_lx)
                 l *= 1.07;
-            s.cb->set_lx(new_lx);
-            s.computation->update_laplacian_operator();
-            builds = count_table_builds([&] { ok = compute_with_allocations(s, 0) && ok; });
-            ok = no_builds("The call after the cell change", builds) && ok;
+            ok = change_cell(s, new_lx) && ok;
+            ok = with_allocations("The call after the cell change", 0, [&] { compute(s); }) && ok;
             ok = s.computation->check_total_partition() && ok;
 
-            // Stress: multipliers before the segment loop, once per cell
+            // Stress: multipliers before the segment loop, once
             s.computation->compute_stress();
             const std::vector<double> stress = s.computation->get_stress();
-            builds = count_table_builds([&] { s.computation->compute_stress(); });
-            ok = no_builds("The second compute_stress()", builds) && ok;
+            ok = with_allocations("The second compute_stress()", 0, [&] { s.computation->compute_stress(); }) && ok;
             if (s.computation->get_stress() != stress)
             {
                 printf("  The second compute_stress() changed the stress\n");
@@ -208,6 +277,25 @@ int main()
             if (!same)
                 printf("  Q after the cell change %.15e, fresh %.15e\n", q, q_fresh);
             ok = same && ok;
+
+            // A second cell: the stress multipliers are rebuilt in place as well
+            std::vector<double> lx_2 = c.lx;
+            for (double& l : lx_2)
+                l *= 0.96;
+            ok = change_cell(s, lx_2) && ok;
+            ok = with_allocations("The calls after the second cell change", 0, [&] {
+                compute(s);
+                s.computation->compute_stress();
+            }) && ok;
+            Computation fresh_2 = create(c, lx_2);
+            compute(fresh_2);
+            fresh_2.computation->compute_stress();
+            ok = same_values("Q after the second cell change", {s.computation->get_total_partition(0)},
+                             {fresh_2.computation->get_total_partition(0)}) && ok;
+            ok = same_values("Stress after the second cell change", s.computation->get_stress(),
+                             fresh_2.computation->get_stress()) && ok;
+
+            ok = tables_shared_by_streams(c) && ok;
 
             printf("%s (%lld allocations in the first call): %s\n", c.name.c_str(), first_call, ok ? "ok" : "FAILED");
             all_ok = all_ok && ok;

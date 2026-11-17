@@ -124,6 +124,10 @@ class PropagatorSolver:
         if self.field_type not in ("real", "complex"):
             raise ValueError(f"field_type must be 'real' or 'complex', got '{field_type}'")
 
+        # Boundary conditions in lowercase, for the comparisons; bc keeps the spelling of the
+        # input, which the checkpoint settings record
+        self._bc_lower = tuple(b.lower() for b in self.bc)
+
         self.platform = self._auto_platform() if platform == "auto" else platform
 
         self._check_boundary_conditions()
@@ -221,7 +225,7 @@ class PropagatorSolver:
         if self.dim == 1 and cpu_platforms:
             return cpu_platforms[0]
         if "cuda" in avail:
-            bc = [b.lower() for b in self.bc]
+            bc = self.bc_lower
             cpu_only = self.numerical_methods()[self.numerical_method]["solver_type"] == "pseudospectral" and (
                 any("absorbing" in bc[2*d:2*d+2] and (self.nx[d] % 2 or self.nx[d] > 6142) for d in range(self.dim))
                 or (self.field_type == "complex" and self.chain_model == "continuous"
@@ -242,9 +246,8 @@ class PropagatorSolver:
         periodic with non-periodic directions is not supported by the spectral
         transform, so it fails loudly instead of silently switching solvers.
         """
-        bc_lower = [b.lower() for b in self.bc]
-        self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in bc_lower)
-        has_periodic = any(b == "periodic" for b in bc_lower)
+        self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in self.bc_lower)
+        has_periodic = any(b == "periodic" for b in self.bc_lower)
         if not self.numerical_methods()[self.numerical_method]["supports_mixed_boundaries"] and has_periodic and self._has_non_periodic_bc:
             real_space = "rs" if self.chain_model == "discrete" else "cn-adi2"
             raise ValueError(
@@ -281,6 +284,11 @@ class PropagatorSolver:
         return self._propagator_computation
 
     @property
+    def bc_lower(self) -> Tuple[str, ...]:
+        """The boundary conditions in lowercase ("periodic", "reflecting", "absorbing"); bc keeps the input spelling."""
+        return self._bc_lower
+
+    @property
     def space_group(self) -> Optional[Any]:
         """The space group in use, or None."""
         return self._space_group
@@ -309,13 +317,16 @@ class PropagatorSolver:
         ``backward`` treats its coefficients the same way. In a mixed box the real
         part of ``backward`` does this for every coefficient.
 
-        ``k_squared()`` gives |k|² in the coefficient shape for the current box; a
-        stored multiplier keeps its values, so store it again after the box
-        changes (``set_lx`` and ``set_lattice_parameters`` need the polymers to be
-        added). See ``examples/tools/FourierTransform.py``.
+        ``k_squared()`` gives |k|² in the coefficient shape for the current box (on an
+        oblique cell of the alias of least |k|², as the propagators use it), and in a
+        periodic box ``alias_moments()`` the moments <v_a v_b>, v = g⁻¹u, over the aliases
+        u tied for it, shape ``(dim, dim) + coefficient_shape``. A stored multiplier keeps
+        its values, so store it again after the box changes (``set_lx`` and
+        ``set_lattice_parameters`` need the polymers to be added). See
+        ``examples/tools/FourierTransform.py``.
         """
         if self._fourier is None:
-            periodic = [self.bc[2 * d].lower() == "periodic" and self.bc[2 * d + 1].lower() == "periodic"
+            periodic = [self.bc_lower[2 * d] == "periodic" and self.bc_lower[2 * d + 1] == "periodic"
                         for d in range(self.dim)]
             axes = ["periodic" if p else "reflecting" for p in periodic]
             self._fourier = self._factory.create_fourier_transform(self._computation_box, axes)
@@ -427,7 +438,6 @@ class PropagatorSolver:
             Example: {"G": delta_function_array}
         """
         self._initialize_solver()
-        self._check_real(*w_fields.values(), *(q_init or {}).values())
         # The native binding checks the sizes of w_fields and q_init against n_grid
         if q_init is not None:
             self._propagator_computation.compute_propagators(w_fields, q_init=q_init)
@@ -691,7 +701,6 @@ class PropagatorSolver:
             Integral of the field over the box volume.
         """
         self._initialize_solver()
-        self._check_real(field)
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.integral(field_use)
 
@@ -712,7 +721,6 @@ class PropagatorSolver:
             Spatial average of the field (integral / volume).
         """
         self._initialize_solver()
-        self._check_real(field)
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.mean(field_use)
 
@@ -740,7 +748,6 @@ class PropagatorSolver:
             Inner product of the two fields.
         """
         self._initialize_solver()
-        self._check_real(field1, field2)
         field1_use = self._to_active_basis(field1, basis)
         field2_use = self._to_active_basis(field2, basis)
         return self._computation_box.inner_product(field1_use, field2_use)
@@ -772,7 +779,6 @@ class PropagatorSolver:
             Sum of inner products.
         """
         self._initialize_solver()
-        self._check_real(fields1, fields2)
         fields1_use = self._to_active_basis_multi(n_fields, fields1, basis)
         fields2_use = self._to_active_basis_multi(n_fields, fields2, basis)
         return self._computation_box.multi_inner_product(n_fields, fields1_use, fields2_use)
@@ -790,7 +796,6 @@ class PropagatorSolver:
         basis : {"active", "irreducible"}
             Input representation, as for integral().
         """
-        self._check_real(field)
         self._initialize_solver()
         field_reduced = self._to_active_basis(field, basis)
         if field_reduced is field:
@@ -811,12 +816,6 @@ class PropagatorSolver:
         sizes agree. Callers therefore specify the representation explicitly.
         """
         return self._space_group is not None and self._space_group.physical_basis_name() != "irreducible"
-
-    def _check_real(self, *fields) -> None:
-        """Reject complex arrays for real fields: the conversion would drop their imaginary parts."""
-        if self.field_type == "real" and any(np.iscomplexobj(field) for field in fields):
-            raise ValueError('This solver has real fields: got a complex array. Complex fields need a '
-                             'solver created with field_type="complex".')
 
     def _to_active_basis(self, field: NDArray[np.floating], basis: str) -> NDArray[np.floating]:
         """Convert only an explicitly declared irreducible input."""
@@ -943,7 +942,6 @@ class PropagatorSolver:
             raise RuntimeError(
                 "Space group not set. Pass space_group= to PropagatorSolver()."
             )
-        self._check_real(field)
         field_2d = np.reshape(field, (1, -1))
         return self._space_group.to_reduced_basis(field_2d)[0]
 
@@ -964,7 +962,6 @@ class PropagatorSolver:
             raise RuntimeError(
                 "Space group not set. Pass space_group= to PropagatorSolver()."
             )
-        self._check_real(field_reduced)
         field_2d = np.reshape(field_reduced, (1, -1))
         return self._space_group.from_reduced_basis(field_2d)[0]
 

@@ -4,7 +4,8 @@
 Writes small YAML and JSON files and checks that numpy expressions are
 evaluated, that nothing outside the allowed expressions is executed, that bad
 files raise ConfigError, and that the three simulation classes build from a
-file with keyword overrides applied.
+file with keyword overrides applied; CL-FTS refuses the saddle and compressor
+entries of L-FTS.
 """
 
 import contextlib
@@ -17,7 +18,7 @@ import warnings
 
 import numpy as np
 
-from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, load_config, ConfigError
+from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, load_config, ConfigError, ValidationError
 
 
 def cpu_platform():
@@ -95,13 +96,22 @@ def main():
             except FileNotFoundError:
                 pass
 
-            # The simulation classes build from the file, with overrides applied
-            # (the warnings were checked above)
+            # The simulation classes build from the file, with overrides applied (the warnings
+            # were checked above); CL-FTS refuses the saddle and compressor of L-FTS
+            with open("c.yaml", "w") as f:
+                f.writelines(line for line in YAML.replace("PLATFORM", cpu_platform()).splitlines(keepends=True)
+                             if not line.startswith(("compressor:", "saddle:")))
             with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 scft = SCFT.from_file("p.yaml", max_iter=7)
                 lfts = LFTS.from_file("p.yaml", random_seed=1, ds=0.05)
-                clfts = CLFTS.from_file("p.yaml", random_seed=1)
+                clfts = CLFTS.from_file("c.yaml", random_seed=1)
+                try:
+                    CLFTS.from_file("p.yaml", random_seed=1)
+                    failed.append("CLFTS.from_file accepted 'saddle' and 'compressor'")
+                except ValidationError as error:
+                    if "'saddle' is supported in L-FTS only" not in str(error):
+                        failed.append(f"CLFTS.from_file refused 'saddle' with {error}")
             if scft.max_iter != 7:
                 failed.append("SCFT.from_file override")
             if abs(lfts.ds - 0.05) > 1e-15:

@@ -10,6 +10,8 @@ from typing import Dict, List, Any, Optional, Union
 import numpy as np
 import yaml
 
+from .validation import right_angle
+
 # Numpy names a configuration expression may use
 CONFIG_NP_CONSTANTS = ("pi", "e")
 CONFIG_NP_FUNCTIONS = ("sqrt", "cbrt", "exp", "log", "log10", "sin", "cos", "tan",
@@ -246,7 +248,7 @@ def save_vtk(
     if angles is not None and len(angles) != 3:
         raise ValueError(f"angles must be [alpha, beta, gamma] or [gamma], got {list(angles)}")
     alpha, beta, gamma = np.deg2rad(angles) if angles is not None else (np.pi/2,)*3
-    orthogonal = np.allclose([alpha, beta, gamma], np.pi/2, rtol=0.0, atol=1e-10)
+    orthogonal = angles is None or all(right_angle(angle) for angle in angles)   # the test of the native box
     # Fractional offset of the first point of each axis: cell centres, or the nodes of a and b
     offsets = [0.5, 0.5, 0.5]
     if space_group is not None and space_group.uses_hexagonal_axes():

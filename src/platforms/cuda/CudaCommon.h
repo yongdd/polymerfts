@@ -151,10 +151,8 @@ private:
     int n_blocks;
     int n_threads;
 
-    /// Throw unless n_threads <= 1024, 1 <= n_blocks * n_threads <= MAX_GRID_THREADS and
-    /// both are within the limits of the current device
-    static void check_launch(int n_blocks, int n_threads);
-
+    /// Reads the launch configuration; throws unless n_threads <= 1024 and
+    /// 1 <= n_blocks * n_threads <= MAX_GRID_THREADS
     CudaCommon();
     ~CudaCommon();
     // Disable copy constructor
@@ -183,12 +181,6 @@ public:
 
     /// Get threads per block.
     int get_n_threads();
-
-    /// Set number of thread blocks.
-    void set_n_blocks(int n_blocks);
-
-    /// Set threads per block.
-    void set_n_threads(int n_threads);
 };
 
 /**
@@ -392,29 +384,6 @@ inline void release_cuda_event(cudaEvent_t event) noexcept
     ignore_release_error(cudaEventDestroy(event));
 }
 
-/**
- * @brief Owning CUDA event, destroyed with the object.
- *
- * The profiling paths time their steps with these, so an exception between
- * the create and the elapsed-time read does not leak the events.
- *
- * @code
- * std::vector<CudaEvent> ev(profile ? 2 : 0);   // created only when profiling
- * if (profile) CUDA_CHECK(cudaEventRecord(ev[0], stream));
- * @endcode
- */
-class CudaEvent
-{
-public:
-    CudaEvent() { CUDA_CHECK(count_cuda_event(cudaEventCreate(&event_))); }
-    ~CudaEvent() { release_cuda_event(event_); }
-    CudaEvent(const CudaEvent&) = delete;
-    CudaEvent& operator=(const CudaEvent&) = delete;
-    operator cudaEvent_t() const noexcept { return event_; }   ///< lends the handle
-private:
-    cudaEvent_t event_ = nullptr;
-};
-
 __global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M);
 
 __global__ void ker_linear_scaling(double* dst, const double* src, double a, double b, const int M);
@@ -478,30 +447,9 @@ __global__ void ker_multi_exp_dw_two(
     cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
     double a, const int M);
 
-__global__ void ker_multi_exp_dw_four(
-    double* dst1, const double* src1, const double* exp_dw1,
-    double* dst2, const double* src2, const double* exp_dw2,
-    double* dst3, const double* src3, const double* exp_dw3,
-    double* dst4, const double* src4, const double* exp_dw4,
-    double a, const int M);
-
-__global__ void ker_multi_exp_dw_four(
-    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
-    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
-    cuDoubleComplex* dst3, const cuDoubleComplex* src3, const cuDoubleComplex* exp_dw3,
-    cuDoubleComplex* dst4, const cuDoubleComplex* src4, const cuDoubleComplex* exp_dw4,
-    double a, const int M);
-
 __global__ void ker_complex_real_multi_bond_two(
     cuDoubleComplex* dst1, const double* boltz_bond1,
     cuDoubleComplex* dst2, const double* boltz_bond2,
-    const int M);
-
-__global__ void ker_complex_real_multi_bond_four(
-    cuDoubleComplex* dst1, const double* boltz_bond1,
-    cuDoubleComplex* dst2, const double* boltz_bond2,
-    cuDoubleComplex* dst3, const double* boltz_bond3,
-    cuDoubleComplex* dst4, const double* boltz_bond4,
     const int M);
 
 // ============================================================
@@ -566,24 +514,6 @@ __global__ void ker_reduce_to_basis(
  */
 __global__ void ker_multi_map(
     double* dst, const double* reduced_multiplier, const int* phys_to_reduced_map, const int n_phys);
-
-/**
- * @brief Gather from full grid and compute product: dst[i] = src[indices[i]]^2 * norm
- *
- * Used for solvent concentration computation in reduced basis.
- * More efficient than computing on full grid then reducing (O(N) vs O(M+N)).
- *
- * @param dst Output reduced basis array (size: n_basis)
- * @param src Input full grid array (size: total_grid)
- * @param reduced_basis_indices Flat indices of reduced-basis points
- * @param norm Normalization factor
- * @param n_basis Number of reduced-basis points
- */
-__global__ void ker_multi_gather(
-    double* dst, const double* src, const int* reduced_basis_indices, double norm, const int n_basis);
-
-__global__ void ker_multi_gather(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* reduced_basis_indices, cuDoubleComplex norm, const int n_basis);
 
 /**
  * @brief Multiply array by integer weights: dst[i] = src[i] * weights[i]
@@ -771,6 +701,15 @@ private:
 
 template <typename T> using CudaDeviceBuffer = CudaBuffer<T, CudaDeviceMemory>;
 template <typename T> using CudaPinnedBuffer = CudaBuffer<T, CudaPinnedMemory>;
+
+/// Allocate `buffer` for `count` elements unless it holds exactly that many already
+/// (work buffers allocated on first use, before a loop)
+template <typename T, typename M>
+void provide(CudaBuffer<T, M>& buffer, size_t count, std::source_location where = std::source_location::current())
+{
+    if (buffer.size() != count)
+        buffer.allocate(count, where);
+}
 
 // The implicit pointer conversion would let a buffer be freed by hand, which
 // the buffer then frees again; these overloads make that a compile error.

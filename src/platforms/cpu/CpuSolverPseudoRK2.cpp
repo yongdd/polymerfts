@@ -220,8 +220,7 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
                 }
 
                 double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_set_contour_step(coeff_full);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data());
+                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_full);
 
                 for (int i = 0; i < M_phys; ++i)
                 {

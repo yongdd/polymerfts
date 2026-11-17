@@ -48,7 +48,7 @@ from .fts.lfts import LFTS
 from .fts.clfts import CLFTS
 from .fts.gibbs_ensemble import GibbsEnsemble
 from .fts.wtmd import WTMD
-from .utils.validation import ValidationError, SaddlePointError
+from .utils.validation import ValidationError, SaddlePointError, NumericalError
 from .scft.phase_equilibrium import coexistence_quantities, homogeneous_thermodynamics, find_binary_coexistence
 from .fts.saddle import LR, LRAM
 from .theory.chains import draw_polymer_architectures

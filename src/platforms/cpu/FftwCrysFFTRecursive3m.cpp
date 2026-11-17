@@ -28,9 +28,8 @@ struct AlignedDeleter {
 //------------------------------------------------------------------------------
 FftwCrysFFTRecursive3m::FftwCrysFFTRecursive3m(
     std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
     std::array<double, 9> translational_part)
-    : Base(nx_logical, cell_para, translational_part)
+    : Base(nx_logical, translational_part)
 {
     try
     {
@@ -97,10 +96,10 @@ void FftwCrysFFTRecursive3m::init_fft_plans()
 }
 
 //------------------------------------------------------------------------------
-// Apply FFT with cached Boltzmann factors
+// Apply FFT with a folded table (Boltzmann factors or stress multiplier)
 //------------------------------------------------------------------------------
-void FftwCrysFFTRecursive3m::apply_with_cache(
-    const KCache& cache, const double* q_in, double* q_out) const
+void FftwCrysFFTRecursive3m::apply_with_table(
+    const double* table, const double* q_in, double* q_out) const
 {
     // fftw_malloc'd like the planning arrays: the new-array execute functions
     // need the alignment the plans were made with
@@ -140,8 +139,13 @@ void FftwCrysFFTRecursive3m::apply_with_cache(
         align_up(static_cast<size_t>(Nz2 / 2 + 1), kAlignment / 8),
         static_cast<size_t>(Nz2));
 
-    const auto& k_re = cache.re;
-    const auto& k_im = cache.im;
+    // The real parts of the eight folded octants, then their imaginary parts
+    std::array<const double*, 8> k_re, k_im;
+    for (int i = 0; i < 8; ++i)
+    {
+        k_re[i] = table + i * table_stride_;
+        k_im[i] = table + (8 + i) * table_stride_;
+    }
 
     for (int ix = 0; ix < Nx2; ++ix)
     {
@@ -158,16 +162,16 @@ void FftwCrysFFTRecursive3m::apply_with_cache(
             {
                 size_t idx = base_shift + iz;
                 dst[iz][0]
-                    = src000[iz][0] * k_re[0].get()[idx] - src000[iz][1] * k_im[7].get()[idx]
-                    + src110[iz][0] * k_re[6].get()[idx] - src110[iz][1] * k_im[1].get()[idx]
-                    + src010[iz][0] * k_re[2].get()[idx] - src010[iz][1] * k_im[5].get()[idx]
-                    + src100[iz][0] * k_re[4].get()[idx] - src100[iz][1] * k_im[3].get()[idx];
+                    = src000[iz][0] * k_re[0][idx] - src000[iz][1] * k_im[7][idx]
+                    + src110[iz][0] * k_re[6][idx] - src110[iz][1] * k_im[1][idx]
+                    + src010[iz][0] * k_re[2][idx] - src010[iz][1] * k_im[5][idx]
+                    + src100[iz][0] * k_re[4][idx] - src100[iz][1] * k_im[3][idx];
 
                 dst[iz][1]
-                    = src000[iz][0] * k_im[0].get()[idx] + src000[iz][1] * k_re[7].get()[idx]
-                    + src110[iz][0] * k_im[6].get()[idx] + src110[iz][1] * k_re[1].get()[idx]
-                    + src010[iz][0] * k_im[2].get()[idx] + src010[iz][1] * k_re[5].get()[idx]
-                    + src100[iz][0] * k_im[4].get()[idx] + src100[iz][1] * k_re[3].get()[idx];
+                    = src000[iz][0] * k_im[0][idx] + src000[iz][1] * k_re[7][idx]
+                    + src110[iz][0] * k_im[6][idx] + src110[iz][1] * k_re[1][idx]
+                    + src010[iz][0] * k_im[2][idx] + src010[iz][1] * k_re[5][idx]
+                    + src100[iz][0] * k_im[4][idx] + src100[iz][1] * k_re[3][idx];
             }
         }
     }

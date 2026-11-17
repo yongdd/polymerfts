@@ -8,7 +8,7 @@
  *
  * **Boundary Conditions:**
  *
- * Supports all boundary conditions via the FFT<T> interface (FftwFFT or MklFFT):
+ * Supports all boundary conditions via the FFT<T> interface (createFFT()):
  * - PERIODIC: Standard FFT (complex coefficients)
  * - REFLECTING: DCT-II/III (Neumann BC, zero flux)
  * - ABSORBING: DST-II/III (Dirichlet BC, zero value)
@@ -84,6 +84,12 @@ template <typename T>
 class CpuSolverPseudoRK2 : public CpuSolverPseudoBase<T>
 {
 protected:
+    /// CrysFFT steps of a block: full steps only
+    std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
+    {
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false)};
+    }
+
 public:
     /**
      * @brief Construct pseudo-spectral solver for continuous chains.

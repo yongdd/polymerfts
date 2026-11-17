@@ -55,11 +55,8 @@ std::array<size_t, 2> MklCrysFFTObliqueZ::thread_z_work_sizes()
 //------------------------------------------------------------------------------
 // Constructor / Destructor
 //------------------------------------------------------------------------------
-MklCrysFFTObliqueZ::MklCrysFFTObliqueZ(
-    std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
-    std::array<double, 9> trans_part)
-    : Base(nx_logical, cell_para, trans_part)
+MklCrysFFTObliqueZ::MklCrysFFTObliqueZ(std::array<int, 3> nx_logical)
+    : Base(nx_logical)
 {
     try
     {
@@ -243,7 +240,7 @@ void MklCrysFFTObliqueZ::applyDCT3BackwardZ(const double* in, double* out) const
 }
 
 //------------------------------------------------------------------------------
-// Shared pipeline of diffusion() and apply_multiplier():
+// The pipeline of diffusion():
 // DCT-II(z) -> to z planes -> FFT(xy) -> multiply -> IFFT(xy) -> from z planes -> DCT-III(z)
 //------------------------------------------------------------------------------
 void MklCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q_out, const double* multiplier) const
@@ -283,8 +280,7 @@ void MklCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q
             planes[iz * n_real + i] = columns[i * N + iz];
     mkl_dfti_check(DftiComputeForward(plan_fft_forward_xy_, planes, complex), "DftiComputeForward (xy)");
 
-    // Step 3: Apply the spectral multiplier (Boltzmann factor or stress multiplier),
-    // stored with z running fastest
+    // Step 3: Apply the Boltzmann factors, stored with z running fastest
     for (int iz = 0; iz < N; ++iz)
         for (int i = 0; i < n_complex; ++i)
             complex[iz * n_complex + i] *= multiplier[i * N + iz];
@@ -302,16 +298,8 @@ void MklCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q
 //------------------------------------------------------------------------------
 // Public API
 //------------------------------------------------------------------------------
-void MklCrysFFTObliqueZ::diffusion(double* q_in, double* q_out)
+void MklCrysFFTObliqueZ::diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const
 {
-    const double* boltz = current_boltzmann();
-    if (!boltz)
-        throw_with_line_number("MklCrysFFTObliqueZ::set_contour_step must be called before diffusion().");
-
-    apply_spectral_multiplier(q_in, q_out, boltz);
-}
-
-void MklCrysFFTObliqueZ::apply_multiplier(const double* q_in, double* q_out, const double* multiplier)
-{
-    apply_spectral_multiplier(q_in, q_out, multiplier);
+    check_table(table, M_complex_);
+    apply_spectral_multiplier(q_in, q_out, table.data());
 }

@@ -8,7 +8,7 @@
  *
  * **Boundary Conditions:**
  *
- * Supports all boundary conditions via the FFT<T> interface (FftwFFT or MklFFT):
+ * Supports all boundary conditions via the FFT<T> interface (createFFT()):
  * - PERIODIC: Standard FFT (complex coefficients)
  * - REFLECTING: DCT-II/III (Neumann BC, zero flux)
  * - ABSORBING: DST-II/III (Dirichlet BC, zero value)
@@ -122,6 +122,14 @@ protected:
      */
     const double* get_stress_boltz_bond(
         std::string monomer_type, bool is_half_bond_length) const override;
+
+    /// CrysFFT steps of a block: its bonds, and half bonds, which always take the
+    /// global ds (index 0; see advance_propagator_half_bond_step())
+    std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
+    {
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false),
+                this->get_effective_diffusion_coeff(monomer_type, 0, true)};
+    }
 
 public:
     /**

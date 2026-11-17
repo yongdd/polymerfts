@@ -216,7 +216,7 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
 ## SCFT Parameters
 
-`SCFT(params)` reads the shared parameters above plus the keys below. These keys and `space_group` are read by `SCFT` only; `LFTS` and `CLFTS` ignore them (a `space_group` given to them has no effect).
+`SCFT(params)` reads the shared parameters above plus the keys below. These keys are read by `SCFT` only; `LFTS` and `CLFTS` ignore them. `space_group` is also read by `SCFT` only: `LFTS` and `CLFTS` raise `ValidationError` for it.
 
 ### Optimizer
 
@@ -265,11 +265,11 @@ Box relaxation needs a method with the stress (every method except `"cn-adi2"`) 
 | `"Monoclinic"` | a, b, c (3D only) | β |
 | `"Triclinic"` | a, b, c (3D only) | α, β, γ |
 
-Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free). Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` at the top of `cell_relaxation.py`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic.
+Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free); like the orthogonality test of the box, this and the angles a given `crystal_system` fixes hold to 1e-10 rad. Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` at the top of `cell_relaxation.py`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic.
 
 ### Axis Ordering
 
-`SCFT.run(initial_fields=...)` requires one real, finite value per full-grid point for each monomer type. Complex arrays and values that become non-finite at double precision raise `ValidationError` before the optimizer is reset or the fields are symmetrized.
+`SCFT.run(initial_fields=...)` requires one value per full-grid point for each monomer type, each a number that converts to a finite double (integers too, within the double range). Strings, ragged lists, complex arrays and values that are not finite at double precision raise `ValidationError` before the optimizer is reset or the fields are symmetrized. L-FTS and CL-FTS check their `initial_fields` the same way before a run starts; CL-FTS takes complex values. A computation that fails during a run raises `NumericalError` (a `RuntimeError`, `polymerfts.NumericalError`) rather than `ValidationError`: in `SCFT.run` a residual or error level that is not finite, a failed forward/backward partition consistency check, or a final partition function that is not positive and finite with real fields. Its `fields` attribute holds the monomer fields of the failed iteration on the full grid.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -317,7 +317,7 @@ SCFT accepts `electrostatics` as described under [Electrostatics](#electrostatic
 | `failure_policy` | str | `"retry"`: continue the saddle solve with the same proposed real fields and noise; `"abort"`: stop on the first failure; `"resample"`: explicitly opt into selecting fresh noise | `"retry"` |
 | `max_retries` | int | Additional saddle solves after the first failed attempt | `5` |
 
-The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. Other numerical errors propagate and are recorded as `failed`.
+The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. `SaddlePointError` is a `NumericalError`, the type of the numerical failures that an L-FTS or CL-FTS run checks: also a non-finite Hamiltonian, force, field, concentration or electrostatic potential, lost material conservation, a failed partition consistency check, and, in L-FTS, a partition function that is not positive and finite at a saddle point whose Hamiltonian is not finite. L-FTS records a `SaddlePointError` as `aborted_saddle_failure`; other errors, and every error of CL-FTS, propagate and are recorded as `failed` with the type and message. The `fields` attribute of the error holds the monomer fields `{type: array}` of the failed state where the check has them (complex in CL-FTS), else `None`.
 
 When no imaginary auxiliary fields remain (for example, the ideal reference limit with `zeta_n=0` and zero interactions), L-FTS evaluates concentrations and energy directly, with zero saddle iterations and error. Checkpointing and recording still run at the requested intervals.
 
@@ -344,7 +344,7 @@ All intervals are positive integer counts of Langevin steps. Structure functions
 
 Field checkpoints use format version 2 and are replaced atomically. They store the full PCG64 state, previous noise, auxiliary fields, concentrations, pending measurement sums/histories, WTMD state, and custom integrator/callback settings and states. Version-1 files continue with default LM and no callbacks. `continue_run(path)` validates the effective physical and numerical settings before restoring the RNG. The output directory, checkpoint interval, maximum final step, verbosity and backend may change; sampling periods, model, integrator settings, named callbacks and WTMD bias settings must match. On a different backend only numerical/statistical equivalence is expected. With `cpu-fftw` a continuation in a new process, like a second run with the same seed, can also differ from the uninterrupted run by rounding (about $`10^{-15}`$ at first, growing as the trajectories separate): FFTW chooses its transform plans by timing candidates, and another process can choose another plan. `cpu-mkl` and `cuda` on the same machine, and continuations within one process, reproduce the run bit for bit. Old unversioned files require `continue_run(path, allow_legacy=True)` and emit a warning because compatibility and pending measurements cannot be verified.
 
-Statistics, structure-function and WTMD files and checkpoints name the measurements of a monomer pair by its two names in sorted order joined with `_`, such as `dH_history_A_B`. L-FTS and CL-FTS therefore refuse monomer names for which two pairs would share this suffix (`A`, `B_C` together with `A_B`, `C`: both pairs give `A_B_C`), and L-FTS refuses a monomer type named `aux`, whose field would take the key `w_aux` of the auxiliary fields.
+Statistics, structure-function and WTMD files name the measurements of a monomer pair by its two names in sorted order joined with `_`, such as `dH_history_A_B`, and so do the WTMD arrays of checkpoints (`wtmd_I1_A_B`); the pending `dH` histories and structure-function sums of checkpoints have keys made from a hash of the pair (`record_dH_<hash>`, `record_sf_<hash>`). L-FTS and CL-FTS therefore refuse monomer names for which two pairs would share this suffix (`A`, `B_C` together with `A_B`, `C`: both pairs give `A_B_C`), and L-FTS refuses a monomer type named `aux`, whose field would take the key `w_aux` of the auxiliary fields.
 
 MAT files also preserve names that cannot be stored directly as nested structure fields, such as monomer names starting with an underscore or exceeding the MAT field-name limit. Each affected structure stores reversible field identifiers and their original names in `polymerfts_mat_keys_json`. To read these names back, use `decode_mat_fields` on SciPy's simplified output:
 
@@ -391,7 +391,7 @@ For `"am"` and `"lram"`, the keys `max_hist`, `start_error`, `mix_min`, and `mix
 | `sigma_psi` | float | Gaussian width $`\sigma_\Psi`$ | `0.16` |
 | `psi_min` | float | Minimum $`\Psi`$ | `0.0` |
 | `psi_max` | float | Maximum $`\Psi`$ | `10.0` |
-| `dpsi` | float | Bin width $`d\Psi`$; a new run requires it to divide `psi_max - psi_min` into a whole number of bins | `1e-3` |
+| `dpsi` | float | Bin width $`d\Psi`$; it must divide `psi_max - psi_min` into a whole number of bins, otherwise `LFTS` raises `ValidationError` | `1e-3` |
 | `update_freq` | int | Statistics update frequency | `1000` |
 | `recording_period` | int | Data recording frequency | `100000` |
 
@@ -414,12 +414,12 @@ derivative diverges at zero coefficients. A zero bias derivative adds no force.
 
 ## CL-FTS Parameters
 
-`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate; a `wtmd` block raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
+`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and each of these keys raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `zeta_n` | float | Compressibility parameter; complex Langevin needs a finite value. Give 0 to a neutral solvent of one segment that only serves as the reference chain of point ions: it then has no field ([CL-FTS theory, Section 6](../theory/ComplexLangevinSimulation.md#6-charged-systems)) | `100.0` |
-| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
+| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, raises `ValidationError` for either name. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
 | `smearing` | dict | (Optional) Finite-range interactions, see [Smearing](#smearing); recommended for CL-FTS stability. CL-FTS also accepts one Gaussian length per monomer type | none |
 | `electrostatics` | dict | (Optional) Smeared Coulomb interactions, see [Electrostatics](#electrostatics) | none |
 
@@ -519,11 +519,11 @@ When `True`:
 
 `reduce_memory=True` works with every chain model and with space-group symmetry, including **discrete chains combined with a space group**, on both CPU and CUDA (see [SpaceGroup.md](../theory/SpaceGroup.md)).
 
-### Space Group Symmetry (Beta)
+### Space Group Symmetry
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `space_group` | dict | Space group constraints (SCFT only) |
+| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS raise `ValidationError`) |
 
 ```python
 "space_group": {
@@ -551,7 +551,7 @@ See [SpaceGroup.md](../theory/SpaceGroup.md) for available space groups.
 | `{"type": "gaussian", "a_int": {"A": a_A, ...}}` | CL-FTS only: one length for every monomer type; type $`i`$ is smeared with its own $`\Gamma_i`$, and the structure function of a pair $`i \le j`$ is divided by $`\Gamma_i`$. No random copolymers | $`\exp(-a_i^2 k^2 / 2)`$ |
 | `{"type": "sigmoidal", "k_int": k_c, "dk_int": dk}` | cutoff wavenumber $`k_c \gtrsim 20 / R_0`$, transition width $`dk`$ (default 5.0) | $`C_0 [1 - \tanh((k - k_c)/dk)]`$ |
 
-$`k`$ is the physical wavenumber of the cell, including the cell angles. Along an axis with reflecting or absorbing walls the field is smeared in the cosine (DCT-II) basis, i.e. together with its even image across the wall (across an absorbing wall the propagators are odd, so fields and concentrations are even); the two sides of an axis may have different walls. In SCFT box relaxation the kernel follows the box, and the stress includes the derivative of $`\Gamma(k)`$. Not available together with `space_group`. References: Delaney & Fredrickson, *J. Phys. Chem. B* **2016**, 120, 7615; Matsen et al., *J. Chem. Phys.* **2026**, 164, 014905.
+$`k`$ is the physical wavenumber of the cell, including the cell angles. Along an axis with reflecting or absorbing walls the field is smeared in the cosine (DCT-II) basis, i.e. together with its even image across the wall (across an absorbing wall the propagators are odd, so fields and concentrations are even); the two sides of an axis may have different walls. In SCFT box relaxation the kernel follows the box, and the stress includes the derivative of $`\Gamma(k)`$. `SCFT` raises `ValidationError` for `smearing` (and so for `electrostatics`) together with `space_group`. References: Delaney & Fredrickson, *J. Phys. Chem. B* **2016**, 120, 7615; Matsen et al., *J. Chem. Phys.* **2026**, 164, 014905.
 
 ### Box Optimization
 
@@ -573,6 +573,8 @@ Following crystallographic convention:
 ```python
 "angles": [90.0, 90.0, 120.0]  # Hexagonal: alpha=90, beta=90, gamma=120
 ```
+
+A 3D box takes all three angles, a 2D box `[gamma]` or `[90, 90, gamma]`, and a 1D box right angles only (`[90]` or `[90, 90, 90]`); a 1D or 2D box also takes `[]`, an orthogonal cell. `SCFT`, `LFTS` and `CLFTS` raise `ValidationError` for other forms.
 
 Non-orthogonal cells need periodic boundaries in every direction (walls are rejected), and the angles must give a cell that is not nearly flat: the ratio of the cell volume to $`abc`$, $`\sqrt{1 - \cos^2\alpha - \cos^2\beta - \cos^2\gamma + 2\cos\alpha\cos\beta\cos\gamma}`$ ($`\sin\gamma`$ in 2D), must be at least 0.1. With one oblique angle this allows 5.74° to 174.26°. A flatter cell raises an error, also when box relaxation reaches it, because the Fourier modes of a flat cell are expensive to set up and its volume loses precision. Describe such a lattice with its reduced (Niggli) cell, spanned by its shortest vectors, whose angles lie between 60° and 120° and whose volume ratio is at least $`1/\sqrt{2}`$; with a rhombohedral space group, use the hexagonal-axes setting of the group.
 
@@ -683,7 +685,7 @@ params = {
 
 ### Non-Periodic Boundaries (Confined Film)
 
-All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, which applies smearing and the `lr`/`lram` compressors in every box, uses the cosine series along every wall, absorbing ones included; on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
+All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, which applies smearing in every box and the `lr`/`lram` compressors along periodic axes and reflecting walls, uses the cosine series along every wall, absorbing ones included; on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
 
 ```python
 params = {

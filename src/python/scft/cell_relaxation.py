@@ -7,35 +7,54 @@ import weakref
 
 import numpy as np
 
-from ..utils.validation import ValidationError
+from ..utils.validation import ValidationError, FIXED_ANGLE_TOLERANCE
 
 
-# Which lattice parameters may vary during box relaxation (relax_cell=True):
+# Which lattice parameters may vary during box relaxation (relax_cell=True), and the cell a crystal
+# system given without a space group needs:
 #   lx_reduced : indices of the independent box lengths among [a, b, c]
 #   lx_full    : for each of a, b, c, the independent length it follows
 #   angles     : indices of the free angles among [alpha, beta, gamma]
+#   fixed      : the angles [alpha, beta, gamma] in degrees the system fixes (None: not fixed)
+#   cell       : what the cell needs, for the error message
 # "Orthorhombic" frees every box length in any dimension and is handled in the constructor.
-# To add a crystal system, add one row here (and, if it needs averaged stress
-# components like a = b, one case in CellRelaxation.update).
+# To add a crystal system, add one row here.
 CRYSTAL_SYSTEMS = {
-    "Orthorhombic": {"lx_reduced": None,      "lx_full": None,      "angles": []},
-    "Tetragonal":   {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # a = b != c
-    "Cubic":        {"lx_reduced": [0],       "lx_full": [0, 0, 0], "angles": []},         # a = b = c
-    "Hexagonal":    {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # a = b != c, gamma = 120
-    "Trigonal":     {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": []},         # hexagonal axes (space group only)
-    "Monoclinic":   {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [1]},        # beta free (a space group: see below)
-    "Triclinic":    {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [0, 1, 2]},  # all free
-    "Hexagonal2D":  {"lx_reduced": [0],       "lx_full": [0, 0],    "angles": []},         # a = b, gamma = 120
-    "Oblique2D":    {"lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2]},        # gamma free
+    "Orthorhombic": {"lx_reduced": None,      "lx_full": None,      "angles": [],
+                     "fixed": [90, 90, 90], "cell": "angles of 90 degrees"},
+    "Tetragonal":   {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # a = b != c
+                     "fixed": [90, 90, 90], "cell": "a = b and angles of 90 degrees"},
+    "Cubic":        {"lx_reduced": [0],       "lx_full": [0, 0, 0], "angles": [],          # a = b = c
+                     "fixed": [90, 90, 90], "cell": "a = b = c and angles of 90 degrees"},
+    "Hexagonal":    {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # a = b != c
+                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
+    "Trigonal":     {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # hexagonal axes (space group only)
+                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
+    "Monoclinic":   {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [1],         # beta free (a space group: see below)
+                     "fixed": [90, None, 90], "cell": "alpha = gamma = 90 degrees"},
+    "Triclinic":    {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [0, 1, 2],   # all free
+                     "fixed": [None, None, None], "cell": None},
+    "Hexagonal2D":  {"lx_reduced": [0],       "lx_full": [0, 0],    "angles": [],          # a = b
+                     "fixed": [None, None, 120], "cell": "a = b and gamma = 120 degrees"},
+    "Oblique2D":    {"lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2],         # gamma free
+                     "fixed": [None, None, None], "cell": None},
 }
+
+
+def angle_fixed_at(degrees, fixed):
+    """Whether an angle in degrees is the angle `fixed` (in degrees) for the native box and SpaceGroup.check_cell,
+    which hold the angles a cell fixes within FIXED_ANGLE_TOLERANCE rad."""
+    return abs(degrees * (np.pi / 180.0) - fixed * (np.pi / 180.0)) < FIXED_ANGLE_TOLERANCE
 
 
 class CellRelaxation:
     """Which lattice parameters of an SCFT calculation vary, and their update from the stress.
 
-    stress() computes the stress of the fields, error() its size along the lattice parameters that
-    vary, update() moves the fields and the cell together, and check_tied_lengths() reports a tie of
-    the crystal system that the structure does not satisfy. n_variables is the size of the optimizer.
+    stress() computes the stress of the fields and error() its size along the lattice parameters that
+    vary. In the iteration, error_at() gives the part of the error from the stress, computed every
+    stress_interval iterations (stress_array), update() moves the fields and the cell together, and
+    check_tied_lengths() reports a tie of the crystal system that the structure does not satisfy.
+    n_variables is the size of the optimizer.
     """
 
     def __init__(self, sim, params, angles):
@@ -44,6 +63,13 @@ class CellRelaxation:
         self.prop_solver, self.smearing = sim.prop_solver, sim.smearing
         self.electrostatics = sim.electrostatics
         self.stress_scale = params.get("stress_scale", 1)
+        # Stress computation interval: an integer (every N iterations) or "adaptive" (more often
+        # while the error is high, see error_at)
+        self.stress_interval = params.get("stress_interval", 1)
+        # The stress of the last iteration that computed one, in the layout of get_stress(), and
+        # whether it belongs to the fields of the current iteration
+        self.stress_array = None
+        self.stress_is_current = False
         self.n_variables = self._choose_lattice_parameters(params, angles)
 
     def _choose_lattice_parameters(self, params, angles):
@@ -58,9 +84,9 @@ class CellRelaxation:
             # The user chooses; a 2D cell without "crystal_system" is classified from gamma
             if params.get("crystal_system", None) is None and dim == 2 and angles is not None and len(angles) > 0:
                 gamma = angles[0] if len(angles) == 1 else angles[2]
-                if abs(gamma - 120.0) < 1e-6:
+                if angle_fixed_at(gamma, 120.0):
                     crystal_system = "Hexagonal2D"
-                elif abs(gamma - 90.0) > 1e-6:
+                elif not angle_fixed_at(gamma, 90.0):
                     crystal_system = "Oblique2D"
                 else:
                     crystal_system = "Orthorhombic"
@@ -86,17 +112,12 @@ class CellRelaxation:
                     cell_angles = [90.0, 90.0, float(angles[0] if len(angles) == 1 else angles[2])]
                 else:
                     cell_angles = [float(v) for v in angles]
-                tied = CRYSTAL_SYSTEMS[crystal_system]["lx_full"] or list(range(dim))
-                fixed = {"Hexagonal": [90, 90, 120], "Hexagonal2D": [None, None, 120], "Monoclinic": [90, None, 90],
-                         "Triclinic": [None] * 3, "Oblique2D": [None] * 3}.get(crystal_system, [90, 90, 90])
-                rule = {"Orthorhombic": "angles of 90 degrees", "Tetragonal": "a = b and angles of 90 degrees",
-                        "Cubic": "a = b = c and angles of 90 degrees",
-                        "Hexagonal": "a = b, alpha = beta = 90 and gamma = 120 degrees",
-                        "Hexagonal2D": "a = b and gamma = 120 degrees",
-                        "Monoclinic": "alpha = gamma = 90 degrees"}.get(crystal_system)
+                row = CRYSTAL_SYSTEMS[crystal_system]
+                tied = row["lx_full"] or list(range(dim))
                 if (any(abs(lx_given[i] - lx_given[tied.index(tied[i])]) > 1e-6 * lx_given[i] for i in range(dim))
-                        or (dim > 1 and any(f is not None and abs(c - f) > 1e-6 for f, c in zip(fixed, cell_angles)))):
-                    raise ValidationError(f"crystal_system '{crystal_system}' needs a cell with {rule}; got lx = "
+                        or (dim > 1 and any(f is not None and not angle_fixed_at(c, f)
+                                            for f, c in zip(row["fixed"], cell_angles)))):
+                    raise ValidationError(f"crystal_system '{crystal_system}' needs a cell with {row['cell']}; got lx = "
                                           f"{lx_given} and angles = {cell_angles} (set lx and angles to such a cell"
                                           + (", or crystal_system 'Oblique2D')" if dim == 2 else ")"))
             n_field_var = len(self.monomer_types) * np.prod(params["nx"])
@@ -115,22 +136,13 @@ class CellRelaxation:
         if self.sg is None:
             self.angles_reduced_indices = list(row["angles"])
         else:
-            # Angles vary only in monoclinic and triclinic groups: those whose change keeps every
-            # symmetry operation an isometry of the cell (SpaceGroup.check_cell), the angle between
-            # the two axes perpendicular to the unique axis of a monoclinic setting (beta for the
-            # unique axis b, gamma for c, alpha for a) and all three in a triclinic group
+            # Angles vary only in monoclinic and triclinic groups, those the group leaves free
+            # (SpaceGroup.fixed_angles): the angle between the two axes perpendicular to the unique
+            # axis of a monoclinic setting (beta for the unique axis b, gamma for c, alpha for a)
+            # and all three in a triclinic group
             self.angles_reduced_indices = []
             if crystal_system in ("Monoclinic", "Triclinic"):
-                cell_lx = list(self.prop_solver.get_lx())
-                cell_angles = list(self.prop_solver.get_angles_degrees())
-                for i in range(3):
-                    trial = list(cell_angles)
-                    trial[i] += 1.0
-                    try:
-                        self.sg.check_cell(cell_lx, trial)
-                        self.angles_reduced_indices.append(i)
-                    except RuntimeError:
-                        pass
+                self.angles_reduced_indices = [i for i, angle in enumerate(self.sg.fixed_angles()) if angle is None]
         self.angles_full_indices = list(self.angles_reduced_indices)
 
         # Number of variables the optimizer adjusts: the fields, plus the free box lengths and angles
@@ -166,24 +178,51 @@ class CellRelaxation:
                             for j in range(len(self.lx_reduced_indices))]
         return n_var
 
-    def update(self, fields, fields_diff, stress_array, old_error_level, error_level):
-        """One optimizer step on the concatenated (fields, box lengths, angles)
-        vector; fields are the flattened fields (and ψ). Applies the new lattice
-        parameters to the solver and returns the new flattened fields. Length
-        changes are limited to 10 % and angle changes to 5 degrees per step.
+    def error_at(self, iter, w, phi, field_error):
+        """The part of the error of iteration iter from the stress (0 for a fixed cell): error() of the
+        stress of the fields w, whose concentrations are phi; field_error is the rest of the error.
+
+        The stress costs ~30 % of an iteration: it is computed every stress_interval iterations
+        ("adaptive": every 1, 2 or 4 as the field error drops below 1e-2 and 1e-4), and at the first
+        and the last one, and reused in between. A reused stress can guide updates, but cannot
+        certify convergence: when the error with it falls below the tolerance, the stress of w
+        replaces it.
         """
+        if not self.sim.relax_cell:
+            return 0.0
+        if self.stress_interval == "adaptive":
+            stress_interval = 1 if field_error > 1e-2 else (2 if field_error > 1e-4 else 4)
+        else:
+            stress_interval = self.stress_interval
+        self.stress_is_current = iter == 1 or iter % stress_interval == 0 or iter == self.sim.max_iter
+        if self.stress_is_current:
+            self.stress_array = self.stress(w, phi)
+        error = self.error(self.stress_array)
+        if not self.stress_is_current and field_error + error < self.sim.tolerance:
+            return self.current_error(w, phi)
+        return error
+
+    def current_error(self, w, phi):
+        """error_at() with the stress of the fields w of this iteration, computed if the last one is reused."""
+        if not self.sim.relax_cell:
+            return 0.0
+        if not self.stress_is_current:
+            self.stress_array = self.stress(w, phi)
+            self.stress_is_current = True
+        return self.error(self.stress_array)
+
+    def update(self, fields, fields_diff, old_error_level, error_level):
+        """One optimizer step on the concatenated (fields, box lengths, angles)
+        vector, with the stress of the last error_at(); fields are the flattened
+        fields (and ψ). Applies the new lattice parameters to the solver and returns
+        the new flattened fields. Length changes are limited to 10 % and angle
+        changes to 5 degrees per step.
+        """
+        stress_array = self.stress_array
         # -dH/dL for the independent box lengths; lengths tied by the crystal
         # system (a = b, or a = b = c) use the averaged derivative
         dlx_full = -stress_array[0:3]
-        crystal_system = self.crystal_system
-        if crystal_system == "Hexagonal2D":
-            dlx_reduced = np.array([0.5 * (dlx_full[0] + dlx_full[1])])
-        elif crystal_system in ("Tetragonal", "Hexagonal", "Trigonal") and len(self.lx_reduced_indices) == 2:
-            dlx_reduced = np.array([0.5 * (dlx_full[0] + dlx_full[1]), dlx_full[2]])
-        elif crystal_system == "Cubic":
-            dlx_reduced = np.array([np.mean(dlx_full)])
-        else:
-            dlx_reduced = dlx_full[self.lx_reduced_indices]
+        dlx_reduced = np.array([np.mean(dlx_full[group]) for group in self.tied_groups])
 
         # get_stress() returns +dH/d(parameter) for angles as well as lengths (the
         # d(cos gamma)/d gamma = -sin gamma factor is already applied in the C++ compute_stress
@@ -261,11 +300,12 @@ class CellRelaxation:
         lengths = [np.sum(stress[group]) / np.sqrt(len(group)) for group in self.tied_groups]
         return np.linalg.norm(lengths + list(stress[self.angle_stress_indices]))
 
-    def check_tied_lengths(self, stress_array, error_level):
+    def check_tied_lengths(self, error_level):
         # The tied lengths relax only along the sum of their stresses. Without a space group the
         # structure need not have the symmetry of the tie, and then the stresses of the tied lengths
         # do not vanish separately at the converged tied cell: there is no stress-free cell with
         # this crystal system.
+        stress_array = self.stress_array
         if self.sim.relax_cell and self.sg is None and stress_array is not None and error_level < self.sim.tolerance:
             unequal = [stress_array[group] - np.mean(stress_array[group]) for group in self.tied_groups if len(group) > 1]
             if unequal and np.linalg.norm(np.concatenate(unequal)) >= self.sim.tolerance:

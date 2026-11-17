@@ -170,7 +170,7 @@ std::vector<T> PropagatorComputation<T>::get_stress()
 
     for(int p=0; p<n_polymer_types; p++){
         Polymer& pc = this->molecules->get_polymer(p);
-        if (pc.get_volume_fraction() == 0.0)
+        if (pc.is_absent())
             continue;
         for(int d=0; d<N_STRESS; d++){
             stress[d] += (this->dq_dl[p][d] * pc.get_volume_fraction() /

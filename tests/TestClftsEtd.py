@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The "etd" integrator: Leimkuhler-Matthews steps with the exact linear response (integrators.py).
+"""The "etd" integrator: Leimkuhler-Matthews steps with the exact linear response (integrators.py,
+force_jacobian.py).
 
 1. Linear force F = J w with a synthetic Jacobian that couples a real-type field to two
    imaginary-type fields (complex symmetric in the variables of real noise): without
@@ -23,7 +24,8 @@
    limit of psi, <|psi(k)|^2> and the holomorphic <psi(k) psi(-k)> (which tells the rotated
    contour); an ordered charged lamella with strong screening, which diverged when unstable
    wavevectors took the plain LM step for all fields, runs like LM; a field dropped at a zero
-   eigenvalue stays fixed; simulations sharing one integrator object keep their own response.
+   eigenvalue stays fixed, and the drift summary of the run names it dropped; simulations
+   sharing one integrator object keep their own response.
 4. Input checks: L-FTS and walls reject the integrator; a step without the linear
    response, or with another time step, raises, and so does a Fourier transform of another
    grid, of real fields or of a box with walls; a copy of a prepared integrator keeps its
@@ -42,8 +44,9 @@ import numpy as np
 import scipy.linalg
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
-from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews, force_jacobian, symmetric_jacobian
-from fts_checks import exact_restart, quiet
+from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
+from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
+from fts_checks import exact_restart, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -301,7 +304,7 @@ def runs(root):
         sim = quiet(lambda: CLFTS(params, random_seed=5, callbacks={"psi": record}))
         es, n_grid = sim.electrostatics, int(np.prod(NX))
         holder["es"] = es
-        with contextlib.redirect_stdout(io.StringIO()):
+        with silenced():
             sim.run(initial_fields={m: np.zeros(n_grid) for m in ("A", "B", "C")})
         scale = sim.prop_solver.get_volume() * np.sqrt(sim.langevin["nbar"]) * es.screened_k_sq / es.coupling / n_grid ** 2
         modes = es.screened_k_sq > 0
@@ -326,7 +329,7 @@ def runs(root):
     x = np.linspace(0, 4.0, 32, endpoint=False)
     w_a = 5.0 * np.cos(4 * np.pi * x / 4.0)
     sim = quiet(lambda: CLFTS(params, random_seed=1))
-    with contextlib.redirect_stdout(io.StringIO()):
+    with silenced():
         sim.run(initial_fields={"A": w_a, "B": -w_a, "C": np.zeros(32)})
     assert np.max(np.abs(sim.electrostatics.psi)) < 1.0, "ordered charged lamella with etd"
 
@@ -356,11 +359,18 @@ def runs(root):
     sim = quiet(lambda: CLFTS(params, random_seed=5))
     dropped = sim.mpt.aux_fields_dropped_idx
     assert dropped, "polyampholyte without chi has a dropped field"
-    with contextlib.redirect_stdout(io.StringIO()):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     w_aux = loadmat(root / "dropped" / "fields_000003.mat", squeeze_me=True)["w_aux"]
     expected = sim.mpt._vector_large_s[dropped[0]] / 2
     assert np.all(np.reshape(w_aux, (2, -1))[dropped[0]] == expected), "dropped field stays fixed"
+    # The drift summary at the end of the run names the dropped field as such, not as an imaginary one
+    (other,) = set(range(2)) - set(dropped)
+    kind = "real" if other in sim.mpt.aux_fields_real_idx else "imaginary"
+    for label in (f"auxiliary field {dropped[0]} (dropped): no drift", f"auxiliary field {other} ({kind}): ",
+                  "psi: "):
+        assert label in output.getvalue(), (label, output.getvalue())
 
 
 def expect_validation_error(make, message):

@@ -34,8 +34,9 @@ class SpaceGroup;
 /// Inputs for the CrysFFT stress fast path (one stream's resources).
 struct CudaCrysFFTStressArgs
 {
-    CudaCrysFFTBase* crysfft;        ///< Per-stream CrysFFT object
-    CudaCrysFFTMode mode;            ///< PmmmDct or Recursive3m
+    CudaCrysFFTBase* crysfft;        ///< Per-stream CrysFFT object (Pmmm or recursive 3m)
+    /// Multiplier table of each axis group (crysfft_stress_axis_groups()), owned by the solver
+    const CudaDeviceBuffer<double>* multipliers[3];
     bool identity_map;               ///< True when reduced basis matches physical grid
     int M_phys;                      ///< CrysFFT physical grid size
     int n_basis;                     ///< Number of reduced-basis points
@@ -51,8 +52,6 @@ struct CudaCrysFFTStressArgs
     const SpaceGroup* space_group;   ///< Space group (for crystal system)
     double lx[3];                    ///< Box lengths
     double bond_length_sq;           ///< b² (already halved for half-bond steps)
-    bool include_bond_factor;        ///< True for discrete chains (exp(-k²·coeff) factor)
-    double global_ds;                ///< Global contour step (discrete chains)
     cudaStream_t stream;             ///< Stream for all GPU work
 };
 
@@ -73,14 +72,5 @@ void cuda_crysfft_compute_single_segment_stress(
     const double* d_q1_reduced,
     const double* d_q2_reduced,
     double* d_segment_stress);
-
-/**
- * @brief Build the multipliers that cuda_crysfft_compute_single_segment_stress()
- *        takes for these arguments, so that the stress loop only looks them up.
- *
- * Reads crysfft, mode, space_group, bond_length_sq, include_bond_factor and
- * global_ds; enqueues no stress work.
- */
-void cuda_crysfft_prepare_stress_tables(const CudaCrysFFTStressArgs& args);
 
 #endif  // CUDA_CRYS_FFT_STRESS_H_

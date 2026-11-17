@@ -163,8 +163,10 @@ public:
     {
         return {this->crysfft_coeff(monomer_type, ds_index, 6.0), this->crysfft_coeff(monomer_type, 0, 12.0)};
     }
+    void allocate_work(int n_field, bool full_grid) override;
     /// Boltzmann bond factor of the stress integrand (see CudaSolverPseudoBase)
     const double* get_stress_boltz_bond(
         const std::string& monomer_type, bool is_half_bond_length) const override;
+    bool stress_has_bond_factor() const override { return true; }
 };
 #endif

@@ -18,11 +18,10 @@
 #include "mkl_dfti.h"
 #include "CrysFFTObliqueZBase.h"
 
-class MklCrysFFTObliqueZ : public CrysFFTObliqueZBase<MklCrysFFTObliqueZ>
+class MklCrysFFTObliqueZ : public CrysFFTObliqueZBase
 {
 private:
-    using Base = CrysFFTObliqueZBase<MklCrysFFTObliqueZ>;
-    friend Base;
+    using Base = CrysFFTObliqueZBase;
 
     DFTI_DESCRIPTOR_HANDLE plan_dct_forward_z_{nullptr};
     DFTI_DESCRIPTOR_HANDLE plan_dct_backward_z_{nullptr};
@@ -40,20 +39,16 @@ private:
     void applyDCT2ForwardZ(const double* in, double* out) const;
     void applyDCT3BackwardZ(const double* in, double* out) const;
 
-    /// Shared pipeline of diffusion() and apply_multiplier():
     /// DCT-II(z) -> r2c FFT(xy) -> multiply -> c2r FFT(xy) -> DCT-III(z).
     void apply_spectral_multiplier(const double* q_in, double* q_out, const double* multiplier) const;
 
 public:
-    MklCrysFFTObliqueZ(
-        std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para,
-        std::array<double, 9> trans_part = {0,0,0, 0,0,0, 0,0,0});
+    explicit MklCrysFFTObliqueZ(std::array<int, 3> nx_logical);
 
     ~MklCrysFFTObliqueZ();
 
-    void diffusion(double* q_in, double* q_out);
-    void apply_multiplier(const double* q_in, double* q_out, const double* multiplier);
+    /// q_out = exp(ds ∇²) q_in with the table of build_boltzmann(ds) (M_complex values).
+    void diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const override;
 
     /// Elements of this thread's z work arrays {reordered real, spectrum}, the most
     /// the transforms on the thread have needed (tests check them against the grid).

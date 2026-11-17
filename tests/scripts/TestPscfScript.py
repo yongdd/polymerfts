@@ -1,5 +1,6 @@
 """Import PSCF models and commands; exercise generated scripts without a backend."""
 
+import ast
 import copy
 import json
 import os
@@ -54,6 +55,13 @@ def imported(tmp_path, param=PARAM, command=COMMAND, **kwargs):
     source, fields = source_files(tmp_path, param, command)
     output = TOOL['import_script'](source / 'param', source / 'command', tmp_path / 'job', **kwargs)
     return output, fields
+
+
+def generated_params(output):
+    """The params literal of a generated simulation.py."""
+    module = ast.parse((output / 'simulation.py').read_text(encoding='utf-8'))
+    return next(ast.literal_eval(node.value) for node in module.body
+                if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == 'params')
 
 
 def recording_solver(monkeypatch, converged=True):
@@ -170,7 +178,9 @@ def test_unsupported_or_malformed_commands_leave_no_bundle(tmp_path, command):
     assert not (tmp_path / 'job').exists()
 
 
-@pytest.mark.parametrize('path', ('../outside', '/tmp/outside', '.', 'out/../omega', 'out/', 'out\\omega'))
+# The generated script may run on Windows: drives and ':' are refused on every platform
+@pytest.mark.parametrize('path', ('../outside', '/tmp/outside', '.', 'out/../omega', 'out/', 'out\\omega',
+                                  'C:/outside', 'C:outside', '//server/share/x', 'out/x:stream'))
 def test_output_paths_cannot_escape_or_name_a_directory(tmp_path, path):
     with pytest.raises(ValueError, match='relative file path'):
         imported(tmp_path, command=f'READ_W_RGRID in/omega ITERATE WRITE_W_RGRID "{path}" FINISH')
@@ -230,13 +240,13 @@ def test_malformed_parameter_syntax(text):
 def test_all_or_no_cell_parameters_may_relax(tmp_path, flags, expected):
     text = PARAM.replace('isFlexible 0', f'isFlexible 1 flexibleParams[ {flags} ]')
     output, _ = imported(tmp_path, param=text)
-    assert TOOL['read_python_params'](output / 'simulation.py')['relax_cell'] is expected
+    assert generated_params(output)['relax_cell'] is expected
 
 
 def test_pscf_defaults_are_explicit_in_generated_script(tmp_path):
     text = PARAM.replace('maxItr 1234 maxHist 20 isFlexible 0 scaleStress 2', '')
     output, _ = imported(tmp_path, param=text)
-    p = TOOL['read_python_params'](output / 'simulation.py')
+    p = generated_params(output)
     assert p['relax_cell'] is True
     assert p['max_iter'] == 200 and p['optimizer']['max_hist'] == 50 and p['stress_scale'] == 10.
 
@@ -247,7 +257,7 @@ def test_branched_tree_and_multiple_polymer_species(tmp_path):
         'type branched nBlock 3 blocks[ 0 .2 0 1 1 .3 1 2 0 .5 1 3 ] phi .6')
     text = text.replace('ds 1.0D-2', 'Polymer{ nBlock 1 blocks[ 1 1.5 ] phi .4 } ds 1.0D-2')
     output, _ = imported(tmp_path, param=text)
-    p = TOOL['read_python_params'](output / 'simulation.py')
+    p = generated_params(output)
     assert len(p['polymers']) == 2
     assert p['polymers'][0]['blocks'][2] == {'type': 'A', 'length': .5, 'v': 1, 'u': 3}
     assert p['polymers'][1]['blocks'] == [{'type': 'B', 'length': 1.5}]
@@ -322,7 +332,7 @@ def test_cell_metric_and_representable_relaxation(tmp_path, case, flexible):
         assert not (tmp_path / 'job').exists()
     else:
         output = TOOL['import_script'](source / 'param', source / 'command', tmp_path / 'job')
-        p = TOOL['read_python_params'](output / 'simulation.py')
+        p = generated_params(output)
         lattice_back, cell_back = TOOL['choose_lattice'](p, override=lattice)
         assert lattice_back == lattice and p['relax_cell'] is flexible
         np.testing.assert_allclose(cell_back, cell, rtol=0, atol=1e-12)

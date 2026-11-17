@@ -140,10 +140,10 @@ The classes each platform provides (the computation classes above them are share
 | Continuous, RK2 | `CpuSolverPseudoRK2` | `CudaSolverPseudoRK2` |
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
-| Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` | `CudaSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond`) |
-| Transforms | `FftwFFT<T,DIM>`, `MklFFT<T,DIM>` (FFT; DCT, DST through `MakhoulTransform`) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
+| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `{Fftw,Mkl}CrysFFT{Pmmm,Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
 
 ### Platform Selection
@@ -162,7 +162,7 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 
 **Notes:**
 
-- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` just pass `platform="auto"` through to `PropagatorSolver`. It is not in C++.
+- The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` create the solver with `chain_solver` (`src/python/theory/chains.py`), which just passes `platform="auto"` through to `PropagatorSolver`. It is not in C++.
 - The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
@@ -349,8 +349,12 @@ CpuSolver<T>                                  [Abstract Base]
         │   ├── fft_               - std::unique_ptr<FFT<T>> for transforms
         │   ├── transform_forward()
         │   ├── transform_backward()
+        │   ├── crysfft_           - std::unique_ptr<CpuCrysFFT>, with a space group; its k-space tables
+        │   │                        are the solver's (crysfft_boltz_, crysfft_multipliers_)
         │   ├── update_laplacian_operator()
+        │   ├── prepare_stress()                 [the CrysFFT stress multipliers]
         │   ├── compute_single_segment_stress()  [shared implementation]
+        │   ├── crysfft_block_coeffs()           [pure virtual; the CrysFFT steps of a block]
         │   └── get_stress_boltz_bond()          [virtual; base returns nullptr]
         │       │
         │       ├── CpuSolverPseudoRQM4<T>
@@ -391,7 +395,12 @@ platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
 (as `CpuSolverPseudoBase` does on the CPU): the derived classes only lend their
 work buffers through `stress_scratch()`, and the discrete solver overrides
-`get_stress_boltz_bond()` (the base default, nullptr, is the continuous chain).
+`get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
+false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
+tables exist only for a path that uses them (`provide_work()`, called by the backend once
+the space group is set and again before the propagator and stress loops, with the derived
+solvers' `allocate_work()`), so the Pmmm and recursive 3m CrysFFT with the stress fast
+path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
@@ -404,7 +413,7 @@ algorithmic difference or a real-only feature and is commented as such.
 
 ### 3.4 FFT Hierarchy
 
-**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cuda/CudaFFT.h`
+**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`, `src/platforms/cuda/CudaFFT.h`
 
 ```
 FFT<T>                                        [Abstract Base]
@@ -413,11 +422,14 @@ FFT<T>                                        [Abstract Base]
 ├── forward(T* real, complex* spectral)       [pure virtual, periodic only]
 └── backward(complex* spectral, T* real)      [pure virtual, periodic only]
         │
-        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend]
+        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
         │
-        ├── MklFFT<T, DIM>                     [CPU - MKL backend]
+        ├── MklFFT<T, DIM>                     [CPU - MKL backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
+        │
+        ├── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
+        │   └── MakhoulTransform over FftwRealFFT or MklRealFFT
         │
         └── CudaFFTBase<T>                    [GPU abstract base]
             ├── forward_stream(..., cudaStream_t)   [pure virtual; double* and complex* overloads]
@@ -427,6 +439,9 @@ FFT<T>                                        [Abstract Base]
                 ├── forward()/backward() call the stream versions on stream 0
                 └── Uses CudaRealTransform for non-periodic BC (DCT/DST)
 ```
+
+On the CPU, `createFFT()` (`FFTFactory.h`) returns `FftwFFT` or `MklFFT` for a periodic
+box and `MakhoulFFT` for a box of reflecting and absorbing axes.
 
 **Transform Types:**
 
@@ -451,11 +466,12 @@ coefficients given to `backward` are made Hermitian on the planes of the half sp
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
 the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
-is transformed through its mirror image: each wall axis is extended to twice its length by
-the even (cosine) or odd (sine) reflection, the complex FFT of the extended periodic grid
-(FFTW, MKL or cuFFT) gives its modes, and a phase factor per wall axis turns them into the
-series coefficients; the coefficients are complex, with the full spectrum on the periodic
-axes, and real fields take the real part of `backward`. `PropagatorSolver.fourier` uses the
+has complex coefficients, with the full spectrum on the periodic axes, and real fields take
+the real part of `backward`. Both versions compute them with one FFT of the grid whose wall
+axes are reordered and combined as in Makhoul's cosine transform: `MakhoulTransform` with
+periodic axes on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid between a reordering
+and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
+Section 2.5). `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
 (osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls
@@ -629,11 +645,15 @@ When adding new computational features, you must implement them for both platfor
 | Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
 | Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
 | Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
-| Cell relaxation and stress of SCFT | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
-| What SCFT returns and writes | `src/python/scft/scft_results.py` |
-| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`) |
-| Reading, drawing and solving the polymer chains | `src/python/theory/chains.py` |
+| WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
+| Electrostatics of the FTS methods: ψ, the ions and their checkpoint state | `src/python/theory/electrostatics.py` (`sim.electrostatics`) |
+| Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
+| Cell relaxation of SCFT: the stress, how often it is computed (`stress_interval`) and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
+| What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`; the fields a run starts from: `prepare_run`) |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver` | `src/python/theory/chains.py` (`chain_solver`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains) | `src/python/utils/validation.py` (`validate_system_params`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -646,7 +666,7 @@ Who owns whom:
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
 - A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
 - A backend owns its solver, and on CUDA the streams, events and scratch buffers.
-- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects and its Boltzmann factors.
+- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
 Allocations are owned by objects that release them, so destructors and constructors
 that throw need no cleanup code:
@@ -674,10 +694,10 @@ created through `count_cufft_plan(...)`, `count_cuda_stream(...)` and `count_cud
 and destroyed with `release_cufft_plan()`, `release_cuda_stream()` and
 `release_cuda_event()`, which keep live counts (`cuda_handle_counters()`); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
-release call fails, and counts the failure in `cuda_release_failures()`. Events used
-only for profiling are `CudaEvent` objects. The CPU FFT classes keep their FFTW/MKL
-plans and descriptors and the `fftw_malloc`-aligned buffers of `FftwFFT`/`FftwCrysFFT*`
-in hand-written `release()` functions, which their destructors call.
+release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
+plans and descriptors in hand-written `release()` functions, which their destructors call;
+the `fftw_malloc` arrays FFTW plans on are freed after planning, and the plans run on the
+caller's arrays or on per-thread scratch of the same alignment.
 
 Every owned CUDA allocation (the buffers and the backends' propagator and checkpoint
 arrays) goes through `counted_cuda_allocate()`/`counted_cuda_release()`, which keep exact

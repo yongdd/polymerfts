@@ -2,7 +2,8 @@
  * @file CudaRealTransform.h
  * @brief Unified CUDA Real Transform (DCT/DST) implementation.
  *
- * Supports DCT Types 1-4 and DST Types 1-4 for 1D, 2D, and 3D arrays.
+ * Supports the DCT and DST types 2 and 3 for 1D, 2D, and 3D arrays (the library
+ * runs reflecting and absorbing walls and the Pmmm CrysFFT on them).
  * Allows mixing different transform types across dimensions.
  *
  * Boundary condition mapping:
@@ -10,10 +11,8 @@
  *   - DST (Discrete Sine Transform): Dirichlet boundary conditions
  *
  * FFTW correspondence:
- *   - DCT-1: FFTW_REDFT00   - DST-1: FFTW_RODFT00
  *   - DCT-2: FFTW_REDFT10   - DST-2: FFTW_RODFT10
  *   - DCT-3: FFTW_REDFT01   - DST-3: FFTW_RODFT01
- *   - DCT-4: FFTW_REDFT11   - DST-4: FFTW_RODFT11
  *
  * Reference: FCT/FST algorithm (Makhoul 1980, Martucci 1994)
  *            CUDA implementation: https://github.com/rmingming/cuHelmholtz
@@ -31,43 +30,20 @@
  */
 enum CudaTransformType {
     // DCT Types (Neumann boundary conditions)
-    CUDA_DCT_1 = 0,   // FFTW_REDFT00: DCT-I
-    CUDA_DCT_2 = 1,   // FFTW_REDFT10: DCT-II
-    CUDA_DCT_3 = 2,   // FFTW_REDFT01: DCT-III
-    CUDA_DCT_4 = 3,   // FFTW_REDFT11: DCT-IV
+    CUDA_DCT_2,   // FFTW_REDFT10: DCT-II
+    CUDA_DCT_3,   // FFTW_REDFT01: DCT-III
     // DST Types (Dirichlet boundary conditions)
-    CUDA_DST_1 = 4,   // FFTW_RODFT00: DST-I
-    CUDA_DST_2 = 5,   // FFTW_RODFT10: DST-II
-    CUDA_DST_3 = 6,   // FFTW_RODFT01: DST-III
-    CUDA_DST_4 = 7    // FFTW_RODFT11: DST-IV
+    CUDA_DST_2,   // FFTW_RODFT10: DST-II
+    CUDA_DST_3    // FFTW_RODFT01: DST-III
 };
-
-/// Check if transform type is DCT
-inline bool isDCT(CudaTransformType type) {
-    return type <= CUDA_DCT_4;
-}
-
-/// Check if transform type is DST
-inline bool isDST(CudaTransformType type) {
-    return type >= CUDA_DST_1;
-}
-
-/// Check if transform type is Type-1 (special handling required)
-inline bool isType1(CudaTransformType type) {
-    return type == CUDA_DCT_1 || type == CUDA_DST_1;
-}
 
 /// Get the name string for a transform type
 inline const char* getTransformName(CudaTransformType type) {
     switch (type) {
-        case CUDA_DCT_1: return "DCT-1";
         case CUDA_DCT_2: return "DCT-2";
         case CUDA_DCT_3: return "DCT-3";
-        case CUDA_DCT_4: return "DCT-4";
-        case CUDA_DST_1: return "DST-1";
         case CUDA_DST_2: return "DST-2";
         case CUDA_DST_3: return "DST-3";
-        case CUDA_DST_4: return "DST-4";
         default: return "Unknown";
     }
 }
@@ -78,16 +54,14 @@ inline const char* getTransformName(CudaTransformType type) {
 
 /**
  * @class CudaRealTransform1D
- * @brief CUDA 1D Real Transform (DCT/DST Types 1-4).
+ * @brief CUDA 1D Real Transform (DCT/DST types 2 and 3).
  *
- * The constructor takes the number of points: N+1 for a DCT-1 over N intervals, N for
- * DST-1 and the types 2-4. Input and output have that size.
+ * The constructor takes the number of points N; input and output have that size.
  *
- * Transform lengths (verified against FFTW): DCT-2/3/4, DST-1/4 and the 2D/3D DCT-1
- * accept any N (the CrysFFT physical grid, half the logical grid, is odd whenever a
- * logical size is 2 mod 4); the 1D DCT-1 takes the number of points N+1, which must
- * be odd; DST-2 (all dimensions) and the 2D/3D DST-3 need even N. The constructors
- * reject unsupported lengths.
+ * Transform lengths (verified against FFTW): DCT-2/3 and the 1D DST-3 accept any N
+ * (the CrysFFT physical grid, half the logical grid, is odd whenever a logical size
+ * is 2 mod 4); DST-2 (all dimensions) and the 2D/3D DST-3 need even N. The constructors reject
+ * unsupported lengths.
  */
 class CudaRealTransform1D
 {
@@ -98,13 +72,11 @@ private:
     bool plan_created_ = false;  ///< plan_ holds a created plan
     CudaDeviceBuffer<double> d_work_;             ///< Work buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
-    // Optional lookup tables for DCT2/DCT3/DCT4 and DST2/3/4
+    // Optional lookup tables for DCT2/DCT3 and DST2/3
     CudaDeviceBuffer<double> dct2_sin_;
     CudaDeviceBuffer<double> dct2_cos_;
     CudaDeviceBuffer<double> dct3_sin_;
     CudaDeviceBuffer<double> dct3_cos_;
-    CudaDeviceBuffer<double> dct4_sin_;
-    CudaDeviceBuffer<double> dct4_cos_;
     cudaStream_t stream_{0};     ///< CUDA stream for execution
     bool initialized_;
 
@@ -115,7 +87,7 @@ public:
     /**
      * @brief Construct 1D real transformer.
      * @param N Transform size
-     * @param type Transform type (DCT-1/2/3/4 or DST-1/2/3/4)
+     * @param type Transform type (DCT-2/3 or DST-2/3)
      */
     CudaRealTransform1D(int N, CudaTransformType type);
     ~CudaRealTransform1D();
@@ -148,8 +120,7 @@ public:
  * @class CudaRealTransform2D
  * @brief CUDA 2D Real Transform (DCT/DST).
  *
- * Supports any combination of DCT-2/3/4 and DST-2/3/4 across dimensions.
- * Type-1 transforms (DCT-1 or DST-1) must use the same type in both dimensions.
+ * Supports any combination of DCT-2/3 and DST-2/3 across dimensions.
  *
  * Example use cases:
  *   - X: DCT-2 (Neumann), Y: DST-2 (Dirichlet)
@@ -159,8 +130,7 @@ class CudaRealTransform2D
 {
 private:
     int Nx_, Ny_;                ///< Transform sizes
-    int M_;                      ///< Total size (Nx * Ny; (Nx+1)(Ny+1) for DCT-1)
-    int M_padded_;               ///< Padded size for FFT
+    int M_;                      ///< Total size (Nx * Ny)
     CudaTransformType type_x_;   ///< Transform type for X dimension
     CudaTransformType type_y_;   ///< Transform type for Y dimension
 
@@ -173,7 +143,7 @@ private:
     CudaDeviceBuffer<double> d_temp_;             ///< Temporary buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
 
-    // Optional lookup tables for DCT2/DCT3/DCT4 and DST2/3/4
+    // Optional lookup tables for DCT2/DCT3 and DST2/3
     CudaDeviceBuffer<double> dct2_sin_x_;
     CudaDeviceBuffer<double> dct2_cos_x_;
     CudaDeviceBuffer<double> dct2_sin_y_;
@@ -182,10 +152,6 @@ private:
     CudaDeviceBuffer<double> dct3_cos_x_;
     CudaDeviceBuffer<double> dct3_sin_y_;
     CudaDeviceBuffer<double> dct3_cos_y_;
-    CudaDeviceBuffer<double> dct4_sin_x_;
-    CudaDeviceBuffer<double> dct4_cos_x_;
-    CudaDeviceBuffer<double> dct4_sin_y_;
-    CudaDeviceBuffer<double> dct4_cos_y_;
 
     bool initialized_;
     cudaStream_t stream_{0};     ///< CUDA stream for execution
@@ -196,24 +162,16 @@ private:
     void release();
 
     // Y dimension processing
-    void executeY_DCT1(double* d_data);
     void executeY_DCT2(double* d_data);
     void executeY_DCT3(double* d_data);
-    void executeY_DCT4(double* d_data);
-    void executeY_DST1(double* d_data);
     void executeY_DST2(double* d_data);
     void executeY_DST3(double* d_data);
-    void executeY_DST4(double* d_data);
 
     // X dimension processing
-    void executeX_DCT1(double* d_data);
     void executeX_DCT2(double* d_data);
     void executeX_DCT3(double* d_data);
-    void executeX_DCT4(double* d_data);
-    void executeX_DST1(double* d_data);
     void executeX_DST2(double* d_data);
     void executeX_DST3(double* d_data);
-    void executeX_DST4(double* d_data);
 
 public:
     /**
@@ -230,7 +188,6 @@ public:
      * @param Ny Size in Y
      * @param type_x Transform type for X dimension
      * @param type_y Transform type for Y dimension
-     * @note Type-1 transforms cannot be mixed with other types
      */
     CudaRealTransform2D(int Nx, int Ny, CudaTransformType type_x, CudaTransformType type_y);
 
@@ -267,8 +224,7 @@ public:
  * @class CudaRealTransform3D
  * @brief CUDA 3D Real Transform (DCT/DST).
  *
- * Supports any combination of DCT-2/3/4 and DST-2/3/4 across dimensions.
- * Type-1 transforms (DCT-1 or DST-1) must use the same type in all dimensions.
+ * Supports any combination of DCT-2/3 and DST-2/3 across dimensions.
  *
  * Example use cases:
  *   - X: DCT-2, Y: DCT-2, Z: DST-2 (Neumann in XY, Dirichlet in Z)
@@ -279,7 +235,6 @@ class CudaRealTransform3D
 private:
     int Nx_, Ny_, Nz_;           ///< Transform sizes
     int M_;                      ///< Total size
-    int M_padded_;               ///< Padded size for FFT
     CudaTransformType type_x_;   ///< Transform type for X dimension
     CudaTransformType type_y_;   ///< Transform type for Y dimension
     CudaTransformType type_z_;   ///< Transform type for Z dimension
@@ -308,12 +263,6 @@ private:
     CudaDeviceBuffer<double> dct3_cos_y_;
     CudaDeviceBuffer<double> dct3_sin_z_;
     CudaDeviceBuffer<double> dct3_cos_z_;
-    CudaDeviceBuffer<double> dct4_sin_x_;
-    CudaDeviceBuffer<double> dct4_cos_x_;
-    CudaDeviceBuffer<double> dct4_sin_y_;
-    CudaDeviceBuffer<double> dct4_cos_y_;
-    CudaDeviceBuffer<double> dct4_sin_z_;
-    CudaDeviceBuffer<double> dct4_cos_z_;
 
     bool initialized_;
     cudaStream_t stream_{0};     ///< CUDA stream for execution
@@ -324,34 +273,22 @@ private:
     void release();
 
     // Z dimension processing
-    void executeZ_DCT1(double* d_data);
     void executeZ_DCT2(double* d_data);
     void executeZ_DCT3(double* d_data);
-    void executeZ_DCT4(double* d_data);
-    void executeZ_DST1(double* d_data);
     void executeZ_DST2(double* d_data);
     void executeZ_DST3(double* d_data);
-    void executeZ_DST4(double* d_data);
 
     // Y dimension processing
-    void executeY_DCT1(double* d_data);
     void executeY_DCT2(double* d_data);
     void executeY_DCT3(double* d_data);
-    void executeY_DCT4(double* d_data);
-    void executeY_DST1(double* d_data);
     void executeY_DST2(double* d_data);
     void executeY_DST3(double* d_data);
-    void executeY_DST4(double* d_data);
 
     // X dimension processing
-    void executeX_DCT1(double* d_data);
     void executeX_DCT2(double* d_data);
     void executeX_DCT3(double* d_data);
-    void executeX_DCT4(double* d_data);
-    void executeX_DST1(double* d_data);
     void executeX_DST2(double* d_data);
     void executeX_DST3(double* d_data);
-    void executeX_DST4(double* d_data);
 
 public:
     /**
@@ -371,7 +308,6 @@ public:
      * @param type_x Transform type for X dimension
      * @param type_y Transform type for Y dimension
      * @param type_z Transform type for Z dimension
-     * @note Type-1 transforms cannot be mixed with other types
      */
     CudaRealTransform3D(int Nx, int Ny, int Nz,
                         CudaTransformType type_x, CudaTransformType type_y, CudaTransformType type_z);
@@ -411,14 +347,10 @@ typedef CudaTransformType CudaDSTType;
 typedef CudaTransformType CudaMixedTransformType;
 
 // Old enum value aliases
-#define CUDA_TRANSFORM_DCT_1 CUDA_DCT_1
 #define CUDA_TRANSFORM_DCT_2 CUDA_DCT_2
 #define CUDA_TRANSFORM_DCT_3 CUDA_DCT_3
-#define CUDA_TRANSFORM_DCT_4 CUDA_DCT_4
-#define CUDA_TRANSFORM_DST_1 CUDA_DST_1
 #define CUDA_TRANSFORM_DST_2 CUDA_DST_2
 #define CUDA_TRANSFORM_DST_3 CUDA_DST_3
-#define CUDA_TRANSFORM_DST_4 CUDA_DST_4
 
 // Old class name aliases
 typedef CudaRealTransform1D CudaDCT;

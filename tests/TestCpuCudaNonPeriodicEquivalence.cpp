@@ -12,7 +12,7 @@
  *   - CUDA discrete non-periodic path that used the periodic cuFFT plans (wrong DCT/DST).
  *   - CudaFFT non-periodic glue kernels missing grid-stride loops (NaN for M > 65536,
  *     hence the 48^3 case).
- *   - MklFFT DST-III backward dropping the highest (Nyquist) mode (absorbing BC).
+ *   - The MKL DST-III backward dropping the highest (Nyquist) mode (absorbing BC).
  *
  * Skips gracefully when fewer than two real backends are available.
  */

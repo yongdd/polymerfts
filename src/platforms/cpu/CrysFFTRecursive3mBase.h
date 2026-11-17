@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include "CrysFFTSharedTables.h"
+#include "CpuCrysFFT.h"
 #include "Exception.h"
 #include "Recursive3mFoldParity.h"
 #include "Recursive3mHelpers.h"
@@ -38,31 +38,25 @@
  * @class CrysFFTRecursive3mBase
  * @brief CRTP base class for recursive crystallographic FFT.
  *
- * Provides common functionality for the 2x2y2z recursive algorithm.
+ * Provides common functionality for the 2x2y2z recursive algorithm: the
+ * twiddle factors and the folded k-space tables (build_boltzmann(),
+ * build_multiplier()). A table holds 16 arrays of M_physical values, the real
+ * parts of the eight folded octants and then their imaginary parts, table_stride_
+ * values apart.
  * Derived classes must implement:
  * - init_fft_plans(): Create platform-specific FFT plans
- * - apply_with_cache(): Execute FFT with cached Boltzmann factors
+ * - apply_with_table(): Execute the FFT with a table
  *
  * @tparam Derived The derived class type (CRTP pattern)
  */
 template <typename Derived>
-class CrysFFTRecursive3mBase
+class CrysFFTRecursive3mBase : public CpuCrysFFT
 {
-public:
-    /// Stress multipliers (see Recursive3mHelpers.h)
-    using MultiplierType = crys_recursive_3m::MultiplierType;
-
-    struct KCache {
-        std::array<std::unique_ptr<double[]>, 8> re;
-        std::array<std::unique_ptr<double[]>, 8> im;
-    };
-
 protected:
     std::array<int, 3> nx_logical_;
     std::array<int, 3> nx_physical_;
     int M_logical_;
     int M_physical_;
-    std::array<double, 6> cell_para_;
     std::array<double, 9> translational_part_;
 
     /// Pairing permutation of the fold: twiddle r_p multiplies the
@@ -74,12 +68,12 @@ protected:
     std::array<std::unique_ptr<double[]>, 8> r_re_;
     std::array<std::unique_ptr<double[]>, 8> r_im_;
 
-    /// Boltzmann factors per coefficient and stress multipliers per (type,
-    /// coefficient), shared by the threads that call the engine
-    SharedTableCache<double, KCache> k_cache_;
-    SharedTableCache<std::pair<MultiplierType, double>, KCache> multiplier_cache_;
+    /// Values from one array of a table to the next: M_physical rounded up to whole
+    /// 64-byte lines, plus one line. The multiply loop reads all 16 arrays at the same
+    /// index; with M_physical a power of two and no extra line they would all fall
+    /// into one cache set.
+    size_t table_stride_ = 0;
 
-    Derived& derived() { return static_cast<Derived&>(*this); }
     const Derived& derived() const { return static_cast<const Derived&>(*this); }
 
     void generate_twiddle_factors()
@@ -107,11 +101,11 @@ protected:
     }
 
     /**
-     * @brief Build the folded 2x2y2z k-space cache for a per-mode value.
+     * @brief Write the folded 2x2y2z table of a per-mode value into `table`.
      *
-     * Shared body of generate_k_cache() and generate_k_cache_from_multiplier().
-     * Tabulates the squared wavevector components kx^2, ky^2, kz^2 of the
-     * logical grid, fills the full grid with value_at(kx2, ky2, kz2) / M_logical,
+     * Shared body of build_boltzmann() and build_multiplier(). Tabulates the
+     * squared wavevector components kx^2, ky^2, kz^2 of the logical grid of
+     * `cell`, fills the full grid with value_at(kx2, ky2, kz2) / M_logical,
      * splits it into 8 octants, applies the 2x2y2z butterflies and multiplies
      * with the (parity-permuted) twiddle factors.
      *
@@ -119,19 +113,14 @@ protected:
      * @param value_at Per-mode value before the 1/M_logical normalization.
      */
     template <typename ValueFn>
-    KCache generate_k_cache_impl(ValueFn&& value_at) const
+    void build_table(std::vector<double>& table, const std::array<double, 6>& cell, ValueFn&& value_at) const
     {
         using namespace crys_recursive_3m;
 
-        KCache cache;
-        for (int i = 0; i < 8; ++i)
-        {
-            cache.re[i] = std::make_unique<double[]>(M_physical_);
-            cache.im[i] = std::make_unique<double[]>(M_physical_);
-        }
+        table.assign(16 * table_stride_, 0.0);
 
         // value_at(kx^2, ky^2, kz^2) / M_logical on the logical grid
-        std::vector<double> tempmat = logical_k_table(nx_logical_, cell_para_, value_at);
+        std::vector<double> tempmat = logical_k_table(nx_logical_, cell, value_at);
 
         // Split into 8 octants
         std::array<std::unique_ptr<double[]>, 8> k_split;
@@ -158,60 +147,29 @@ protected:
         // S_{fold_perm_[p]} (translation-parity permutation; identity when all
         // generator translations are even in grid units).
         constexpr std::array<std::pair<int, int>, 4> seq3{{{0,7},{6,1},{2,5},{4,3}}};
-        std::array<double*, 8> cache_re_ptr, cache_im_ptr;
+        std::array<double*, 8> table_re_ptr, table_im_ptr;
         std::array<const double*, 8> r_re_ptr, r_im_ptr, k_split_perm_ptr;
         for (int i = 0; i < 8; ++i)
         {
-            cache_re_ptr[i] = cache.re[i].get();
-            cache_im_ptr[i] = cache.im[i].get();
+            table_re_ptr[i] = table.data() + i * table_stride_;
+            table_im_ptr[i] = table.data() + (8 + i) * table_stride_;
             r_re_ptr[i] = r_re_[i].get();
             r_im_ptr[i] = r_im_[i].get();
             k_split_perm_ptr[i] = k_split[fold_perm_[i]].get();
         }
 
         mul_add_sub_by_seq(
-            cache_re_ptr, cache_im_ptr,
+            table_re_ptr, table_im_ptr,
             r_re_ptr, r_im_ptr,
             k_split_perm_ptr,
             seq3, halfsize);
-
-        return cache;
-    }
-
-    /// Boltzmann cache exp(-k^2 coeff) used by diffusion().
-    KCache generate_k_cache(double coeff) const
-    {
-        return generate_k_cache_impl([coeff](double kx2, double ky2, double kz2) {
-            return std::exp(-(kx2 + ky2 + kz2) * coeff);
-        });
-    }
-
-    /// Multiplier cache (k_d² summed over the axes of the type, times
-    /// exp(-k² coeff) for the Exp types) used by apply_multiplier() for the stress.
-    KCache generate_k_cache_from_multiplier(MultiplierType type, double coeff) const
-    {
-        const int axes = crys_recursive_3m::multiplier_axes(type);
-        const bool bond = crys_recursive_3m::multiplier_has_bond(type);
-        return generate_k_cache_impl([axes, bond, coeff](double kx2, double ky2, double kz2) {
-            const double k_axes = ((axes & 1) ? kx2 : 0.0) + ((axes & 2) ? ky2 : 0.0) + ((axes & 4) ? kz2 : 0.0);
-            return bond ? std::exp(-(kx2 + ky2 + kz2) * coeff) * k_axes : k_axes;
-        });
-    }
-
-    const KCache& get_multiplier_cache(MultiplierType type, double coeff) const
-    {
-        // Types without the bond factor do not depend on coeff
-        const auto key = std::make_pair(type, crys_recursive_3m::multiplier_has_bond(type) ? coeff : 0.0);
-        return multiplier_cache_.get(key, [&] { return generate_k_cache_from_multiplier(type, coeff); });
     }
 
 public:
     CrysFFTRecursive3mBase(
         std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para,
         std::array<double, 9> translational_part)
         : nx_logical_(nx_logical),
-          cell_para_(cell_para),
           translational_part_(translational_part)
     {
         for (int d = 0; d < 3; ++d)
@@ -256,48 +214,48 @@ public:
 
         M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
         M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
+        table_stride_ = (static_cast<size_t>(M_physical_) + 7) / 8 * 8 + 8;
     }
 
-    virtual ~CrysFFTRecursive3mBase() = default;
+    int get_M_physical() const override { return M_physical_; }
 
-    void set_cell_para(const std::array<double, 6>& cell_para)
+    /// Folded table of exp(-k² coeff) for diffusion().
+    void build_boltzmann(std::vector<double>& table, const std::array<double, 6>& cell, double coeff) const override
     {
-        if (cell_para[0] == cell_para_[0] &&
-            cell_para[1] == cell_para_[1] &&
-            cell_para[2] == cell_para_[2])
-        {
-            return;
-        }
-
-        cell_para_ = cell_para;
-        k_cache_.invalidate();
-        multiplier_cache_.invalidate();
+        build_table(table, cell, [coeff](double kx2, double ky2, double kz2) {
+            return std::exp(-(kx2 + ky2 + kz2) * coeff);
+        });
     }
 
-    void set_contour_step(double coeff)
+    void diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const override
     {
-        k_cache_.select(coeff, [&] { return generate_k_cache(coeff); });
+        check_table(table, 16 * table_stride_);
+        derived().apply_with_table(table.data(), q_in, q_out);
     }
 
-    void diffusion(const double* q_in, double* q_out) const
+    /// Folded table of Σ_{d in axes} k_d², times exp(-k² coeff) when coeff is not
+    /// 0 (the bond factor of discrete chains), for apply_multiplier().
+    void build_multiplier(std::vector<double>& table, const std::array<double, 6>& cell,
+                          int axes, double coeff) const override
     {
-        const KCache* cache = k_cache_.current();
-        if (!cache)
-            throw_with_line_number("set_contour_step must be called before diffusion().");
-
-        derived().apply_with_cache(*cache, q_in, q_out);
+        if (axes < 1 || axes > 7)
+            throw_with_line_number("CrysFFTRecursive3m::build_multiplier: axes must be a mask of 1 (x), 2 (y), 4 (z).");
+        const bool bond = (coeff != 0.0);
+        build_table(table, cell, [axes, bond, coeff](double kx2, double ky2, double kz2) {
+            const double k_axes = ((axes & 1) ? kx2 : 0.0) + ((axes & 2) ? ky2 : 0.0) + ((axes & 4) ? kz2 : 0.0);
+            return bond ? std::exp(-(kx2 + ky2 + kz2) * coeff) * k_axes : k_axes;
+        });
     }
 
-    void apply_multiplier(const double* q_in, double* q_out, MultiplierType type, double coeff) const
+    void apply_multiplier(const double* q_in, double* q_out, const std::vector<double>& table) const override
     {
-        const KCache& cache = get_multiplier_cache(type, coeff);
-        derived().apply_with_cache(cache, q_in, q_out);
+        check_table(table, 16 * table_stride_);
+        derived().apply_with_table(table.data(), q_in, q_out);
     }
 
     const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
     const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
     int get_M_logical() const { return M_logical_; }
-    int get_M_physical() const { return M_physical_; }
 };
 
 #endif  // CRYS_FFT_RECURSIVE_3M_BASE_H_

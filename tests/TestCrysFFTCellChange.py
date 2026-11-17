@@ -13,7 +13,9 @@ rescaled to a standard deviation of 5, continuous and discrete chains):
   (nz/2 = 4); Ly alone, then Lx, Ly and Lz;
 - Pmmm 32x24x16, irreducible basis: the recursive 3m CrysFFT (nz/2 = 8); Ly
   alone, then Lz alone;
-- Im-3m 16^3, m3 physical basis: the recursive 3m CrysFFT on a cubic cell.
+- Im-3m 16^3, m3 physical basis: the recursive 3m CrysFFT on a cubic cell;
+- Im-3m 18^3, m3 physical basis: an odd basis size (9^3), so the second propagator
+  of a stress pair lies at an odd offset that cuFFT cannot read directly.
 
 A solver chooses its CrysFFT engine once, for the angles of its box: the Pmmm DCT
 and the recursive 3m CrysFFT need an orthogonal cell, the ObliqueZ CrysFFT alpha =
@@ -38,6 +40,7 @@ CASES = [
     ("Pmmm", None, [16, 12, 8], "irreducible", [[2.0, 1.8, 1.6], [2.0, 1.9, 1.6], [2.1, 1.95, 1.5]]),
     ("Pmmm", None, [32, 24, 16], "irreducible", [[3.0, 2.4, 2.0], [3.0, 2.6, 2.0], [3.0, 2.6, 2.2]]),
     ("Im-3m", 529, [16, 16, 16], "m3", [[1.9] * 3, [2.0] * 3]),
+    ("Im-3m", 529, [18, 18, 18], "m3", [[1.9] * 3, [2.0] * 3]),
 ]
 
 

@@ -416,7 +416,7 @@ int main()
 
         // Case C: same cubic group on a 40^3 grid, where nz/2 = 20 is not a
         // multiple of 8. Historically this grid fell back to the PmmmDct engine
-        // (catching the MklCrysFFTPmmm DCT-normalization bug); since the
+        // (catching a DCT-normalization bug of the MKL Pmmm engine); since the
         // Recursive3m grid condition was relaxed to nz/2 >= 8, this now
         // exercises the Recursive3m engine on a non-multiple-of-16 grid that
         // the selector previously rejected outright.

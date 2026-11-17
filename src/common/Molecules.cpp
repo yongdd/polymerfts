@@ -84,7 +84,8 @@ void Molecules::add_polymer(
     std::map<int, std::string> chain_end_to_q_init)
 {
     if (contour_length_mapping.finalized())
-        throw_with_line_number("Cannot add a polymer after a propagator computation has been created from these molecules.");
+        throw_with_line_number("Cannot add a polymer once a propagator computation optimizer has finalized "
+            "the contour-length mapping of these molecules.");
 
     // For discrete chains, validate that contour_length is an integer multiple of ds
     if (model_name == "discrete")
@@ -125,7 +126,8 @@ void Molecules::add_solvent(
 {
     // A propagator computation sizes its solvent arrays when it is created
     if (contour_length_mapping.finalized())
-        throw_with_line_number("Cannot add a solvent after a propagator computation has been created from these molecules.");
+        throw_with_line_number("Cannot add a solvent once a propagator computation optimizer has finalized "
+            "the contour-length mapping of these molecules.");
     validation::require_in_range(volume_fraction, 0.0, 1.0, "volume_fraction of the solvent");
     // As for polymer blocks: the solvers keep a Boltzmann factor for each type of bond_lengths only
     validation::require_string_key(bond_lengths, monomer_type, "bond_lengths");

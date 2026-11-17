@@ -6,6 +6,10 @@
  * transforms themselves single-threaded as in the propagator solvers) and the
  * multipliers are applied with OpenMP over wavevectors.
  *
+ * A box that mixes periodic and wall axes runs MakhoulTransform with periodic
+ * axes: one real FFT of the grid, the DFT along the periodic axes and the
+ * cosine or sine series along the walls.
+ *
  * @see FourierTransform for the interface and layouts
  */
 
@@ -18,6 +22,7 @@
 
 #include "FFT.h"
 #include "FourierTransform.h"
+#include "MakhoulTransform.h"
 
 /// Multiplier values in host memory
 template <typename T>
@@ -50,15 +55,10 @@ protected:
     void backward_impl(const double* coefficients, int n_fields, T* fields) override;
 
 private:
-    std::unique_ptr<FFT<T>> fft_;                             ///< periodic or wall boxes
-    std::unique_ptr<FFT<std::complex<double>>> mirror_fft_;   ///< mirror image of a mixed box
+    std::unique_ptr<FFT<T>> fft_;                     ///< periodic or wall boxes
+    std::unique_ptr<MakhoulTransform> mixed_fft_;     ///< boxes that mix periodic and wall axes
     std::vector<double> coefficients_in_;    ///< coefficients of the inputs of a term
     std::vector<double> coefficients_out_;   ///< accumulated output coefficients
-
-    /// Coefficients of one field of a mixed box (FourierTransform: the mirror image)
-    void mirror_forward(const T* field, std::complex<double>* coefficients) const;
-    /// Inverse of mirror_forward() (real fields take the real part)
-    void mirror_backward(const std::complex<double>* coefficients, T* field) const;
 };
 
 #endif

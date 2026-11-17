@@ -184,9 +184,13 @@ public:
     /**
      * @brief Backward FFT (complex input interface, periodic BC only) with explicit stream.
      *
-     * The input is preserved (real fields transform a copy of it).
+     * The input may be overwritten: for real fields cuFFT Z2D may use it as scratch
+     * even out of place, and it is not copied first. Pass a spectrum that is not read
+     * again. cuFFT reads and writes both arrays directly, so both must be aligned to a
+     * cufftDoubleComplex (16 bytes), like the arrays of forward_stream(); the only caller,
+     * CudaFourierTransform, keeps every field and spectrum an even number of doubles apart.
      *
-     * @param d_cdata Input complex data on device
+     * @param d_cdata Input complex data on device (scratch after the call)
      * @param d_rdata Output real data on device
      * @param stream  CUDA stream for async execution
      *

@@ -15,10 +15,9 @@
 #include "CudaCommon.h"
 #include "CudaCrysFFT.h"
 #include "CudaCrysFFTRecursive3m.h"
-#include "FftwCrysFFTPmmm.h"
+#include "CrysFFTPmmm.h"
 #include "FftwCrysFFTRecursive3m.h"
 #ifdef USE_CPU_MKL
-#include "MklCrysFFTPmmm.h"
 #include "MklCrysFFTRecursive3m.h"
 #endif
 #include "SpaceGroup.h"
@@ -175,8 +174,7 @@ __global__ void ker_apply_boltzmann(
 // Test functions
 //==============================================================================
 
-template <typename Engine>
-bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
+bool test_cpu_engine(const char* label, FFTBackend backend, int Nx, int Ny, int Nz, double ds)
 {
     double Lx = 4.0, Ly = 4.0, Lz = 4.0;
     int M_logical = Nx * Ny * Nz;
@@ -202,9 +200,10 @@ bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
     }
     expand_pmmm(q_phys.data(), q_logical.data(), Nx, Ny, Nz);
 
-    Engine crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
-    crys.set_contour_step(ds);
-    crys.diffusion(q_phys.data(), q_phys_out.data());
+    CrysFFTPmmm crys({Nx, Ny, Nz}, backend);
+    std::vector<double> boltz;
+    crys.build_boltzmann(boltz, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, ds);
+    crys.diffusion(q_phys.data(), q_phys_out.data(), boltz);
 
     diffusion_standard_fft(q_logical.data(), q_logical_out.data(), Nx, Ny, Nz, Lx, Ly, Lz, ds);
 
@@ -229,14 +228,14 @@ bool test_cpu_engine(const char* label, int Nx, int Ny, int Nz, double ds)
 
 bool test_cpu(int Nx, int Ny, int Nz, double ds)
 {
-    return test_cpu_engine<FftwCrysFFTPmmm>("CPU-FFTW:", Nx, Ny, Nz, ds);
+    return test_cpu_engine("CPU-FFTW:", FFTBackend::FFTW, Nx, Ny, Nz, ds);
 }
 
 #ifdef USE_CPU_MKL
 // The MKL Pmmm engine against the same full-grid reference
 bool test_cpu_mkl(int Nx, int Ny, int Nz, double ds)
 {
-    return test_cpu_engine<MklCrysFFTPmmm>("CPU-MKL:", Nx, Ny, Nz, ds);
+    return test_cpu_engine("CPU-MKL:", FFTBackend::MKL, Nx, Ny, Nz, ds);
 }
 #endif
 
@@ -267,15 +266,16 @@ bool test_cuda(int Nx, int Ny, int Nz, double ds)
     expand_pmmm(h_phys.data(), h_logical.data(), Nx, Ny, Nz);
 
     // CudaCrysFFT
-    CudaCrysFFT crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
-    crys.set_contour_step(ds);
+    CudaCrysFFT crys({Nx, Ny, Nz});
+    CudaDeviceBuffer<double> boltz;
+    crys.build_boltzmann(boltz, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, ds, 0);
 
     double *d_in, *d_out;
     CUDA_CHECK(cudaMalloc(&d_in, sizeof(double)*M_physical));
     CUDA_CHECK(cudaMalloc(&d_out, sizeof(double)*M_physical));
     CUDA_CHECK(cudaMemcpy(d_in, h_phys.data(), sizeof(double)*M_physical, cudaMemcpyHostToDevice));
 
-    crys.diffusion(d_in, d_out);
+    crys.diffusion(d_in, d_out, boltz, 0);
     cudaDeviceSynchronize();
 
     std::vector<double> h_crys_out(M_physical);
@@ -402,9 +402,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     std::vector<double> got(M_physical);
 
     {
-        FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
-        crys.diffusion(q_phys.data(), got.data());
+        FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        std::vector<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds);
+        crys.diffusion(q_phys.data(), got.data(), boltz);
         double rel = max_rel(got);
         bool pass = rel < 1e-10;
         printf("  CPU (FFTW 3m):  %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -412,9 +413,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     }
 #ifdef USE_CPU_MKL
     {
-        MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
-        crys.diffusion(q_phys.data(), got.data());
+        MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        std::vector<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds);
+        crys.diffusion(q_phys.data(), got.data(), boltz);
         double rel = max_rel(got);
         bool pass = rel < 1e-10;
         printf("  CPU (MKL 3m):   %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -422,13 +424,14 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     }
 #endif
     {
-        CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
+        CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        CudaDeviceBuffer<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds, 0);
         double *d_in, *d_out;
         CUDA_CHECK(cudaMalloc(&d_in, sizeof(double) * M_physical));
         CUDA_CHECK(cudaMalloc(&d_out, sizeof(double) * M_physical));
         CUDA_CHECK(cudaMemcpy(d_in, q_phys.data(), sizeof(double) * M_physical, cudaMemcpyHostToDevice));
-        crys.diffusion(d_in, d_out);
+        crys.diffusion(d_in, d_out, boltz, 0);
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaMemcpy(got.data(), d_out, sizeof(double) * M_physical, cudaMemcpyDeviceToHost));
         cudaFree(d_in);
@@ -463,9 +466,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         };
 
         {
-            FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-            crys.apply_multiplier(q_phys.data(), got.data(),
-                                  FftwCrysFFTRecursive3m::MultiplierType::ExpKx2, ds);
+            FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            std::vector<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds);
+            crys.apply_multiplier(q_phys.data(), got.data(), exp_kx2);
             double rel = max_rel_m(got);
             bool pass = rel < 1e-10;
             printf("  CPU (FFTW 3m, ExpKx2): %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -473,9 +477,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         }
 #ifdef USE_CPU_MKL
         {
-            MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-            crys.apply_multiplier(q_phys.data(), got.data(),
-                                  MklCrysFFTRecursive3m::MultiplierType::ExpKx2, ds);
+            MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            std::vector<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds);
+            crys.apply_multiplier(q_phys.data(), got.data(), exp_kx2);
             double rel = max_rel_m(got);
             bool pass = rel < 1e-10;
             printf("  CPU (MKL 3m, ExpKx2):  %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -483,13 +488,14 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         }
 #endif
         {
-            CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
+            CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            CudaDeviceBuffer<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds, 0);
             double *d_in, *d_out;
             CUDA_CHECK(cudaMalloc(&d_in, sizeof(double) * M_physical));
             CUDA_CHECK(cudaMalloc(&d_out, sizeof(double) * M_physical));
             CUDA_CHECK(cudaMemcpy(d_in, q_phys.data(), sizeof(double) * M_physical, cudaMemcpyHostToDevice));
-            crys.apply_multiplier(d_in, d_out,
-                                  CudaCrysFFTRecursive3m::MultiplierType::ExpKx2, ds, 0);
+            crys.apply_multiplier(d_in, d_out, exp_kx2, 0);
             cudaDeviceSynchronize();
             CUDA_CHECK(cudaMemcpy(got.data(), d_out, sizeof(double) * M_physical, cudaMemcpyDeviceToHost));
             cudaFree(d_in);

@@ -17,7 +17,7 @@ from types import MappingProxyType
 from pathlib import Path
 import numpy as np
 
-from .validation import ValidationError
+from .validation import NumericalError
 from .mat_fields import _encode_mat_fields
 
 
@@ -38,20 +38,24 @@ def numpy_scalar(value):
     return result
 
 
-def json_ready(value):
-    """Convert parameter dictionaries to portable JSON values."""
+def json_ready(value, strict=True):
+    """Convert parameter dictionaries to portable JSON values.
+
+    Strict JSON has no NaN or infinity: a non-finite float becomes {"nonfinite_float": "-inf"}.
+    With strict=False it stays a float, for YAML, which has .nan and .inf.
+    """
     if isinstance(value, np.ndarray):
-        return json_ready(value.tolist())
+        return json_ready(value.tolist(), strict)
     if isinstance(value, np.generic):
-        return json_ready(numpy_scalar(value))
-    if isinstance(value, float) and not np.isfinite(value):
+        return json_ready(numpy_scalar(value), strict)
+    if strict and isinstance(value, float) and not np.isfinite(value):
         return {"nonfinite_float": str(value)}
     if isinstance(value, dict):
-        return {str(k): json_ready(v) for k, v in value.items()}
+        return {str(k): json_ready(v, strict) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [json_ready(v) for v in value]
+        return [json_ready(v, strict) for v in value]
     if isinstance(value, complex):
-        return {"real": json_ready(value.real), "imag": json_ready(value.imag)}
+        return {"real": json_ready(value.real, strict), "imag": json_ready(value.imag, strict)}
     if isinstance(value, os.PathLike):
         return os.fspath(value)
     return value
@@ -146,16 +150,15 @@ def atomic_savemat(path, data, **kwargs):
             os.unlink(temporary)
 
 
-def write_run_status(sim):
-    """Persist completion/failure separately from periodic field checkpoints."""
-    path = Path(sim.recording["dir"])
-    path.mkdir(parents=True, exist_ok=True)
-    stream, temporary = _new_file_next_to(path / "run_status.json", "w")
+def atomic_write_json(path, value):
+    """Atomically write value as strict, indented JSON (json_ready) with a final newline."""
+    path = Path(path)
+    stream, temporary = _new_file_next_to(path, "w")
     try:
         with stream:
-            json.dump(json_ready({**sim.run_status, "metadata": sim.metadata}), stream, indent=2, allow_nan=False)
+            json.dump(json_ready(value), stream, indent=2, allow_nan=False)
             stream.write("\n")
-        os.replace(temporary, path / "run_status.json")
+        os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -170,8 +173,8 @@ def report_partition_consistency(prop_solver):
     return all(np.isfinite(error) and error <= _core.PARTITION_TOLERANCE for error in errors)
 
 
-def check_partition_functions(prop_solver, state):
-    """Reject an accepted state with a non-positive or non-finite occupied partition.
+def check_partition_functions(prop_solver, state, fields=None):
+    """Reject an accepted state with a non-positive or non-finite occupied partition (NumericalError).
 
     With real fields Q is a sum of positive Boltzmann weights. Intermediate iterates can
     still give Q <= 0 (the Richardson extrapolation of rqm4 or Crank-Nicolson steps on a
@@ -179,6 +182,8 @@ def check_partition_functions(prop_solver, state):
     fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
     finite. An absent canonical polymer contributes no log Q term, including when
     a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
+    `fields` are the monomer fields of the state, or a function that returns them (called only
+    when the check fails, as in check_partition_once), kept as NumericalError.fields.
     """
     if prop_solver.field_type != "real":
         return
@@ -187,12 +192,12 @@ def check_partition_functions(prop_solver, state):
             continue
         Q = prop_solver.get_partition_function(p)
         if not (np.isfinite(Q) and Q > 0):
-            raise ValidationError(
+            raise NumericalError(
                 f"The partition function of polymer {p} is {Q:.6e} at {state}, but with real fields it must "
                 "be positive and finite. Either the discretization is too coarse for the fields (refine the "
                 "grid or the contour step), or the propagators fell below the round-off level of the spectral "
                 "transforms, which is relative to their largest value on the grid (for example strong fields "
-                "next to absorbing walls or a grafted source).")
+                "next to absorbing walls or a grafted source).", fields() if callable(fields) else fields)
 
 
 def simulation_metadata(sim, random_seed=None):

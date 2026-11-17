@@ -215,8 +215,7 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
 
                 this->fill_crysfft_from_reduced(q_in, phys_in.data());
                 double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_set_contour_step(coeff_full);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data());
+                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_full);
 
                 for (int i = 0; i < M_phys; ++i)
                 {
@@ -346,8 +345,7 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
 
                 this->fill_crysfft_from_reduced(q_in, phys_in.data());
                 double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
-                this->crysfft_set_contour_step(coeff_half);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data());
+                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_half);
 
                 q_full_out_local.resize(M_reduced);
                 this->reduce_crysfft_to_reduced(phys_out.data(), q_full_out_local.data());

@@ -124,6 +124,8 @@ def check_fts_constructors(platform, directory):
     for cls in (LFTS, CLFTS):
         for fractions in ({"A": 0.3, "B": 0.7}, {"A": 0.5, "B": 0.5 + 5e-11}):
             params = parameters(platform, fractions, directory / cls.__name__)
+            if cls is CLFTS:
+                del params["compressor"], params["saddle"]   # options of L-FTS, which CL-FTS refuses
             before = copy.deepcopy(params)
             sim = quiet(lambda: cls(params, random_seed=17))
             assert sim.random_fraction["R"] == fractions

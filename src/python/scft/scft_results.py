@@ -1,4 +1,5 @@
-"""What SCFT returns and writes: its result classes, the result files and the final report."""
+"""What SCFT returns and writes: its result classes, the chemical potentials and the grand potential of the
+final state of a run, the result files and the final report."""
 
 import json
 import os
@@ -8,7 +9,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import yaml
 
-from ..utils.common import atomic_savemat, json_ready, mat_ready, numpy_scalar, simulation_metadata
+from ..utils.common import atomic_savemat, atomic_write_json, json_ready, mat_ready, simulation_metadata
 
 
 @dataclass
@@ -188,6 +189,8 @@ def save_results(sim, path):
     m_dic = {"initial_params": sim.params,
         "dim":sim.prop_solver.dim, "nx":sim.prop_solver.nx, "lx":sim.prop_solver.get_lx(),
         "angles":list(sim.prop_solver.get_angles_degrees()),
+        # True when a and b are sampled at the nodes, not the cell centres (PropagatorSolver.get_grid_points)
+        "uses_hexagonal_axes": sim.sg is not None and sim.sg.uses_hexagonal_axes(),
         "monomer_types":sim.monomer_types, "chi_n":chi_n_mat, "chain_model":sim.chain_model, "ds":sim.ds,
         "eigenvalues": sim.mpt.eigenvalues, "matrix_a": sim.mpt.matrix_a, "matrix_a_inverse": sim.mpt.matrix_a_inv}
     metadata = simulation_metadata(sim)
@@ -223,61 +226,82 @@ def save_results(sim, path):
         if sim.ion_chemical_potentials is not None:
             m_dic["ion_chemical_potentials"] = sim.ion_chemical_potentials
 
-    # Convert nested parameters too, without modifying sim.params.
-    def plain(value):
-        if isinstance(value, np.ndarray):
-            return plain(value.tolist())
-        if isinstance(value, np.generic):
-            return plain(numpy_scalar(value))
-        if isinstance(value, dict):
-            return {plain(key): plain(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [plain(item) for item in value]
-        if isinstance(value, os.PathLike):
-            return os.fspath(value)
-        return value
-
-    m_dic = plain(m_dic)
-
     # Get input file extension
     _, file_extension = os.path.splitext(path)
 
-    # Save data in matlab format (MAT files have no None: options given as None are left out).
-    # Every format is converted before the file is opened, so that a failure keeps an existing file
+    # A failure keeps an existing file: MAT and JSON are written to a new file that then replaces it,
+    # and YAML is converted before the file is opened. The converters (mat_ready, json_ready) copy the
+    # nested parameters, so sim.params stays as it is.
+
+    # Save data in matlab format (MAT files have no None: options given as None are left out)
     if file_extension == ".mat":
         atomic_savemat(path, mat_ready(m_dic), long_field_names=True, do_compression=True)
 
     # Save data in json format (strict JSON: a non-finite number, such as the chemical
     # potential -inf of a species with volume fraction 0, becomes {"nonfinite_float": "-inf"})
     elif file_extension == ".json":
-        text = json.dumps(json_ready(m_dic), indent=2, allow_nan=False)
-        with open(path, "w") as f:
-            f.write(text)
+        atomic_write_json(path, m_dic)
 
-    # Save data in yaml format
+    # Save data in yaml format (YAML has .inf: a non-finite number stays a number)
     elif file_extension == ".yaml":
-        text = yaml.safe_dump(m_dic, default_flow_style=None, width=90, sort_keys=False)
+        text = yaml.safe_dump(json_ready(m_dic, strict=False), default_flow_style=None, width=90, sort_keys=False)
         with open(path, "w") as f:
             f.write(text)
     else:
         raise ValueError("Invalid output file extension. Use .mat, .json, or .yaml.")
 
 
-def scft_result(sim, phi, w, energy_total, error_level, iter, total_partitions, stress_array):
+def ion_chemical_potentials(sim, phi):
+    """With electrostatics, prints the Poisson residual of the final ψ of SCFT.run (concentrations phi) and
+    returns βμ_s of the point ions, which it prints with the ions per reference chain; None without
+    point ions."""
+    es = sim.electrostatics
+    if es is None:
+        return None
+    print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
+          % es.poisson_error(sim.smearing.apply_to_dict(phi), sim.psi))
+    if not es.ions:
+        return None
+    mu = es.ion_chemical_potentials(sim.psi)
+    print("Point ions: chemical potentials βμ", mu, "ions per reference chain", es.ion_number_densities(sim.psi))
+    return mu
+
+
+def chemical_potentials(sim, q_init):
+    """βμ_p of the chains and the grand potential of the final state of SCFT.run, which it prints; (None,
+    None) for grafted chains (initial propagators), which have no chemical potential."""
+    if q_init is not None or any(p.get("initial_conditions") for p in sim.polymers):
+        return None, None
+    mu = sim.compute_chemical_potentials()
+    present = sim.chain_densities > 0.0
+    grand_potential = float(sim.free_energy_absolute - np.dot(sim.chain_densities[present], np.array(mu)[present]))
+    # Canonical point ions add -N c_s βμ_s; the term of grand-canonical ions is grand already
+    es = sim.electrostatics
+    if es is not None:
+        for ion, ion_mu in zip(es.ions, sim.ion_chemical_potentials or []):
+            if ion["concentration"] is not None and ion["concentration"] > 0:
+                grand_potential -= es.n_segments * ion["concentration"] * ion_mu
+    print("Chemical potentials βμ (mean ξ = 0 for incompressible systems):", mu)
+    print("Grand potential in the same pressure convention: %.9f" % grand_potential)
+    return mu, grand_potential
+
+
+def scft_result(sim):
+    """The SCFTResult of the last SCFT.run, on the full grid."""
     es = sim.electrostatics
     return SCFTResult(
-        converged=error_level < sim.tolerance,
-        free_energy=energy_total,
-        error_level=error_level,
-        iterations=iter,
-        phi={name: sim._to_full_grid(phi[name]) for name in sim.monomer_types},
-        w={name: sim._to_full_grid(w[i]) for i, name in enumerate(sim.monomer_types)},
-        partition_functions=total_partitions,
+        converged=sim.error_level < sim.tolerance,
+        free_energy=sim.free_energy,
+        error_level=sim.error_level,
+        iterations=sim.iter,
+        phi={name: sim._to_full_grid(sim.phi[name]) for name in sim.monomer_types},
+        w={name: sim._to_full_grid(sim.w[i]) for i, name in enumerate(sim.monomer_types)},
+        partition_functions=list(sim.partition_functions),
         lx=list(sim.prop_solver.get_lx()),
         nx=list(sim.prop_solver.nx),
         monomer_types=sim.monomer_types,
         params=sim.params,
-        stress=stress_array if sim.relax_cell else None,
+        stress=sim.cell.stress_array if sim.relax_cell else None,
         angles=list(sim.prop_solver.get_angles_degrees()) if sim.prop_solver.dim > 1 else None,
         free_energy_homogeneous=sim.free_energy_homogeneous,
         free_energy_absolute=sim.free_energy_absolute,

@@ -10,9 +10,7 @@ its keys through its files and an exact continuation, and CL-FTS (fields w_<type
 continues with a type 'aux'.
 """
 
-import contextlib
 import copy
-import io
 import itertools
 import os
 import tempfile
@@ -26,14 +24,14 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, SCFT, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
-from fts_checks import exact_restart, python_platform
+from fts_checks import exact_restart, python_platform, silenced
 
 
 def read_mat(path):
     return {key: value for key, value in loadmat(path, squeeze_me=True).items() if not key.startswith("__")}
 
 
-def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4)):
+def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4), cls=LFTS):
     result = {
         "nx": list(nx), "lx": [3.0] * len(nx), "ds": 0.05,
         "chain_model": "continuous", "platform": platform,
@@ -51,6 +49,8 @@ def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4)):
     }
     if wtmd:
         result["wtmd"] = {"update_freq": 3, "recording_period": 3, "dpsi": 0.1}
+    if cls is CLFTS:
+        del result["compressor"], result["saddle"]   # options of L-FTS, which CL-FTS refuses
     return result
 
 
@@ -62,7 +62,7 @@ def fields(names, size=64):
 def refused(root, platform):
     for cls in (LFTS, CLFTS):
         try:
-            cls(parameters(root / "refused", platform, ("A", "A_B", "B_C", "C")))
+            cls(parameters(root / "refused", platform, ("A", "A_B", "B_C", "C"), cls=cls))
         except ValidationError as error:
             assert "A,B_C" in str(error) and "A_B,C" in str(error), str(error)
         else:
@@ -88,7 +88,7 @@ def check_statistics(root, platform, cls):
     output = root / (cls.__name__ + "_statistics")
     output.mkdir()
     names = ("A", "B_C", "D_E", "F")
-    sim = cls(parameters(output, platform, names), random_seed=11)
+    sim = cls(parameters(output, platform, names, cls=cls), random_seed=11)
     pairs = list(itertools.combinations(sim.monomer_types, 2))
     spectrum_pairs = list(itertools.combinations_with_replacement(sim.monomer_types, 2))
     assert len(pairs) == 6 and len(spectrum_pairs) == 10
@@ -160,7 +160,7 @@ def check_wtmd(root, platform):
 def check_clfts_aux(root, platform):
     names = ("aux", "B")
     exact_restart(
-        lambda name, steps, seed: CLFTS(parameters(root / ("aux_" + name), platform, names, steps, nx=[8]),
+        lambda name, steps, seed: CLFTS(parameters(root / ("aux_" + name), platform, names, steps, nx=[8], cls=CLFTS),
                                         random_seed=seed),
         lambda sim: sim.run(fields(names, 8)), 4, 2,
         {"fields_000004.mat": ("w_aux", "w_B_", "phi_aux_", "normal_noise_prev")})
@@ -175,7 +175,7 @@ def main():
         previous = Path.cwd()
         os.chdir(root)
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with silenced():
                 refused(root, platform)
                 for cls in (LFTS, CLFTS):
                     check_statistics(root, platform, cls)
