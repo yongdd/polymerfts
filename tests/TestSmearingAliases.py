@@ -70,11 +70,12 @@ def aliases_and_transforms():
 
 
 def solver_wavenumbers():
-    """The smearing of a simulation (smearing_of) and minimal_alias_search have the |k|^2 and the tied-alias
-    moments of the propagator solver bit for bit."""
+    """The smearing of a simulation (smearing_of), minimal_alias_k_squared and minimal_alias_moments have the
+    |k|^2 and the tied-alias moments of the propagator solver bit for bit."""
     for nx, lx, angles in (([12, 10], [1.5, 1.4], [105.0]), ([4, 32], [2.0, 2.0], [120.0]),
                            ([6, 8, 5], [1.6, 1.3, 2.0], [105.0, 80.0, 110.0])):
-        k_squared, moments = _core.minimal_alias_search(nx, lx, angles)
+        k_squared = _core.minimal_alias_k_squared(nx, lx, angles)
+        moments = _core.minimal_alias_moments(nx, lx, angles)
         for platform in PlatformSelector.avail_platforms():
             for field_type in ("real", "complex"):
                 solver = quiet(PropagatorSolver, nx=nx, lx=lx, angles=angles, ds=0.1,

@@ -134,7 +134,7 @@ class WTMD:
         else:
             # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form, from the
             # search of the propagator solvers: of the simulation's transform, or on the cell (lx, angles)
-            k_squared = fourier.k_squared() if fourier is not None else _core.minimal_alias_search(nx, lx, angles)[0]
+            k_squared = fourier.k_squared() if fourier is not None else _core.minimal_alias_k_squared(nx, lx, angles)
             mag_k = np.sqrt(k_squared[:, :, :nx[2] // 2 + 1])
         self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
         self._fk_root = np.power(self.fk, 1.0 / self.l)

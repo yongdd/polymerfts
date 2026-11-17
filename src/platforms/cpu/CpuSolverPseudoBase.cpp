@@ -328,9 +328,8 @@ void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, do
         return;
     }
 
-    const int M_reduced = space_group_->get_n_reduced_basis();
-    std::fill(reduced_out, reduced_out + M_reduced, 0.0);
-
+    // The CrysFFT path is taken only when the physical grid reaches every reduced-basis
+    // point (crysfft_mapping_usable), so the scatter writes all of reduced_out
     for (int i = 0; i < M_phys; ++i)
     {
         reduced_out[crysfft_reduced_indices_[i]] = phys_in[i];

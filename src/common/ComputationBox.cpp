@@ -39,14 +39,13 @@
 
 #include "ComputationBox.h"
 #include "GridLimits.h"
+#include "ReciprocalMetric.h"
 #include "SpaceGroup.h"
 #include "ValidationUtils.h"
 
 namespace {
     /// Tolerance for comparing mask values to 0.0 or 1.0
     constexpr double MASK_TOLERANCE = 1e-7;
-    /// Minimum sin(gamma) value to avoid division by zero in lattice calculations
-    constexpr double SIN_GAMMA_MIN = 1e-10;
 
     /// An angle in degrees lies within FIXED_ANGLE_TOLERANCE radians of 90 degrees
     bool is_right_angle(double degrees)
@@ -165,7 +164,7 @@ namespace {
 }
 
 /**
- * @brief Construct computation box with given grid and boundaries.
+ * @brief Construct computation box with given grid and boundaries (an orthogonal cell).
  *
  * @param new_nx Grid points per dimension [nx, ny, nz]
  * @param new_lx Box lengths per dimension [Lx, Ly, Lz]
@@ -177,114 +176,8 @@ namespace {
 template <typename T>
 ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> new_lx,
     std::vector<std::string> bc, const double* mask)
+    : ComputationBox(std::move(new_nx), std::move(new_lx), std::move(bc), std::vector<double>{}, mask)
 {
-    validation::require_same_size(new_nx.size(), new_lx.size(), "nx", "lx");
-    if ( new_nx.size() != 3 && new_nx.size() != 2 && new_nx.size() != 1)
-    {
-        throw_with_line_number("We expect 1D, 2D or 3D, but we get " + std::to_string(new_nx.size()))
-    }
-    validation::require_all_positive(new_nx, "nx");
-    validation::require_all_positive(new_lx, "lx");
-
-    try
-    {
-        this->dim = new_nx.size();
-        nx = new_nx;
-        lx = new_lx;
-
-        const int DIM = this->dim;
-
-        // Grid interval
-        for(int d=0; d<DIM; d++)
-            dx.push_back(lx[d]/nx[d]);
-
-        // Check before multiplication: three valid int dimensions can overflow even 64 bits.
-        total_grid = checked_grid_points(nx);
-
-        // Mask
-        // Penetrable region == 1.0
-        // Impenetrable region == 0.0
-        if (mask != nullptr)
-        {
-            mask_full_.assign(mask, mask + total_grid);
-            validation::validate_mask(mask_full_.data(), total_grid, MASK_TOLERANCE);
-        }
-        // else: mask remains empty (no mask)
-
-        // Set boundary conditions
-        if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
-        {
-            throw_with_line_number(
-                "We expect 0 or " + std::to_string(2*DIM) + " boundary conditions, but we get " + std::to_string(bc.size()) +
-                ". For each dimension, two boundary conditions (top and bottom) are required.");
-        }
-
-        if(bc.size() == 0)
-        {
-            // Default is periodic boundary
-            for(int i=0; i<2*DIM; i++)
-                this->bc.push_back(BoundaryCondition::PERIODIC);
-        }
-        else
-        {
-            for(int i=0; i<2*DIM; i+=2)
-            {
-                std::string bc_name_l = validation::to_lower(bc[i]);
-                std::string bc_name_h = validation::to_lower(bc[i+1]);
-
-                if((bc_name_l == "periodic" && bc_name_h != "periodic") ||
-                   (bc_name_l != "periodic" && bc_name_h == "periodic"))
-                {
-                   throw_with_line_number(bc_name_l + " and "  + bc_name_h + " are an invalid boundary condition combination. " +
-                    + "If one side imposes a periodic boundary condition, the other side must also be a periodic boundary condition.")
-                }
-            }
-
-            for(int i=0; i<2*DIM; i++)
-            {
-                std::string bc_name = validation::to_lower(bc[i]);
-
-                if(bc_name == "periodic")
-                    this->bc.push_back(BoundaryCondition::PERIODIC);
-                else if(bc_name == "reflecting")
-                    this->bc.push_back(BoundaryCondition::REFLECTING);
-                else if(bc_name == "absorbing")
-                    this->bc.push_back(BoundaryCondition::ABSORBING);
-                else
-                {
-                    throw_with_line_number(bc_name + " is an invalid boundary condition. Choose among ['periodic', 'reflecting', 'absorbing']")
-                }
-            }
-        }
-
-        // Initialize default orthogonal angles (90 degrees = π/2 radians)
-        angles_.resize(3);
-        for(int d=0; d<3; d++)
-            angles_[d] = std::numbers::pi / 2.0;
-        is_orthogonal_ = true;
-        is_z_axis_orthogonal_ = true;
-
-        // Initialize lattice vectors and metric tensor
-        lattice_vec_.fill(0.0);
-        recip_vec_.fill(0.0);
-        recip_metric_.fill(0.0);
-
-        // Compute lattice vectors (and the cell volume), reciprocal lattice, and metric tensor
-        compute_lattice_vectors();
-        compute_reciprocal_lattice();
-        compute_recip_metric();
-
-        // Weight factor for integral
-        update_volume_elements();
-
-        // Initialize space group (disabled by default)
-        space_group_ = nullptr;
-        n_basis_ = total_grid;
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
 }
 //----------------- Constructor with angles -----------------------------
 /**
@@ -293,7 +186,7 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
  * @param new_nx    Grid points per dimension [nx, ny, nz]
  * @param new_lx    Box lengths (lattice constants) per dimension [a, b, c]
  * @param bc        Boundary conditions (2 per dimension: low, high)
- * @param angles    Lattice angles [alpha, beta, gamma] in DEGREES
+ * @param angles    Lattice angles [alpha, beta, gamma] in DEGREES (empty: all 90 degrees)
  * @param mask      Optional mask for impenetrable regions (nullptr = no mask)
  *
  * @throws Exception if dimensions mismatch, invalid parameters, or invalid angles
@@ -338,14 +231,12 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         is_orthogonal_ = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
         is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
 
-        // Grid interval
-        for(int d=0; d<DIM; d++)
-            dx.push_back(lx[d]/nx[d]);
-
         // Check before multiplication: three valid int dimensions can overflow even 64 bits.
         total_grid = checked_grid_points(nx);
 
         // Mask
+        // Penetrable region == 1.0
+        // Impenetrable region == 0.0
         if (mask != nullptr)
         {
             mask_full_.assign(mask, mask + total_grid);
@@ -353,18 +244,8 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         }
         // else: mask remains empty (no mask)
 
-        // Initialize lattice vectors and metric tensor
-        lattice_vec_.fill(0.0);
-        recip_vec_.fill(0.0);
-        recip_metric_.fill(0.0);
-
-        // Compute lattice vectors, reciprocal lattice, and metric tensor
-        compute_lattice_vectors();
-        compute_reciprocal_lattice();
-        compute_recip_metric();
-
-        // Weight factor for integral
-        update_volume_elements();
+        // Grid interval, lattice vectors, reciprocal lattice, metric tensor and volume elements
+        update_cell();
 
         // Set boundary conditions
         if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
@@ -376,6 +257,7 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
 
         if(bc.size() == 0)
         {
+            // Default is periodic boundary
             for(int i=0; i<2*DIM; i++)
                 this->bc.push_back(BoundaryCondition::PERIODIC);
         }
@@ -429,28 +311,46 @@ ComputationBox<T>::~ComputationBox()
     // Vectors handle memory cleanup automatically
 }
 
-//----------------- Lattice computation methods -----------------------------
+//----------------- Cell -----------------------------
 /**
- * @brief Volume elements of the current cell, with the mask, and the accessible volume.
+ * @brief Grid spacing, cell geometry, volume elements and accessible volume of the
+ *        current lx and angles.
  *
- * dv = Π dx[d] in an orthogonal cell, the cell volume over the grid points V/M in
- * an oblique one (the two agree to round-off for right angles). The mask is the full
- * grid one: `mask` is in the reduced basis while a space group is set.
+ * The constructor, set_lx and set_lattice_parameters all take this one update, so a
+ * box moved to a cell equals one created there bit for bit. 1D and 2D cells use the
+ * 3D formalism with unit lengths on the absent axes. The volume element is
+ * dv_base_ = Π dx[d] in an orthogonal cell and the cell volume over the grid points
+ * V/M in an oblique one (the two agree to round-off for right angles); dv carries
+ * the full-grid mask (`mask` is in the reduced basis while a space group is set).
  */
 template <typename T>
-void ComputationBox<T>::update_volume_elements()
+void ComputationBox<T>::update_cell()
 {
-    double dv_base = 1.0;
+    // Grid interval
+    dx.resize(dim);
+    for (int d = 0; d < dim; d++)
+        dx[d] = lx[d] / nx[d];
+
+    // Lattice vectors, cell volume, reciprocal lattice and metric tensor
+    const CellGeometry geometry = cell_geometry({lx[0], (dim >= 2) ? lx[1] : 1.0, (dim >= 3) ? lx[2] : 1.0,
+                                                 angles_[0], angles_[1], angles_[2]});
+    volume = geometry.volume;
+    lattice_vec_ = geometry.lattice_vec;
+    recip_vec_ = geometry.recip_vec;
+    recip_metric_ = geometry.recip_metric;
+
+    // Volume element of a grid point, the weight of every integral, then with the mask
     if (is_orthogonal_)
     {
+        dv_base_ = 1.0;
         for (int d = 0; d < dim; d++)
-            dv_base *= dx[d];
+            dv_base_ *= dx[d];
     }
     else
     {
-        dv_base = volume / total_grid;
+        dv_base_ = volume / total_grid;
     }
-    dv.assign(total_grid, dv_base);
+    dv.assign(total_grid, dv_base_);
     if (!mask_full_.empty())
         for (int i = 0; i < total_grid; i++)
             dv[i] *= mask_full_[i];
@@ -458,155 +358,6 @@ void ComputationBox<T>::update_volume_elements()
     accessible_volume = 0.0;
     for (int i = 0; i < total_grid; i++)
         accessible_volume += dv[i];
-}
-
-/**
- * @brief Compute lattice vectors from box lengths and angles.
- *
- * Standard crystallographic parameterization:
- * - a along x-axis: a = (a, 0, 0)
- * - b in xy-plane:  b = (b*cos(γ), b*sin(γ), 0)
- * - c general:      c = (c_x, c_y, c_z)
- *
- * where c_x = c*cos(β), c_y = c*(cos(α) - cos(β)*cos(γ))/sin(γ),
- * and c_z = V / (a * b * sin(γ))
- *
- * Also computes the cell volume: V = a·(b×c)
- */
-template <typename T>
-void ComputationBox<T>::compute_lattice_vectors()
-{
-    // For 1D and 2D, we still use the 3D formalism but with unit values
-    double a = (dim >= 1) ? lx[0] : 1.0;
-    double b = (dim >= 2) ? lx[1] : 1.0;
-    double c = (dim >= 3) ? lx[2] : 1.0;
-
-    double alpha = angles_[0];  // angle between b and c
-    double beta = angles_[1];   // angle between a and c
-    double gamma = angles_[2];  // angle between a and b
-
-    double cos_a = std::cos(alpha);
-    double cos_b = std::cos(beta);
-    double cos_g = std::cos(gamma);
-    double sin_g = std::sin(gamma);
-
-    // Compute volume factor: V = abc * sqrt(1 - cos²α - cos²β - cos²γ + 2*cosα*cosβ*cosγ)
-    double vol_factor_sq = 1.0 - cos_a*cos_a - cos_b*cos_b - cos_g*cos_g + 2.0*cos_a*cos_b*cos_g;
-    double vol_factor = std::sqrt(vol_factor_sq);
-
-    // Cell volume
-    volume = a * b * c * vol_factor;
-
-    // Lattice vector a (along x-axis)
-    lattice_vec_[0] = a;
-    lattice_vec_[1] = 0.0;
-    lattice_vec_[2] = 0.0;
-
-    // Lattice vector b (in xy-plane)
-    lattice_vec_[3] = b * cos_g;
-    lattice_vec_[4] = b * sin_g;
-    lattice_vec_[5] = 0.0;
-
-    // Lattice vector c
-    double c_x = c * cos_b;
-    double c_y = (sin_g > SIN_GAMMA_MIN) ? c * (cos_a - cos_b * cos_g) / sin_g : 0.0;
-    double c_z = volume / (a * b * sin_g);
-
-    lattice_vec_[6] = c_x;
-    lattice_vec_[7] = c_y;
-    lattice_vec_[8] = c_z;
-}
-
-/**
- * @brief Compute reciprocal lattice vectors from direct lattice.
- *
- * Reciprocal vectors are defined as:
- * - a* = (b × c) / V
- * - b* = (c × a) / V
- * - c* = (a × b) / V
- *
- * where V = a·(b×c) is the cell volume.
- *
- * The reciprocal vectors satisfy: a*·a = b*·b = c*·c = 1
- * and a*·b = a*·c = b*·a = b*·c = c*·a = c*·b = 0
- *
- * Note: These are the "crystallographer's" reciprocal vectors (without 2π factor).
- */
-template <typename T>
-void ComputationBox<T>::compute_reciprocal_lattice()
-{
-    // Direct lattice vectors
-    double ax = lattice_vec_[0], ay = lattice_vec_[1], az = lattice_vec_[2];
-    double bx = lattice_vec_[3], by = lattice_vec_[4], bz = lattice_vec_[5];
-    double cx = lattice_vec_[6], cy = lattice_vec_[7], cz = lattice_vec_[8];
-
-    // b × c
-    double bc_x = by * cz - bz * cy;
-    double bc_y = bz * cx - bx * cz;
-    double bc_z = bx * cy - by * cx;
-
-    // c × a
-    double ca_x = cy * az - cz * ay;
-    double ca_y = cz * ax - cx * az;
-    double ca_z = cx * ay - cy * ax;
-
-    // a × b
-    double ab_x = ay * bz - az * by;
-    double ab_y = az * bx - ax * bz;
-    double ab_z = ax * by - ay * bx;
-
-    // a* = (b × c) / V
-    recip_vec_[0] = bc_x / volume;
-    recip_vec_[1] = bc_y / volume;
-    recip_vec_[2] = bc_z / volume;
-
-    // b* = (c × a) / V
-    recip_vec_[3] = ca_x / volume;
-    recip_vec_[4] = ca_y / volume;
-    recip_vec_[5] = ca_z / volume;
-
-    // c* = (a × b) / V
-    recip_vec_[6] = ab_x / volume;
-    recip_vec_[7] = ab_y / volume;
-    recip_vec_[8] = ab_z / volume;
-}
-
-/**
- * @brief Compute reciprocal metric tensor from reciprocal vectors.
- *
- * The reciprocal metric tensor G*_ij = e*_i · e*_j where e* are reciprocal basis vectors.
- *
- * For wavenumber magnitude: |k|² = G*_ij k_i k_j
- *                                = G*_00 kx² + G*_11 ky² + G*_22 kz²
- *                                  + 2*G*_01 kx*ky + 2*G*_02 kx*kz + 2*G*_12 ky*kz
- *
- * Storage layout: [G*_00, G*_01, G*_02, G*_11, G*_12, G*_22]
- */
-template <typename T>
-void ComputationBox<T>::compute_recip_metric()
-{
-    // Reciprocal lattice vectors
-    double a_star_x = recip_vec_[0], a_star_y = recip_vec_[1], a_star_z = recip_vec_[2];
-    double b_star_x = recip_vec_[3], b_star_y = recip_vec_[4], b_star_z = recip_vec_[5];
-    double c_star_x = recip_vec_[6], c_star_y = recip_vec_[7], c_star_z = recip_vec_[8];
-
-    // G*_00 = a* · a*
-    recip_metric_[0] = a_star_x * a_star_x + a_star_y * a_star_y + a_star_z * a_star_z;
-
-    // G*_01 = a* · b*
-    recip_metric_[1] = a_star_x * b_star_x + a_star_y * b_star_y + a_star_z * b_star_z;
-
-    // G*_02 = a* · c*
-    recip_metric_[2] = a_star_x * c_star_x + a_star_y * c_star_y + a_star_z * c_star_z;
-
-    // G*_11 = b* · b*
-    recip_metric_[3] = b_star_x * b_star_x + b_star_y * b_star_y + b_star_z * b_star_z;
-
-    // G*_12 = b* · c*
-    recip_metric_[4] = b_star_x * c_star_x + b_star_y * c_star_y + b_star_z * c_star_z;
-
-    // G*_22 = c* · c*
-    recip_metric_[5] = c_star_x * c_star_x + c_star_y * c_star_y + c_star_z * c_star_z;
 }
 
 //----------------- get methods-------------------------------------
@@ -661,6 +412,11 @@ template <typename T>
 double ComputationBox<T>::get_dv(int i) const
 {
     return dv[i];
+}
+template <typename T>
+double ComputationBox<T>::get_dv_base() const
+{
+    return dv_base_;
 }
 template <typename T>
 int ComputationBox<T>::get_total_grid() const
@@ -743,18 +499,7 @@ void ComputationBox<T>::set_lx(std::vector<double> new_lx)
         space_group_->check_cell(new_lx, get_angles_degrees());
 
     lx = new_lx;
-
-    // Grid interval
-    for(int d=0; d<dim; d++)
-        dx[d] = lx[d]/nx[d];
-
-    // Recompute lattice vectors, reciprocal lattice, and metric tensor
-    compute_lattice_vectors();
-    compute_reciprocal_lattice();
-    compute_recip_metric();
-
-    // Weight factor for integral, as a box created at this cell gets it
-    update_volume_elements();
+    update_cell();
 }
 
 template <typename T>
@@ -791,18 +536,7 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
 
     is_orthogonal_ = orthogonal;
     is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
-
-    // Grid interval
-    for(int d=0; d<dim; d++)
-        dx[d] = lx[d]/nx[d];
-
-    // Recompute lattice vectors, reciprocal lattice, and metric tensor
-    compute_lattice_vectors();
-    compute_reciprocal_lattice();
-    compute_recip_metric();
-
-    // Weight factor for integral, as a box created at this cell gets it
-    update_volume_elements();
+    update_cell();
 }
 // ==================== Space Group Methods ====================
 
@@ -972,10 +706,9 @@ T ComputationBox<T>::integral(const T *g)
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
-        double dv_base = volume / total_grid;
         for (int i = 0; i < n_basis_; i++)
             sum += static_cast<T>(basis_weights_[i]) * g[i];
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(dv_base_);
     }
     else
     {
@@ -1008,10 +741,9 @@ T ComputationBox<T>::inner_product(const T *g, const T *h)
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
-        double dv_base = volume / total_grid;
         for (int i = 0; i < n_basis_; i++)
             sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i];
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(dv_base_);
     }
     else
     {
@@ -1048,9 +780,8 @@ T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const 
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
-        double dv_base = volume / total_grid;
         return sum(n_basis_, [&](int i) { return static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i]; })
-               * static_cast<T>(dv_base);
+               * static_cast<T>(dv_base_);
     }
     else
     {
@@ -1079,7 +810,7 @@ double ComputationBox<T>::absolute_inner_product(const T *g, const T *h, const T
             product /= divisor[i];
         sum += weight[i] * std::abs(product);
     }
-    return reduced ? sum * (volume / total_grid) : sum;
+    return reduced ? sum * dv_base_ : sum;
 }
 
 /**
@@ -1095,14 +826,13 @@ T ComputationBox<T>::multi_inner_product(int n_comp, const T *g, const T *h)
     if (space_group_ != nullptr)
     {
         // Reduced basis mode
-        double dv_base = volume / total_grid;
         for (int n = 0; n < n_comp; n++)
         {
             const size_t offset = static_cast<size_t>(n) * n_basis_;
             for (int i = 0; i < n_basis_; i++)
                 sum += static_cast<T>(basis_weights_[i]) * g[offset + i] * h[offset + i];
         }
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(dv_base_);
     }
     else
     {

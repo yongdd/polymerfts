@@ -201,33 +201,31 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
             fft_in = q_full_in_local.data();
         }
 
-        // ===== Step 1: Full step =====
-        if constexpr (std::is_same_v<T, double>)
+        // ===== Step 1: one full step (q_out1); Step 2: two half steps (q_out2) =====
+        if (crysfft_path)
         {
-            if (crysfft_path)
+            // On the CrysFFT physical grid, from and into the reduced basis (real fields only, init_crysfft)
+            if constexpr (std::is_same_v<T, double>)
             {
-                // exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2) on the CrysFFT physical grid
                 auto [phys_in, phys_out] = this->crysfft_grids(work);
+
+                // Full step: exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2)
                 const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
                 this->fill_crysfft_from_reduced(q_in, phys_in);
                 this->crysfft_step(phys_in, phys_out, coeff_full, _exp_dw, _exp_dw);
                 this->reduce_crysfft_to_reduced(phys_out, q_out1.data());
-            }
-            else
-            {
-                for (int i = 0; i < M_full; ++i)
-                    q_out1[i] = _exp_dw[i] * fft_in[i];
 
-                this->transform_forward(q_out1.data(), k_q_in1.data());
-                this->multiply_fourier_coeffs(k_q_in1.data(), _boltz_bond, M_COMPLEX);
-                this->transform_backward(k_q_in1.data(), q_out1.data());
-
-                for (int i = 0; i < M_full; ++i)
-                    q_out1[i] *= _exp_dw[i];
+                // Two half steps (exp(-w·ds/4) outside, exp(-w·ds/2) between them)
+                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
+                this->fill_crysfft_from_reduced(q_in, phys_in);
+                this->crysfft_step(phys_in, phys_out, coeff_half, _exp_dw_half, _exp_dw);   // first half step
+                this->crysfft_step(phys_out, phys_in, coeff_half, nullptr, _exp_dw_half);   // second half step
+                this->reduce_crysfft_to_reduced(phys_in, q_out2.data());
             }
         }
         else
         {
+            // Full step
             for (int i = 0; i < M_full; ++i)
                 q_out1[i] = _exp_dw[i] * fft_in[i];
 
@@ -237,45 +235,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
 
             for (int i = 0; i < M_full; ++i)
                 q_out1[i] *= _exp_dw[i];
-        }
 
-        // ===== Step 2: Two half steps =====
-        if constexpr (std::is_same_v<T, double>)
-        {
-            if (crysfft_path)
-            {
-                // Two half steps on the CrysFFT physical grid (exp(-w·ds/4) outside, exp(-w·ds/2) between them)
-                auto [phys_in, phys_out] = this->crysfft_grids(work);
-                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
-                this->fill_crysfft_from_reduced(q_in, phys_in);
-                this->crysfft_step(phys_in, phys_out, coeff_half, _exp_dw_half, _exp_dw);   // first half step
-                this->crysfft_step(phys_out, phys_in, coeff_half, nullptr, _exp_dw_half);   // second half step
-                this->reduce_crysfft_to_reduced(phys_in, q_out2.data());
-            }
-            else
-            {
-                // First half step
-                for (int i = 0; i < M_full; ++i)
-                    q_out2[i] = _exp_dw_half[i] * fft_in[i];
-
-                this->transform_forward(q_out2.data(), k_q_in2.data());
-                this->multiply_fourier_coeffs(k_q_in2.data(), _boltz_bond_half, M_COMPLEX);
-                this->transform_backward(k_q_in2.data(), q_out2.data());
-
-                for (int i = 0; i < M_full; ++i)
-                    q_out2[i] *= _exp_dw[i];
-
-                // Second half step
-                this->transform_forward(q_out2.data(), k_q_in2.data());
-                this->multiply_fourier_coeffs(k_q_in2.data(), _boltz_bond_half, M_COMPLEX);
-                this->transform_backward(k_q_in2.data(), q_out2.data());
-
-                for (int i = 0; i < M_full; ++i)
-                    q_out2[i] *= _exp_dw_half[i];
-            }
-        }
-        else
-        {
             // First half step
             for (int i = 0; i < M_full; ++i)
                 q_out2[i] = _exp_dw_half[i] * fft_in[i];
@@ -297,25 +257,17 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         }
 
         // ===== RQM4: Richardson extrapolation =====
-        // Result goes into q_out2 (reuse buffer)
+        // Into q_out, unless a full-grid result is reduced to the basis of a space group afterwards
+        const bool reduce_full_grid = this->space_group_ != nullptr && !crysfft_path;
+        T* q_richardson = reduce_full_grid ? q_out2.data() : q_out;
         for (int i = 0; i < M_out; ++i)
-            q_out2[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
+            q_richardson[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
 
-        // Reduce output to reduced basis if space_group is set
-        if (this->space_group_ != nullptr)
+        // Reduce full grid → reduced basis
+        if (reduce_full_grid)
         {
             if constexpr (std::is_same_v<T, double>)
-            {
-                if (this->use_crysfft())
-                    std::copy(q_out2.begin(), q_out2.begin() + M_out, q_out);
-                else
-                    this->space_group_->to_reduced_basis(q_out2.data(), q_out, 1);
-            }
-        }
-        else
-        {
-            // No space group - copy result to output
-            std::copy(q_out2.begin(), q_out2.begin() + M_full, q_out);
+                this->space_group_->to_reduced_basis(q_out2.data(), q_out, 1);
         }
 
         // Apply the mask on the output. The computation box stores the mask in the

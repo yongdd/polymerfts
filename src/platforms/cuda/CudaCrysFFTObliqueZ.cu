@@ -232,7 +232,7 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
     const int nz_c = n / 2 + 1;
     std::vector<double> h_table(2 * static_cast<size_t>(M_spectral_));
 
-    const std::array<double, 6> recip_metric = reciprocal_metric_of_cell(cell);
+    const std::array<double, 6> recip_metric = cell_geometry(cell).recip_metric;
     const double G11 = recip_metric[0];
     const double G12 = recip_metric[1];
     const double G13 = recip_metric[2];

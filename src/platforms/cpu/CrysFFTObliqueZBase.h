@@ -69,7 +69,7 @@ public:
     {
         table.assign(M_complex_, 0.0);
 
-        const std::array<double, 6> recip_metric = reciprocal_metric_of_cell(cell);
+        const std::array<double, 6> recip_metric = cell_geometry(cell).recip_metric;
         const double G11 = recip_metric[0];
         const double G12 = recip_metric[1];
         const double G13 = recip_metric[2];

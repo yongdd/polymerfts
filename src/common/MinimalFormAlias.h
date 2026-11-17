@@ -34,6 +34,7 @@
 
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 #include "Exception.h"
@@ -445,6 +446,44 @@ inline std::array<double, 6> tied_alias_moments(const std::array<int, 3>& m, con
     for (double& value : sum)
         value /= count;
     return sum;
+}
+
+/**
+ * @brief |k|² = 4π² f(u) of every mode of a periodic grid of n points, u its alias
+ *        of least form, in the row-major order of `shape` (see for_each_mode_min_alias):
+ *        the wavenumbers of the propagator solvers (Pseudo).
+ */
+inline void alias_k_squared(
+    const std::array<int, 3>& n, const std::array<int, 3>& shape, const IndexMetric& g, double* k_squared)
+{
+    const double PI = std::numbers::pi;
+    const IndexForm form{g};
+    for_each_mode_min_alias(n, shape, g, form,
+        [&](long long index, const std::array<int, 3>& u) { k_squared[index] = 4.0 * PI * PI * form(u[0], u[1], u[2]); });
+}
+
+/**
+ * @brief tied_alias_moments (scale 1) of every mode of a periodic grid of n points, in the
+ *        row-major order of `shape`: dim × dim arrays, <v_a v_b> of mode i at
+ *        moments[(a dim + b) n_modes + i], n_modes the number of modes of `shape`.
+ */
+inline void alias_moments(
+    const std::array<int, 3>& n, const std::array<int, 3>& shape, const IndexMetric& g, int dim, double* moments)
+{
+    const AliasSearch search(n, g);
+    const long long n_modes = static_cast<long long>(shape[0]) * shape[1] * shape[2];
+    long long index = 0;
+    for (int i = 0; i < shape[0]; ++i)
+        for (int j = 0; j < shape[1]; ++j)
+            for (int k = 0; k < shape[2]; ++k, ++index)
+            {
+                const std::array<double, 6> v = tied_alias_moments(
+                    {centered_index(i, n[0]), centered_index(j, n[1]), centered_index(k, n[2])}, search, 1.0);
+                const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
+                for (int a = 0; a < dim; ++a)
+                    for (int b = 0; b < dim; ++b)
+                        moments[(a * dim + b) * n_modes + index] = product[a][b];
+            }
 }
 
 #endif  // MINIMAL_FORM_ALIAS_H_

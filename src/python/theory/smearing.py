@@ -186,10 +186,6 @@ class Smearing:
         if not self.enabled:
             return
 
-        # Integer frequencies m (componentwise principal zone), shape (dim, n_grid)
-        frequencies = [np.concatenate([np.arange((n + 1) // 2), np.arange(-(n // 2), 0)]) for n in self.nx]
-        self._m = np.array(np.meshgrid(*frequencies, indexing="ij")).reshape(self.dim, -1)
-
         if self.orthogonal:
             # Separable wavenumbers of the transform of each axis: k = 2π·n/L (FFT; the
             # componentwise alias is minimal) or πn/L (DCT-II, wall axes)
@@ -204,7 +200,7 @@ class Smearing:
         else:
             # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form
             # (first Brillouin zone), from the search of the propagator solvers
-            self.k_sq = _core.minimal_alias_search(self.nx, self.lx, self.angles)[0]
+            self.k_sq = _core.minimal_alias_k_squared(self.nx, self.lx, self.angles)
         self.k_mag = np.sqrt(self.k_sq)
 
         if self.per_species:
@@ -287,18 +283,20 @@ class Smearing:
             # opposite sign, so the angle derivatives average to zero there. A box with
             # walls keeps its angles at 90 degrees (no angle derivatives).
             k = np.array([np.ravel(k_grid) for k_grid in np.meshgrid(*self._k_axes, indexing="ij")])
-            nyquist = np.array([(2 * self._m[a] == -self.nx[a]) & (self.nx[a] > 1) for a in range(self.dim)])
             derivatives = {a: -2 * k[a] ** 2 / L[a] for a in range(self.dim)}
+            if not self.periodic:
+                derivatives.update({slot: np.zeros(self.n_grid) for slot in angle_slots.values()})
+                return derivatives
+            # The Nyquist planes m_a = -N_a/2 of the even axes: index N_a/2 in the order of np.fft.fftfreq
+            nyquist_axes = [(np.arange(n) == n // 2) & (n % 2 == 0) for n in self.nx]
+            nyquist = np.array([np.ravel(grid) for grid in np.meshgrid(*nyquist_axes, indexing="ij")])
             for (a, b), slot in angle_slots.items():
-                if self.periodic:
-                    derivatives[slot] = np.where(nyquist[a] | nyquist[b], 0.0, 2 * k[a] * k[b])
-                else:
-                    derivatives[slot] = np.zeros(self.n_grid)
+                derivatives[slot] = np.where(nyquist[a] | nyquist[b], 0.0, 2 * k[a] * k[b])
             return derivatives
 
         # <u_a u_b>, u = g^-1 m, averaged over all aliases tied for the exact minimum (the same search)
         if self._alias_moments is None:
-            moments = _core.minimal_alias_search(self.nx, self.lx, self.angles)[1]
+            moments = _core.minimal_alias_moments(self.nx, self.lx, self.angles)
             self._alias_moments = moments.reshape(self.dim, self.dim, self.n_grid)
         moments = self._alias_moments
         derivatives = {a: -8 * np.pi ** 2 * np.sum((self._cos[a] * L)[:, None] * moments[a], axis=0)

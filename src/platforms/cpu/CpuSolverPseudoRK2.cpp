@@ -172,7 +172,7 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
         T* fft_out = q_out;
 
         // Thread-local buffers for expand/reduce (called from OpenMP parallel regions);
-        // the CrysFFT path reads the reduced basis directly
+        // the CrysFFT path reads and writes the reduced basis directly
         std::vector<T>& q_full_in_local = work.q_full_in;
         std::vector<T>& q_full_out_local = work.q_full_out;
 
@@ -190,64 +190,38 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
         }
 
         // ===== RK2: Single full step =====
-        // Step 1: exp(-w·ds/2) * q_in
-        if (!crysfft_path)
+        if (crysfft_path)
         {
-            for (int i = 0; i < M_full; ++i)
-                fft_out[i] = _exp_dw[i] * fft_in[i];
-        }
-
-        // Step 2-4: Forward FFT -> multiply by Boltzmann factor -> Backward FFT
-        if constexpr (std::is_same_v<T, double>)
-        {
-            if (crysfft_path)
+            // Steps 1-5 on the CrysFFT physical grid, from and into the reduced basis (real fields
+            // only, init_crysfft)
+            if constexpr (std::is_same_v<T, double>)
             {
-                // Steps 1-5 on the CrysFFT physical grid
                 auto [phys_in, phys_out] = this->crysfft_grids(work);
                 const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
                 this->fill_crysfft_from_reduced(q_in, phys_in);
                 this->crysfft_step(phys_in, phys_out, coeff_full, _exp_dw, _exp_dw);
-                q_full_out_local.resize(M_reduced);
-                this->reduce_crysfft_to_reduced(phys_out, q_full_out_local.data());
-                fft_out = q_full_out_local.data();
-            }
-            else
-            {
-                this->transform_forward(fft_out, k_q_in.data());
-                this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond, M_COMPLEX);
-                this->transform_backward(k_q_in.data(), fft_out);
+                this->reduce_crysfft_to_reduced(phys_out, q_out);
             }
         }
         else
         {
+            // Step 1: exp(-w·ds/2) * q_in
+            for (int i = 0; i < M_full; ++i)
+                fft_out[i] = _exp_dw[i] * fft_in[i];
+
+            // Step 2-4: Forward FFT -> multiply by Boltzmann factor -> Backward FFT
             this->transform_forward(fft_out, k_q_in.data());
             this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond, M_COMPLEX);
             this->transform_backward(k_q_in.data(), fft_out);
-        }
 
-        // Step 5: exp(-w·ds/2) * result
-        if constexpr (std::is_same_v<T, double>)
-        {
-            if (!crysfft_path)
-            {
-                for (int i = 0; i < M_full; ++i)
-                    fft_out[i] *= _exp_dw[i];
-            }
-        }
-        else
-        {
+            // Step 5: exp(-w·ds/2) * result
             for (int i = 0; i < M_full; ++i)
                 fft_out[i] *= _exp_dw[i];
-        }
 
-        // Reduce full grid → reduced basis
-        if (this->space_group_ != nullptr)
-        {
-            if constexpr (std::is_same_v<T, double>)
+            // Reduce full grid → reduced basis
+            if (this->space_group_ != nullptr)
             {
-                if (this->use_crysfft())
-                    std::copy(fft_out, fft_out + M_reduced, q_out);
-                else
+                if constexpr (std::is_same_v<T, double>)
                     this->space_group_->to_reduced_basis(fft_out, q_out, 1);
             }
         }
