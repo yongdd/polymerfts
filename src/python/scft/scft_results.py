@@ -189,8 +189,6 @@ def save_results(sim, path):
     m_dic = {"initial_params": sim.params,
         "dim":sim.prop_solver.dim, "nx":sim.prop_solver.nx, "lx":sim.prop_solver.get_lx(),
         "angles":list(sim.prop_solver.get_angles_degrees()),
-        # True when a and b are sampled at the nodes, not the cell centres (PropagatorSolver.get_grid_points)
-        "uses_hexagonal_axes": sim.sg is not None and sim.sg.uses_hexagonal_axes(),
         "monomer_types":sim.monomer_types, "chi_n":chi_n_mat, "chain_model":sim.chain_model, "ds":sim.ds,
         "eigenvalues": sim.mpt.eigenvalues, "matrix_a": sim.mpt.matrix_a, "matrix_a_inverse": sim.mpt.matrix_a_inv}
     metadata = simulation_metadata(sim)

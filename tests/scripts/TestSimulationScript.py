@@ -64,7 +64,7 @@ def test_exported_presets(preset, tmp_path, monkeypatch):
     calls = execute_export(values, tmp_path, monkeypatch)
     params = calls["params"]
     if values["mode"] == "SCFT":
-        VALIDATION["validate_system_params"](params)
+        VALIDATION["validate_scft_params"](params)
     else:
         VALIDATION["validate_lfts_params"](params, complex_fields=values["mode"] == "CL-FTS")
     assert calls["cwd"] == tmp_path / "export" / values["output_dir"]

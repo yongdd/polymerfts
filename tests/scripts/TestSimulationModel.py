@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import re
 import runpy
 import threading
 from urllib.request import Request, urlopen
@@ -38,7 +39,7 @@ def test_mixture_export(mode, tmp_path, monkeypatch):
     form["mode"] = mode
     calls = CHECKS["execute_export"](form, tmp_path, monkeypatch)
     params = calls["params"]
-    CHECKS["VALIDATION"]["validate_system_params" if mode == "SCFT" else "validate_lfts_params"](params)
+    CHECKS["VALIDATION"]["validate_scft_params" if mode == "SCFT" else "validate_lfts_params"](params)
     assert params["nx"] == [8, 10, 12]
     assert params["segment_lengths"] == {"A": 1, "B": 1.2, "C": .8}
     assert [p["volume_fraction"] for p in params["polymers"]] == [.6, .4]
@@ -153,6 +154,20 @@ def test_discrete_block_below_half_a_segment():
     form["model"]["polymers"][0]["blocks"] = [{"type": "A", "length": "0.04"}, {"type": "B", "length": "0.96"}]
     with pytest.raises(ValueError, match=r"block length 0\.04 must be a multiple of ds = 0\.1 \(closest: 0\.1\)"):
         BUILDER["build_script"](form)
+
+
+@pytest.mark.parametrize("length, closest", (("0.15", "0.2"), ("0.25", "0.3")))
+def test_discrete_block_at_half_a_segment_rounds_as_the_library(length, closest):
+    """0.15/0.1 is 1.4999999999999998, which the library takes as 1.5 segments; halves round up, not to
+    even (ContourLengthMapping::segment_count), so both lengths suggest the closest valid length above."""
+    form = values()
+    form.update(chain_model="discrete", numerical_method="auto", ds="0.1")
+    form["model"]["polymers"][0]["blocks"] = [{"type": "A", "length": length}, {"type": "B", "length": "0.8"}]
+    with pytest.raises(ValueError, match=re.escape(f"block length {length} must be a multiple of ds = 0.1 "
+                                                   f"(closest: {closest})")):
+        BUILDER["build_script"](form)
+    with pytest.raises(ValueError, match=re.escape(f"Closest valid value: {closest}")):
+        CHECKS["VALIDATION"]["_discrete_contour_length"](float(length), 0.1)
 
 
 @pytest.mark.parametrize("suffix, valid", (("1", False), ("_x", True)))

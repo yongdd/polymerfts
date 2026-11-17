@@ -93,4 +93,9 @@ for (const [dimension, shape, system, lengths, angles, free] of [
   assert.deepEqual(model().box.angles, ["90", "90", "90"]);
   assert.deepEqual(options(), ["line"]);
 }
+
+// New monomer types up to the limit of 32: after Z come AA, AB, ..., as the PSCF converter names
+// them; the library takes letters and underscores only, so a name such as M27 fails when the script runs
+for (let i = 0; i < 40; i++) element("add-monomer").listeners.click();
+assert.deepEqual(model().monomers.map(m => m.name), [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", "AA", "AB", "AC", "AD", "AE", "AF"]);
 process.stdout.write(JSON.stringify(exportedModels));
