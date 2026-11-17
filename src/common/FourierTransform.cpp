@@ -113,17 +113,12 @@ std::vector<double> FourierTransform<T>::get_k_squared() const
     const std::vector<int> nx = cb_->get_nx();
     std::vector<double> k_sq(n_coefficients_);
 
-    // Pad to 3D in front, as the propagator solvers do (Pseudo.cpp)
-    std::array<int, 3> tnx = {1, 1, 1};
-    std::array<int, 3> tcoef = {1, 1, 1};
-    for (int d = 0; d < dim_; ++d)
-    {
-        tnx[3 - dim_ + d] = nx[d];
-        tcoef[3 - dim_ + d] = coefficient_shape_[d];
-    }
-
     if (!periodic_)
     {
+        // Pad to 3D in front, as the propagator solvers do (Pseudo.cpp)
+        std::array<int, 3> tnx = {1, 1, 1};
+        for (int d = 0; d < dim_; ++d)
+            tnx[3 - dim_ + d] = nx[d];
         // Separable wavenumbers (orthogonal cell): k = πm/L (cosine), π(m+1)/L (sine)
         // or 2πm/L with the signed index m of the FFT (periodic axes of a mixed box)
         const std::vector<double> lx = cb_->get_lx();
@@ -150,44 +145,35 @@ std::vector<double> FourierTransform<T>::get_k_squared() const
         return k_sq;
     }
 
-    // |k|² = 4π² mᵀ g⁻¹ m with the reciprocal metric of the box, as in
-    // Pseudo<T>::update_boltz_bond_periodic_for_ds_index()
-    const std::array<double, 6>& recip_metric = cb_->get_recip_metric();
-    std::array<double, 3> Gd;
-    double Gij, Gik, Gjk;
-    if (dim_ == 3) {
-        Gd = {recip_metric[0], recip_metric[3], recip_metric[5]};
-        Gij = recip_metric[1]; Gik = recip_metric[2]; Gjk = recip_metric[4];
-    } else if (dim_ == 2) {
-        Gd = {0.0, recip_metric[0], recip_metric[3]};
-        Gij = 0.0; Gik = 0.0; Gjk = recip_metric[1];
-    } else {
-        Gd = {0.0, 0.0, recip_metric[0]};
-        Gij = 0.0; Gik = 0.0; Gjk = 0.0;
-    }
-    const IndexMetric index_metric{Gd[0], Gd[1], Gd[2], Gij, Gik, Gjk};
-    const bool oblique = index_metric_has_coupling(index_metric);
-    auto form = [&](double a, double b, double c) {
-        return Gd[0] * a * a + Gd[1] * b * b + Gd[2] * c * c +
-               2.0 * (Gij * a * b + Gik * a * c + Gjk * b * c);
-    };
-    auto signed_index = [](int i, int n) { return (i > n / 2) ? i - n : i; };
-
-    for (int i = 0; i < tcoef[0]; ++i)
-    {
-        for (int j = 0; j < tcoef[1]; ++j)
-        {
-            for (int k = 0; k < tcoef[2]; ++k)
-            {
-                std::array<int, 3> m = {signed_index(i, tnx[0]), signed_index(j, tnx[1]), signed_index(k, tnx[2])};
-                if (oblique)
-                    min_form_alias_rep(m, tnx, index_metric, form);
-                k_sq[(static_cast<long long>(i) * tcoef[1] + j) * tcoef[2] + k] =
-                    4.0 * PI * PI * form(m[0], m[1], m[2]);
-            }
-        }
-    }
+    // |k|² = 4π² uᵀ g⁻¹ u of the alias u of least form, as in the propagator solvers (Pseudo)
+    const IndexForm form{index_metric_of(cb_->get_recip_metric(), dim_)};
+    for_each_mode_min_alias(padded_grid(nx), padded_grid(coefficient_shape_), form.g, form,
+        [&](long long index, const std::array<int, 3>& u) { k_sq[index] = 4.0 * PI * PI * form(u[0], u[1], u[2]); });
     return k_sq;
+}
+
+template <typename T>
+std::vector<double> FourierTransform<T>::get_alias_moments() const
+{
+    if (!periodic_)
+        throw_with_line_number("The alias moments need a periodic box.");
+    const std::vector<int> nx = cb_->get_nx();
+    const std::array<int, 3> grid = padded_grid(nx), shape = padded_grid(coefficient_shape_);
+    const AliasSearch search(grid, index_metric_of(cb_->get_recip_metric(), dim_));
+    std::vector<double> moments(static_cast<size_t>(dim_) * dim_ * n_coefficients_);
+    long long index = 0;
+    for (int i = 0; i < shape[0]; ++i)
+        for (int j = 0; j < shape[1]; ++j)
+            for (int k = 0; k < shape[2]; ++k, ++index)
+            {
+                const std::array<double, 6> v = tied_alias_moments(
+                    {centered_index(i, grid[0]), centered_index(j, grid[1]), centered_index(k, grid[2])}, search, 1.0);
+                const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
+                for (int a = 0; a < dim_; ++a)
+                    for (int b = 0; b < dim_; ++b)
+                        moments[(a * dim_ + b) * static_cast<long long>(n_coefficients_) + index] = product[a][b];
+            }
+    return moments;
 }
 
 template <typename T>

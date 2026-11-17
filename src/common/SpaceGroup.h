@@ -204,6 +204,16 @@ public:
      * @param angles_deg Lattice angles [alpha, beta, gamma] in degrees
      */
     void check_cell(const std::vector<double>& lx, const std::vector<double>& angles_deg) const;
+    /**
+     * @brief The angles [alpha, beta, gamma] the group fixes, in degrees; NaN where an
+     *        angle is free.
+     *
+     * Cubic, tetragonal and orthorhombic groups fix 90 degrees, hexagonal ones and
+     * hexagonal-axes trigonal ones 90, 90 and 120; a monoclinic group the right angles
+     * at its unique axis. Rhombohedral-axes trigonal groups tie their angles
+     * (alpha = beta = gamma) without fixing them, and triclinic groups fix none.
+     */
+    std::array<double, 3> fixed_angles() const;
     const std::vector<int>& get_nx() const { return nx_; }
     int get_total_grid() const { return total_grid_; }
     int get_n_reduced_basis() const { return n_irreducible_; }

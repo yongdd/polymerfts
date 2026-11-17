@@ -7,7 +7,23 @@ interactions by convolving fields with a smearing function in Fourier space.
 import numpy as np
 import scipy.fft
 
-from .._core import _periodic_metric
+from .. import _core
+
+
+def periodic_transform(nx, lx, angles):
+    """The periodic Fourier transform of complex fields on a box of its own, cell (lx, angles).
+
+    Its k_squared() and alias_moments() give, on the full grid, |k|² of the alias of least
+    |k|² of every mode and the moments of g⁻¹m over the aliases tied for it: the search of
+    the propagator solvers (PropagatorSolver.fourier.k_squared(), MinimalFormAlias.h), for
+    a cell that the simulation box need not have. Returns (transform, box); the box takes
+    set_lattice_parameters(). A CPU platform is preferred: no FFT of it runs.
+    """
+    platforms = _core.PlatformSelector.avail_platforms()
+    platform = next((p for p in ("cpu-mkl", "cpu-fftw") if p in platforms), platforms[0])
+    factory = _core.PlatformSelector.create_factory(platform, False, "complex")
+    box = factory.create_computation_box(nx=list(nx), lx=list(lx), angles=list(angles))
+    return factory.create_fourier_transform(box, ["periodic"] * len(nx)), box
 
 
 class Smearing:
@@ -114,6 +130,7 @@ class Smearing:
         # (PropagatorSolver.fourier, on the GPU with CUDA)
         self._transform = transform
         self._multipliers = {}
+        self._metric = None   # periodic_transform() of an oblique cell
 
         self.species_fourier = None
         if smearing_params is None:
@@ -184,8 +201,6 @@ class Smearing:
             raise ValueError("Smearing with reflecting or absorbing boundaries needs an orthogonal box.")
         if not self.enabled:
             return
-        L = np.array(self.lx, dtype=np.float64)
-        self._metric_inv = np.linalg.inv(np.outer(L, L) * self._cos)
 
         # Integer frequencies m (componentwise principal zone), shape (dim, n_grid)
         frequencies = [np.concatenate([np.arange((n + 1) // 2), np.arange(-(n // 2), 0)]) for n in self.nx]
@@ -204,9 +219,13 @@ class Smearing:
             self.k_sq = sum(k ** 2 for k in k_grids)
         else:
             # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form
-            # (first Brillouin zone). Use the exact metric-bounded search of the propagators:
-            # an anisotropic grid can need aliases several periods from the centered mode.
-            self.k_sq, _ = _periodic_metric(self.nx, self._metric_inv)
+            # (first Brillouin zone), from the search of the propagator solvers on a box of
+            # its own: set_box() takes any cell, not only that of the simulation
+            if self._metric is None:
+                self._metric = periodic_transform(self.nx, self.lx, self.angles)
+            else:
+                self._metric[1].set_lattice_parameters(self.lx, self.angles)
+            self.k_sq = self._metric[0].k_squared()
         self.k_mag = np.sqrt(self.k_sq)
 
         if self.per_species:
@@ -299,8 +318,7 @@ class Smearing:
             return derivatives
 
         if self._metric_moments is None:
-            _, moments = _periodic_metric(self.nx, self._metric_inv, with_moments=True)
-            self._metric_moments = moments.reshape(self.dim, self.dim, self.n_grid)
+            self._metric_moments = self._metric[0].alias_moments().reshape(self.dim, self.dim, self.n_grid)
         # <u_a u_b>, u = g^-1 m, averaged over all aliases tied for the exact minimum.
         moments = self._metric_moments
         derivatives = {a: -8 * np.pi ** 2 * np.sum((self._cos[a] * L)[:, None] * moments[a], axis=0)

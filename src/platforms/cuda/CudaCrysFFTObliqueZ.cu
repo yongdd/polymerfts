@@ -258,8 +258,7 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
     // cos(pi/2) ~ 6e-17; do not flip rectangular cells onto the
     // minimal-form alias path.
     const bool oblique_xy = reciprocal_axes_coupled(G11, G22, G12);
-    const std::array<int, 3> grid_xy = {Nx, Ny, 1};
-    const IndexMetric metric_xy{G11, G22, 0.0, G12, 0.0, 0.0};
+    const AliasSearch search_xy({Nx, Ny, 1}, IndexMetric{G11, G22, 0.0, G12, 0.0, 0.0});
     auto form_xy = [&](double a, double b, double) {
         return G11 * a * a + 2.0 * G12 * a * b + G22 * b * b;
     };
@@ -272,7 +271,7 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
         {
             std::array<int, 3> rep = {(ix > Nx / 2) ? (ix - Nx) : ix, (iy > Ny / 2) ? (iy - Ny) : iy, 0};
             if (oblique_xy)
-                min_form_alias_rep(rep, grid_xy, metric_xy, form_xy);
+                min_form_alias_rep(rep, search_xy, form_xy);
             const int m1 = rep[0], m2 = rep[1];
             auto boltzmann = [&](int m3) {
                 const double gmm = G11 * m1 * m1 + G22 * m2 * m2 + G33 * m3 * m3

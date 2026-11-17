@@ -317,10 +317,13 @@ class PropagatorSolver:
         ``backward`` treats its coefficients the same way. In a mixed box the real
         part of ``backward`` does this for every coefficient.
 
-        ``k_squared()`` gives |k|² in the coefficient shape for the current box; a
-        stored multiplier keeps its values, so store it again after the box
-        changes (``set_lx`` and ``set_lattice_parameters`` need the polymers to be
-        added). See ``examples/tools/FourierTransform.py``.
+        ``k_squared()`` gives |k|² in the coefficient shape for the current box (on an
+        oblique cell of the alias of least |k|², as the propagators use it), and in a
+        periodic box ``alias_moments()`` the moments <v_a v_b>, v = g⁻¹u, over the aliases
+        u tied for it, shape ``(dim, dim) + coefficient_shape``. A stored multiplier keeps
+        its values, so store it again after the box changes (``set_lx`` and
+        ``set_lattice_parameters`` need the polymers to be added). See
+        ``examples/tools/FourierTransform.py``.
         """
         if self._fourier is None:
             periodic = [self.bc_lower[2 * d] == "periodic" and self.bc_lower[2 * d + 1] == "periodic"

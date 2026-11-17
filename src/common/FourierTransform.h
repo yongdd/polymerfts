@@ -160,6 +160,9 @@ public:
 
     /// |k|² of every coefficient for the current box
     std::vector<double> get_k_squared() const;
+    /// <v_a v_b>, v = g⁻¹u, over the least-|k|² aliases u of every coefficient
+    /// (tied_alias_moments), dim × dim arrays of the coefficient layout; periodic boxes
+    std::vector<double> get_alias_moments() const;
 
     /**
      * @brief Store a multiplier.

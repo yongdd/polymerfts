@@ -1342,38 +1342,36 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
     if (lx.size() != 3 || angles_deg.size() != 3)
         return;
     // Lengths and free angles agree to a relative 1e-6. An angle the group fixes
-    // passes the orthogonality test of ComputationBox, |angle - exact| <
-    // FIXED_ANGLE_TOLERANCE (1e-10 rad), in the same arithmetic: a solver chooses its
-    // CrysFFT engine for the angles of its box once, and every cell accepted later
-    // keeps the angles that engine needs.
+    // passes the orthogonality test of ComputationBox (angle_is_fixed_at, 1e-10 rad):
+    // a solver chooses its CrysFFT engine for the angles of its box once, and every
+    // cell accepted later keeps the angles that engine needs.
     auto same = [](double a, double b) { return std::abs(a - b) <= 1e-6 * std::max({std::abs(a), std::abs(b), 1.0}); };
-    auto fixed = [](double degrees, double radians) {
-        const double deg_to_rad = std::numbers::pi / 180.0;
-        return std::abs(degrees * deg_to_rad - radians) < FIXED_ANGLE_TOLERANCE; };
-    const double right = std::numbers::pi / 2.0;
-    const bool right_angles = fixed(angles_deg[0], right) && fixed(angles_deg[1], right) && fixed(angles_deg[2], right);
-    const bool z_right = fixed(angles_deg[0], right) && fixed(angles_deg[1], right);
+    const std::array<double, 3> fixed = fixed_angles();
+    bool angles_fixed = true;
+    for (int i = 0; i < 3; ++i)
+        if (!std::isnan(fixed[i]))
+            angles_fixed = angles_fixed && angle_is_fixed_at(angles_deg[i], fixed[i] * (std::numbers::pi / 180.0));
 
     bool ok = true;
     std::string need;
     if (crystal_system_ == "Cubic")
     {
-        ok = same(lx[0], lx[1]) && same(lx[0], lx[2]) && right_angles;
+        ok = same(lx[0], lx[1]) && same(lx[0], lx[2]) && angles_fixed;
         need = "lx[0] = lx[1] = lx[2] and an orthogonal cell (angles [90, 90, 90])";
     }
     else if (crystal_system_ == "Tetragonal")
     {
-        ok = same(lx[0], lx[1]) && right_angles;
+        ok = same(lx[0], lx[1]) && angles_fixed;
         need = "lx[0] = lx[1] and an orthogonal cell (angles [90, 90, 90])";
     }
     else if (crystal_system_ == "Orthorhombic")
     {
-        ok = right_angles;
+        ok = angles_fixed;
         need = "an orthogonal cell (angles [90, 90, 90])";
     }
     else if (crystal_system_ == "Hexagonal" || (crystal_system_ == "Trigonal" && uses_hexagonal_axes()))
     {
-        ok = same(lx[0], lx[1]) && z_right && fixed(angles_deg[2], 2.0 * std::numbers::pi / 3.0);
+        ok = same(lx[0], lx[1]) && angles_fixed;
         need = "lx[0] = lx[1] and angles [90, 90, 120]";
     }
     else if (crystal_system_ == "Trigonal")
@@ -1410,16 +1408,7 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
                     }
             return true;
         };
-        ok = metric_preserved(angles_deg);
-        // The angles the group fixes, those whose change by a degree breaks the
-        // metric, are the right angles at the unique axis: they pass the box's test
-        for (int i = 0; i < 3 && ok; ++i)
-        {
-            std::vector<double> trial = angles_deg;
-            trial[i] += 1.0;
-            if (!metric_preserved(trial) && !fixed(angles_deg[i], right))
-                ok = false;
-        }
+        ok = metric_preserved(angles_deg) && angles_fixed;
         need = "the unique axis perpendicular to the other two (every symmetry operation must preserve the cell metric)";
     }
     if (!ok)
@@ -1431,6 +1420,26 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
             spacegroup_symbol_ + ": it needs " + need + " (the angles the group fixes to 1e-10 rad, lengths to "
             "a relative 1e-6). Got " + got.str() + ".");
     }
+}
+
+std::array<double, 3> SpaceGroup::fixed_angles() const
+{
+    const double free = std::numeric_limits<double>::quiet_NaN();
+    if (crystal_system_ == "Cubic" || crystal_system_ == "Tetragonal" || crystal_system_ == "Orthorhombic")
+        return {90.0, 90.0, 90.0};
+    if (crystal_system_ == "Hexagonal" || (crystal_system_ == "Trigonal" && uses_hexagonal_axes()))
+        return {90.0, 90.0, 120.0};
+    std::array<double, 3> result = {free, free, free};
+    if (crystal_system_ == "Trigonal")
+        return result;
+    // Monoclinic and triclinic rotations are diagonal in lattice coordinates. One that
+    // reverses exactly one of two axes preserves the metric only when they are
+    // perpendicular: the angles at the unique axis of a monoclinic group.
+    for (const auto& R : rotations_)
+        for (int i = 0; i < 3; ++i)
+            if (R[(i + 1) % 3][(i + 1) % 3] * R[(i + 2) % 3][(i + 2) % 3] < 0)
+                result[i] = 90.0;
+    return result;
 }
 
 bool SpaceGroup::uses_hexagonal_axes() const

@@ -53,6 +53,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <numbers>
 
 #include <pybind11/pybind11.h>
@@ -74,7 +75,6 @@
 #endif
 
 #include "GridLimits.h"
-#include "MinimalFormAlias.h"
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "ComputationBox.h"
@@ -99,86 +99,6 @@ using array_in = py::array_t<T, py::array::c_style | py::array::forcecast>;
  */
 template <typename... Args>
 using overload_cast_ = py::detail::overload_cast_impl<Args...>;
-
-/**
- * Exact periodic metric for Python kernels, without creating a platform or FFT.
- * The optional moments <(Gm)_a (Gm)_b> average all tied minimal aliases, so
- * derivatives of the metric use the same representatives as the propagators.
- * The callers (Smearing, WTMD) pass a validated grid and the inverse metric of a
- * validated cell; only the shapes are checked here, so that no read leaves the arrays.
- */
-py::tuple periodic_metric(const std::vector<int>& nx, array_in<double> reciprocal_metric,
-                          bool with_moments)
-{
-    const int dim = static_cast<int>(nx.size());
-    const auto metric = reciprocal_metric.request();
-    if (dim < 1 || dim > 3 || metric.ndim != 2 || metric.shape[0] != dim || metric.shape[1] != dim)
-        throw py::value_error("A periodic metric needs 1 to 3 grid sizes and a matching square reciprocal metric.");
-    long long n_grid = 1;
-    std::array<int, 3> grid = {1, 1, 1};
-    for (int d = 0; d < dim; ++d)
-    {
-        n_grid *= nx[d];
-        grid[d] = nx[d];
-    }
-    const auto* values = static_cast<const double*>(metric.ptr);
-    double G[3][3] = {};
-    for (int a = 0; a < dim; ++a)
-        for (int b = 0; b < dim; ++b)
-            G[a][b] = values[a * dim + b];
-
-    py::array_t<double> k_squared(nx);
-    py::array_t<double> moments;
-    double* moment_data = nullptr;
-    if (with_moments)
-    {
-        std::vector<py::ssize_t> shape = {dim, dim};
-        shape.insert(shape.end(), nx.begin(), nx.end());
-        moments = py::array_t<double>(shape);
-        moment_data = moments.mutable_data();
-    }
-    auto* k_data = k_squared.mutable_data();
-    const IndexMetric index_metric{G[0][0], G[1][1], G[2][2], G[0][1], G[0][2], G[1][2]};
-    const double four_pi_squared = 4.0 * std::numbers::pi * std::numbers::pi;
-    auto form = [&](int a, int b, int c) {
-        return G[0][0] * a * a + G[1][1] * b * b + G[2][2] * c * c
-             + 2.0 * (G[0][1] * a * b + G[0][2] * a * c + G[1][2] * b * c);
-    };
-    auto signed_index = [](int i, int n) { return i > n / 2 ? i - n : i; };
-    {
-        py::gil_scoped_release release;
-        for (int i = 0; i < grid[0]; ++i)
-            for (int j = 0; j < grid[1]; ++j)
-                for (int k = 0; k < grid[2]; ++k)
-                {
-                    const long long index = (static_cast<long long>(i) * grid[1] + j) * grid[2] + k;
-                    const std::array<int, 3> m = {signed_index(i, grid[0]), signed_index(j, grid[1]), signed_index(k, grid[2])};
-                    auto representative = m;
-                    min_form_alias_rep(representative, grid, index_metric, form);
-                    k_data[index] = four_pi_squared * form(representative[0], representative[1], representative[2]);
-                    if (with_moments)
-                    {
-                        double products[3][3] = {};
-                        const int count = for_each_min_form_alias(m, grid, index_metric, form, 1e-10,
-                            [&](int a, int b, int c) {
-                                double u[3] = {};
-                                for (int d = 0; d < dim; ++d)
-                                    u[d] = G[d][0] * a + G[d][1] * b + G[d][2] * c;
-                                for (int row = 0; row < dim; ++row)
-                                    for (int col = 0; col < dim; ++col)
-                                        products[row][col] += u[row] * u[col];
-                            });
-                        for (int row = 0; row < dim; ++row)
-                            for (int col = 0; col < dim; ++col)
-                                moment_data[(row * dim + col) * n_grid + index] = products[row][col] / count;
-                    }
-                }
-    }
-    if (with_moments)
-        return py::make_tuple(k_squared, moments);
-    return py::make_tuple(k_squared, py::none());
-}
-
 
 /**
  * @brief Bind ComputationBox<T> class to Python.
@@ -598,6 +518,8 @@ void bind_anderson_mixing(py::module &m, const std::string &type_name) {
  * - field_type: "real" or "complex", the fields the transform takes; periodic: every axis periodic
  *   (FFT); mixed: periodic and wall axes (one FFT of the grid with Makhoul's reordering on the walls)
  * - k_squared(): |k|² in the coefficient shape, from the current box
+ * - alias_moments(): <v_a v_b>, v = g⁻¹u, over the aliases u tied for the least |k|²
+ *   (periodic boxes), shape (dim, dim) + coefficient_shape
  * - set_multiplier(values): Store a multiplier of shape coefficient_shape
  *   (diagonal: applied to each field) or (n_out, n_in) + coefficient_shape
  * - apply([(multiplier, fields), ...]): backward(Σ M · forward(fields))
@@ -666,6 +588,17 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
             const std::vector<double> k_sq = obj.get_k_squared();
             py::array_t<double> result(obj.get_coefficient_shape());
             std::copy(k_sq.begin(), k_sq.end(), result.mutable_data());
+            return result;
+        })
+        .def("alias_moments", [](FourierTransform<T>& obj)
+        {
+            const std::vector<double> moments = obj.get_alias_moments();
+            const int dim = static_cast<int>(obj.get_coefficient_shape().size());
+            std::vector<py::ssize_t> shape = {dim, dim};
+            for (int n : obj.get_coefficient_shape())
+                shape.push_back(n);
+            py::array_t<double> result(shape);
+            std::copy(moments.begin(), moments.end(), result.mutable_data());
             return result;
         })
         // The handle keeps its transform alive (it is used only with that transform)
@@ -955,9 +888,6 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
 
 PYBIND11_MODULE(_core, m)
 {
-    m.def("_periodic_metric", &periodic_metric, py::arg("nx"), py::arg("reciprocal_metric"),
-          py::arg("with_moments") = false,
-          "Exact full-grid periodic k squared and optional tied-alias metric moments.");
     m.attr("build_info") = polymerfts_build_info();
     m.def("numerical_methods", []() {
         py::dict result;
@@ -1144,6 +1074,13 @@ Example:
              "Crystal system name.")
         .def("check_cell", &SpaceGroup::check_cell, py::arg("lx"), py::arg("angles"),
              "Raise unless the cell (lengths, angles in degrees) belongs to the crystal system of the group.")
+        .def("fixed_angles", [](const SpaceGroup& sg)
+        {
+            py::list result;
+            for (double angle : sg.fixed_angles())
+                result.append(std::isnan(angle) ? py::none() : py::cast(angle));
+            return result;
+        }, "The angles [alpha, beta, gamma] in degrees the group fixes; None where an angle is free.")
         .def("get_nx", &SpaceGroup::get_nx,
              "Grid dimensions [nx, ny, nz].")
         .def("get_total_grid", &SpaceGroup::get_total_grid,

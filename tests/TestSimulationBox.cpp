@@ -56,6 +56,30 @@ void check_overflow_grid(const std::string& platform)
     }
 }
 
+// The angles of the axes a 1D or 2D box lacks hold at 90 degrees within
+// FIXED_ANGLE_TOLERANCE in radians: 1e-9 degrees off is 1.7e-11 rad (accepted),
+// 1e-8 degrees is 1.7e-10 rad (refused)
+void check_absent_axis_angles(const std::string& platform)
+{
+    auto factory = PlatformSelector::create_factory_real(platform, false);
+    auto accepted = [&](std::vector<int> nx, std::vector<double> lx, std::vector<double> angles) {
+        try
+        {
+            factory->create_computation_box(nx, lx, {}, angles);
+            return true;
+        }
+        catch (const Exception& exc)
+        {
+            if (std::string(exc.what()).find("90 degrees") == std::string::npos)
+                throw;
+            return false;
+        }
+    };
+    if (!accepted({4, 4}, {1.0, 1.0}, {90.0 + 1e-9, 90.0, 120.0}) || accepted({4, 4}, {1.0, 1.0}, {90.0 + 1e-8, 90.0, 120.0})
+        || !accepted({4}, {1.0}, {90.0, 90.0 - 1e-9, 90.0}) || accepted({4}, {1.0}, {90.0, 90.0 - 1e-8, 90.0}))
+        throw std::runtime_error("The angles of absent axes are not compared with 1e-10 rad");
+}
+
 // Host reductions of a 1x2x2 box against reference values
 static bool check_host_reductions(ComputationBox<double>& cb)
 {
@@ -173,6 +197,7 @@ int main()
             std::cout << "Platform: " << platform << std::endl;
             check_overflow_grid<double>(platform);
             check_overflow_grid<std::complex<double>>(platform);
+            check_absent_axis_angles(platform);
             auto factory = PlatformSelector::create_factory_real(platform, false);
             std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box({1,2,2}, {4.5,3.5,2.5}, {});
             if (!check_host_reductions(*cb))

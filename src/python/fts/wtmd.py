@@ -11,7 +11,7 @@ hills (see WTMD.update_statistics).
 import numpy as np
 import scipy.signal
 
-from .._core import _periodic_metric
+from ..theory.smearing import periodic_transform
 from ..utils.common import atomic_savemat
 from ..utils.checkpoint import pair_suffix
 from ..utils.validation import ValidationError, _finite_number
@@ -69,10 +69,6 @@ class WTMD:
             self.V = lx[0] * lx[1] * lx[2]
         else:
             self.V = lx[0] * lx[1] * lx[2] * np.sqrt(1.0 - cos_a**2 - cos_b**2 - cos_g**2 + 2.0 * cos_a * cos_b * cos_g)
-            L = np.array(lx, dtype=np.float64)
-            self._metric_inv = np.linalg.inv(np.outer(L, L) * np.array([[1.0, cos_g, cos_b],
-                                                                         [cos_g, 1.0, cos_a],
-                                                                         [cos_b, cos_a, 1.0]]))
         self.CV = np.sqrt(nbar) * self.V
 
         # Choose one index of w_aux to use order parameter
@@ -133,10 +129,10 @@ class WTMD:
                 2 * np.pi / lx[2] * np.arange(nx[2] // 2 + 1), indexing='ij')
             mag_k = np.sqrt(space_kx**2 + space_ky**2 + space_kz**2)
         else:
-            # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form,
-            # from the same exact search as Smearing and the propagator solvers.
-            k_sq, _ = _periodic_metric(nx, self._metric_inv)
-            mag_k = np.sqrt(k_sq[:, :, :nx[2] // 2 + 1])
+            # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form, from the
+            # search of the propagator solvers: of the simulation's transform, or of a box of its own
+            transform = fourier if fourier is not None else periodic_transform(nx, lx, angles)[0]
+            mag_k = np.sqrt(transform.k_squared()[:, :, :nx[2] // 2 + 1])
         self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
         self._fk_root = np.power(self.fk, 1.0 / self.l)
 

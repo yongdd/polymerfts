@@ -124,22 +124,13 @@ class CellRelaxation:
         if self.sg is None:
             self.angles_reduced_indices = list(row["angles"])
         else:
-            # Angles vary only in monoclinic and triclinic groups: those whose change keeps every
-            # symmetry operation an isometry of the cell (SpaceGroup.check_cell), the angle between
-            # the two axes perpendicular to the unique axis of a monoclinic setting (beta for the
-            # unique axis b, gamma for c, alpha for a) and all three in a triclinic group
+            # Angles vary only in monoclinic and triclinic groups, those the group leaves free
+            # (SpaceGroup.fixed_angles): the angle between the two axes perpendicular to the unique
+            # axis of a monoclinic setting (beta for the unique axis b, gamma for c, alpha for a)
+            # and all three in a triclinic group
             self.angles_reduced_indices = []
             if crystal_system in ("Monoclinic", "Triclinic"):
-                cell_lx = list(self.prop_solver.get_lx())
-                cell_angles = list(self.prop_solver.get_angles_degrees())
-                for i in range(3):
-                    trial = list(cell_angles)
-                    trial[i] += 1.0
-                    try:
-                        self.sg.check_cell(cell_lx, trial)
-                        self.angles_reduced_indices.append(i)
-                    except RuntimeError:
-                        pass
+                self.angles_reduced_indices = [i for i, angle in enumerate(self.sg.fixed_angles()) if angle is None]
         self.angles_full_indices = list(self.angles_reduced_indices)
 
         # Number of variables the optimizer adjusts: the fields, plus the free box lengths and angles

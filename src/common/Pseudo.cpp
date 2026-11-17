@@ -325,57 +325,18 @@ void update_weighted_fourier_basis_periodic_impl(
         tnx = {1, 1, nx[0]};
     }
 
-    // Extract inverse metric tensor components g⁻¹
-    // recip_metric_ layout: [G₁₁, G₁₂, G₁₃, G₂₂, G₂₃, G₃₃]
-    double G11, G22, G33, G12, G13, G23;
-    if (DIM == 3) {
-        G11 = recip_metric_[0]; G12 = recip_metric_[1]; G13 = recip_metric_[2];
-        G22 = recip_metric_[3]; G23 = recip_metric_[4]; G33 = recip_metric_[5];
-    } else if (DIM == 2) {
-        // 2D: indices map to (1,2) plane
-        G11 = recip_metric_[0]; G12 = recip_metric_[1]; G13 = 0.0;
-        G22 = recip_metric_[3]; G23 = 0.0; G33 = 0.0;
-    } else {
-        // 1D: only G₁₁
-        G11 = recip_metric_[0]; G12 = 0.0; G13 = 0.0;
-        G22 = 0.0; G23 = 0.0; G33 = 0.0;
-    }
-
-    // Oblique cells need the group-invariant (minimal-form) alias
-    // representative, consistent with the diffusion Boltzmann factors;
-    // see MinimalFormAlias.h. The search runs in loop-index space
-    // (i,j,k with padded leading dims), before mapping to Miller indices.
-    // Normalize each coupling by its own pair of axes: a thin orthogonal
-    // third direction must not hide an oblique plane. The shared predicate
-    // also excludes cos(pi/2) roundoff on rectangular cells.
-    const bool oblique = index_metric_has_coupling({G11, G22, G33, G12, G13, G23});
-
-    // Recip metric in loop-index space: for DIM==3 (i,j,k)=(m1,m2,m3);
-    // DIM==2 (j,k)=(m1,m2); DIM==1 k=m1
-    double La, Lb, Lc, Lab, Lac, Lbc;
-    if (DIM == 3) {
-        La = G11; Lb = G22; Lc = G33; Lab = G12; Lac = G13; Lbc = G23;
-    } else if (DIM == 2) {
-        La = 0.0; Lb = G11; Lc = G22; Lab = 0.0; Lac = 0.0; Lbc = G12;
-    } else {
-        La = 0.0; Lb = 0.0; Lc = G11; Lab = 0.0; Lac = 0.0; Lbc = 0.0;
-    }
-    auto form = [&](int a, int b, int c) {
-        return La * a * a + Lb * b * b + Lc * c * c + 2.0 * (Lab * a * b + Lac * a * c + Lbc * b * c);
-    };
-    // Deformation vector v = 2π g⁻¹ m of a loop-index representative
-    auto deformation = [&](int a, int b, int c, double& v1, double& v2, double& v3) {
-        int m1, m2, m3;
-        if (DIM == 3) {
-            m1 = a; m2 = b; m3 = c;
-        } else if (DIM == 2) {
-            m1 = b; m2 = c; m3 = 0;
-        } else {
-            m1 = c; m2 = 0; m3 = 0;
-        }
-        v1 = TWO_PI * (G11 * m1 + G12 * m2 + G13 * m3);
-        v2 = TWO_PI * (G12 * m1 + G22 * m2 + G23 * m3);
-        v3 = TWO_PI * (G13 * m1 + G23 * m2 + G33 * m3);
+    // Inverse metric tensor g⁻¹ and grid in Miller order, unused axes last
+    const IndexMetric G = index_metric_of(recip_metric_, DIM);
+    const std::array<int, 3> grid = padded_grid(nx);
+    // Oblique cells need the group-invariant (minimal-form) alias representative,
+    // consistent with the diffusion Boltzmann factors; see MinimalFormAlias.h.
+    const AliasSearch search(grid, G);
+    const bool oblique = search.coupled;
+    // Deformation vector v = 2π g⁻¹ m of Miller indices m
+    auto deformation = [&](int m1, int m2, int m3, double& v1, double& v2, double& v3) {
+        v1 = TWO_PI * (G.g11 * m1 + G.g12 * m2 + G.g13 * m3);
+        v2 = TWO_PI * (G.g12 * m1 + G.g22 * m2 + G.g23 * m3);
+        v3 = TWO_PI * (G.g13 * m1 + G.g23 * m2 + G.g33 * m3);
     };
 
     // v⊗v of one mode (x, y, z, xy, xz, yz). The Boltzmann factor depends only on
@@ -383,39 +344,30 @@ void update_weighted_fourier_basis_periodic_impl(
     // representatives that tie for the minimum: the Brillouin-zone boundary of an
     // oblique cell (e.g. 2 m1 + m2 = N in a hexagonal cell) and the Nyquist planes
     // (m = N/2 and -N/2) of any cell. The products are averaged over the tied
-    // representatives, which keeps the stress invariant under the point group
-    // (sigma_a = sigma_b in a hexagonal cell); for two tied representatives the
-    // average is the central difference of the minimum. Orthogonal cells keep the
-    // componentwise representative for the diagonal terms (bit-identical); only
-    // their cross terms on the Nyquist planes are averaged.
-    const IndexMetric index_metric{La, Lb, Lc, Lab, Lac, Lbc};
-    const std::array<int, 3> grid = {tnx[0], tnx[1], tnx[2]};
+    // representatives (tied_alias_moments), which keeps the stress invariant under
+    // the point group (sigma_a = sigma_b in a hexagonal cell); for two tied
+    // representatives the average is the central difference of the minimum.
+    // Orthogonal cells keep the componentwise representative for the diagonal
+    // terms (bit-identical); only their cross terms on the Nyquist planes are averaged.
     auto mode_basis = [&](int i_s, int j_s, int k_s, double* vv) {
-        double v1, v2, v3;
+        const std::array<int, 3> m = DIM == 3 ? std::array<int, 3>{i_s, j_s, k_s}
+                                   : DIM == 2 ? std::array<int, 3>{j_s, k_s, 0} : std::array<int, 3>{k_s, 0, 0};
         if (oblique)
         {
-            // Aliases of least form (exact search, see MinimalFormAlias.h)
-            for (int t = 0; t < 6; ++t)
-                vv[t] = 0.0;
-            const int n_tied = for_each_min_form_alias(
-                {i_s, j_s, k_s}, grid, index_metric, form, 1e-10, [&](int a, int b, int c) {
-                    deformation(a, b, c, v1, v2, v3);
-                    vv[0] += v1 * v1; vv[1] += v2 * v2; vv[2] += v3 * v3;
-                    vv[3] += v1 * v2; vv[4] += v1 * v3; vv[5] += v2 * v3;
-                });
-            for (int t = 0; t < 6; ++t)
-                vv[t] /= n_tied;
+            const std::array<double, 6> tied = tied_alias_moments(m, search, TWO_PI);
+            std::copy(tied.begin(), tied.end(), vv);
             return;
         }
 
-        deformation(i_s, j_s, k_s, v1, v2, v3);
+        double v1, v2, v3;
+        deformation(m[0], m[1], m[2], v1, v2, v3);
         vv[0] = v1 * v1; vv[1] = v2 * v2; vv[2] = v3 * v3;
         vv[3] = v1 * v2; vv[4] = v1 * v3; vv[5] = v2 * v3;
 
         // Nyquist components (index N/2 of an even N) and their aliases -N/2
-        const bool na = (tnx[0] > 1 && 2 * i_s == tnx[0]);
-        const bool nb = (tnx[1] > 1 && 2 * j_s == tnx[1]);
-        const bool nc = (tnx[2] > 1 && 2 * k_s == tnx[2]);
+        const bool na = (grid[0] > 1 && 2 * m[0] == grid[0]);
+        const bool nb = (grid[1] > 1 && 2 * m[1] == grid[1]);
+        const bool nc = (grid[2] > 1 && 2 * m[2] == grid[2]);
         if (!(na || nb || nc))
             return;
         double cross[3] = {0.0, 0.0, 0.0};
@@ -424,7 +376,7 @@ void update_weighted_fourier_basis_periodic_impl(
             for (int b = 0; b <= (nb ? 1 : 0); ++b)
                 for (int c = 0; c <= (nc ? 1 : 0); ++c)
                 {
-                    deformation(i_s - a * tnx[0], j_s - b * tnx[1], k_s - c * tnx[2], v1, v2, v3);
+                    deformation(m[0] - a * grid[0], m[1] - b * grid[1], m[2] - c * grid[2], v1, v2, v3);
                     cross[0] += v1 * v2; cross[1] += v1 * v3; cross[2] += v2 * v3;
                     ++n_tied;
                 }
@@ -721,40 +673,18 @@ template <typename T>
 void Pseudo<T>::update_boltz_bond_periodic_for_ds_index(int ds_idx)
 {
     const double PI = std::numbers::pi;
-    const int DIM = nx.size();
     double local_ds = ds_values[ds_idx];
 
-    // Pad to 3D for unified loop
-    std::array<int, 3> tnx = {1, 1, 1};
-    if (DIM == 3)      tnx = {nx[0], nx[1], nx[2]};
-    else if (DIM == 2) tnx = {1, nx[0], nx[1]};
-    else               tnx = {1, 1, nx[0]};
-
-    // Extract reciprocal metric: G = [Gii, Gij, Gik; Gij, Gjj, Gjk; Gik, Gjk, Gkk]
-    std::array<double, 3> Gd;  // diagonal: Gii, Gjj, Gkk
-    double Gij, Gik, Gjk;      // off-diagonal
-    if (DIM == 3) {
-        Gd = {recip_metric_[0], recip_metric_[3], recip_metric_[5]};
-        Gij = recip_metric_[1]; Gik = recip_metric_[2]; Gjk = recip_metric_[4];
-    } else if (DIM == 2) {
-        Gd = {0.0, recip_metric_[0], recip_metric_[3]};
-        Gij = 0.0; Gik = 0.0; Gjk = recip_metric_[1];
-    } else {
-        Gd = {0.0, 0.0, recip_metric_[0]};
-        Gij = 0.0; Gik = 0.0; Gjk = 0.0;
-    }
-
-    // Oblique cells need the group-invariant (minimal-form) alias
-    // representative; see MinimalFormAlias.h.
-    const IndexMetric index_metric{Gd[0], Gd[1], Gd[2], Gij, Gik, Gjk};
-    // The same pair-normalized decision as the stress and ObliqueZ tables.
-    // MinimalFormAlias searches independent components separately, so the
-    // third direction cannot enlarge the search bound of an oblique plane.
-    const bool oblique = index_metric_has_coupling(index_metric);
-    auto form = [&](double a, double b, double c) {
-        return Gd[0] * a * a + Gd[1] * b * b + Gd[2] * c * c +
-               2.0 * (Gij * a * b + Gik * a * c + Gjk * b * c);
-    };
+    // f = mᵀ G m of the alias of least form (first-Brillouin-zone representative;
+    // see MinimalFormAlias.h), |k|² = 4π² f, in the layout of the Boltzmann
+    // factors: the r2c half spectrum for real fields
+    std::vector<int> shape = nx;
+    if constexpr (std::is_same<T, double>::value)
+        shape.back() = shape.back() / 2 + 1;
+    const IndexForm form{index_metric_of(recip_metric_, static_cast<int>(nx.size()))};
+    std::vector<double> forms(get_total_complex_grid());
+    for_each_mode_min_alias(padded_grid(nx), padded_grid(shape), form.g, form,
+        [&](long long idx, const std::array<int, 3>& u) { forms[idx] = form(u[0], u[1], u[2]); });
 
     for (const auto& [monomer_type, bond_length] : bond_lengths)
     {
@@ -762,66 +692,11 @@ void Pseudo<T>::update_boltz_bond_periodic_for_ds_index(int ds_idx)
         double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
         double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
         double prefactor = -bond_length_sq * 4.0 * PI * PI * local_ds / 6.0;
-
-        for (int i = 0; i < tnx[0]; i++)
+        for (size_t idx = 0; idx < forms.size(); ++idx)
         {
-            int i_signed = (i > tnx[0]/2) ? i - tnx[0] : i;
-            int ni = std::abs(i_signed);
-
-            for (int j = 0; j < tnx[1]; j++)
-            {
-                int j_signed = (j > tnx[1]/2) ? j - tnx[1] : j;
-                int nj = std::abs(j_signed);
-
-                if constexpr (std::is_same<T, double>::value)
-                {
-                    for (int k = 0; k < tnx[2]/2+1; k++)
-                    {
-                        int idx = i * tnx[1]*(tnx[2]/2+1) + j*(tnx[2]/2+1) + k;
-                        double mag_q2;
-                        if (oblique)
-                        {
-                            std::array<int, 3> m = {i_signed, j_signed, k};
-                            min_form_alias_rep(m, tnx, index_metric, form);
-                            const int m1 = m[0], m2 = m[1], m3 = m[2];
-                            mag_q2 = prefactor * (Gd[0]*m1*m1 + Gd[1]*m2*m2 + Gd[2]*m3*m3 +
-                                2.0*(Gij*m1*m2 + Gik*m1*m3 + Gjk*m2*m3));
-                        }
-                        else
-                        {
-                            mag_q2 = prefactor * (Gd[0]*ni*ni + Gd[1]*nj*nj + Gd[2]*k*k +
-                                2.0*(Gij*i_signed*j_signed + Gik*i_signed*k + Gjk*j_signed*k));
-                        }
-                        _boltz_bond[idx] = std::exp(mag_q2);
-                        _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
-                    }
-                }
-                else  // Complex field type
-                {
-                    for (int k = 0; k < tnx[2]; k++)
-                    {
-                        int k_signed = (k > tnx[2]/2) ? k - tnx[2] : k;
-                        int nk = std::abs(k_signed);
-                        int idx = i * tnx[1]*tnx[2] + j*tnx[2] + k;
-                        double mag_q2;
-                        if (oblique)
-                        {
-                            std::array<int, 3> m = {i_signed, j_signed, k_signed};
-                            min_form_alias_rep(m, tnx, index_metric, form);
-                            const int m1 = m[0], m2 = m[1], m3 = m[2];
-                            mag_q2 = prefactor * (Gd[0]*m1*m1 + Gd[1]*m2*m2 + Gd[2]*m3*m3 +
-                                2.0*(Gij*m1*m2 + Gik*m1*m3 + Gjk*m2*m3));
-                        }
-                        else
-                        {
-                            mag_q2 = prefactor * (Gd[0]*ni*ni + Gd[1]*nj*nj + Gd[2]*nk*nk +
-                                2.0*(Gij*i_signed*j_signed + Gik*i_signed*k_signed + Gjk*j_signed*k_signed));
-                        }
-                        _boltz_bond[idx] = std::exp(mag_q2);
-                        _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
-                    }
-                }
-            }
+            const double mag_q2 = prefactor * forms[idx];
+            _boltz_bond[idx] = std::exp(mag_q2);
+            _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
         }
     }
 }

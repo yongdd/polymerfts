@@ -56,7 +56,9 @@
 #include <array>
 #include <vector>
 #include <cassert>
+#include <cmath>
 #include <complex>
+#include <numbers>
 
 #include "Exception.h"
 
@@ -67,6 +69,13 @@ class SpaceGroup;
 /// within this many radians of it: the box is then orthogonal (is_orthogonal()), a CrysFFT
 /// engine that needs the angle applies, and SpaceGroup::check_cell accepts the cell.
 constexpr double FIXED_ANGLE_TOLERANCE = 1e-10;
+
+/// Whether an angle given in degrees lies within FIXED_ANGLE_TOLERANCE of `radians`
+/// (false if it is not finite), the one test of a fixed angle
+inline bool angle_is_fixed_at(double degrees, double radians)
+{
+    return std::abs(degrees * (std::numbers::pi / 180.0) - radians) < FIXED_ANGLE_TOLERANCE;
+}
 
 /**
  * @enum BoundaryCondition

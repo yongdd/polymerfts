@@ -22,11 +22,14 @@
  * - The blocks must form a tree: loops (also through parallel blocks or a block
  *   from a node to itself) and disconnected blocks are rejected; trees with any
  *   non-negative node labels are accepted.
+ * - A chain of one discrete segment needs no propagator steps: the statistics
+ *   print a reduction of 0 %, not 0/0.
  */
 
 #include <iostream>
 #include <functional>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -162,6 +165,19 @@ int main()
                 "There is no route from node 0 to nodes: 2, 3, 5."), "disconnected blocks are rejected");
 
             ok &= check(molecules.get_n_polymer_types() == 3, "only the three trees were added");
+        }
+
+        std::cout << "=== Statistics of chains without propagator steps ===" << std::endl;
+        {
+            Molecules molecules("discrete", 1.0, {{"A", 1.0}});
+            molecules.add_polymer(1.0, {{"A", 1.0, 0, 1}}, {});
+            PropagatorComputationOptimizer optimizer(&molecules, true);
+            std::ostringstream printed;
+            std::streambuf* original = std::cout.rdbuf(printed.rdbuf());
+            optimizer.display_statistics();
+            std::cout.rdbuf(original);
+            ok &= check(printed.str().find("reduction = 0 %") != std::string::npos,
+                "a one-segment discrete chain prints a reduction of 0 % (" + printed.str().substr(0, printed.str().size() - 1) + ")");
         }
 
         std::cout << "=== NaN values ===" << std::endl;

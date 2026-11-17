@@ -84,11 +84,9 @@ protected:
         // symmetric under the hexagonal point group and mode-by-mode
         // consistent with the full-grid multiplier. The z (DCT) index is a
         // true non-negative frequency and needs no re-aliasing (ObliqueZ
-        // requires alpha = beta = 90, i.e. G13 = G23 = 0).
-        // Relative-tolerance gate: gamma of exactly 90 degrees gives
-        // cos(pi/2) ~ 6e-17; do not flip rectangular cells onto the
-        // minimal-form alias path.
-        const bool oblique_xy = reciprocal_axes_coupled(G11, G22, G12);
+        // requires alpha = beta = 90, i.e. G13 = G23 = 0). Rectangular cells,
+        // where gamma = 90 degrees gives cos(pi/2) ~ 6e-17, keep the centered
+        // representative (index_metric_has_coupling).
         const std::array<int, 3> grid_xy = {nx_logical_[0], nx_logical_[1], 1};
         const IndexMetric metric_xy{G11, G22, 0.0, G12, 0.0, 0.0};
         auto form_xy = [&](double a, double b, double) {
@@ -97,14 +95,8 @@ protected:
 
         const int Nyh = nx_logical_[1] / 2 + 1;
         const int Nz2 = nx_physical_[2];
-        for (int ix = 0; ix < nx_logical_[0]; ++ix)
-        {
-            int m1s = (ix > nx_logical_[0] / 2) ? (ix - nx_logical_[0]) : ix;
-            for (int iy = 0; iy < Nyh; ++iy)
-            {
-                std::array<int, 3> rep = {m1s, iy, 0};
-                if (oblique_xy)
-                    min_form_alias_rep(rep, grid_xy, metric_xy, form_xy);
+        for_each_mode_min_alias(grid_xy, {nx_logical_[0], Nyh, 1}, metric_xy, form_xy,
+            [&](long long ixy, const std::array<int, 3>& rep) {
                 const int m1 = rep[0], m2 = rep[1];
                 for (int iz = 0; iz < Nz2; ++iz)
                 {
@@ -112,11 +104,9 @@ protected:
                     double gmm = G11 * m1 * m1 + G22 * m2 * m2 + G33 * m3 * m3
                                + 2.0 * (G12 * m1 * m2 + G13 * m1 * m3 + G23 * m2 * m3);
                     double k2 = factor * gmm;
-                    int idx = (ix * Nyh + iy) * Nz2 + iz;
-                    boltz[idx] = std::exp(-k2 * ds);
+                    boltz[ixy * Nz2 + iz] = std::exp(-k2 * ds);
                 }
-            }
-        }
+            });
 
         return boltz;
     }

@@ -48,12 +48,10 @@ namespace {
     /// Minimum sin(gamma) value to avoid division by zero in lattice calculations
     constexpr double SIN_GAMMA_MIN = 1e-10;
 
-    /// An angle in degrees lies within FIXED_ANGLE_TOLERANCE radians of 90 degrees, in the
-    /// arithmetic of is_orthogonal() (false if it is not finite)
+    /// An angle in degrees lies within FIXED_ANGLE_TOLERANCE radians of 90 degrees
     bool is_right_angle(double degrees)
     {
-        const double deg_to_rad = std::numbers::pi / 180.0;
-        return std::abs(degrees * deg_to_rad - std::numbers::pi / 2.0) < FIXED_ANGLE_TOLERANCE;
+        return angle_is_fixed_at(degrees, std::numbers::pi / 2.0);
     }
 
     /**
@@ -359,11 +357,8 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         for (int d = 0; d < 3; d++)
             angles_[d] = full_angles[d] * deg_to_rad;
 
-        // Check if orthogonal (all angles are 90 degrees within tolerance)
-        const double angle_tolerance = FIXED_ANGLE_TOLERANCE;
-        is_orthogonal_ = (std::abs(angles_[0] - std::numbers::pi/2.0) < angle_tolerance &&
-                          std::abs(angles_[1] - std::numbers::pi/2.0) < angle_tolerance &&
-                          std::abs(angles_[2] - std::numbers::pi/2.0) < angle_tolerance);
+        // Orthogonal: all angles are 90 degrees within tolerance
+        is_orthogonal_ = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
 
         // Grid interval
         for(int d=0; d<DIM; d++)
@@ -801,11 +796,7 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
     for (int d = 0; d < 3; d++)
         angles_[d] = full_angles[d] * deg_to_rad;
 
-    // Check if orthogonal
-    const double angle_tolerance = FIXED_ANGLE_TOLERANCE;
-    is_orthogonal_ = (std::abs(angles_[0] - std::numbers::pi/2.0) < angle_tolerance &&
-                      std::abs(angles_[1] - std::numbers::pi/2.0) < angle_tolerance &&
-                      std::abs(angles_[2] - std::numbers::pi/2.0) < angle_tolerance);
+    is_orthogonal_ = orthogonal;
 
     // Grid interval
     for(int d=0; d<dim; d++)

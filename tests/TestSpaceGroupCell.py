@@ -7,7 +7,8 @@ the symmetry must be rejected, for every crystal system: cubic a = b = c,
 tetragonal a = b, orthorhombic right angles, hexagonal (and trigonal in
 hexagonal axes) a = b with gamma = 120, rhombohedral a = b = c with
 alpha = beta = gamma, and monoclinic with the unique axis perpendicular to the
-other two. Matching cells must be accepted.
+other two. Matching cells must be accepted. SpaceGroup.fixed_angles names the
+angles each group fixes (None where free), as SCFT box relaxation reads them.
 """
 
 import sys
@@ -74,6 +75,14 @@ def main():
     # Monoclinic P2/m with unique axis b: alpha = gamma = 90, beta free
     expect_accept("P2/m (unique b) with beta = 70", lambda: solver([2.0, 2.0, 2.0], "P2/m", 57, angles=[90.0, 70.0, 90.0]))
     expect_reject("P2/m (unique b) with alpha = 70", lambda: solver([2.0, 2.0, 2.0], "P2/m", 57, angles=[70.0, 90.0, 90.0]))
+
+    # The angles the group fixes
+    for symbol, hall, expected in [("Im-3m", 529, [90.0] * 3), ("P6/mmm", None, [90.0, 90.0, 120.0]),
+                                   ("R-3m", 459, [None] * 3), ("P2/m", 57, [90.0, None, 90.0]),
+                                   ("P-1", None, [None] * 3)]:
+        sg = SpaceGroup([8, 8, 8], symbol, hall) if hall is not None else SpaceGroup([8, 8, 8], symbol)
+        if sg.fixed_angles() != expected:
+            failed.append(f"{symbol} fixes {sg.fixed_angles()}, expected {expected}")
 
     # Box changes: set_lx and set_lattice_parameters
     s = expect_accept("Im-3m on a cube", lambda: solver([2.0, 2.0, 2.0], "Im-3m", 529))

@@ -265,6 +265,10 @@ public:
      */
     double get_volume_fraction() const;
 
+    /// A species with volume fraction 0, present only to be computed alongside the others:
+    /// it has no concentration, stress or free-energy term, also where its propagators are not finite
+    bool is_absent() const { return volume_fraction == 0.0; }
+
     /**
      * @brief Get number of blocks in polymer.
      * @return Number of edges in polymer graph
