@@ -450,23 +450,33 @@ def test_scft_result_with_langevin_settings_exports(tmp_path):
     assert (tmp_path / 'pscf/param').read_text() == TOOL['param_text'](params(), 'orthorhombic')
 
 
-@pytest.mark.parametrize('simulation', ('LFTS', 'CLFTS'))
+@pytest.mark.parametrize('simulation', ('LFTS', 'CLFTS', 'CLFTS as --fields'))
 def test_langevin_fields_files(tmp_path, simulation):
-    # A CL-FTS fields file, also of a box of a Gibbs ensemble, carries the zeta_n of its model; its
-    # params here have the saddle and compressor of L-FTS, so that the file alone tells the method
+    # A CL-FTS fields file, also of a box of a Gibbs ensemble, carries the zeta_n of its model and
+    # its complex fields as w_A_real and w_A_imag (clfts.py save_simulation_data)
     data = result()
-    data['initial_params'].update(LFTS)
-    if simulation == 'CLFTS':
+    if simulation == 'LFTS':
+        data['initial_params'].update(LFTS)
+    else:
+        data['initial_params'].update(LANGEVIN)
         data['zeta_n'] = 100.
+        for name in params()['segment_lengths']:
+            w = data.pop('w_' + name)
+            data['w_' + name + '_real'], data['w_' + name + '_imag'] = w, .5 * w
     source = tmp_path / 'fields.mat'
     savemat(source, data, long_field_names=True)
     if simulation == 'LFTS':
         TOOL['export_files'](source, tmp_path / 'pscf')
         assert (tmp_path / 'pscf/param').read_text() == TOOL['param_text'](params(), 'orthorhombic')
-    else:
-        with pytest.raises(ValueError, match='compressible model'):
-            TOOL['export_files'](source, tmp_path / 'pscf')
-        assert not (tmp_path / 'pscf').exists()
+        return
+    args = (source, tmp_path / 'pscf')
+    if simulation == 'CLFTS as --fields':
+        # The fields of an L-FTS parameter file are still CL-FTS fields, not a missing w_Zed
+        args = (tmp_path / 'params.json', tmp_path / 'pscf', source)
+        args[0].write_text(json.dumps({**params(), **LFTS}))
+    with pytest.raises(ValueError, match='CL-FTS uses a compressible model'):
+        TOOL['export_files'](*args)
+    assert not (tmp_path / 'pscf').exists()
 
 
 @pytest.mark.parametrize('problem', ('discrete', 'complex', 'nonfinite', 'field_size', 'nx_mismatch',

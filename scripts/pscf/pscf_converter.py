@@ -14,7 +14,7 @@ import argparse
 import copy
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from pprint import pformat
 import runpy
 import shlex
@@ -344,18 +344,20 @@ def prepare_export(source, field_source=None, lattice=None):
     except _VALIDATION["ValidationError"] as exc:
         raise ValueError(str(exc)) from None
     # PSCF's SCFT input describes one incompressible system. CL-FTS takes zeta_n = 100 when params
-    # give none: its fields files carry that value, and a parameter file with Langevin settings but
-    # without the saddle and compressor that L-FTS requires is a CL-FTS input. Saved results keep
-    # their params under initial_params, which an SCFT run may share with a Langevin method
+    # give none: its fields files carry that value beside w_A_real and w_A_imag, also as the --fields
+    # of a parameter file, and a parameter file with Langevin settings but without the saddle and
+    # compressor that L-FTS requires is a CL-FTS input. Saved results keep their params under
+    # initial_params, which an SCFT run may share with a Langevin method
     if "gibbs_ensemble" in params:
         raise ValueError("A Gibbs-ensemble input describes two boxes, which one PSCF SCFT input cannot represent.")
-    if params.get("zeta_n") is not None:
-        raise ValueError("Finite-compressibility models are not supported by this incompressible PSCF export.")
     parameter_file = "initial_params" not in source
-    if source.get("zeta_n") is not None or (parameter_file and "langevin" in params
-                                            and not {"saddle", "compressor"} <= params.keys()):
+    saved = ([] if parameter_file else [source]) + ([] if field_source is None else [field_source])
+    if (any(isinstance(d, dict) and d.get("zeta_n") is not None for d in saved)
+            or (parameter_file and "langevin" in params and not {"saddle", "compressor"} <= params.keys())):
         raise ValueError("CL-FTS uses a compressible model (zeta_n, 100 by default), which this "
                          "incompressible PSCF export cannot represent.")
+    if params.get("zeta_n") is not None:
+        raise ValueError("Finite-compressibility models are not supported by this incompressible PSCF export.")
     data = field_source if field_source is not None else source
     if not isinstance(data, dict):
         raise ValueError("Field input must be a dictionary.")
@@ -787,11 +789,12 @@ def script_commands(text):
         elif name == "ITERATE" and stage == "iterate":
             stage = "write"
         elif name in writes and stage == "write":
-            source = Path(argument)
-            # anchor: a root or a drive; on Windows "/tmp/x" is rooted on the current drive
-            if (not argument or source.anchor or ".." in source.parts or "\\" in argument
-                    or argument.endswith("/") or source == Path(".")):
-                raise ValueError(f"PSCF output must be a relative file path without '..': {argument!r}.")
+            # The generated script may run on Windows, where "/tmp/x" is rooted on the current
+            # drive and ':' separates a drive ("C:x") or names an alternate data stream
+            source = PurePosixPath(argument)
+            if (not argument or source.anchor or ".." in source.parts or "\\" in argument or ":" in argument
+                    or argument.endswith("/") or source == PurePosixPath(".")):
+                raise ValueError(f"PSCF output must be a relative file path without '..', '\\' or ':': {argument!r}.")
             outputs.append({"command": name, "source": argument, "target": source.as_posix() + ".mat"})
         elif name == "FINISH" and stage == "write" and position == len(tokens):
             stage = "done"

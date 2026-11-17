@@ -178,7 +178,9 @@ def test_unsupported_or_malformed_commands_leave_no_bundle(tmp_path, command):
     assert not (tmp_path / 'job').exists()
 
 
-@pytest.mark.parametrize('path', ('../outside', '/tmp/outside', '.', 'out/../omega', 'out/', 'out\\omega'))
+# The generated script may run on Windows: drives and ':' are refused on every platform
+@pytest.mark.parametrize('path', ('../outside', '/tmp/outside', '.', 'out/../omega', 'out/', 'out\\omega',
+                                  'C:/outside', 'C:outside', '//server/share/x', 'out/x:stream'))
 def test_output_paths_cannot_escape_or_name_a_directory(tmp_path, path):
     with pytest.raises(ValueError, match='relative file path'):
         imported(tmp_path, command=f'READ_W_RGRID in/omega ITERATE WRITE_W_RGRID "{path}" FINISH')

@@ -198,8 +198,9 @@ data. These files are not PSCF r-grid or text thermodynamics files, and
 `WRITE_THERMO` does not reproduce PSCF's append-to-text behavior. The original
 relative output name is retained with `.mat` appended. `conversion.json` records
 each command's mapping. If there are no write commands, `results/fields.mat` is
-saved by default. Output paths must be relative filenames without `..`;
-conflicting file/directory paths are rejected.
+saved by default. Output paths must be relative filenames without `..`, `\` or `:`
+on every platform, as the script may run on Windows; conflicting file/directory
+paths are rejected.
 
 The script creates a fresh `results/` beside `simulation.py` and leaves the working
 directory unchanged; it draws no polymer architecture figures. It refuses to reuse an
