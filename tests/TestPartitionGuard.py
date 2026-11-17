@@ -97,7 +97,7 @@ def check_simulations(root):
     if not expect_partition_error(lambda: lfts.run(diblock_fields()), "the initial saddle point"):
         failures.append("L-FTS accepted a saddle point with a negative Q")
 
-    for key in ("langevin", "compressor", "saddle", "recording", "verbose_level"):   # SCFT refuses them
+    for key in ("langevin", "compressor", "saddle", "recording", "verbose_level"):   # SCFT would ignore them
         params.pop(key)
     params.update(optimizer={"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
                   max_iter=3, tolerance=1e-8, relax_cell=False)

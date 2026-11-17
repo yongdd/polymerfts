@@ -85,8 +85,8 @@ def main():
                 np.testing.assert_allclose(saved["phi_A"], phi["A"], rtol=0, atol=1e-11)
             assert isinstance(short.params["nx"][0], np.int64)
 
-    # Options given as None and path objects are saved in every format (MAT files have no
-    # None: such options are left out)
+    # Path objects are saved in every format; options given as None are absent, and every format
+    # leaves them out
     with tempfile.TemporaryDirectory() as tmp:
         p = params([32], [1.7], max_iter=2, tolerance=1e-11, relax_cell=False, smearing=None,
                    polymer_figure_dir=Path(tmp)/"figures")
@@ -99,7 +99,7 @@ def main():
         assert "smearing" not in saved.dtype.names and str(saved["polymer_figure_dir"]) == str(Path(tmp)/"figures")
         with (Path(tmp)/"options.json").open() as stream:
             saved = json.load(stream)["initial_params"]
-        assert saved["smearing"] is None and saved["polymer_figure_dir"] == str(Path(tmp)/"figures")
+        assert "smearing" not in saved and saved["polymer_figure_dir"] == str(Path(tmp)/"figures")
         # Result files get the permissions of any new file (0666 less the umask), not the
         # 0600 of a temporary file; a umask of 022 tells the two apart
         if os.name == "posix":

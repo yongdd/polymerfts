@@ -7,7 +7,7 @@ from typing import Dict, Optional, Callable, Union
 from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..theory.chains import chain_solver
-from ..utils.validation import (normalize_params, validate_scft_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_scft_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values)
 from ..utils.common import (
@@ -295,8 +295,7 @@ class SCFT:
         SCFT
             Configured SCFT instance.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params)
 
     def compute_concentrations(self, w, q_init=None):

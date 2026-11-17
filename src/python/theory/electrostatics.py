@@ -508,10 +508,11 @@ class Electrostatics:
         """ψ, ψ(k), the previous noise and the noise stream from a checkpoint that validate_checkpoint()
         accepted.
 
-        ψ(k) is restored as stored, because transforming ψ back does not reproduce it bit
+        ψ(k) is restored as stored, not transformed from ψ, which does not reproduce it bit
         for bit.
         """
-        self.psi = np.asarray(data["psi_real"]) + 1j * np.asarray(data["psi_imag"])
+        self._psi = np.array(np.asarray(data["psi_real"]) + 1j * np.asarray(data["psi_imag"]),
+                             dtype=np.complex128).reshape(-1)
         self._psi_k = np.reshape(np.asarray(data["psi_k_real"]) + 1j * np.asarray(data["psi_k_imag"]),
                                  self.nx).astype(np.complex128)
         self._forget_ions()

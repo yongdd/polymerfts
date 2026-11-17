@@ -8,8 +8,8 @@ bit on the same backend. expect_error() expects an exception. The inputs that se
 diblock_parameters() and diblock_fields() (a 1D L-FTS or CL-FTS diblock melt), FailingLFTS (its
 saddle search fails at chosen calls), compressible_parameters() (a 4-point diblock with zeta_n)
 and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
-with the saddle and compressor entries, of CL-FTS (cls=CLFTS), which refuses them, or the system
-part for SCFT (cls=SCFT), which refuses all Langevin options (input_of).
+with the saddle and compressor entries, of CL-FTS (cls=CLFTS), which would ignore them with a
+warning, or the system part for SCFT (cls=SCFT), which would ignore the Langevin options (input_of).
 """
 
 import contextlib
@@ -121,9 +121,9 @@ def exact_restart(make, start, steps, split, files, inspect=None, exclude=(), sa
 
 
 def input_of(cls, params):
-    """params for the simulation class cls, without the options of the other methods, which it refuses:
-    CL-FTS takes no saddle and compressor entries, SCFT neither them nor the Langevin options (an SCFT
-    input also needs the optimizer and relax_cell)."""
+    """params for the simulation class cls, without the options of the other methods, which it would
+    ignore with a warning: CL-FTS reads no saddle and compressor entries, SCFT neither them nor the
+    Langevin options (an SCFT input also needs the optimizer and relax_cell)."""
     if issubclass(cls, (CLFTS, SCFT)):
         del params["compressor"], params["saddle"]
     if issubclass(cls, SCFT):

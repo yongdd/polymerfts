@@ -27,7 +27,7 @@ from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from ..theory.electrostatics import Electrostatics
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values, previous_noise_values)
 from ..utils.common import (
@@ -95,8 +95,7 @@ class CLFTS:
         Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params, random_seed=random_seed, integrator=integrator, callbacks=callbacks)
 
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
@@ -106,7 +105,7 @@ class CLFTS:
         params = validate_lfts_params(params, complex_fields=True)
 
         # Compressibility parameter; complex Langevin needs a finite one (default: high compressibility)
-        self.zeta_n = 100.0 if params.get("zeta_n", None) is None else params["zeta_n"]
+        self.zeta_n = params.get("zeta_n", 100.0)
 
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
@@ -454,7 +453,7 @@ class CLFTS:
         # The number of components
         M = len(self.monomer_types)
 
-        # The recording directory and the complex auxiliary fields to start from (chains.prepare_run)
+        # The architecture drawings and the complex auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data, np.complex128)
 
         if start_langevin_step is None:
@@ -627,8 +626,8 @@ class CLFTS:
                 warnings.warn("The run continues without initial_psi: the electrostatic potential restarts "
                               "at zero and relaxes again", RuntimeWarning)
             es.psi = np.zeros_like(es.psi)
-        es.previous_noise = (np.zeros(self.prop_solver.n_grid) if psi_noise_prev is None
-                             else np.asarray(psi_noise_prev, dtype=np.float64).reshape(-1).copy())
+        # run() has checked psi_noise_prev and made it a flat array of its own (previous_noise_values)
+        es.previous_noise = np.zeros(self.prop_solver.n_grid) if psi_noise_prev is None else psi_noise_prev
 
     def _forces(self, w_aux, phi_smeared):
         """δH/δw of all auxiliary fields from the smeared concentrations, with the stabilization.

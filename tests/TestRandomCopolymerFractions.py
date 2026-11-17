@@ -24,7 +24,8 @@ from fts_checks import input_of, python_platform, quiet
 
 
 def parameters(platform, fractions, directory, model="continuous", cls=SCFT):
-    """The input of cls (SCFT, LFTS or CLFTS) without the options of the other methods, which it refuses."""
+    """The input of cls (SCFT, LFTS or CLFTS) without the options of the other methods, which it would
+    ignore with a warning."""
     params = {
         "nx": [16], "lx": [4.0], "chain_model": model, "ds": 0.05,
         "segment_lengths": {name: 1.0 + 0.2 * i for i, name in enumerate(sorted(fractions))},

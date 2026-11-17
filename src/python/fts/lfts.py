@@ -3,7 +3,7 @@ import time
 import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
                                 initial_field_values, previous_noise_values)
 from ..utils.common import (
     display_system,
@@ -88,8 +88,7 @@ class LFTS:
         Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params, random_seed=random_seed, integrator=integrator, callbacks=callbacks)
 
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
@@ -360,7 +359,7 @@ class LFTS:
         # The number of real fields
         R = len(self.mpt.aux_fields_real_idx)
 
-        # The recording directory and the auxiliary fields to start from (chains.prepare_run)
+        # The architecture drawings and the auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data)
 
         if start_langevin_step is None:
@@ -369,14 +368,17 @@ class LFTS:
         # Find the saddle point of the initial fields. A continued run loads fields
         # that are already at the saddle point; solving again would change the
         # trajectory slightly, so the loop's own solve is the first one then.
+        # The smeared concentrations (smearing.py) are those of the forces and dH/dχN
         print("iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)")
         if start_langevin_step == 1:
-            phi = self.saddle.first_point(w_aux)
-        elif restored:
-            phi = {m: np.asarray(_restart_data["phi_" + m]).reshape(self.prop_solver.n_grid).copy()
-                   for m in self.monomer_types}
+            phi, phi_smeared = self.saddle.first_point(w_aux)
         else:
-            phi, _ = self.compute_concentrations(w_aux)
+            if restored:
+                phi = {m: np.asarray(_restart_data["phi_" + m]).reshape(self.prop_solver.n_grid).copy()
+                       for m in self.monomer_types}
+            else:
+                phi, _ = self.compute_concentrations(w_aux)
+            phi_smeared = self.smearing.apply_to_dict(phi)
 
         # Measurements of the run, with the pending ones of a checkpoint
         series = {"H_history": 0, "drift_history": 0} | {"dH " + key: 0 for key in self.chi_n}
@@ -388,9 +390,6 @@ class LFTS:
             normal_noise_prev = np.zeros([R, self.prop_solver.n_grid], dtype=np.float64)
         else:
             normal_noise_prev = np.reshape(normal_noise_prev, [R, self.prop_solver.n_grid])
-
-        # The smeared concentrations of the fields (smearing.py), for the forces and dH/dχN
-        phi_smeared = self.smearing.apply_to_dict(phi)
 
         # Init timers
         self.saddle.iterations = 0

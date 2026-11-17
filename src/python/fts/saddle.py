@@ -222,9 +222,10 @@ class SaddlePointSearch:
         return LRAM(lr, am)   # "lram" (validation.py accepts these three)
 
     def first_point(self, w_aux):
-        """Saddle point of the initial fields, found in place; returns their concentrations."""
-        phi, _, _, _ = self.solve_with_retries(w_aux, "the initial saddle point")
-        return phi
+        """Saddle point of the initial fields, found in place; returns their concentrations and smeared
+        concentrations."""
+        phi, phi_smeared, _, _ = self.solve_with_retries(w_aux, "the initial saddle point")
+        return phi, phi_smeared
 
     def advance(self, w_aux_start, forces, noise_prev, langevin_step):
         """One Langevin step of the real fields, then the saddle point of the imaginary fields.

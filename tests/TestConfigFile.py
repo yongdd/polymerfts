@@ -4,8 +4,10 @@
 Writes small YAML and JSON files and checks that numpy expressions are
 evaluated, that nothing outside the allowed expressions is executed, that bad
 files raise ConfigError, and that the three simulation classes build from a
-file with keyword overrides applied: one file serves the three, each warning about
-the options of the other methods it ignores, and a key no method reads is refused.
+file with keyword overrides applied: one file serves the three, each warning once,
+at the line that calls from_file, about the options of the other methods it
+ignores; a key given as None is absent, also as an override, and a key no method
+reads is refused.
 """
 
 import contextlib
@@ -96,27 +98,43 @@ def main():
             except FileNotFoundError:
                 pass
 
-            # The simulation classes build from one file, with overrides applied, each warning about the
-            # options of the other methods that it ignores; a key that no method reads is refused
+            # The simulation classes build from one file, with overrides applied, each with one warning
+            # about the options of the other methods that it ignores, at the line that calls from_file; a
+            # key given as None (~) in the file is absent, and an override given as None removes the key
+            # of the file; a key that no method reads is refused
             with open("shared.yaml", "w") as f:
                 f.writelines(line for line in YAML.replace("PLATFORM", cpu_platform()).splitlines(keepends=True)
                              if not line.startswith(("note:", "complex:")))
+                f.write("dynamic_stabilization: ~\nzeta_n: ~\n")
             with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 scft = SCFT.from_file("shared.yaml", max_iter=7)
                 lfts = LFTS.from_file("shared.yaml", random_seed=1, ds=0.05)
                 clfts = CLFTS.from_file("shared.yaml", random_seed=1)
-                ignored = [str(w.message) for w in caught if "ignores the options of other methods" in str(w.message)]
+                ignored = [w for w in caught if "ignores the options of other methods" in str(w.message)]
                 for method, key in (("SCFT", "langevin (L-FTS and CL-FTS)"), ("L-FTS", "relax_cell (SCFT)"),
                                     ("CL-FTS", "compressor (L-FTS)")):
-                    if not any(text.startswith(method + " ") and key in text for text in ignored):
-                        failed.append(f"{method} gave no warning that it ignores {key}: {ignored}")
+                    texts = [str(w.message) for w in ignored if str(w.message).startswith(method + " ")]
+                    if len(texts) != 1 or key not in texts[0]:
+                        failed.append(f"{method} gave not one warning that it ignores {key}: {texts}")
+                for w in ignored:
+                    if os.path.realpath(w.filename) != os.path.realpath(__file__):
+                        failed.append(f"the warning '{w.message}' points at {w.filename}:{w.lineno}")
                 try:
                     LFTS.from_file("p.yaml")
                     failed.append("LFTS.from_file accepted the key 'note'")
                 except ValidationError as error:
                     if "L-FTS does not take a 'note' parameter" not in str(error):
                         failed.append(f"LFTS.from_file refused p.yaml with {error}")
+                # The file gives relax_cell: false; the override None removes it, and SCFT requires it
+                try:
+                    SCFT.from_file("shared.yaml", relax_cell=None)
+                    failed.append("SCFT.from_file kept the relax_cell of the file under an override None")
+                except ValidationError as error:
+                    if "relax_cell" not in str(error):
+                        failed.append(f"SCFT.from_file with relax_cell=None refused with {error}")
+            if clfts.alpha_ds != 0.0 or clfts.zeta_n != 100.0 or lfts.zeta_n is not None:
+                failed.append("an option given as None in the file is not absent")
             if scft.max_iter != 7:
                 failed.append("SCFT.from_file override")
             if abs(lfts.ds - 0.05) > 1e-15:

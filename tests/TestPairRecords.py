@@ -49,7 +49,7 @@ def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4), cl
     }
     if wtmd:
         result["wtmd"] = {"update_freq": 3, "recording_period": 3, "dpsi": 0.1}
-    return input_of(cls, result)   # without the options of the other methods, which cls refuses
+    return input_of(cls, result)   # without the options of the other methods, which cls would ignore
 
 
 def fields(names, size=64):

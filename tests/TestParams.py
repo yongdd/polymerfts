@@ -4,7 +4,10 @@
 Builds the three simulation classes on the CPU with tiny grids and checks
 that the parameter dictionary is read as documented: defaults, chi N
 completion, random copolymers, no modification of the user's dictionary,
-and ValidationError for invalid input.
+and ValidationError for invalid input. The top-level keys: a key given as None
+is absent, the options of other methods are ignored with one warning at the
+caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
+and a key that no method reads is refused.
 """
 
 import sys
@@ -76,6 +79,84 @@ def expect_ignored(cls, params, what, key):
         return True
     print(f"FAILED: {what} gave no warning naming {key!r}")
     return False
+
+
+def check_none_keys():
+    """A top-level key given as None is the same as an absent key, for every option of every method: the
+    method takes its default (options that refused None before, as platform, dynamic_stabilization and
+    the convergence options of SCFT, among them) or reports a required key as missing. The None of
+    another method's key is no option to warn about, and the None of an alias does not conflict with
+    its other name."""
+    ok = True
+    absent = {"platform": None, "zeta_n": None, "smearing": None, "angles": None, "bc": None,
+              "numerical_method": None, "reduce_memory": None, "aggregate_propagator_computation": None}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        given = {**scft_parameters(), **absent, "max_iter": None, "tolerance": None, "stress_scale": None,
+                 "stress_interval": None, "crystal_system": None, "space_group": None, "axis_ordering": None,
+                 "langevin": None, "wtmd": None, "dynamic_stabilization": None}
+        params = validate_scft_params(given)
+        given["platform"] = cpu_platform()
+        scft = build(SCFT, given)
+        lfts = build(LFTS, {**lfts_params(), **absent, "platform": cpu_platform(), "wtmd": None,
+                            "relax_cell": None, "axis_ordering": None, "electrostatics": None,
+                            "dynamic_stabilization": None})
+        clfts = build(CLFTS, {**clfts_params(), **absent, "platform": cpu_platform(), "electrostatics": None,
+                              "dynamic_stabilization": None, "saddle": None, "max_iter": None})
+    if caught:
+        print(f"FAILED: None values gave warnings: {[str(w.message) for w in caught]}")
+        ok = False
+    if set(params) != set(scft_parameters()) - {"platform"}:
+        print(f"FAILED: the keys given as None stay in the SCFT input: {sorted(params)}")
+        ok = False
+    expected = (2000, 1e-8, 1, 1, 0.0, 100.0)
+    actual = (scft.max_iter, scft.tolerance, scft.cell.stress_scale, scft.cell.stress_interval, clfts.alpha_ds,
+              clfts.zeta_n)
+    if actual != expected or lfts.zeta_n is not None or not lfts.prop_solver.aggregate_propagator_computation:
+        print(f"FAILED: the defaults of options given as None: {actual}, L-FTS zeta_n {lfts.zeta_n}")
+        ok = False
+    for cls, params, key, message in (
+            (SCFT, scft_parameters(), "relax_cell", "Missing required parameter for SCFT: 'relax_cell'"),
+            (SCFT, scft_parameters(), "optimizer", "Missing required parameter for SCFT: 'optimizer'"),
+            (LFTS, lfts_params(), "langevin", "Missing required parameter: 'langevin'"),
+            (CLFTS, clfts_params(), "nx", "Missing required parameter: 'nx'")):
+        ok &= expect_error(cls, {**params, key: None}, f"{cls.__name__} with {key} None", message)
+    for given in ({"alpha_ds": None, "dynamic_stabilization": 0.05}, {"alpha_ds": 0.05, "dynamic_stabilization": None}):
+        if build(CLFTS, {**clfts_params(), **given}).alpha_ds != 0.05:
+            print(f"FAILED: dynamic stabilization of {given}")
+            ok = False
+    return ok
+
+
+def check_ignored_keys():
+    """The options of other methods: one warning per construction that lists all of them, at the line
+    that builds the simulation (here in build()); their sections are not checked. L-FTS and CL-FTS
+    refuse axis_ordering, which would reorder the shared nx, lx, bc and angles."""
+    ok = True
+    invalid = {SCFT: {"langevin": "x", "saddle": 3, "wtmd": {"ell": -1}, "dynamic_stabilization": "fast"},
+               LFTS: {"optimizer": 3, "space_group": "Im-3m", "stress_interval": "fast", "dynamic_stabilization": -1},
+               CLFTS: {"saddle": "x", "compressor": {"name": "foo"}, "wtmd": {"ell": -1}, "relax_cell": "yes"}}
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                build(cls, {**params, **invalid[cls]})
+            except ValidationError as error:
+                print(f"FAILED: {cls.__name__} checked an option of another method: {error}")
+                ok = False
+                continue
+        ignored = [w for w in caught if "ignores the options of other methods" in str(w.message)]
+        if len(ignored) != 1 or not all(f"{key} (" in str(ignored[0].message) for key in invalid[cls]):
+            print(f"FAILED: {cls.__name__} warned {[str(w.message) for w in ignored]} about {list(invalid[cls])}")
+            ok = False
+        elif os.path.realpath(ignored[0].filename) != os.path.realpath(__file__):
+            print(f"FAILED: the warning of {cls.__name__} points at {ignored[0].filename}:{ignored[0].lineno}")
+            ok = False
+    for cls, params in ((LFTS, lfts_params()), (CLFTS, clfts_params())):
+        for ordering in (["b", "a", "c"], ["a", "b", "c"]):
+            ok &= expect_error(cls, {**params, "axis_ordering": ordering}, f"{cls.__name__} with axis_ordering",
+                               "'axis_ordering' is supported in SCFT only")
+    return ok
 
 
 def main():
@@ -578,6 +659,8 @@ def main():
     for value in (0, -1, 1.5, "fast"):
         params = scft_parameters(); params["stress_interval"] = value
         ok &= expect_error(SCFT, params, f"stress_interval {value!r}")
+    ok &= check_none_keys()
+    ok &= check_ignored_keys()
 
     if ok:
         print("Test passed, parameter handling")

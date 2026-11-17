@@ -217,13 +217,13 @@ def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):
     """The start that the runs of L-FTS and CL-FTS share; returns the auxiliary fields of the first step
     and whether they come from the checkpoint.
 
-    The recording directory gets the drawings of the chain architectures (polymer_<id>.png), unless
-    sim.draw_architectures is False. The auxiliary fields are those of the monomer fields initial_fields
-    ({type: flat array of dtype}) with the dropped modes pinned, or those that the checkpoint of a
-    continued run (restart_data) stored: transforming its monomer fields would not reproduce them bit for
-    bit. The partition consistency is checked again on the first fields of the run (check_partition_once).
+    The recording directory (which recording_run_status has created) gets the drawings of the chain
+    architectures (polymer_<id>.png), unless sim.draw_architectures is False. The auxiliary fields are
+    those of the monomer fields initial_fields ({type: flat array of dtype}) with the dropped modes pinned,
+    or those that the checkpoint of a continued run (restart_data) stored: transforming its monomer fields
+    would not reproduce them bit for bit. The partition consistency is checked again on the first fields
+    of the run (check_partition_once).
     """
-    Path(sim.recording["dir"]).mkdir(parents=True, exist_ok=True)
     if getattr(sim, "draw_architectures", True):
         draw_polymer_architectures(sim.polymers, sim.ds, sim.segment_lengths, directory=sim.recording["dir"])
     sim._partition_checked = False
