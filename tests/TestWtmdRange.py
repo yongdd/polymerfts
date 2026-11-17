@@ -34,6 +34,13 @@ def logarithmic_norm(wtmd, field):
     return np.exp(logsumexp(terms) / wtmd.l - np.log(wtmd.M))
 
 
+def coefficients(wtmd, fourier, field):
+    """The half spectrum of field that WTMD transforms: with fourier, or numpy.fft.rfftn."""
+    if fourier is not None:
+        return fourier.forward(np.reshape(field, -1))
+    return np.fft.rfftn(np.reshape(field, wtmd.nx))
+
+
 class ExactUniformTransform:
     """Supply exact uniform coefficients; still use the platform's inverse FFT."""
     def __init__(self, nx, fourier):
@@ -65,9 +72,9 @@ def norm_and_gradient(fourier=None):
             fields = np.stack([scale * base, np.zeros(size)])
             force = np.zeros((1, size))
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                psi = wtmd.compute_order_parameter(1, fields)
-                quiet(wtmd.add_bias_to_langevin, psi, force)
+                psi = quiet(wtmd.add_bias, fields, force)
             assert psi > 0 and np.isfinite(psi) and np.all(np.isfinite(force))
+            assert wtmd.order_parameter(fields) == psi
             np.testing.assert_allclose(psi, logarithmic_norm(wtmd, fields[0]), rtol=3e-13, atol=0)
             if baseline_psi is None:
                 baseline_psi, baseline_force = psi, force.copy()
@@ -90,15 +97,15 @@ def norm_and_gradient(fourier=None):
             fields = np.stack([np.full(size, amplitude), np.zeros(size)])
             force = np.zeros((1, size))
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                psi = wtmd.compute_order_parameter(1, fields)
-                quiet(wtmd.add_bias_to_langevin, psi, force)
+                psi = quiet(wtmd.add_bias, fields, force)
             np.testing.assert_allclose(psi, logarithmic_norm(wtmd, fields[0]), rtol=3e-13, atol=0)
             # An odd-length FFT can leave tiny nonzero modes of a constant
             # input. At ell=1 their phase has an O(1) derivative, and for
             # ell=1.5 it decays only as sqrt(magnitude). Compare the actual
             # coefficients against the original derivative with NumPy's IFFT.
-            magnitude = np.abs(wtmd.w_aux_k)
-            phase = np.divide(wtmd.w_aux_k, magnitude, out=np.zeros_like(wtmd.w_aux_k), where=magnitude > 0)
+            w_k = coefficients(wtmd, fourier, fields[0])
+            magnitude = np.abs(w_k)
+            phase = np.divide(w_k, magnitude, out=np.zeros_like(w_k), where=magnitude > 0)
             if psi == 0:
                 expected = np.zeros(size)
             else:
@@ -110,9 +117,8 @@ def norm_and_gradient(fourier=None):
             # and analytic uniform derivative, without assuming FFT roundoff.
             force[:] = 0
             with np.errstate(over="raise", invalid="raise", divide="raise"):
-                psi = exact.compute_order_parameter(1, fields)
-                quiet(exact.add_bias_to_langevin, psi, force)
-            assert np.count_nonzero(exact.w_aux_k) == int(amplitude != 0)
+                psi = quiet(exact.add_bias, fields, force)
+            assert np.count_nonzero(ExactUniformTransform(nx, fourier).forward(fields[0])) == int(amplitude != 0)
             expected = 0.0 if amplitude == 0 else 0.7 * wtmd.fk[0, 0, 0] ** (1.0 / ell)
             np.testing.assert_allclose(force, expected, rtol=2e-12, atol=1e-14)
 
@@ -157,17 +163,18 @@ def trajectory(root, platform, ell, method):
     params = parameters(root, platform, ell, method, 6)
     observer = Observations(params["saddle"]["tolerance"])
     sim = quiet(LFTS, params, random_seed=17, callbacks={"observations": observer})
-    bias = sim.wtmd.add_bias_to_langevin
+    add_bias = sim.wtmd.add_bias
     changes = []
 
-    def record_bias(psi, force):
-        assert np.isfinite(psi)
+    def record_bias(w_aux, force):
         before = force.copy()
-        bias(psi, force)
+        psi = add_bias(w_aux, force)
+        assert np.isfinite(psi)
         assert np.all(np.isfinite(force))
         changes.append(float(np.max(np.abs(force - before))))
+        return psi
 
-    sim.wtmd.add_bias_to_langevin = record_bias
+    sim.wtmd.add_bias = record_bias
     initial = dict(zip(("A", "B"), np.random.default_rng(3).normal(0.0, 5.0, (2, 64))))
     status = quiet(sim.run, initial)
     # Retrying the initial saddle at the same fields is allowed; accepted

@@ -69,7 +69,8 @@ def check_aliases(root):
     assert normalize_params(old) == params
     assert old == before
     assert normalize_params(params) == params
-    validate_lfts_params(old)
+    # L-FTS takes the legacy names; it refuses space_group, an SCFT key
+    validate_lfts_params({key: value for key, value in old.items() if key != "space_group"})
     assert normalize_params(old)["wtmd"]["recording_period"] == 100
     # Every alias is rejected when both spellings are supplied; values need
     # not be valid because ambiguity is caught before numerical construction.

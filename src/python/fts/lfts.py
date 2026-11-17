@@ -1,12 +1,10 @@
 import os
 import time
-import pathlib
 import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from .integrators import checked_fields
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, SaddlePointError,
-                                NumericalError, initial_field_values)
+from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
+                                finite_values, initial_field_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -18,13 +16,14 @@ from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     recording_run_status,
+    prepare_run,
     RunRecord,
     initialize_extensions,
     extension_state,
     restore_extensions,
 )
-from ..theory.chains import (read_chains, chain_solver, mean_concentrations, draw_polymer_architectures, chain_fields,
-                             solve_chains, check_partition_once)
+from ..theory.chains import (read_chains, chain_solver, mean_concentrations, chain_fields, solve_chains,
+                             check_partition_once)
 from ..utils.file_formats import load_config
 from .saddle import SaddlePointSearch
 from ..theory.smearing import smearing_of
@@ -310,11 +309,14 @@ class LFTS:
         ``'resample'`` explicitly opts into the former noise-selection policy.
         ``saddle.max_retries`` defaults to five. Failed steps are never recorded.
         """
-        # The WTMD bins (unless a checkpoint restores the statistics) and the initial fields (real,
-        # finite numbers) are checked before the run starts
-        if self.wtmd is not None:
-            self.wtmd.check_bin_width(_restart_data)
+        # The initial fields and the previous noise (real, finite numbers) are checked before the run starts
         fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid)
+        if normal_noise_prev is not None:
+            R = len(self.mpt.aux_fields_real_idx)
+            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
+            if normal_noise_prev.size != R * self.prop_solver.n_grid:
+                raise ValidationError(f"normal_noise_prev needs {R} x {self.prop_solver.n_grid} values (real auxiliary "
+                                      f"fields x grid points), got {normal_noise_prev.size}")
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=True,
                                   saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
@@ -359,32 +361,11 @@ class LFTS:
 
         print("---------- Run  ----------")
 
-        # The number of components
-        M = len(self.monomer_types)
-
         # The number of real fields
         R = len(self.mpt.aux_fields_real_idx)
 
-        # Check the partition consistency on the first field of this run
-        # (the LR/LRAM setup already called compute_concentrations on w = 0)
-        self._partition_checked = False
-
-        # Simulation data directory, with the drawings of the chain architectures (polymer_<id>.png)
-        pathlib.Path(self.recording["dir"]).mkdir(parents=True, exist_ok=True)
-        draw_polymer_architectures(self.polymers, self.ds, self.segment_lengths, directory=self.recording["dir"])
-
-        # Reshape initial fields
-        w = np.array([np.reshape(initial_fields[m], self.prop_solver.n_grid)
-                      for m in self.monomer_types])
-            
-        # Convert monomer potential fields into auxiliary potential fields
-        w_aux = self.mpt.to_aux_fields(w)
-        self.mpt.pin_dropped_fields(w_aux)
-        saved_aux = None if _restart_data is None else _restart_data.get("w_aux")
-        if saved_aux is not None:
-            w_aux = np.asarray(saved_aux, dtype=np.float64).reshape(M, self.prop_solver.n_grid).copy()
-        if not np.all(np.isfinite(w_aux)):
-            raise ValidationError("Initial fields must be finite")
+        # The recording directory and the auxiliary fields to start from (checkpoint.prepare_run)
+        w_aux, restored = prepare_run(self, initial_fields, _restart_data)
 
         if start_langevin_step is None:
             start_langevin_step = 1
@@ -395,7 +376,7 @@ class LFTS:
         print("iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)")
         if start_langevin_step == 1:
             phi = self.saddle.first_point(w_aux)
-        elif saved_aux is not None:
+        elif restored:
             phi = {m: np.asarray(_restart_data["phi_" + m]).reshape(self.prop_solver.n_grid).copy()
                    for m in self.monomer_types}
         else:
@@ -406,17 +387,17 @@ class LFTS:
         record = RunRecord(series, self.structure_functions.empty_sums())
         record.restore(_restart_data, start_langevin_step)
 
-        # Create an empty array for field update algorithm
-        # (a checkpoint loaded with squeeze_me drops the leading axis when R == 1)
+        # The previous noise of the Leimkuhler-Matthews step (run() has checked its values), zero without one
         if normal_noise_prev is None:
             normal_noise_prev = np.zeros([R, self.prop_solver.n_grid], dtype=np.float64)
         else:
-            normal_noise_prev = np.reshape(np.asarray(normal_noise_prev, dtype=np.float64), [R, self.prop_solver.n_grid])
+            normal_noise_prev = np.reshape(normal_noise_prev, [R, self.prop_solver.n_grid])
 
+        # The smeared concentrations of the fields (smearing.py), for the forces and dH/dχN
+        phi_smeared = self.smearing.apply_to_dict(phi)
 
         # Init timers
         self.saddle.iterations = 0
-        self._intermediate_saddle_iterations = 0
         time_start = time.time()
 
         # Langevin iteration begins here
@@ -426,24 +407,23 @@ class LFTS:
             if self.verbose_level >= 1:
                 print("Langevin step: ", langevin_step)
 
-            # Forces on the real fields, with the bias of WTMD (same as deep-langevin-fts)
-            phi_for_force = self.smearing.apply_to_dict(phi)
-            w_lambda = self.mpt.compute_func_deriv(w_aux, phi_for_force, self.mpt.aux_fields_real_idx)
+            # Forces on the real fields, with the bias of WTMD at the order parameter Ψ (same as deep-langevin-fts)
+            w_lambda = self.mpt.compute_func_deriv(w_aux, phi_smeared, self.mpt.aux_fields_real_idx)
             if self.wtmd is not None:
-                psi = self.wtmd.compute_order_parameter(langevin_step, w_aux)
-                self.wtmd.add_bias_to_langevin(psi, w_lambda)
+                psi = self.wtmd.add_bias(w_aux, w_lambda)
             drift_max = float(np.max(np.abs(w_lambda * self.dt_scaling[self.mpt.aux_fields_real_idx, None]))) if R else 0.0
 
             # One Langevin step of the real fields and the saddle point of the imaginary fields
-            w_aux_before = w_aux
+            w_aux_before, phi_smeared_before = w_aux, phi_smeared
             w_aux, phi, hamiltonian, error_level, normal_noise_prev = self.saddle.advance(
                 w_aux_before, w_lambda, normal_noise_prev, langevin_step)
+            phi_smeared = self.smearing.apply_to_dict(phi)
             self.run_status["last_completed_step"] = langevin_step
 
             # WTMD: order parameter with dH/dχN of the same fields (those before the update, at which
             # psi and the bias were computed), the update of the bias and its statistics files
             if self.wtmd is not None:
-                dH = self.mpt.compute_h_deriv_chin(w_aux=w_aux_before, phi=phi_for_force, wtmd=True)
+                dH = self.mpt.compute_h_deriv_chin(w_aux=w_aux_before, phi=phi_smeared_before, wtmd=True)
                 self.wtmd.store_order_parameter(psi, dH)
                 if langevin_step % self.wtmd.update_freq == 0:
                     self.wtmd.update_statistics()
@@ -455,7 +435,7 @@ class LFTS:
                 record.sample_count += 1
                 record.add("H_history", hamiltonian)
                 record.add("drift_history", drift_max)
-                dH = self.mpt.compute_h_deriv_chin(w_aux=w_aux, phi=self.smearing.apply_to_dict(phi))
+                dH = self.mpt.compute_h_deriv_chin(w_aux=w_aux, phi=phi_smeared)
                 for key in self.chi_n:
                     record.add("dH " + key, dH[key])
                 self.structure_functions.add(w_aux, phi, record.sums)
@@ -488,39 +468,8 @@ class LFTS:
 
         n_steps = max(langevin_step + 1 - start_langevin_step, 1)
         print("total time: %f, time per step: %f" % (time_duration, time_duration/n_steps))
-        total_saddle_iter = self.saddle.iterations + self._intermediate_saddle_iterations
         print("Total iterations for saddle points: %d, Iterations per Langevin step: %f" %
-            (total_saddle_iter, total_saddle_iter/n_steps))
-
-    def evaluate_force(self, fields, *, w_aux, step):
-        """dH/dw at intermediate active fields, with a saddle solve and fixed bias.
-
-        No noise is drawn and no observations or WTMD statistics are recorded.
-        ``w_aux`` supplies the imaginary-field warm start of this proposal.
-        """
-        trial = w_aux.copy()
-        indices = self.mpt.aux_fields_real_idx
-        trial[indices] = checked_fields(fields, trial[indices])
-        for attempt in range(self.saddle.settings.get("max_retries", 5) + 1):
-            phi, hamiltonian, iterations, error = self.saddle.solve(trial)
-            self._intermediate_saddle_iterations += iterations
-            if not np.isfinite(hamiltonian) or not np.all(np.isfinite(trial)):
-                raise NumericalError("Non-finite intermediate LFTS state", self.mpt.to_monomer_fields_dict(trial))
-            if np.isfinite(error) and error < self.saddle.settings["tolerance"]:
-                break
-            self.run_status["saddle_failures"] += 1
-            if self.saddle.settings.get("failure_policy", "retry") == "abort":
-                break
-        if not np.isfinite(error) or error >= self.saddle.settings["tolerance"]:
-            raise SaddlePointError(f"Intermediate saddle failed at step {step} (error={error})",
-                                   self.mpt.to_monomer_fields_dict(trial))
-        force = self.mpt.compute_func_deriv(trial, self.smearing.apply_to_dict(phi), indices)
-        if self.wtmd is not None:
-            psi = self.wtmd.compute_order_parameter(step, trial)
-            self.wtmd.add_bias_to_langevin(psi, force)
-        if not np.all(np.isfinite(force)):
-            raise NumericalError("Non-finite intermediate LFTS force", self.mpt.to_monomer_fields_dict(trial))
-        return force
+            (self.saddle.iterations, self.saddle.iterations/n_steps))
 
     def mean_concentrations(self):
         """Volume-averaged concentration of each monomer type from the chain compositions."""

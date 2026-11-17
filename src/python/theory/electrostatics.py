@@ -505,15 +505,12 @@ class Electrostatics:
                     raise ValidationError(f"Invalid checkpoint charge structure sum '{key}'")
 
     def restore(self, data):
-        """ψ, ψ(k), the previous noise and the noise stream from a checkpoint.
+        """ψ, ψ(k), the previous noise and the noise stream from a checkpoint that validate_checkpoint()
+        accepted.
 
         ψ(k) is restored as stored, because transforming ψ back does not reproduce it bit
         for bit.
         """
-        missing = [key for key in self.CHECKPOINT_KEYS if key not in data]
-        if missing:
-            raise ValidationError(f"The checkpoint has no electrostatic potential ({', '.join(missing)}); "
-                                  "it was not written with 'electrostatics'")
         self.psi = np.asarray(data["psi_real"]) + 1j * np.asarray(data["psi_imag"])
         self._psi_k = np.reshape(np.asarray(data["psi_k_real"]) + 1j * np.asarray(data["psi_k_imag"]),
                                  self.nx).astype(np.complex128)

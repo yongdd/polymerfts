@@ -98,19 +98,19 @@ def wtmd_aliases():
     np.testing.assert_allclose(wtmd.fk, cutoff[:, :, :nx[2] // 2 + 1], rtol=1e-12, atol=1e-14)
     field = np.random.default_rng(17).normal(0.0, 5.0, nx)
     fields = np.stack([field.ravel(), np.zeros(field.size)])
-    psi = wtmd.compute_order_parameter(0, fields)
+    psi = wtmd.order_parameter(fields)
     expected = np.sum(np.abs(np.fft.fftn(field))**wtmd.l * cutoff)**(1 / wtmd.l) / field.size
     np.testing.assert_allclose(psi, expected, rtol=1e-12, atol=0)
     wtmd.up[:] = 0.7
     force = np.zeros((1, field.size))
-    quiet(wtmd.add_bias_to_langevin, psi, force)
+    quiet(wtmd.add_bias, fields, force)
     direction = np.random.default_rng(11).normal(size=field.size)
     epsilon = 1e-5
     displaced = []
     for sign in (1, -1):
         trial = fields.copy()
         trial[0] += sign * epsilon * direction
-        displaced.append(wtmd.compute_order_parameter(0, trial))
+        displaced.append(wtmd.order_parameter(trial))
     np.testing.assert_allclose(np.mean(force[0] * direction), 0.7 * (displaced[0] - displaced[1]) / (2 * epsilon),
                                rtol=1e-7, atol=1e-10)
 

@@ -46,11 +46,15 @@ def build(cls, params):
         return cls(params)
 
 
-def expect_error(cls, params, what):
+def expect_error(cls, params, what, message=""):
+    """Constructing cls with params raises a ValidationError whose message contains message."""
     try:
         build(cls, params)
-    except ValidationError:
-        return True
+    except ValidationError as error:
+        if message in str(error):
+            return True
+        print(f"FAILED: the ValidationError of {what} does not name {message!r}: {error}")
+        return False
     print(f"FAILED: {what} did not raise ValidationError")
     return False
 
@@ -472,6 +476,14 @@ def main():
     for key in ("saddle", "compressor"):
         params = clfts_params(); params[key] = lfts_params()[key]
         ok &= expect_error(CLFTS, params, f"CLFTS with the L-FTS option '{key}'")
+    # L-FTS refuses the CL-FTS option dynamic_stabilization (also by its alias), and neither method takes
+    # the space group of SCFT, which they would ignore
+    for key in ("dynamic_stabilization", "alpha_ds"):
+        params = lfts_params(); params[key] = 0.05
+        ok &= expect_error(LFTS, params, f"LFTS with the CL-FTS option '{key}'", "dynamic_stabilization")
+    for cls, params in ((LFTS, lfts_params()), (CLFTS, clfts_params())):
+        params["space_group"] = {"symbol": "Im-3m"}
+        ok &= expect_error(cls, params, f"{cls.__name__} with a space group", "space_group")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
@@ -490,16 +502,16 @@ def main():
     ok &= expect_error(LFTS, params, "WTMD on a 2D grid")
     params = clfts_params(); params["wtmd"] = {"ell": 4}
     ok &= expect_error(CLFTS, params, "CL-FTS with a wtmd block")
-    # A bin width that does not divide the range is refused when a new run starts; the
-    # constructor accepts it, so that a run started with such a width still continues
+    # A bin width that does not divide the range is refused by the constructor
     params = lfts_params(); params["wtmd"] = {"psi_min": 0.0, "psi_max": 1.0, "dpsi": 0.3}
-    simulation = build(LFTS, params)
     try:
-        simulation.run(initial_fields={})
+        build(LFTS, params)
         print("FAILED: WTMD bin width that does not divide the range did not raise ValidationError")
         ok = False
-    except ValidationError:
-        pass
+    except ValidationError as error:
+        if "dpsi" not in str(error):
+            print(f"FAILED: the refusal of a WTMD bin width does not name dpsi: {error}")
+            ok = False
     for chi_n in (0.0, -5.0):   # no real auxiliary (exchange) field for the order parameter
         params = lfts_params(); params["wtmd"] = {"ell": 4}; params["chi_n"] = {"A,B": chi_n}
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")

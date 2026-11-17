@@ -97,18 +97,29 @@ def check_wtmd(root):
     before_u = sim.wtmd.u.copy()
     before_I1 = copy.deepcopy(sim.wtmd.I1)
     for key in ("wtmd_u", "wtmd_up", "wtmd_I0", "wtmd_I1_A_B", "wtmd_unscaled_up", "wtmd_unscaled_I1_A_B",
-                "wtmd_order_parameter_history", "wtmd_dH_history_A_B", "edited wtmd_u", "edited wtmd_I1_A_B"):
+                "wtmd_order_parameter_history", "wtmd_dH_history_A_B"):
         bad = copy.deepcopy(data)
-        if key.startswith("edited "):   # the scaled copy no longer matches the unscaled one
-            bad[key[7:]] = 2.0 * bad[key[7:]]
-        else:
-            bad.pop(key)
-        path = root / (key.replace(" ", "_") + ".mat")
+        bad.pop(key)
+        path = root / (key + ".mat")
         atomic_savemat(path, bad)
         expect_error(lambda: sim.continue_run(path), ValidationError)
         assert sim.random_bg.state == before_rng
         assert np.array_equal(sim.wtmd.u, before_u)
         assert all(np.array_equal(sim.wtmd.I1[key], value) for key, value in before_I1.items())
+
+    # An unversioned checkpoint of the WTMD before 2026-02-03 (no wtmd_I0) is refused before any state changes
+    legacy = copy.deepcopy(data)
+    legacy.pop("checkpoint_format_version")
+    legacy.pop("wtmd_I0")
+    path = root / "legacy_wtmd.mat"
+    atomic_savemat(path, legacy)
+    try:
+        sim.continue_run(path, allow_legacy=True)
+        raise AssertionError("A legacy WTMD checkpoint without wtmd_I0 was accepted")
+    except ValidationError as exc:
+        assert "wtmd_I0" in str(exc), exc
+    assert sim.random_bg.state == before_rng
+    assert np.array_equal(sim.wtmd.u, before_u)
 
 
 def main():

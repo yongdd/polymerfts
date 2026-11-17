@@ -216,7 +216,7 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
 ## SCFT Parameters
 
-`SCFT(params)` reads the shared parameters above plus the keys below. These keys and `space_group` are read by `SCFT` only; `LFTS` and `CLFTS` ignore them (a `space_group` given to them has no effect).
+`SCFT(params)` reads the shared parameters above plus the keys below. These keys are read by `SCFT` only; `LFTS` and `CLFTS` ignore them. `space_group` is also read by `SCFT` only: `LFTS` and `CLFTS` raise `ValidationError` for it.
 
 ### Optimizer
 
@@ -391,7 +391,7 @@ For `"am"` and `"lram"`, the keys `max_hist`, `start_error`, `mix_min`, and `mix
 | `sigma_psi` | float | Gaussian width $`\sigma_\Psi`$ | `0.16` |
 | `psi_min` | float | Minimum $`\Psi`$ | `0.0` |
 | `psi_max` | float | Maximum $`\Psi`$ | `10.0` |
-| `dpsi` | float | Bin width $`d\Psi`$; a new run requires it to divide `psi_max - psi_min` into a whole number of bins | `1e-3` |
+| `dpsi` | float | Bin width $`d\Psi`$; it must divide `psi_max - psi_min` into a whole number of bins, otherwise `LFTS` raises `ValidationError` | `1e-3` |
 | `update_freq` | int | Statistics update frequency | `1000` |
 | `recording_period` | int | Data recording frequency | `100000` |
 
@@ -419,7 +419,7 @@ derivative diverges at zero coefficients. A zero bias derivative adds no force.
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `zeta_n` | float | Compressibility parameter; complex Langevin needs a finite value. Give 0 to a neutral solvent of one segment that only serves as the reference chain of point ions: it then has no field ([CL-FTS theory, Section 6](../theory/ComplexLangevinSimulation.md#6-charged-systems)) | `100.0` |
-| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
+| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, raises `ValidationError` for either name. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
 | `smearing` | dict | (Optional) Finite-range interactions, see [Smearing](#smearing); recommended for CL-FTS stability. CL-FTS also accepts one Gaussian length per monomer type | none |
 | `electrostatics` | dict | (Optional) Smeared Coulomb interactions, see [Electrostatics](#electrostatics) | none |
 
@@ -523,7 +523,7 @@ When `True`:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `space_group` | dict | Space group constraints (SCFT only) |
+| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS raise `ValidationError`) |
 
 ```python
 "space_group": {

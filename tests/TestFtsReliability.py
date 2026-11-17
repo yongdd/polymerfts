@@ -1,4 +1,4 @@
-"""Failure semantics, restart compatibility, pending samples, initial fields and atomic writes.
+"""Failure semantics, restart compatibility, pending samples, initial fields, previous noise and atomic writes.
 
 A failed computation raises NumericalError, of which SaddlePointError is a subclass; L-FTS records a
 SaddlePointError as aborted_saddle_failure, CL-FTS every error as failed with its type and message.
@@ -23,14 +23,77 @@ from fts_checks import (FailingLFTS, diblock_fields, diblock_parameters, exact_r
                         silenced)
 
 
-def expect_refused(sim, fields, *messages):
-    """sim.run(fields) raises a ValidationError whose message contains messages."""
+def expect_refused(sim, fields, *messages, **run_options):
+    """sim.run(fields, **run_options) raises a ValidationError whose message contains messages."""
     try:
-        sim.run(fields)
+        sim.run(fields, **run_options)
     except ValidationError as error:
         assert all(message in str(error) for message in messages), str(error)
     else:
-        raise AssertionError(f"{type(sim).__name__} accepted invalid initial fields: expected {messages}")
+        raise AssertionError(f"{type(sim).__name__} accepted invalid input: expected {messages}")
+
+
+def expect_numerical(call, message):
+    """call() raises a NumericalError, not an error of the input (ValidationError), whose message
+    contains message."""
+    try:
+        call()
+    except NumericalError as error:
+        assert not isinstance(error, ValidationError) and message in str(error), str(error)
+    else:
+        raise AssertionError(f"Expected NumericalError: {message}")
+
+
+def numerical_failures(root):
+    """Failed computations raise NumericalError: a partition consistency check that fails, a Hamiltonian or
+    a force that is not finite at an intermediate saddle point of L-FTS, intermediate CL-FTS fields or
+    forces that are not finite, and concentrations that are not finite after a CL-FTS step."""
+    for cls, dtype in ((LFTS, np.float64), (CLFTS, np.complex128)):
+        sim = cls(diblock_parameters(root / (cls.__name__ + "_partition"), 1, cls), random_seed=5)
+        sim._partition_checked = False
+        with patch("polymerfts.theory.chains.report_partition_consistency", return_value=False):
+            expect_numerical(lambda: sim.compute_concentrations(np.zeros((2, 16), dtype)), "Partition consistency")
+
+    # The forces at the intermediate fields of an integrator in L-FTS (SaddlePointSearch.evaluate_force)
+    lfts = LFTS(diblock_parameters(root / "LFTS_intermediate", 1), random_seed=5)
+    solve = lfts.saddle.solve
+
+    def non_finite_hamiltonian(w_aux):
+        phi, _, iterations, error_level = solve(w_aux)
+        return phi, np.nan, iterations, error_level
+    lfts.saddle.solve = non_finite_hamiltonian
+    expect_numerical(lambda: lfts.saddle.evaluate_force(np.zeros((1, 16)), np.zeros((2, 16)), 1),
+                     "Non-finite Hamiltonian at an intermediate saddle point of step 1")
+    lfts.saddle.solve = solve
+    derivative, real = lfts.mpt.compute_func_deriv, list(lfts.mpt.aux_fields_real_idx)
+    lfts.mpt.compute_func_deriv = lambda w_aux, phi, indices: (
+        derivative(w_aux, phi, indices) * (np.nan if list(indices) == real else 1.0))
+    expect_numerical(lambda: lfts.saddle.evaluate_force(np.zeros((1, 16)), np.zeros((2, 16)), 1),
+                     "Non-finite intermediate LFTS force")
+
+    # CL-FTS: intermediate fields and forces (CLFTS.evaluate_force), and the concentrations after a step
+    clfts = CLFTS(diblock_parameters(root / "CLFTS_intermediate", 1, CLFTS), random_seed=5)
+    fields = np.zeros((2, 16), np.complex128)
+    fields[0, 3] = np.nan
+    expect_numerical(lambda: clfts.evaluate_force(fields), "Intermediate CLFTS fields have non-finite values")
+    derivative = clfts.mpt.compute_func_deriv
+    clfts.mpt.compute_func_deriv = lambda w_aux, phi, indices: derivative(w_aux, phi, indices) * np.nan
+    expect_numerical(lambda: clfts.evaluate_force(np.zeros((2, 16), np.complex128)),
+                     "Non-finite intermediate CLFTS force")
+    directory = root / "CLFTS_concentrations"
+    clfts = CLFTS(diblock_parameters(directory, 1, CLFTS), random_seed=5)
+    compute, calls = clfts.compute_concentrations, []
+
+    def non_finite_after_the_first(w_aux):
+        phi, elapsed_time = compute(w_aux)
+        calls.append(len(calls))
+        if len(calls) > 1:
+            phi = {m: np.full_like(values, np.nan) for m, values in phi.items()}
+        return phi, elapsed_time
+    clfts.compute_concentrations = non_finite_after_the_first
+    expect_numerical(lambda: clfts.run(diblock_fields()), "Non-finite complex fields or concentrations at step 1")
+    status = json.loads((directory / "run_status.json").read_text())
+    assert status["status"] == "failed" and status["reason"].startswith("NumericalError"), status
 
 
 class FailedSolveStep(LeimkuhlerMatthews):
@@ -209,12 +272,24 @@ def main():
                     for values, message in refused:
                         expect_refused(sim, {"A": values, "B": zeros}, "initial_fields['A']", message)
                     expect_refused(sim, {"A": zeros}, "missing monomer 'B'")
+                    # The previous noise of a run continued by hand: real, finite numbers, one per real
+                    # (L-FTS) or auxiliary (CL-FTS) field and grid point
+                    rows = 1 if cls is LFTS else 2
+                    for noise, message in ((np.full((rows, 16), np.nan), "real, finite"),
+                                           (np.zeros((rows, 16)) + 1j, "real, finite"),
+                                           (np.full((rows, 16), "0.5"), "real, finite"),
+                                           ([[0.0] * 16, [0.0]], "real, finite"),
+                                           (np.zeros(5), f"needs {rows} x 16 values")):
+                        expect_refused(sim, diblock_fields(), "normal_noise_prev", message,
+                                       normal_noise_prev=noise, start_langevin_step=2)
                     assert sim.random_bg.state == rng_before and sim.run_status["status"] == "initialized"
                     assert not (directory / "run_status.json").exists(), cls.__name__
                 # CL-FTS takes complex initial fields
                 clfts = CLFTS(diblock_parameters(root / "CLFTS_complex", 1, CLFTS), random_seed=5)
                 assert clfts.run({name: values + 0.5j for name, values in diblock_fields().items()})["status"] \
                     == "completed"
+
+                numerical_failures(root)
 
             for complex_fields in (False, True):
                 for section, key, value in ((None, "ds", np.nan), ("langevin", "dt", np.inf),

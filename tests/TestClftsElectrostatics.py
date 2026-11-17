@@ -41,7 +41,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError
+from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError, NumericalError
 from polymerfts.utils.checkpoint import validate_checkpoint, _measurement_key
 from fts_checks import exact_restart, quiet, silenced
 
@@ -326,8 +326,11 @@ def restart(root):
     # psi draws from the jumped stream of the auxiliary fields, recorded in the run metadata
     metadata = json.loads(str(a["simulation_metadata_json"]))
     assert metadata["initial_psi_rng_state"] == np.random.PCG64(17).jumped().state
-    # A checkpoint without psi is rejected
-    expect_validation_error(lambda: sims["full"].electrostatics.restore({"psi_real": np.zeros(int(np.prod(NX)))}),
+    # A checkpoint without psi is rejected: an unversioned one, which validate_checkpoint does not check
+    # otherwise, holds none
+    legacy = mat(root / "partial", "fields_000003.mat")
+    legacy.pop("checkpoint_format_version")
+    expect_validation_error(lambda: validate_checkpoint(sims["full"], legacy, allow_legacy=True),
                             "no electrostatic potential")
 
     # A run continued by hand takes psi through initial_psi; without it psi restarts at zero
@@ -347,8 +350,9 @@ def restart(root):
             sim.run(initial, normal_noise_prev=fields["normal_noise_prev"], start_langevin_step=4, initial_psi=given)
         assert np.array_equal(first[0], np.zeros_like(psi) if given is None else psi), "psi at the start of step 4"
         assert any("initial_psi" in str(w.message) for w in caught) == (given is None), "warning without initial_psi"
-    expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4)).run(
-        initial, start_langevin_step=4, initial_psi=np.zeros(3)), "initial_psi")
+    for values in (np.zeros(3), np.full(int(np.prod(NX)), "0.5"), [[0.0] * 3, [0.0]]):   # size, strings, ragged
+        expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4)).run(
+            initial, start_langevin_step=4, initial_psi=values), "initial_psi")
     expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4, electrostatics=False)).run(
         initial, initial_psi=psi), "needs 'electrostatics'")
     # Without Coulomb coupling psi does not move: a nonzero initial_psi is rejected
@@ -375,6 +379,42 @@ def restart(root):
         modified = dict(data)
         change(modified)
         expect_validation_error(lambda: validate_checkpoint(sim, modified), message)
+
+
+def numerical_failures(root):
+    """A failed computation raises NumericalError, not an error of the input (ValidationError): ψ that is not
+    finite after a step, and intermediate fields or forces that are not finite when the integrator
+    advances ψ with the fields."""
+    def expect_numerical(call, message):
+        try:
+            with silenced():
+                call()
+        except NumericalError as error:
+            assert not isinstance(error, ValidationError) and message in str(error), (message, str(error))
+            return
+        raise AssertionError(f"Expected NumericalError: {message}")
+
+    with silenced():
+        sim = CLFTS(parameters(root / "non_finite_psi", steps=1), random_seed=5)
+    es = sim.electrostatics
+
+    def non_finite_step(charge_density):
+        es.psi = np.full_like(es.psi, np.nan)
+    es.step = non_finite_step
+    expect_numerical(lambda: sim.run(initial_fields()), "Non-finite electrostatic potential at step 1")
+    status = json.loads((root / "non_finite_psi" / "run_status.json").read_text())
+    assert status["status"] == "failed" and status["reason"].startswith("NumericalError"), status
+
+    with silenced():
+        sim = CLFTS(parameters(root / "intermediate"), random_seed=5)
+    shape = (len(sim.monomer_types) + 1, sim.prop_solver.n_grid)
+    fields = np.zeros(shape, np.complex128)
+    fields[-1, 2] = np.nan
+    expect_numerical(lambda: sim._evaluate_force_with_psi(fields), "Intermediate CLFTS fields have non-finite values")
+    derivative = sim.mpt.compute_func_deriv
+    sim.mpt.compute_func_deriv = lambda w_aux, phi, indices: derivative(w_aux, phi, indices) * np.nan
+    expect_numerical(lambda: sim._evaluate_force_with_psi(np.zeros(shape, np.complex128)),
+                     "Non-finite intermediate CLFTS force")
 
 
 def expect_validation_error(make, message):
@@ -583,7 +623,8 @@ def main():
         root = Path(tmp)
         for name, check in (("neutral reductions", neutral_reductions), ("forces", forces),
                             ("recorded measurements", recorded_measurements), ("psi step", psi_step),
-                            ("restart", restart), ("input checks", input_checks), ("screening", screening),
+                            ("restart", restart), ("input checks", input_checks),
+                            ("numerical failures", numerical_failures), ("screening", screening),
                             ("screened measurements", screened_measurements)):
             check(root)
             print(f"[PASS] {name}")

@@ -642,8 +642,17 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
         if polymer.get("initial_conditions"):
             raise ValidationError(f"polymers[{i}]: L-FTS and CL-FTS need free chains; grafted chains "
                                   "(initial_conditions) need q_init, which only SCFT takes")
+    # The keys that the other methods ignore: dynamical stabilization acts on the imaginary parts of the
+    # complex fields of CL-FTS, and the space group of SCFT has no counterpart in the full-grid
+    # simulations of L-FTS and CL-FTS
     if "dynamic_stabilization" in params:
+        if not complex_fields:
+            raise ValidationError("'dynamic_stabilization' (or 'alpha_ds') is supported in CL-FTS only: "
+                                  "the fields of L-FTS have no imaginary parts to stabilize; remove it")
         _finite_number(params["dynamic_stabilization"], "dynamic_stabilization", nonnegative=True)
+    if params.get("space_group") is not None:
+        raise ValidationError("'space_group' is supported in SCFT only: L-FTS and CL-FTS sample the fields "
+                              "on the full grid; remove it")
     _validate_smearing(params, complex_fields)
     if params.get("electrostatics") is not None:
         if not complex_fields:
@@ -664,8 +673,13 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
         lo, hi = wtmd.get("psi_min", 0.0), wtmd.get("psi_max", 10.0)
         _finite_number(lo, "wtmd.psi_min")
         _finite_number(hi, "wtmd.psi_max")
-        if hi <= lo or (hi - lo) / wtmd.get("dpsi", 1e-3) < 2:
+        bins = (hi - lo) / wtmd.get("dpsi", 1e-3)
+        if hi <= lo or bins < 2:
             raise ValidationError("WTMD range must contain at least two bins")
+        # The histogram, the Gaussian kernels and the integrals of the statistics all use the bin width
+        if abs(bins - round(bins)) > 1e-9 * bins:
+            raise ValidationError(f"wtmd.dpsi must divide psi_max - psi_min into a whole number of bins "
+                                  f"(dpsi = {wtmd.get('dpsi', 1e-3)!r}, psi_max - psi_min = {hi - lo!r})")
     for polymer in params["polymers"]:
         polymer_block_lengths(params, polymer)
     return params

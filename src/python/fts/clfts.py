@@ -12,7 +12,6 @@ examples/charged/clfts/ and examples/blend/clfts/GibbsEnsemble.py.
 
 import os
 import time
-import pathlib
 import warnings
 import copy
 import json
@@ -22,8 +21,7 @@ from .force_jacobian import force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import (read_chains, chain_solver, draw_polymer_architectures, chain_fields, solve_chains,
-                             check_partition_once)
+from ..theory.chains import read_chains, chain_solver, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
@@ -45,6 +43,7 @@ from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     recording_run_status,
+    prepare_run,
     initialize_extensions,
     extension_state,
     restore_extensions,
@@ -403,8 +402,8 @@ class CLFTS:
     def run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, initial_psi=None,
             psi_noise_prev=None, _restart_data=None):
         """Run complex Langevin dynamics and return a status dict; errors are persisted and raised."""
-        # The initial fields and ψ (real or complex finite numbers) and the previous noise of ψ (real) are
-        # checked before the run starts
+        # The initial fields and ψ (real or complex finite numbers) and the previous noises of the fields
+        # and ψ (real) are checked before the run starts
         fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid, np.complex128)
         if initial_psi is not None:
             if self.electrostatics is None:
@@ -421,6 +420,12 @@ class CLFTS:
             psi_noise_prev = finite_values(psi_noise_prev, "psi_noise_prev")
             if psi_noise_prev.size != self.prop_solver.n_grid:
                 raise ValidationError("psi_noise_prev must hold one real, finite value per grid point")
+        # The previous noise of the fields: real, one value per auxiliary field and grid point
+        if normal_noise_prev is not None:
+            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
+            if normal_noise_prev.size != len(self.monomer_types) * self.prop_solver.n_grid:
+                raise ValidationError(f"normal_noise_prev needs {len(self.monomer_types)} x {self.prop_solver.n_grid} "
+                                      f"values (auxiliary fields x grid points), got {normal_noise_prev.size}")
         # CL-FTS solves no saddle points: a SaddlePointError (of an extension) fails the run like other errors
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=False):
             if _restart_data is None:
@@ -455,26 +460,8 @@ class CLFTS:
         # The number of components
         M = len(self.monomer_types)
 
-        # Check the partition consistency on the first field of this run
-        self._partition_checked = False
-
-        # Simulation data directory, with the drawings of the chain architectures (polymer_<id>.png)
-        pathlib.Path(self.recording["dir"]).mkdir(parents=True, exist_ok=True)
-        if self.draw_architectures:
-            draw_polymer_architectures(self.polymers, self.ds, self.segment_lengths, directory=self.recording["dir"])
-
-        # Reshape initial fields (convert to complex if needed)
-        w = np.array([np.reshape(initial_fields[m], self.prop_solver.n_grid).astype(np.complex128)
-                      for m in self.monomer_types])
-
-        # Convert monomer chemical potential fields into auxiliary fields
-        w_aux = self.mpt.to_aux_fields(w)
-        self.mpt.pin_dropped_fields(w_aux)
-        saved_aux = None if _restart_data is None else _restart_data.get("w_aux")
-        if saved_aux is not None:
-            w_aux = np.asarray(saved_aux, dtype=np.complex128).reshape(M, self.prop_solver.n_grid).copy()
-        if not np.all(np.isfinite(w_aux)):
-            raise ValidationError("Initial fields must be finite")
+        # The recording directory and the complex auxiliary fields to start from (checkpoint.prepare_run)
+        w_aux, restored = prepare_run(self, initial_fields, _restart_data, np.complex128)
 
         if start_langevin_step is None:
             start_langevin_step = 1
@@ -495,12 +482,11 @@ class CLFTS:
         tail_labels = [f"auxiliary field {i} ({kinds.get(i, 'dropped')})" for i in range(M)]
         drift_tail = DriftTailSummary(tail_labels + (["psi"] if self.electrostatics is not None else []))
 
-        # Create an empty array for field update algorithm
-        # (a checkpoint loaded with squeeze_me drops the leading axis when M == 1)
+        # The previous noise of the Leimkuhler-Matthews step (run() has checked its values), zero without one
         if normal_noise_prev is None:
             normal_noise_prev = np.zeros([M, self.prop_solver.n_grid], dtype=np.float64)
         else:
-            normal_noise_prev = np.reshape(np.asarray(normal_noise_prev, dtype=np.float64), [M, self.prop_solver.n_grid])
+            normal_noise_prev = np.reshape(normal_noise_prev, [M, self.prop_solver.n_grid])
 
         # Init timers
         time_start = time.time()
@@ -513,7 +499,7 @@ class CLFTS:
         # the forces of the next step use the concentrations of the same fields.
         # Smearing implements finite-range interactions: φ_Γ = FFT⁻¹[FFT[φ]·Γ(k)]
         # Reference: Matsen et al., J. Chem. Phys. 164, 014905 (2026)
-        if saved_aux is not None:
+        if restored:
             phi = {m: (np.asarray(_restart_data["phi_" + m + "_real"]) +
                        1j * np.asarray(_restart_data["phi_" + m + "_imag"])).reshape(self.prop_solver.n_grid)
                    for m in self.monomer_types}
@@ -527,11 +513,15 @@ class CLFTS:
         charge_density = None if es is None else es.charge_density(phi_for_force)
         psi_force = None if es is None else es.force(charge_density)
 
+        # δH/δw of the current state (compute_func_deriv), for the forces of the next step and the
+        # progress line
+        h_deriv = self.mpt.compute_func_deriv(w_aux, phi_for_force, range(M))
+
         for langevin_step in range(start_langevin_step, self.langevin["max_step"] + 1):
             step_start = time.perf_counter()
 
             # Forces on all fields and the largest drift of each
-            w_lambda = self._forces(w_aux, phi_for_force)
+            w_lambda = self._stabilized(w_aux, h_deriv)
             field_drift_max = np.max(np.abs(w_lambda * self.dt_scaling[:, None]), axis=1)
             drift_max = float(np.max(field_drift_max))
             record.add("drift_step_history", field_drift_max)
@@ -570,7 +560,8 @@ class CLFTS:
                 raise NumericalError(f"Non-finite Hamiltonian at step {langevin_step}", self.mpt.to_monomer_fields_dict(w_aux))
             self.run_status["last_completed_step"] = langevin_step
 
-            # Print progress (functional derivatives with the smeared φ, for consistency)
+            # δH/δw of the updated fields and the progress line (functional derivatives with the smeared φ,
+            # for consistency)
             h_deriv = self.mpt.compute_func_deriv(w_aux, phi_for_force, range(M))
             error_level_array = np.std(h_deriv, axis=1)
             if self.verbose_level >= 1:
@@ -645,15 +636,20 @@ class CLFTS:
                              else np.asarray(psi_noise_prev, dtype=np.float64).reshape(-1).copy())
 
     def _forces(self, w_aux, phi_smeared):
-        """δH/δw of all auxiliary fields from the smeared concentrations.
+        """δH/δw of all auxiliary fields from the smeared concentrations, with the stabilization.
 
         compute_func_deriv transforms the concentrations through the matrix A: for an AB diblock
         the exchange field w- gets phi_A - phi_B and the pressure field w+ gets phi_A + phi_B
-        (Matsen et al., J. Chem. Phys. 164, 014905 (2026)). Dynamical stabilization (Willis & Matsen,
-        J. Chem. Phys. 161, 244903 (2024)) adds iαds·N·Im[W] to the real-type fields, against runaway
-        solutions in the imaginary direction; self.alpha_ds is the combined coefficient αds·N.
+        (Matsen et al., J. Chem. Phys. 164, 014905 (2026)).
         """
-        forces = self.mpt.compute_func_deriv(w_aux, phi_smeared, range(len(self.monomer_types)))
+        return self._stabilized(w_aux, self.mpt.compute_func_deriv(w_aux, phi_smeared, range(len(self.monomer_types))))
+
+    def _stabilized(self, w_aux, h_deriv):
+        """The forces of the fields w_aux from their δH/δw (compute_func_deriv). Dynamical stabilization
+        (Willis & Matsen, J. Chem. Phys. 161, 244903 (2024)) adds iαds·N·Im[W] to the real-type fields,
+        against runaway solutions in the imaginary direction; self.alpha_ds is the combined coefficient αds·N.
+        """
+        forces = h_deriv.copy()
         if self.alpha_ds > 0:
             for i in self.mpt.aux_fields_real_idx:
                 forces[i] += 1j * self.alpha_ds * np.imag(w_aux[i])
