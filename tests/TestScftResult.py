@@ -4,7 +4,10 @@
 1D lamella on the CPU: the result must match the attributes of the run, its
 fields must be on the full grid, and its w fields must restart the run at the
 converged solution. 3D BCC with the Im-3m space group: one iteration must
-give the same full-grid fields as the same iteration without the space group.
+give the same full-grid fields as the same iteration without the space group,
+and a numerical failure (NumericalError) gives its fields on the full grid too.
+Result files are written to a new file that replaces the old one once it is on
+the disk: a failed write leaves an existing file as it was.
 """
 
 import contextlib
@@ -20,7 +23,7 @@ import yaml
 import numpy as np
 
 from scipy.io import loadmat
-from polymerfts import SCFT, SCFTResult, SpaceGroup, PlatformSelector
+from polymerfts import SCFT, SCFTResult, SpaceGroup, PlatformSelector, NumericalError
 
 
 def cpu_platform():
@@ -107,6 +110,33 @@ def main():
             for name in ("umask.mat", "umask.json"):
                 assert stat.S_IMODE((Path(tmp)/name).stat().st_mode) == 0o644, name
 
+    # A failed write leaves an existing result file as it was, in every format: here a value that
+    # JSON cannot hold (json.dump fails after writing part of the file) and, with other contents, a
+    # failing fsync, which every format calls before the new file replaces the old one
+    def failing_fsync(fd):
+        raise OSError("fsync failed")
+    with tempfile.TemporaryDirectory() as tmp:
+        for extension in ("json", "yaml", "mat"):
+            path = Path(tmp)/("atomic." + extension)
+            calc.save_results(str(path))
+            before = path.read_bytes()
+            free_energy, fsync = calc.free_energy, os.fsync
+            failures = ((TypeError, "a value JSON cannot hold"),) if extension == "json" else ()
+            for error, what in failures + ((OSError, "a failing fsync"),):
+                if error is TypeError:
+                    calc.free_energy = object()
+                else:
+                    calc.free_energy, os.fsync = free_energy + 1.0, failing_fsync
+                try:
+                    calc.save_results(str(path))
+                    raise AssertionError(f"{what}: the {extension} write raised no {error.__name__}")
+                except error:
+                    pass
+                finally:
+                    calc.free_energy, os.fsync = free_energy, fsync
+                assert path.read_bytes() == before, f"{what} changed the {extension} file"
+        assert sorted(os.listdir(tmp)) == ["atomic.json", "atomic.mat", "atomic.yaml"], os.listdir(tmp)
+
     # The JSON file is strict JSON: the chemical potential -inf of a polymer with volume
     # fraction 0 is written as {"nonfinite_float": "-inf"}, not as the token -Infinity
     with tempfile.TemporaryDirectory() as tmp:
@@ -190,6 +220,21 @@ def main():
                 failed.append(f"BCC {kind}[{m}] is not on the full {n}^3 grid")
             elif not np.allclose(on, off, rtol=0, atol=1e-10):
                 failed.append(f"BCC {kind}[{m}] differs from the run without space group by {np.max(np.abs(on - off)):.2e}")
+
+    # A numerical failure gives the fields of its state on the full grid, as SCFTResult.w (fields of
+    # +-2000 overflow the propagators, and the partition check of the first iteration fails)
+    with contextlib.redirect_stdout(io.StringIO()):
+        calc = SCFT(params([n]*3, [1.9]*3, max_iter=3, space_group={"symbol": "Im-3m", "hall_number": 529}))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            calc.run(initial_fields={"A": 2000*w_a, "B": -2000*w_a})
+        failed.append("fields of +-2000 raised no NumericalError")
+    except NumericalError as error:
+        if sorted(error.fields) != ["A", "B"] or any(np.size(f) != n**3 for f in error.fields.values()):
+            failed.append(f"NumericalError.fields with a space group are not on the full grid: "
+                          f"{ {m: np.shape(f) for m, f in error.fields.items()} }")
+        elif not np.allclose(error.fields["A"], 2000*w_a - np.mean(2000*w_a), rtol=0, atol=1e-9):
+            failed.append("NumericalError.fields are not the fields of the failed state")
 
     for f in failed:
         print("FAILED:", f)

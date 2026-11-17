@@ -4,6 +4,10 @@
 A fixed one-period search missed the metric minimum on a 4x32 hexagonal grid,
 made Gamma(k) differ from Gamma(-k), and broke the CLFTS Hamiltonian gradient.
 The reference searches a wider window using Cartesian reciprocal vectors.
+The smearing of a simulation has the |k|^2 of its propagator solver bit for bit,
+also at angles that change in a round trip through radians (105 degrees). An
+angle 1e-9 degrees from 90 is a right angle for the smearing, WTMD and save_vtk,
+as for the native box (1e-10 rad); |cos| < 1e-12 called such a cell oblique.
 """
 import os
 import tempfile
@@ -11,8 +15,8 @@ import tempfile
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import CLFTS, PlatformSelector, PropagatorSolver
-from polymerfts.theory.smearing import Smearing
+from polymerfts import CLFTS, PlatformSelector, PropagatorSolver, _core, save_vtk
+from polymerfts.theory.smearing import Smearing, smearing_of
 from polymerfts.fts.wtmd import WTMD
 from cuda_part import cuda_part_missing
 from fts_checks import quiet
@@ -63,6 +67,40 @@ def aliases_and_transforms():
                 native = quiet(Smearing, nx, lx, params, angles=angles, transform=solver.fourier)
                 value = native.apply(field if field_type == "real" else field.astype(complex))
                 np.testing.assert_allclose(value, real, rtol=1e-12, atol=1e-12)
+
+
+def solver_wavenumbers():
+    """The smearing of a simulation (smearing_of) and minimal_alias_search have the |k|^2 and the tied-alias
+    moments of the propagator solver bit for bit."""
+    for nx, lx, angles in (([12, 10], [1.5, 1.4], [105.0]), ([4, 32], [2.0, 2.0], [120.0]),
+                           ([6, 8, 5], [1.6, 1.3, 2.0], [105.0, 80.0, 110.0])):
+        k_squared, moments = _core.minimal_alias_search(nx, lx, angles)
+        for platform in PlatformSelector.avail_platforms():
+            for field_type in ("real", "complex"):
+                solver = quiet(PropagatorSolver, nx=nx, lx=lx, angles=angles, ds=0.1,
+                               bond_lengths={"A": 1.0}, bc=["periodic"] * (2 * len(nx)),
+                               chain_model="continuous", platform=platform, field_type=field_type)
+                solver.add_polymer(1.0, [["A", 1.0, 0, 1]])
+                smearing = quiet(smearing_of, {"smearing": {"type": "gaussian", "a_int": 0.05}, "angles": angles}, solver)
+                native_k, native_moments = solver.fourier.k_squared(), solver.fourier.alias_moments()
+                selection = tuple(slice(0, n) for n in native_k.shape)
+                assert np.array_equal(smearing.k_sq[selection], native_k), (nx, angles, platform, field_type)
+                assert np.array_equal(k_squared[selection], native_k), (nx, angles, platform, field_type)
+                assert np.array_equal(moments[(Ellipsis,) + selection], native_moments), (nx, angles, platform, field_type)
+
+
+def right_angles(directory):
+    """1e-9 degrees from 90 (1.7e-11 rad) is a right angle: walls are accepted, and the cell is orthogonal."""
+    angles = [90.0, 90.0, 90.0 + 1e-9]
+    walls = quiet(Smearing, [8, 6, 4], [1.6, 1.3, 1.1], {"type": "gaussian", "a_int": 0.1}, angles=angles,
+                  bc=["reflecting"] * 6)
+    assert walls.orthogonal
+    wtmd = quiet(WTMD, [4, 4, 4], [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
+    assert wtmd.orthogonal
+    path = os.path.join(directory, "right.vtk")
+    save_vtk(path, np.zeros((4, 4, 4)), [2.0] * 3, angles=angles)
+    with open(path) as stream:
+        assert "DATASET STRUCTURED_POINTS" in stream.read()
 
 
 def lattice_derivatives():
@@ -153,9 +191,12 @@ def clfts_gradient(directory):
 
 if __name__ == "__main__":
     aliases_and_transforms()
+    solver_wavenumbers()
     lattice_derivatives()
     wtmd_aliases()
     with tempfile.TemporaryDirectory(prefix="polymerfts_aliases_") as directory:
+        right_angles(directory)
         clfts_gradient(directory)
-    print("Test passed: exact smearing and WTMD aliases, lattice derivatives, and CLFTS gradient")
+    print("Test passed: exact smearing and WTMD aliases, the |k|^2 of the solver, right angles, lattice derivatives, "
+          "and CLFTS gradient")
     raise SystemExit(int(cuda_part_missing()))

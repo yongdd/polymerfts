@@ -301,7 +301,7 @@ class SaddlePointSearch:
             if not np.isfinite(hamiltonian):
                 # H contains log Q: name a partition function that is not positive as the cause
                 fields = self.mpt.to_monomer_fields_dict(w_aux)
-                check_partition_functions(self.prop_solver, where, fields)
+                check_partition_functions(self.prop_solver, where, lambda: fields)
                 raise NumericalError(f"Non-finite Hamiltonian at {where}", fields)
             if np.isfinite(error_level) and error_level < self.settings["tolerance"]:
                 return phi, hamiltonian, error_level

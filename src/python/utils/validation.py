@@ -294,9 +294,17 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
 FIXED_ANGLE_TOLERANCE = 1e-10
 
 
-def right_angle(degrees):
-    """Whether an angle in degrees is 90 degrees for the native box (within FIXED_ANGLE_TOLERANCE rad)."""
-    return abs(degrees * (math.pi / 180.0) - math.pi / 2.0) < FIXED_ANGLE_TOLERANCE
+# The crystal systems SCFT relaxes without a space group in each dimension (rows of CRYSTAL_SYSTEMS in
+# scft/cell_relaxation.py)
+SCFT_CRYSTAL_SYSTEMS = {1: ("Orthorhombic",),
+                        2: ("Orthorhombic", "Hexagonal2D", "Oblique2D"),
+                        3: ("Orthorhombic", "Tetragonal", "Cubic", "Hexagonal", "Monoclinic", "Triclinic")}
+
+
+def angle_fixed_at(degrees, fixed=90.0):
+    """Whether an angle in degrees is the angle `fixed` (in degrees) for the native box and
+    SpaceGroup.check_cell: within FIXED_ANGLE_TOLERANCE rad, in their arithmetic."""
+    return abs(degrees * (math.pi / 180.0) - fixed * (math.pi / 180.0)) < FIXED_ANGLE_TOLERANCE
 
 
 def _check_angles(angles, dim: int) -> None:
@@ -312,7 +320,7 @@ def _check_angles(angles, dim: int) -> None:
         if len(angles) not in (0, 1, 3):
             raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
         fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
-        if not all(right_angle(angle) for angle in np.asarray(fixed, dtype=float)):
+        if not all(angle_fixed_at(angle) for angle in np.asarray(fixed, dtype=float)):
             raise ValidationError("A 1D box requires all angles to be 90 degrees; "
                                   "a 2D box requires alpha and beta to be 90 degrees.")
 
@@ -503,6 +511,21 @@ def _validate_smearing(params: Dict[str, Any], complex_fields: bool) -> None:
                            positive=key != "a_int", nonnegative=key == "a_int")
 
 
+def _numerical_method(params: Dict[str, Any]) -> tuple:
+    """The numerical method of the input as the factories resolve it, and its capabilities in the method
+    registry: (None, None) for a name the registry does not know (PropagatorSolver names the valid ones),
+    and without the native extension (the input is also checked before it is built)."""
+    try:
+        from .. import _core
+    except ImportError:
+        return None, None
+    try:
+        name = _core.resolve_numerical_method(params["chain_model"], str(params.get("numerical_method") or "").lower())
+    except RuntimeError:
+        return None, None
+    return name, _core.numerical_methods()[name]
+
+
 def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the SCFT options before constructing numerical objects; returns the copy with the
     names of normalize_params that the simulation uses."""
@@ -555,6 +578,22 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
         _finite_number(optimizer.get(key), "optimizer." + key, nonnegative=True)
     _finite_number(params.get("tolerance", 1e-8), "tolerance", positive=True)
     _finite_number(params.get("stress_scale", 1), "stress_scale", positive=True)
+    _integer(params.get("max_iter", 2000), "max_iter")
+    # A crystal system given without a space group exists in the dimension (a group fixes its own)
+    crystal_system = params.get("crystal_system")
+    valid_systems = SCFT_CRYSTAL_SYSTEMS[len(params["nx"])]
+    if group is None and crystal_system is not None and crystal_system not in valid_systems:
+        raise ValidationError(f"'crystal_system' {crystal_system!r} is not valid for a {len(params['nx'])}D box; "
+                              "choose from " + ", ".join(valid_systems))
+    if params["relax_cell"]:
+        # Box relaxation needs the stress, which not every numerical method computes
+        method, capabilities = _numerical_method(params)
+        if capabilities is not None and not capabilities["supports_stress"]:
+            raise ValidationError(f"'relax_cell' needs the stress; '{method}' computes none")
+        # Box relaxation with electrostatics is limited to periodic boxes (CellRelaxation.stress also
+        # holds in closed boxes)
+        if electrostatics is not None and any(str(b).lower() != "periodic" for b in params.get("bc") or []):
+            raise ValidationError("'relax_cell' with 'electrostatics' needs a periodic box")
     # Preserve the ordering of option checks, while rejecting invalid discrete
     # lengths before any solver is constructed (including uncharged systems).
     for polymer in params["polymers"]:

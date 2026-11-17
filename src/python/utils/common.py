@@ -132,16 +132,14 @@ def _new_file_next_to(path, mode):
     return os.fdopen(fd, mode), temporary
 
 
-def atomic_savemat(path, data, **kwargs):
-    """Atomically write a MAT file, reversibly escaping unsupported struct keys."""
-    from scipy.io import savemat
+def _atomic_write(path, mode, write):
+    """Write a file with write(stream) to a new file next to path, on the disk, that then replaces
+    path: a failed write leaves an existing file as it was."""
     path = Path(path)
-    stream, temporary = _new_file_next_to(path, "wb")
+    stream, temporary = _new_file_next_to(path, mode)
     try:
         with stream:
-            encoded = _encode_mat_fields(data, 63 if kwargs.get("long_field_names", False) else 31,
-                                         top_level=True)
-            savemat(stream, encoded, **kwargs)
+            write(stream)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -150,18 +148,24 @@ def atomic_savemat(path, data, **kwargs):
             os.unlink(temporary)
 
 
+def atomic_savemat(path, data, **kwargs):
+    """Atomically write a MAT file, reversibly escaping unsupported struct keys."""
+    from scipy.io import savemat
+    encoded = _encode_mat_fields(data, 63 if kwargs.get("long_field_names", False) else 31, top_level=True)
+    _atomic_write(path, "wb", lambda stream: savemat(stream, encoded, **kwargs))
+
+
 def atomic_write_json(path, value):
     """Atomically write value as strict, indented JSON (json_ready) with a final newline."""
-    path = Path(path)
-    stream, temporary = _new_file_next_to(path, "w")
-    try:
-        with stream:
-            json.dump(json_ready(value), stream, indent=2, allow_nan=False)
-            stream.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    def write(stream):
+        json.dump(json_ready(value), stream, indent=2, allow_nan=False)
+        stream.write("\n")
+    _atomic_write(path, "w", write)
+
+
+def atomic_write_text(path, text):
+    """Atomically write a text file."""
+    _atomic_write(path, "w", lambda stream: stream.write(text))
 
 
 def report_partition_consistency(prop_solver):
@@ -182,8 +186,8 @@ def check_partition_functions(prop_solver, state, fields=None):
     fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
     finite. An absent canonical polymer contributes no log Q term, including when
     a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
-    `fields` are the monomer fields of the state, or a function that returns them (called only
-    when the check fails, as in check_partition_once), kept as NumericalError.fields.
+    `fields` is a function that returns the monomer fields of the state for NumericalError.fields
+    (as in check_partition_once), called only when the check fails; without it the error has none.
     """
     if prop_solver.field_type != "real":
         return
@@ -197,7 +201,7 @@ def check_partition_functions(prop_solver, state, fields=None):
                 "be positive and finite. Either the discretization is too coarse for the fields (refine the "
                 "grid or the contour step), or the propagators fell below the round-off level of the spectral "
                 "transforms, which is relative to their largest value on the grid (for example strong fields "
-                "next to absorbing walls or a grafted source).", fields() if callable(fields) else fields)
+                "next to absorbing walls or a grafted source).", None if fields is None else fields())
 
 
 def simulation_metadata(sim, random_seed=None):

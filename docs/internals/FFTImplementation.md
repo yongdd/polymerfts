@@ -295,11 +295,12 @@ Fddd, which has no pure mirror, ends on the standard FFT.
 
 The solver uses the basis the `SpaceGroup` holds. SCFT (`scft.py`) enables one
 automatically from the angles the group fixes (`SpaceGroup.fixed_angles()`): with
-α=β=γ=90° the m3 basis when the recursive 3m CrysFFT is feasible, otherwise the Pmmm
-basis, otherwise the z-mirror basis; with α=β=90° (γ free or 120°) the z-mirror basis;
-the irreducible basis stays when none applies. With `PropagatorSolver`, enable a
-basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
-`enable_pmmm_physical_basis()`, `enable_z_mirror_physical_basis()`).
+α=β=γ=90° the m3 basis when the recursive 3m CrysFFT pays off
+(`SpaceGroup.m3_crysfft_feasible()`), otherwise the Pmmm basis; with α=β=90° and γ
+free or 120° the z-mirror basis; the irreducible basis stays when none applies.
+With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
+(`enable_m3_physical_basis()`, `enable_pmmm_physical_basis()`,
+`enable_z_mirror_physical_basis()`).
 
 ### 6.5 Phase Support Table
 

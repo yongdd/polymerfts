@@ -462,7 +462,9 @@ and evaluates `backward(Σ M(k) · forward(fields))` for Fourier multipliers sto
 keeps the multipliers in device memory and runs a call on its own stream: upload,
 transforms, a grid-stride product kernel, inverse transforms and download. The
 coefficients have the layout of `FFT<T>`, and `get_k_squared()` gives |k|² in it for the
-current box with the alias convention of `Pseudo`. For real fields the multipliers and the
+current box with the alias convention of `Pseudo`; `_core.minimal_alias_search(nx, lx, angles)`
+gives the same |k|² and tied-alias moments on every mode of a periodic grid of any cell, for
+the smearing (whose cell follows SCFT box relaxation) and WTMD. For real fields the multipliers and the
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from

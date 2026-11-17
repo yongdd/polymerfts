@@ -7,7 +7,7 @@ import weakref
 
 import numpy as np
 
-from ..utils.validation import ValidationError, FIXED_ANGLE_TOLERANCE
+from ..utils.validation import ValidationError, angle_fixed_at
 
 
 # Which lattice parameters may vary during box relaxation (relax_cell=True), and the cell a crystal
@@ -18,7 +18,7 @@ from ..utils.validation import ValidationError, FIXED_ANGLE_TOLERANCE
 #   fixed      : the angles [alpha, beta, gamma] in degrees the system fixes (None: not fixed)
 #   cell       : what the cell needs, for the error message
 # "Orthorhombic" frees every box length in any dimension and is handled in the constructor.
-# To add a crystal system, add one row here.
+# To add a crystal system, add one row here and its name to SCFT_CRYSTAL_SYSTEMS (utils/validation.py).
 CRYSTAL_SYSTEMS = {
     "Orthorhombic": {"lx_reduced": None,      "lx_full": None,      "angles": [],
                      "fixed": [90, 90, 90], "cell": "angles of 90 degrees"},
@@ -39,12 +39,6 @@ CRYSTAL_SYSTEMS = {
     "Oblique2D":    {"lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2],         # gamma free
                      "fixed": [None, None, None], "cell": None},
 }
-
-
-def angle_fixed_at(degrees, fixed):
-    """Whether an angle in degrees is the angle `fixed` (in degrees) for the native box and SpaceGroup.check_cell,
-    which hold the angles a cell fixes within FIXED_ANGLE_TOLERANCE rad."""
-    return abs(degrees * (np.pi / 180.0) - fixed * (np.pi / 180.0)) < FIXED_ANGLE_TOLERANCE
 
 
 class CellRelaxation:
@@ -91,14 +85,8 @@ class CellRelaxation:
                 else:
                     crystal_system = "Orthorhombic"
             else:
+                # One valid for the dimension (validate_scft_params)
                 crystal_system = params.get("crystal_system", None) or "Orthorhombic"
-
-            valid_systems = {1: ["Orthorhombic"],
-                             2: ["Orthorhombic", "Hexagonal2D", "Oblique2D"],
-                             3: ["Orthorhombic", "Tetragonal", "Cubic", "Hexagonal", "Monoclinic", "Triclinic"]}[dim]
-            if crystal_system not in valid_systems:
-                raise ValueError(f"Crystal system '{crystal_system}' is not valid for a {dim}D box. " +
-                    "Choose from: " + ", ".join(valid_systems) + ".")
 
             # Relaxation never changes the fixed angles, and its first step overwrites the tied
             # lengths with the first one (a jump of the cell), so with relax_cell a crystal system

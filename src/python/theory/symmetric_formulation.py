@@ -588,7 +588,7 @@ class SymmetricPolymerTheory:
 
         return d_h_const, d_Q2, d_q1, d_A, d_phi2, d_phi1
 
-    def compute_h_deriv_chin(self, chi_n=None, w_aux=None, phi=None, wtmd=False):
+    def compute_h_deriv_chin(self, w_aux, phi=None, wtmd=False):
         """Compute derivatives of Hamiltonian w.r.t. χN parameters.
 
         Calculates dH/dχ_{ij}N for all interaction parameters. Used in L-FTS
@@ -618,10 +618,6 @@ class SymmetricPolymerTheory:
 
         Parameters
         ----------
-        chi_n : dict, optional
-            Flory-Huggins interaction parameters, {monomer_pair: value}. The derivatives always
-            use the χN of this object; when given, chi_n must equal it. Without it, pass w_aux
-            and phi by keyword.
         w_aux : ndarray
             Current auxiliary potential fields, shape (M, total_grid).
         phi : dict, optional
@@ -634,16 +630,8 @@ class SymmetricPolymerTheory:
         Returns
         -------
         dH : dict
-            Derivatives {monomer_pair: dH/dχN_value}.
+            Derivatives {monomer_pair: dH/dχN_value} at the χN of this object.
         """
-        if chi_n is not None and not isinstance(chi_n, dict):
-            raise TypeError("compute_h_deriv_chin: chi_n must be a dict {monomer_pair: value}; pass the "
-                            "fields by keyword, compute_h_deriv_chin(w_aux=w_aux, phi=phi).")
-        if w_aux is None:
-            raise TypeError("compute_h_deriv_chin needs the auxiliary fields w_aux.")
-        if chi_n is not None and {",".join(sorted(key.split(","))): float(value) for key, value in chi_n.items()} != self.chi_n:
-            raise ValueError("compute_h_deriv_chin needs the chi N of this SymmetricPolymerTheory.")
-
         # Volume averages <Ω_k>, <Ω_k Ω_l>, <φ_j Ω_k>, <φ_j> and <φ_i φ_j> (no conjugate: H is
         # holomorphic in complex fields)
         w_aux = np.asarray(w_aux)

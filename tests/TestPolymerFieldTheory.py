@@ -93,7 +93,7 @@ def test_dropped_fields_and_keys():
         noisy = omega.copy()
         noisy[dropped] = rng.normal(0.0, 2.0, (len(dropped), 300))
         phi_dict = {t: phi[i] for i, t in enumerate(types)}
-        dH, dH_noisy = mpt.compute_h_deriv_chin(chi_n, omega, phi_dict), mpt.compute_h_deriv_chin(chi_n, noisy, phi_dict)
+        dH, dH_noisy = mpt.compute_h_deriv_chin(omega, phi_dict), mpt.compute_h_deriv_chin(noisy, phi_dict)
         error = max(abs(dH[key] - np.mean(phi[types.index(key[0])] * phi[types.index(key[2])])) for key in chi_n)
         change = max(abs(dH[key] - dH_noisy[key]) for key in chi_n)
         check(len(dropped) == 1 and error < 1e-12 and change == 0.0,
@@ -101,12 +101,6 @@ def test_dropped_fields_and_keys():
     with contextlib.redirect_stdout(io.StringIO()):
         mpt = SymmetricPolymerTheory(["A", "B"], {"B,A": 15.0}, None)
     check(np.isclose(mpt.eigenvalues[0], -15.0) and mpt.chi_n == {"A,B": 15.0}, "chi N key 'B,A' is read as 'A,B'")
-    try:
-        mpt.compute_h_deriv_chin(np.zeros((2, 10)), {"A": np.ones(10), "B": np.zeros(10)})
-        message = ""
-    except TypeError as exc:
-        message = str(exc)
-    check("by keyword" in message, "positional fields in compute_h_deriv_chin raise a TypeError that names the keywords")
 
 
 def test_saddle_point_model(chi0):
@@ -274,7 +268,7 @@ def main():
             check(abs(value - exact) < 1e-9 * max(1.0, abs(exact)),
                   f"{name} {model}: stationary field part {value:.12f} = interaction energy {exact:.12f}")
 
-            dH = mpt.compute_h_deriv_chin(chi_n, omega, {t: phi[i] for i, t in enumerate(types)})
+            dH = mpt.compute_h_deriv_chin(omega, {t: phi[i] for i, t in enumerate(types)})
             errors = []
             for key in chi_n:
                 a, b = [types.index(t) for t in key.split(",")]

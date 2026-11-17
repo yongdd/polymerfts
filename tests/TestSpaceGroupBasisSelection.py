@@ -88,16 +88,27 @@ def main():
     expect_error(run_pmmm_basis_on_hexagonal_cell, "orthogonal cell")
 
     # SCFT chooses the basis from the angles the group fixes (SpaceGroup.fixed_angles): with all three
-    # at 90 degrees m3, else Pmmm, else z-mirror; with alpha and beta at 90 degrees z-mirror, also when
-    # the free gamma of a monoclinic group is 90 degrees; otherwise the irreducible basis
+    # at 90 degrees m3, else Pmmm, else the irreducible basis (no z-mirror basis for these groups); with
+    # alpha and beta at 90 degrees and gamma free or 120 degrees z-mirror, also when the free gamma of a
+    # monoclinic group is 90 degrees; otherwise the irreducible basis
     import contextlib
     import io
     from polymerfts import SCFT
+
+    def scft_params(symbol, hall, grid, lx, angles, **extra):
+        return {"nx": grid, "lx": lx, "angles": angles, "chain_model": "continuous", "ds": 0.1,
+                "segment_lengths": {"A": 1.0, "B": 1.2}, "chi_n": {"A,B": 15.0}, "relax_cell": False,
+                "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.4},
+                                                                 {"type": "B", "length": 0.6}]}],
+                "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
+                "space_group": {"symbol": symbol, "hall_number": None if hall < 0 else hall}, "platform": cpu,
+                **extra}
+
     for symbol, hall, grid, angles, expected in (
             ("Im-3m", 529, [16, 16, 16], [90.0, 90.0, 90.0], "m3"),
             ("Pmmm", -1, [8, 10, 12], [90.0, 90.0, 90.0], "pmmm"),
-            ("Pmmm", -1, [9, 10, 12], [90.0, 90.0, 90.0], "z-mirror"),    # odd nx: no Pmmm basis
-            ("P4/m", -1, [8, 8, 8], [90.0, 90.0, 90.0], "z-mirror"),       # no mirror x -> -x
+            ("Pmmm", -1, [9, 10, 12], [90.0, 90.0, 90.0], "irreducible"),  # odd nx: no Pmmm basis
+            ("P4/m", -1, [8, 8, 8], [90.0, 90.0, 90.0], "irreducible"),     # no mirror x -> -x
             ("P6/mmm", -1, [8, 8, 8], [90.0, 90.0, 120.0], "z-mirror"),
             ("P2/m", 58, [8, 8, 8], [90.0, 90.0, 90.0], "z-mirror"),       # unique axis c, gamma free
             ("P2/m", 58, [8, 8, 8], [90.0, 90.0, 100.0], "z-mirror"),
@@ -112,6 +123,31 @@ def main():
         with contextlib.redirect_stdout(io.StringIO()):
             basis = SCFT(params).sg.physical_basis_name()
         assert basis == expected, f"{symbol} ({hall}) at angles {angles}: {basis}, expected {expected}"
+
+    # ... and the basis gives the iteration of the full grid: one SCFT iteration from random symmetric
+    # fields of standard deviation 5, with the group and without it
+    rng = np.random.default_rng(7)
+    for symbol, hall, grid, lx, angles, expected in (
+            ("Ibmm", -1, [16, 16, 16], [3.1, 3.3, 3.5], [90.0, 90.0, 90.0], "m3"),
+            ("Pmmm", -1, [8, 10, 12], [2.1, 2.4, 2.7], [90.0, 90.0, 90.0], "pmmm"),
+            ("P4/m", -1, [8, 8, 12], [2.3, 2.3, 2.7], [90.0, 90.0, 90.0], "irreducible"),
+            ("P6/mmm", -1, [12, 12, 8], [3.0, 3.0, 2.6], [90.0, 90.0, 120.0], "z-mirror"),
+            ("P2/m", 58, [8, 10, 12], [2.1, 2.4, 2.7], [90.0, 90.0, 100.0], "z-mirror")):
+        params = scft_params(symbol, hall, grid, lx, angles, max_iter=1)
+        sg = _core.SpaceGroup(grid, symbol, hall) if hall > 0 else _core.SpaceGroup(grid, symbol)
+        w = np.asarray(sg.symmetrize(rng.normal(0.0, 5.0, (2, int(np.prod(grid))))))
+        initial = {"A": w[0], "B": w[1]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            calc = SCFT(params)
+            with_group = calc.run(initial_fields=initial, return_result=True)
+            del params["space_group"]
+            full = SCFT(params).run(initial_fields=initial, return_result=True)
+        basis = calc.sg.physical_basis_name()
+        difference = max(max(np.max(np.abs(with_group.phi[m] - full.phi[m])) for m in "AB"),
+                         abs(with_group.partition_functions[0] / full.partition_functions[0] - 1),
+                         abs(with_group.free_energy - full.free_energy))
+        assert basis == expected and difference < 1e-11, \
+            f"{symbol} ({hall}), {basis} basis: one iteration differs from the full grid by {difference:.2e}"
 
     # Grid compatibility is checked per axis: the 6_3 screw of P6_3/mmc (1/2 along z)
     # constrains only nz, so odd in-plane sizes are accepted and an odd nz is not

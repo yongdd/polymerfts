@@ -81,6 +81,7 @@
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "ComputationBox.h"
+#include "MinimalFormAlias.h"
 #include "PropagatorComputation.h"
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
@@ -1052,6 +1053,47 @@ PYBIND11_MODULE(_core, m)
     m.attr("MAX_GRID_ARRAY") = MAX_GRID_ARRAY;
     // Default tolerance of check_total_partition (PropagatorComputation.h)
     m.attr("PARTITION_TOLERANCE") = PARTITION_TOLERANCE;
+    // The alias search of the propagator solvers (MinimalFormAlias.h) on a periodic grid of a cell
+    // that need not be the simulation box: the smearing in SCFT box relaxation, and WTMD
+    m.def("minimal_alias_search", [](const std::vector<int>& nx, const std::vector<double>& lx,
+                                     const std::vector<double>& angles)
+    {
+        // A box of the cell gives its reciprocal metric, from the angles in degrees as every box
+        const ComputationBox<double> box(nx, lx, std::vector<std::string>(2 * nx.size(), "periodic"), angles);
+        const int dim = box.get_dim();
+        const long long n_grid = box.get_total_grid();
+        const std::array<int, 3> grid = padded_grid(nx);
+        const IndexForm form{index_metric_of(box.get_recip_metric(), dim)};
+        const AliasSearch search(grid, form.g);
+
+        std::vector<py::ssize_t> shape(nx.begin(), nx.end());
+        py::array_t<double> k_squared(shape);
+        shape.insert(shape.begin(), {dim, dim});
+        py::array_t<double> moments(shape);
+        double* k_sq = k_squared.mutable_data();
+        double* moment = moments.mutable_data();
+        // As FourierTransform::get_k_squared and get_alias_moments of a periodic box, on every mode
+        const double PI = std::numbers::pi;
+        for_each_mode_min_alias(grid, grid, form.g, form,
+            [&](long long index, const std::array<int, 3>& u) { k_sq[index] = 4.0 * PI * PI * form(u[0], u[1], u[2]); });
+        long long index = 0;
+        for (int i = 0; i < grid[0]; ++i)
+            for (int j = 0; j < grid[1]; ++j)
+                for (int k = 0; k < grid[2]; ++k, ++index)
+                {
+                    const std::array<double, 6> v = tied_alias_moments(
+                        {centered_index(i, grid[0]), centered_index(j, grid[1]), centered_index(k, grid[2])}, search, 1.0);
+                    const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
+                    for (int a = 0; a < dim; ++a)
+                        for (int b = 0; b < dim; ++b)
+                            moment[(a * dim + b) * n_grid + index] = product[a][b];
+                }
+        return py::make_tuple(k_squared, moments);
+    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
+       "(k_squared, alias_moments) of the periodic grid nx on the cell lx, angles ([alpha, beta, gamma] or "
+       "[gamma] in degrees): |k|^2 = 4 pi^2 u^T G u of the alias u of least |k|^2 of every mode, shape nx, and "
+       "<v_a v_b>, v = G u, over the aliases tied for it, shape (dim, dim) + nx; G is the reciprocal metric "
+       "of the box. The values of PropagatorSolver.fourier.k_squared() and alias_moments() on every mode.");
 
 
     py::class_<Block>(m, "Block")

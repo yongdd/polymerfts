@@ -325,6 +325,37 @@ def main():
     params = scft_parameters(); params.update(numerical_method="cn-adi2", relax_cell=True)
     ok &= expect_error(SCFT, params, "relax_cell with cn-adi2")
 
+    # ---- SCFT input that the run cannot use is refused by validate_scft_params, before any solver is built
+    electrostatics = {"charges": {"A": 1.0, "B": -1.0}, "coupling": 1.0}
+    for change, what, message in (
+            (lambda p: p.update(max_iter=10.5), "max_iter 10.5", "'max_iter' must be an integer"),
+            (lambda p: p.update(max_iter="5"), "max_iter '5'", "'max_iter' must be an integer"),
+            (lambda p: p.update(max_iter=0), "max_iter 0", "'max_iter' must be an integer"),
+            (lambda p: p.update(nx=[8, 8], lx=[4.0, 4.0], crystal_system="Cubic"), "Cubic for a 2D box",
+             "'crystal_system' 'Cubic' is not valid for a 2D box"),
+            (lambda p: p.update(crystal_system="Cubik"), "an unknown crystal system", "'crystal_system' 'Cubik'"),
+            (lambda p: p.update(numerical_method="cn-adi2", relax_cell=True), "relax_cell with cn-adi2",
+             "'cn-adi2' computes none"),
+            (lambda p: p.update(relax_cell=True, bc=["reflecting"] * 6, smearing={"type": "gaussian", "a_int": 0.1},
+                                electrostatics=electrostatics), "relax_cell with electrostatics and walls",
+             "needs a periodic box")):
+        params = scft_parameters(); change(params)
+        try:
+            validate_scft_params(params)
+            print(f"FAILED: validate_scft_params accepted {what}")
+            ok = False
+        except ValidationError as error:
+            if message not in str(error):
+                print(f"FAILED: the ValidationError of {what} does not name {message!r}: {error}")
+                ok = False
+    # ... while the same options that the run can use pass
+    for change in (lambda p: p.update(max_iter=np.int64(5)), lambda p: p.update(crystal_system="Cubic", relax_cell=True),
+                   lambda p: p.update(numerical_method="cn-adi2"),
+                   lambda p: p.update(relax_cell=True, smearing={"type": "gaussian", "a_int": 0.1},
+                                      electrostatics=electrostatics)):
+        params = scft_parameters(); change(params)
+        validate_scft_params(params)
+
     # ---- the cell must match the crystal system of the space group
     params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}; params["lx"] = [4.0, 4.0, 3.0]
     ok &= expect_error(SCFT, params, "cubic space group with unequal box lengths")
@@ -402,12 +433,7 @@ def main():
 
     # ---- crystal systems are checked against the dimension
     params = scft_parameters(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["crystal_system"] = "Cubic"
-    try:
-        build(SCFT, params)
-        print("FAILED: Cubic accepted for a 2D box")
-        ok = False
-    except ValueError:
-        pass
+    ok &= expect_error(SCFT, params, "Cubic for a 2D box", "not valid for a 2D box")
     # ... and against the cell, which relaxation keeps but does not set (without a space group)
     for lx, angles, system in (([4.0, 4.0, 6.0], None, "Hexagonal"), ([4.0, 5.0, 6.0], None, "Cubic"),
                                ([4.0, 5.0, 6.0], None, "Tetragonal"), ([4.0, 4.0, 4.0], [90.0, 90.0, 100.0], "Orthorhombic"),
