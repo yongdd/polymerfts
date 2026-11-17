@@ -15,7 +15,9 @@
  * **Device Memory:**
  *
  * All input/output arrays are device pointers (CuDeviceData<T>).
- * No host-device transfers occur within solver methods.
+ * No host-device transfers occur within solver methods. With a space group,
+ * which the solvers take in their constructors with the backend's device index
+ * maps, the propagators are in its reduced basis.
  *
  * @see CudaSolverPseudoRQM4 for continuous chain pseudo-spectral
  * @see CudaSolverPseudoDiscrete for discrete chain pseudo-spectral
@@ -92,30 +94,6 @@ public:
      * @param force true to always accumulate cross-term stress sums
      */
     void set_force_off_diagonal_stress(bool force) { force_off_diagonal_stress_ = force; }
-
-    /**
-     * @brief Set space group for reduced basis expand/reduce operations.
-     *
-     * When set, the solver will internally handle expand (reduced→full) before
-     * FFT and reduce (full→reduced) after FFT. Input/output are in reduced basis.
-     *
-     * @param sg                      SpaceGroup pointer (nullptr to disable)
-     * @param d_reduced_basis_indices Device array mapping reduced→full indices
-     * @param d_full_to_reduced_map   Device array mapping full→reduced indices
-     * @param n_basis                 Number of reduced basis points
-     */
-    virtual void set_space_group(
-        [[maybe_unused]] SpaceGroup* sg,
-        [[maybe_unused]] int* d_reduced_basis_indices,
-        [[maybe_unused]] int* d_full_to_reduced_map,
-        [[maybe_unused]] int n_basis) {}
-
-    /**
-     * @brief Allocate the work of the path the solver takes, once the space group (if
-     *        any) is set and before the first computation (default: nothing; the
-     *        solvers that allocate all their work in the constructor need no call).
-     */
-    virtual void provide_work() {}
 
     /**
      * @brief Update Laplacian operator for new box dimensions.

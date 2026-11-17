@@ -118,11 +118,9 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
 template <typename T>
 void CpuSolverPseudoBase<T>::reset_crysfft()
 {
-    crysfft_mode_ = CrysFFTMode::None;
     crysfft_.reset();
     crysfft_boltz_.clear();
     crysfft_multipliers_.clear();
-    crysfft_full_indices_.clear();
     crysfft_reduced_indices_.clear();
     crysfft_identity_map_ = false;
 }
@@ -132,14 +130,12 @@ void CpuSolverPseudoBase<T>::adopt_crysfft_mapping(const CrysFFTBasisMapping& ma
 {
     if (physical_basis_enabled)
     {
-        // The fields already live on the physical grid: no index maps needed.
-        crysfft_full_indices_.clear();
+        // The fields already live on the physical grid: no index map needed.
         crysfft_reduced_indices_.clear();
         crysfft_identity_map_ = true;
     }
     else
     {
-        crysfft_full_indices_ = map.phys_to_full;
         crysfft_reduced_indices_ = map.phys_to_reduced;
         crysfft_identity_map_ = map.identity;
     }
@@ -193,12 +189,10 @@ void CpuSolverPseudoBase<T>::init_crysfft()
         if (fft_backend_ == FFTBackend::FFTW)
             crysfft_ = std::make_unique<FftwCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
 #endif
-        crysfft_mode_ = CrysFFTMode::Recursive3m;
     }
     else if (plan.mode == CrysFFTChoice::PmmmDct)
     {
         crysfft_ = std::make_unique<CrysFFTPmmm>(nx_logical, fft_backend_);
-        crysfft_mode_ = CrysFFTMode::PmmmDct;
     }
     else if (plan.mode == CrysFFTChoice::ObliqueZ)
     {
@@ -210,7 +204,6 @@ void CpuSolverPseudoBase<T>::init_crysfft()
         if (fft_backend_ == FFTBackend::FFTW)
             crysfft_ = std::make_unique<FftwCrysFFTObliqueZ>(nx_logical);
 #endif
-        crysfft_mode_ = CrysFFTMode::ObliqueZ;
     }
     if (!crysfft_)
         throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
@@ -335,9 +328,8 @@ void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, do
         return;
     }
 
-    const int M_reduced = space_group_->get_n_reduced_basis();
-    std::fill(reduced_out, reduced_out + M_reduced, 0.0);
-
+    // The CrysFFT path is taken only when the physical grid reaches every reduced-basis
+    // point (crysfft_mapping_usable), so the scatter writes all of reduced_out
     for (int i = 0; i < M_phys; ++i)
     {
         reduced_out[crysfft_reduced_indices_[i]] = phys_in[i];
@@ -356,13 +348,37 @@ int CpuSolverPseudoBase<T>::get_crysfft_physical_size() const
 }
 
 template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_diffusion(const double* q_in, double* q_out, double coeff) const
+std::pair<double*, double*> CpuSolverPseudoBase<T>::crysfft_grids(WorkArrays& work) const
+{
+    const int M_phys = get_crysfft_physical_size();
+    if (static_cast<int>(work.phys_in.size()) != M_phys)
+    {
+        work.phys_in.resize(M_phys);
+        work.phys_out.resize(M_phys);
+    }
+    return {work.phys_in.data(), work.phys_out.data()};
+}
+
+template <typename T>
+void CpuSolverPseudoBase<T>::crysfft_step(double* q_in, double* q_out, double coeff,
+                                          const double* pre, const double* post) const
 {
     const auto boltz = crysfft_boltz_.find(coeff);
     if (boltz == crysfft_boltz_.end())
         throw_with_line_number("No CrysFFT table was built for the step coefficient " + std::to_string(coeff) +
             " (see crysfft_block_coeffs()).");
+
+    // The factors live in the reduced basis: physical-grid point i holds reduced-basis point
+    // crysfft_reduced_indices_[i], or i with the identity map
+    const int M_phys = get_crysfft_physical_size();
+    const int* reduced_index = crysfft_identity_map_ ? nullptr : crysfft_reduced_indices_.data();
+    if (pre != nullptr)
+        for (int i = 0; i < M_phys; ++i)
+            q_in[i] *= pre[reduced_index ? reduced_index[i] : i];
     crysfft_->diffusion(q_in, q_out, boltz->second);
+    if (post != nullptr)
+        for (int i = 0; i < M_phys; ++i)
+            q_out[i] *= post[reduced_index ? reduced_index[i] : i];
 }
 
 template <typename T>
@@ -423,12 +439,12 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 template <typename T>
 bool CpuSolverPseudoBase<T>::crysfft_stress_fast_path() const
 {
-    // Only the Pmmm and recursive-3m modes have a stress fast path (ObliqueZ has
-    // none). The fast path computes the diagonal sums V₁₁, V₂₂, V₃₃ only, which is
-    // fine because the eligible crystal systems are orthogonal and never optimize
-    // angles. If angle derivatives are forced (force_off_diagonal_stress_), the
-    // standard path computes the cross terms instead of returning zeros for them.
-    return (use_crysfft_pmmm() || use_crysfft_recursive())
+    // Only the engines with stress multipliers, Pmmm and recursive 3m, have a stress
+    // fast path (ObliqueZ has none). The fast path computes the diagonal sums V₁₁, V₂₂,
+    // V₃₃ only, which is fine because the eligible crystal systems are orthogonal and
+    // never optimize angles. If angle derivatives are forced (force_off_diagonal_stress_),
+    // the standard path computes the cross terms instead of returning zeros for them.
+    return crysfft_ != nullptr && crysfft_->has_multipliers()
         && space_group_ != nullptr && is_periodic_ && dim_ == 3 && cb->is_orthogonal()
         && !this->force_off_diagonal_stress_;
 }

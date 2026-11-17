@@ -5,7 +5,9 @@
  *
  * 1. The buffer class: allocation, lending, moves (also over a buffer that holds
  *    memory), release, containers, the destructor, pinned memory, a failed
- *    allocation (its message names the caller and the size).
+ *    allocation (its message names the caller and the size). The owning cuFFT
+ *    plan handle CufftPlan: creation, replacement, moves, a failed creation,
+ *    reset, lending and the destructor, by the live plan count.
  * 2. Every kind of CUDA object (propagator computations of all solvers, the CrysFFT
  *    engines, non-periodic transforms, complex fields, the Anderson mixers), built
  *    with 4 streams (reduce-memory computations use one), returns everything when
@@ -35,6 +37,7 @@
  *    does not hide sections 1-3 (tests/CMakeLists.txt).
  */
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <concepts>
 #include <cstdio>
@@ -612,6 +615,47 @@ int main(int argc, char** argv)
                 && cuda_buffer_fail_countdown().load() < 0 && live_pinned() == p_start,
                 "the failure hook throws once, with a message that says so");
     cuda_buffer_fail_countdown().store(-1);
+
+    printf("--- cuFFT plan handle ---\n");
+    {
+        auto live_plans = []() { return cuda_handle_counters().cufft_plans.load(); };
+        const long long plans_start = live_plans();
+        {
+            CufftPlan a;
+            ok &= check(a.empty() && live_plans() == plans_start, "a new handle holds no plan");
+            ok &= check(a.create(cufftPlan1d, 64, CUFFT_D2Z, 1) == CUFFT_SUCCESS && !a.empty()
+                        && live_plans() == plans_start + 1, "create() makes a plan and counts it");
+            ok &= check(a.create(cufftPlan1d, 32, CUFFT_Z2Z, 1) == CUFFT_SUCCESS && !a.empty()
+                        && live_plans() == plans_start + 1, "a second create() destroys the first plan");
+            CufftPlan b(std::move(a));
+            ok &= check(a.empty() && !b.empty() && live_plans() == plans_start + 1, "move constructor transfers the plan");
+            CufftPlan c;
+            CUFFT_CHECK(c.create(cufftPlan1d, 16, CUFFT_D2Z, 1));
+            c = std::move(b);
+            ok &= check(b.empty() && !c.empty() && live_plans() == plans_start + 1,
+                        "move assignment over a plan destroys the plan it held");
+            ok &= check(c.create(cufftPlan1d, 0, CUFFT_D2Z, 1) != CUFFT_SUCCESS && c.empty() && live_plans() == plans_start,
+                        "a failed create() destroys the old plan and leaves the handle empty");
+            c.reset();
+            ok &= check(c.empty() && live_plans() == plans_start, "reset() of an empty handle does nothing");
+
+            // The handle is lent to cuFFT: a D2Z of a constant gives its sum at k = 0
+            CUFFT_CHECK(c.create(cufftPlan1d, 64, CUFFT_D2Z, 1));
+            std::vector<double> ones(64, 1.0);
+            CudaDeviceBuffer<double> in(64);
+            CudaDeviceBuffer<cuDoubleComplex> out(33);
+            CUDA_CHECK(cudaMemcpy(in, ones.data(), in.bytes(), cudaMemcpyHostToDevice));
+            CUFFT_CHECK(cufftExecD2Z(c, in, out));
+            cuDoubleComplex k0;
+            CUDA_CHECK(cudaMemcpy(&k0, out, sizeof(k0), cudaMemcpyDeviceToHost));
+            ok &= check(std::abs(k0.x - 64.0) < 1e-12 && std::abs(k0.y) < 1e-12, "the plan runs through the lent handle");
+            c.reset();
+            ok &= check(c.empty() && live_plans() == plans_start, "reset() destroys the plan");
+            CUFFT_CHECK(c.create(cufftPlan1d, 16, CUFFT_D2Z, 1));
+        }
+        ok &= check(live_plans() == plans_start, "the destructor destroys the plan");
+        ok &= check(no_cuda_error("the plan checks"), "no plan destroy failed (a double destroy would count)");
+    }
 
     //--------------------------------------------------------------------------
     // 2. Every kind of object returns everything it took

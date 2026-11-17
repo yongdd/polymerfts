@@ -174,30 +174,21 @@ const int* Pseudo<T>::get_negative_frequency_mapping()
 // Update total complex grid size
 //------------------------------------------------------------------------------
 template <typename T>
+int Pseudo<T>::complex_grid_size(int n_grid, int n_last, bool all_periodic)
+{
+    // Periodic BC: the r2c FFT of a real field keeps n/2 + 1 values along the last axis
+    if constexpr (std::is_same<T, double>::value)
+    {
+        if (all_periodic)
+            return n_grid / n_last * (n_last / 2 + 1);
+    }
+    return n_grid;   // c2c FFT (complex fields), or DCT/DST coefficients (non-periodic BC)
+}
+
+template <typename T>
 void Pseudo<T>::update_total_complex_grid()
 {
-    if (is_all_periodic())
-    {
-        // Periodic BC: use r2c FFT for double, c2c for complex
-        if constexpr (std::is_same<T, double>::value)
-        {
-            if (nx.size() == 3)
-                total_complex_grid = nx[0] * nx[1] * (nx[2] / 2 + 1);
-            else if (nx.size() == 2)
-                total_complex_grid = nx[0] * (nx[1] / 2 + 1);
-            else if (nx.size() == 1)
-                total_complex_grid = nx[0] / 2 + 1;
-        }
-        else
-        {
-            total_complex_grid = total_grid;
-        }
-    }
-    else
-    {
-        // Non-periodic BC: DCT/DST uses full grid
-        total_complex_grid = total_grid;
-    }
+    total_complex_grid = complex_grid_size(total_grid, nx.back(), is_all_periodic());
 }
 
 //------------------------------------------------------------------------------

@@ -263,7 +263,6 @@ def build_params(phase_def, lx, platform, reduce_memory):
         "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
         "max_iter": 5,
         "tolerance": 2e-8,
-        "verbose": 0,
         "reduce_memory": reduce_memory,
     }
 

@@ -2,6 +2,21 @@
 
 This document provides a complete reference for all simulation parameters.
 
+`SCFT`, `LFTS` and `CLFTS` read the keys of their own sections and the shared ones (system, chains,
+numerical method, platform, memory, smearing; `electrostatics` in SCFT and CL-FTS). One input can serve all
+three at its top level: a method ignores the options of the others, such as `relax_cell` in L-FTS or
+`langevin` in SCFT, with one warning that lists them (options nested in a section are checked by the
+method that reads the section). Two keys would change the system rather than add an option, and raise
+`ValidationError`: `electrostatics` in L-FTS, which has no electrostatic potential and would simulate a
+neutral system, and `axis_ordering` in L-FTS and CL-FTS, which would read the shared `nx`, `lx`, `bc` and
+`angles` in another order than SCFT ([Axis Ordering](#axis-ordering)). A top-level key that no method
+reads, such as a misspelled key, raises `ValidationError` naming the key and the closest valid one.
+
+A top-level key given the value `None` (`null` or `~` in YAML) is the same as an absent key: the method
+uses its default, or reports a required key as missing. A keyword override of `from_file` given as `None`
+removes the key of the file, so the method uses its default too. Inside a section `None` has the meaning
+that its option documents, such as `"counterion": None` of `electrostatics`.
+
 ## Table of Contents
 
 1. [Simulation Setup](#simulation-setup)
@@ -216,7 +231,7 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
 ## SCFT Parameters
 
-`SCFT(params)` reads the shared parameters above plus the keys below. These keys are read by `SCFT` only; `LFTS` and `CLFTS` ignore them. `space_group` is also read by `SCFT` only: `LFTS` and `CLFTS` raise `ValidationError` for it.
+`SCFT(params)` reads the shared parameters above plus the keys below. These keys and `space_group` are read by `SCFT` only, except `electrostatics`, which `CLFTS` reads too: `LFTS` and `CLFTS` ignore them with a warning, but refuse `axis_ordering` (and `LFTS` refuses `electrostatics`).
 
 ### Optimizer
 
@@ -242,7 +257,7 @@ All keys are **required**: omitting one, a name other than `"am"`, a `max_hist` 
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `max_iter` | int | Maximum number of SCFT iterations | `2000` |
+| `max_iter` | int | Maximum number of SCFT iterations (at least 1) | `2000` |
 | `tolerance` | float | Stop when the self-consistency error (plus the norm of the stress along the relaxed lattice parameters when the box relaxes) is below this value | `1e-8` |
 | `relax_cell` | bool | Relax the box lengths (and, for monoclinic/triclinic/oblique systems, the angles) together with the fields | Required |
 | `stress_scale` | float | Scaling of the stress entries in the optimizer vector | `1` |
@@ -265,7 +280,7 @@ Box relaxation needs a method with the stress (every method except `"cn-adi2"`) 
 | `"Monoclinic"` | a, b, c (3D only) | β |
 | `"Triclinic"` | a, b, c (3D only) | α, β, γ |
 
-Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free); like the orthogonality test of the box, this and the angles a given `crystal_system` fixes hold to 1e-10 rad. Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` at the top of `cell_relaxation.py`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic.
+Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° → hexagonal (a = b), other non-90° → oblique (a, b and γ free); like the orthogonality test of the box, this and the angles a given `crystal_system` fixes hold to 1e-10 rad. Relaxation never changes the angles that are not free, and its first step overwrites the tied lengths with the first one: with `relax_cell` and without a space group, a given `crystal_system` (and a 2D cell classified as hexagonal) needs `lx` and `angles` that already satisfy the table, for example `"angles": [90, 90, 120]` with a = b for `"Hexagonal"`; otherwise SCFT raises `ValidationError`. A fixed cell (`"relax_cell": false`) is not checked. Tied lengths relax along the sum of their stresses, which is also what the convergence test measures; when the structure lacks the symmetry of the tie and the stresses of the tied lengths do not vanish separately, SCFT prints a warning that names a crystal system with free lengths (Orthorhombic, Triclinic for Hexagonal, Oblique2D for Hexagonal2D). With a `space_group` the crystal system comes from the group, and the angles vary only with a monoclinic group (the angle between the two axes perpendicular to its unique axis: β for the unique axis b, γ for c, α for a) or a triclinic group (all three). The table lives in `CRYSTAL_SYSTEMS` in `utils/validation.py`, next to the check of `crystal_system`; [crystal_systems/](../../examples/block_copolymer/scft/crystal_systems/) has examples of the non-orthogonal systems. Valid values depend on the dimension: 3D accepts Orthorhombic, Tetragonal, Cubic, Hexagonal, Monoclinic and Triclinic; 2D accepts Orthorhombic, Hexagonal2D and Oblique2D; 1D only Orthorhombic. Without a space group, `SCFT` raises `ValidationError` for another value.
 
 ### Axis Ordering
 
@@ -274,6 +289,8 @@ Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° �
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and full-grid `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
+
+`LFTS` and `CLFTS` refuse `axis_ordering` with `ValidationError`: they read `nx`, `lx`, `bc` and `angles` in the order given, so that an input with `axis_ordering` would describe another grid there. An input that SCFT shares with the Langevin methods gives these keys in the standard order.
 
 ### Output
 
@@ -340,7 +357,7 @@ NumPy floating-point parameters, including `longdouble`, are converted to Python
 | `pressure` | bool | (CL-FTS, optional) Also record the osmotic pressure at every sample; needs a periodic box, free chains and a method with the stress (not `cn-adi2`). Default `False` |
 | `concentrations` | bool | (CL-FTS, optional) Also record the mean concentration of every monomer type and point ion on the grid, over all steps. Default `False` |
 
-All intervals are positive integer counts of Langevin steps. Structure functions are normalized by the actual sample count, including when `statistics_save_interval` is not a multiple of `sample_interval`. Measurement files include `sample_count` and a JSON string `simulation_metadata_json`. Hamiltonian files also record `drift_max_history`: the maximum absolute scaled force used for each sampled transition, including dynamical stabilization in CL-FTS. CL-FTS also records `drift_max_step_history`, the maximum of every step for each auxiliary field (one column per field), and with electrostatics `psi_drift_max_step_history`. With canonical single-site species (discrete chains of one segment, point ions) it records `partition_ratio_step_history`, the ratio $`\vert Q_s \vert / \langle \vert e^{-u_s} \vert \rangle`$ of every step for each species (columns named by `partition_ratio_species_json`), which approaches zero near a zero of $`Q_s`$. Checkpoints keep the steps since the last statistics file. See [ComplexLangevinSimulation.md](../theory/ComplexLangevinSimulation.md#3-correct-convergence) for their use. At every sample CL-FTS records the chemical potentials βμ_p of all species (`chemical_potential_history_real`/`_imag`, one row per sample), with `pressure` the osmotic pressure βΠR₀³/C in its virial form (`pressure_history_real`/`_imag`) and, with grand-canonical species, the numbers of chains and ions per reference chain of all species (`number_density_history_real`/`_imag`, the columns of the chemical potentials) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)). With `concentrations`, the files `structure_function_NNNNNN.mat` hold the mean of every monomer type and point ion over all steps of the interval, whatever `sample_interval`, shaped like `nx` (`concentration_<name>_real`/`_imag`), with the number of steps `concentration_step_count`; a run continued from a checkpoint without the sums averages from the restart on. Custom callbacks use their own `interval` independently of these built-in measurements.
+All intervals are positive integer counts of Langevin steps. Structure functions are normalized by the actual sample count, including when `statistics_save_interval` is not a multiple of `sample_interval`. Measurement files include `sample_count` and a JSON string `simulation_metadata_json`. Hamiltonian files also record `drift_max_history`: the maximum absolute scaled force used for each sampled transition, including dynamical stabilization in CL-FTS. CL-FTS also records `drift_max_step_history`, the maximum of every step for each auxiliary field (one column per field), and with electrostatics `psi_drift_max_step_history`. With canonical single-site species (discrete chains of one segment, point ions) it records `partition_ratio_step_history`, the ratio $`\vert Q_s \vert / \langle \vert e^{-u_s} \vert \rangle`$ of every step for each species (columns named by `partition_ratio_species_json`), which approaches zero near a zero of $`Q_s`$. Checkpoints keep the steps since the last statistics file; a run continued from a checkpoint without them (written by release 0.10.0) records the steps from the restart on. See [ComplexLangevinSimulation.md](../theory/ComplexLangevinSimulation.md#3-correct-convergence) for their use. At every sample CL-FTS records the chemical potentials βμ_p of all species (`chemical_potential_history_real`/`_imag`, one row per sample), with `pressure` the osmotic pressure βΠR₀³/C in its virial form (`pressure_history_real`/`_imag`) and, with grand-canonical species, the numbers of chains and ions per reference chain of all species (`number_density_history_real`/`_imag`, the columns of the chemical potentials) ([CL-FTS theory, Section 7](../theory/ComplexLangevinSimulation.md#7-chemical-potential-and-osmotic-pressure)). With `concentrations`, the files `structure_function_NNNNNN.mat` hold the mean of every monomer type and point ion over all steps of the interval, whatever `sample_interval`, shaped like `nx` (`concentration_<name>_real`/`_imag`), with the number of steps `concentration_step_count`; a run continued from a checkpoint without the sums averages from the restart on. Custom callbacks use their own `interval` independently of these built-in measurements.
 
 Field checkpoints use format version 2 and are replaced atomically. They store the full PCG64 state, previous noise, auxiliary fields, concentrations, pending measurement sums/histories, WTMD state, and custom integrator/callback settings and states. Version-1 files continue with default LM and no callbacks. `continue_run(path)` validates the effective physical and numerical settings before restoring the RNG. The output directory, checkpoint interval, maximum final step, verbosity and backend may change; sampling periods, model, integrator settings, named callbacks and WTMD bias settings must match. On a different backend only numerical/statistical equivalence is expected. With `cpu-fftw` a continuation in a new process, like a second run with the same seed, can also differ from the uninterrupted run by rounding (about $`10^{-15}`$ at first, growing as the trajectories separate): FFTW chooses its transform plans by timing candidates, and another process can choose another plan. `cpu-mkl` and `cuda` on the same machine, and continuations within one process, reproduce the run bit for bit. Old unversioned files require `continue_run(path, allow_legacy=True)` and emit a warning because compatibility and pending measurements cannot be verified.
 
@@ -414,12 +431,12 @@ derivative diverges at zero coefficients. A zero bias derivative adds no force.
 
 ## CL-FTS Parameters
 
-`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and each of these keys raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
+`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and CL-FTS ignores these keys with a warning), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `zeta_n` | float | Compressibility parameter; complex Langevin needs a finite value. Give 0 to a neutral solvent of one segment that only serves as the reference chain of point ions: it then has no field ([CL-FTS theory, Section 6](../theory/ComplexLangevinSimulation.md#6-charged-systems)) | `100.0` |
-| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, raises `ValidationError` for either name. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
+| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, ignores either name with a warning. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
 | `smearing` | dict | (Optional) Finite-range interactions, see [Smearing](#smearing); recommended for CL-FTS stability. CL-FTS also accepts one Gaussian length per monomer type | none |
 | `electrostatics` | dict | (Optional) Smeared Coulomb interactions, see [Electrostatics](#electrostatics) | none |
 
@@ -483,7 +500,7 @@ params["electrostatics"] = {"charges": {"P": 1.0, "M": -1.0}, "coupling": 1e5}
 
 ### Gibbs Ensemble
 
-`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it. Both return `summary()`, the averages of the second half of the cycles.
+`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it from an input that may differ only in `gibbs_ensemble.cycles` and in the options of other methods, which CL-FTS ignores. Both return `summary()`, the averages of the second half of the cycles.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -523,7 +540,7 @@ When `True`:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS raise `ValidationError`) |
+| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS ignore it with a warning) |
 
 ```python
 "space_group": {

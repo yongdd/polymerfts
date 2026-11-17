@@ -14,10 +14,10 @@ at a zero mode (see WTMD.add_bias).
 import numpy as np
 import scipy.signal
 
-from ..theory.smearing import periodic_transform
+from .. import _core
 from ..utils.common import atomic_savemat
 from ..utils.checkpoint import pair_suffix
-from ..utils.validation import ValidationError, _finite_number, right_angle
+from ..utils.validation import ValidationError, _finite_number, angle_fixed_at
 
 
 class WTMD:
@@ -67,7 +67,7 @@ class WTMD:
 
         # Cell volume and metric (angles [alpha, beta, gamma] in degrees; None: orthogonal)
         cos_a, cos_b, cos_g = np.cos(np.deg2rad(angles)) if angles is not None else (0.0, 0.0, 0.0)
-        self.orthogonal = angles is None or all(right_angle(angle) for angle in angles)   # the test of the native box
+        self.orthogonal = angles is None or all(angle_fixed_at(angle) for angle in angles)   # the test of the native box
         if self.orthogonal:
             self.V = lx[0] * lx[1] * lx[2]
         else:
@@ -133,9 +133,9 @@ class WTMD:
             mag_k = np.sqrt(space_kx**2 + space_ky**2 + space_kz**2)
         else:
             # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form, from the
-            # search of the propagator solvers: of the simulation's transform, or of a box of its own
-            transform = fourier if fourier is not None else periodic_transform(nx, lx, angles)[0]
-            mag_k = np.sqrt(transform.k_squared()[:, :, :nx[2] // 2 + 1])
+            # search of the propagator solvers: of the simulation's transform, or on the cell (lx, angles)
+            k_squared = fourier.k_squared() if fourier is not None else _core.minimal_alias_k_squared(nx, lx, angles)
+            mag_k = np.sqrt(k_squared[:, :, :nx[2] // 2 + 1])
         self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
         self._fk_root = np.power(self.fk, 1.0 / self.l)
 

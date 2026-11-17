@@ -63,8 +63,8 @@ def uniform_operators(root, platform):
             assert quiet(sim.prop_solver.check_total_partition)
 
         mean_params = copy.deepcopy(params)
-        mean_params.pop("langevin")
-        mean_params.pop("recording")
+        for key in ("langevin", "recording", "verbose_level"):   # options of CL-FTS, which SCFT refuses
+            mean_params.pop(key)
         mean_params.update(relax_cell=False, max_iter=1, tolerance=1e-8,
                            optimizer={"name": "am", "max_hist": 10, "start_error": 0.1,
                                       "mix_min": 0.1, "mix_init": 0.1})

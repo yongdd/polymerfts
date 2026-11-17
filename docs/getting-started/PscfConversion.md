@@ -112,7 +112,8 @@ python scripts/pscf/pscf_converter.py import omega --rho rho \
     --monomers A B C -o fields.mat
 ```
 
-Without a name mapping the defaults are `A` through `Z`, then `M27`, `M28`, etc.
+Without a name mapping the defaults are `A` through `Z`, then `AA`, `AB`, etc., as
+the simulation editor names monomer types (the library takes letters and underscores only).
 The importer checks both headers independently and rejects mismatched grids,
 cells, groups or monomer counts. It also rejects missing or extra data rows,
 wrong column counts, nonfinite values, and basis/Fourier-space files. Both
@@ -340,7 +341,8 @@ establish numerical equivalence between the two codes for every physical model.
 
 Generated-script execution tests are separately enabled with
 `POLYMERFTS_SCRIPT_TEST_PLATFORM=cpu-mkl`, `cpu-fftw` or `cuda` on allocated compute
-resources. They are skipped when that variable is unset. For example:
+resources. They are skipped when that variable is unset; the Linux CI build runs them
+on `cpu-mkl`. For example:
 
 ```bash
 POLYMERFTS_SCRIPT_TEST_PLATFORM=cpu-fftw \

@@ -38,9 +38,13 @@ public:
     /// build_boltzmann(coeff); q_in is kept (q_out may be q_in).
     virtual void diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const = 0;
 
+    /// Whether the engine has stress multipliers (build_multiplier(), apply_multiplier()):
+    /// Pmmm and recursive 3m.
+    virtual bool has_multipliers() const { return false; }
+
     /// Write the stress multiplier exp(-k² coeff)·Σ_{d in axes} k_d² (axes: bit
     /// mask 1 = x, 2 = y, 4 = z; coeff 0: no bond factor) into `table`, as
-    /// build_boltzmann() does. Pmmm and recursive 3m only.
+    /// build_boltzmann() does. Pmmm and recursive 3m only (has_multipliers()).
     virtual void build_multiplier(std::vector<double>&, const std::array<double, 6>&, int, double) const
     {
         throw_with_line_number("This CrysFFT engine has no stress multipliers.");

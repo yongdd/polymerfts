@@ -607,10 +607,11 @@ class PropagatorSolver:
         Returns
         -------
         float
-            Volume of each grid cell, V / (Nx Ny Nz) of the current box (the
-            cell volume includes the angles; a mask leaves it unchanged).
+            Volume of each grid cell in the current box, the weight of its
+            integrals: the product of the grid spacings in an orthogonal cell,
+            V / (Nx Ny Nz) in an oblique one (a mask leaves it unchanged).
         """
-        return self._computation_box.get_volume() / self._total_grid
+        return self._computation_box.get_dv_base()
 
     @property
     def n_grid(self):

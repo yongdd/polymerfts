@@ -73,21 +73,6 @@ __global__ void ker_real_to_complex_part(cuDoubleComplex* dst, const double* src
     }
 }
 
-__global__ void ker_complex_to_real(double* dst, const cuDoubleComplex* src, int M)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M; idx += blockDim.x * gridDim.x)
-        dst[idx] = src[idx].x;
-}
-
-__global__ void ker_real_to_complex(cuDoubleComplex* dst, const double* src, int M)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M; idx += blockDim.x * gridDim.x)
-    {
-        dst[idx].x = src[idx];
-        dst[idx].y = 0.0;
-    }
-}
-
 __global__ void ker_complex_to_interleaved(double* dst, const cuDoubleComplex* src, int M_COMPLEX)
 {
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M_COMPLEX; idx += blockDim.x * gridDim.x)
@@ -117,7 +102,7 @@ __global__ void ker_scale(double* data, double scale, int M)
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx)
-    : nx_(nx), is_all_periodic_(true), plan_forward_(0), plan_backward_(0)
+    : nx_(nx), is_all_periodic_(true)
 {
     for (int d = 0; d < DIM; ++d)
         bc_[d] = BoundaryCondition::PERIODIC;
@@ -146,13 +131,7 @@ CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx)
     }
     catch (std::exception& exc)
     {
-        release();
-        throw_without_line_number(exc.what());
-    }
-    catch (...)
-    {
-        release();
-        throw;
+        throw_without_line_number(exc.what());   // the owning members release what was acquired
     }
 }
 
@@ -161,7 +140,7 @@ CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx)
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc)
-    : nx_(nx), bc_(bc), plan_forward_(0), plan_backward_(0)
+    : nx_(nx), bc_(bc)
 {
     try
     {
@@ -233,43 +212,15 @@ CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, 
     }
     catch (std::exception& exc)
     {
-        release();
-        throw_without_line_number(exc.what());
-    }
-    catch (...)
-    {
-        release();
-        throw;
+        throw_without_line_number(exc.what());   // the owning members release what was acquired
     }
 }
 
 //------------------------------------------------------------------------------
-// Destructor
+// Destructor (here, where the real transforms are complete types)
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
-CudaFFT<T, DIM>::~CudaFFT()
-{
-    release();
-}
-
-//------------------------------------------------------------------------------
-// Release (idempotent; tolerates a partly built object)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-void CudaFFT<T, DIM>::release()
-{
-    d_work_buffer_.release();
-
-    if (plan_forward_created_)
-        release_cufft_plan(plan_forward_);
-    if (plan_backward_created_)
-        release_cufft_plan(plan_backward_);
-    plan_forward_created_ = false;
-    plan_backward_created_ = false;
-
-    rt_forward_.reset();
-    rt_backward_.reset();
-}
+CudaFFT<T, DIM>::~CudaFFT() = default;
 
 //------------------------------------------------------------------------------
 // Initialize cuFFT plans for periodic BC
@@ -277,9 +228,6 @@ void CudaFFT<T, DIM>::release()
 template <typename T, int DIM>
 void CudaFFT<T, DIM>::initPeriodicFFT()
 {
-    // Called once, from the constructor: a second call would leak the plans
-    if (plan_forward_created_ || plan_backward_created_)
-        throw_with_line_number("CudaFFT::initPeriodicFFT() called with plans already created.");
     int total_grid[DIM];
     for (int d = 0; d < DIM; ++d)
         total_grid[d] = nx_[d];
@@ -298,10 +246,8 @@ void CudaFFT<T, DIM>::initPeriodicFFT()
         cufft_backward = CUFFT_Z2Z;
     }
 
-    CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_forward_, DIM, total_grid, nullptr, 1, 0, nullptr, 1, 0, cufft_forward, 1)));
-    plan_forward_created_ = true;
-    CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_backward_, DIM, total_grid, nullptr, 1, 0, nullptr, 1, 0, cufft_backward, 1)));
-    plan_backward_created_ = true;
+    CUFFT_CHECK(plan_forward_.create(cufftPlanMany, DIM, total_grid, nullptr, 1, 0, nullptr, 1, 0, cufft_forward, 1));
+    CUFFT_CHECK(plan_backward_.create(cufftPlanMany, DIM, total_grid, nullptr, 1, 0, nullptr, 1, 0, cufft_backward, 1));
 }
 
 //------------------------------------------------------------------------------

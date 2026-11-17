@@ -243,8 +243,8 @@ private:
     /// @name Space group support (reduced basis)
     /// @{
     SpaceGroup* space_group_;           ///< Space group pointer (nullptr if not used)
-    int* d_reduced_basis_indices_;      ///< Device array: reduced → full index mapping (lent by the backend)
-    int* d_full_to_reduced_map_;        ///< Device array: full → reduced index mapping (lent by the backend)
+    const int* d_reduced_basis_indices_;  ///< Device array: reduced → full index mapping (lent by the backend)
+    const int* d_full_to_reduced_map_;    ///< Device array: full → reduced index mapping (lent by the backend)
     int n_basis_;                       ///< Number of reduced basis points
     CudaDeviceBuffer<double> d_q_full_in_[MAX_STREAMS];  ///< Work buffer: full grid input (per stream)
     CudaDeviceBuffer<double> d_q_full_out_[MAX_STREAMS]; ///< Work buffer: full grid output (per stream)
@@ -343,25 +343,18 @@ public:
      * @param molecules           Molecules container
      * @param n_streams           Number of parallel streams
      * @param streams             Pre-created CUDA streams
-     * @param reduce_memory   Checkpointing mode
+     * @param space_group         Space group of the reduced basis, or nullptr: input and
+     *                            output are then in its basis, expanded and reduced around
+     *                            the finite-difference steps
+     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
+     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
     CudaSolverCNADI(ComputationBox<double>* cb, Molecules *molecules,
-        int n_streams, cudaStream_t streams[MAX_STREAMS][2], bool reduce_memory);
+        int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+        SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees GPU resources.
     ~CudaSolverCNADI();
-
-    /**
-     * @brief Set space group for reduced basis operations.
-     *
-     * When set, input/output are in reduced basis and the solver expands/reduces
-     * internally around finite-difference operations.
-     */
-    void set_space_group(
-        SpaceGroup* sg,
-        int* d_reduced_basis_indices,
-        int* d_full_to_reduced_map,
-        int n_basis) override;
 
     /// Update finite difference coefficients for new box.
     void update_laplacian_operator() override;

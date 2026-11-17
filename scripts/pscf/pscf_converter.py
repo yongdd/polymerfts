@@ -325,12 +325,9 @@ def prepare_export(source, field_source=None, lattice=None):
         params = _VALIDATION["normalize_params"](params)
     except _VALIDATION["ValidationError"] as exc:
         raise ValueError(str(exc)) from None
-    # PSCF's SCFT input describes one incompressible system. A model with zeta_n is compressible,
-    # and so is CL-FTS, which takes zeta_n = 100 when params give none: its fields files carry that
-    # value beside w_A_real and w_A_imag, also as the --fields of a parameter file, and a parameter
-    # file with Langevin settings but without the saddle and compressor that L-FTS requires is a
-    # CL-FTS input. Saved results keep their params under initial_params, which an SCFT run may
-    # share with a Langevin method
+    # One PSCF SCFT input holds one incompressible box: refuse two boxes, zeta_n (in the params or at
+    # the top of a fields file) and a parameter file whose Langevin settings lack the saddle and
+    # compressor of L-FTS, a CL-FTS input (zeta_n = 100 by default)
     if "gibbs_ensemble" in params:
         raise ValueError("A Gibbs-ensemble input describes two boxes, which one PSCF SCFT input cannot represent.")
     parameter_file = "initial_params" not in source
@@ -483,6 +480,17 @@ def export_files(input_path, output_dir, fields_path=None, lattice=None):
     return output_dir
 
 
+def default_monomer_name(index):
+    """A to Z, then AA, AB, ..., ZZ, AAA, ... as the simulation editor names monomer types: the
+    library takes letters and underscores only."""
+    name = ""
+    index += 1
+    while index:
+        index, letter = divmod(index - 1, 26)
+        name = string.ascii_uppercase[letter] + name
+    return name
+
+
 def field_identity(data, monomers=None, metadata=None, chain_model=None):
     """Resolve a field's column names without writing anything."""
     n_monomer = len(data["fields"])
@@ -494,7 +502,7 @@ def field_identity(data, monomers=None, metadata=None, chain_model=None):
         if monomers is None: monomers = info.get("monomer_types", [])
         if chain_model is None: chain_model = info.get("chain_model")
     if monomers is None:
-        monomers = [string.ascii_uppercase[i] if i < 26 else f"M{i+1}" for i in range(n_monomer)]
+        monomers = [default_monomer_name(i) for i in range(n_monomer)]
     if (not isinstance(monomers, (list, tuple)) or len(monomers) != n_monomer or
             any(not isinstance(name, str) or not name or any(c.isspace() for c in name) for name in monomers)
             or len(set(monomers)) != n_monomer):

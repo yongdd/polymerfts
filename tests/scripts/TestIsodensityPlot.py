@@ -78,15 +78,13 @@ def test_lattice_vectors_follow_the_angles_of_the_file(tmp_path, monkeypatch, so
     assert L[0, 1] == L[0, 2] == L[1, 2] == 0.0     # a along x, b in the xy plane
 
 
-# Hexagonal axes put the points along a and b at the nodes: SCFT results save the flag, older SCFT
-# results only the Hall number, which gives the axes
+# Hexagonal axes put the points along a and b at the nodes: SCFT results with a space group save its
+# Hall number, which gives the axes
 @pytest.mark.parametrize('lx, angles, group, offsets', [
     ([1.3, 1.7, 2.1], [80.0, 95.0, 110.0], {}, (0.5, 0.5, 0.5)),     # triclinic, no group
-    ([1.5, 1.5, 2.4], [90.0, 90.0, 120.0], {'uses_hexagonal_axes': True}, (0.0, 0.0, 0.5)),
     ([1.5, 1.5, 2.4], [90.0, 90.0, 120.0], {'space_group_hall_number': 488}, (0.0, 0.0, 0.5)),     # P6_3/mmc
-    ([2.0, 2.0, 2.0], [75.0, 75.0, 75.0], {'uses_hexagonal_axes': False, 'space_group_hall_number': 459},
+    ([2.0, 2.0, 2.0], [75.0, 75.0, 75.0], {'space_group_hall_number': 459},
      (0.5, 0.5, 0.5)),                                                 # R-3m on rhombohedral axes
-    ([2.0, 2.0, 2.0], [75.0, 75.0, 75.0], {'space_group_hall_number': 459}, (0.5, 0.5, 0.5)),
 ])
 def test_non_orthogonal_cell_interpolates_the_periodic_field(tmp_path, monkeypatch, lx, angles, group, offsets):
     # The interpolation error is below 0.01; read with the other offsets along a and b, the field
@@ -96,17 +94,21 @@ def test_non_orthogonal_cell_interpolates_the_periodic_field(tmp_path, monkeypat
     assert result['X'].size <= 8*24**3
 
 
-def test_older_scft_result_with_a_space_group_needs_no_polymerfts(tmp_path, monkeypatch):
-    # The Hall number alone gives the axes of the space group
+# The ends of the trigonal (430-461) and hexagonal (462-488) settings, and R settings on hexagonal
+# (433, 460) and on rhombohedral axes (434, 461)
+@pytest.mark.parametrize('hall, hexagonal', [(429, False), (430, True), (433, True), (434, False), (460, True),
+                                             (461, False), (462, True), (488, True), (489, False)])
+def test_hall_number_gives_the_axes_without_polymerfts(tmp_path, monkeypatch, hall, hexagonal):
     monkeypatch.setitem(sys.modules, 'polymerfts', None)        # import polymerfts fails
-    result = draw(tmp_path, monkeypatch, [24, 24, 24], [1.5, 1.5, 2.4], offsets=(0.0, 0.0, 0.5),
-                  angles=np.array([90.0, 90.0, 120.0]), space_group_hall_number=488)
-    np.testing.assert_array_equal(result['offsets'], [0.0, 0.0, 0.5])
+    result = draw(tmp_path, monkeypatch, [12, 12, 12], [1.5, 1.5, 2.4], offsets=(0.0, 0.0, 0.5),
+                  angles=np.array([90.0, 90.0, 90.0]), space_group_hall_number=hall)
+    assert result['hexagonal'] == hexagonal
+    np.testing.assert_array_equal(result['offsets'], [0.0, 0.0, 0.5] if hexagonal else [0.5, 0.5, 0.5])
 
 
 def test_hall_numbers_give_the_axes_of_the_solver(tmp_path, monkeypatch):
-    # The reader (the first cell) of an older SCFT result with each of the 530 Hall settings
-    # takes the axes that polymerfts.SpaceGroup uses
+    # The reader (the first cell) of an SCFT result with each of the 530 Hall settings takes the
+    # axes that polymerfts.SpaceGroup uses
     polymerfts = pytest.importorskip('polymerfts')
     reader = compile(''.join(json.loads(NOTEBOOK.read_text(encoding='utf-8'))['cells'][0]['source']),
                      str(NOTEBOOK), 'exec')
@@ -149,7 +151,7 @@ def test_file_without_A_draws_the_chosen_type(tmp_path, monkeypatch, monomer_typ
 @pytest.mark.parametrize('symbol, hall, lx, angles', [('P6_3/mmc', 488, [2.0, 2.0, 3.0], [90.0, 90.0, 120.0]),
                                                       ('R-3m', 459, [2.0, 2.0, 2.0], [80.0, 80.0, 80.0])])
 def test_scft_results_place_the_points_of_the_solver(tmp_path, monkeypatch, suffix, symbol, hall, lx, angles):
-    # The angles and uses_hexagonal_axes saved by SCFT give the grid points of PropagatorSolver.get_grid_points
+    # The angles and the Hall number saved by SCFT give the grid points of PropagatorSolver.get_grid_points
     polymerfts = pytest.importorskip('polymerfts')
     if NOTEBOOK.parents[2] not in Path(polymerfts.__file__).resolve().parents:
         pytest.skip('needs the staged build/python of this checkout on PYTHONPATH')
@@ -170,7 +172,7 @@ def test_scft_results_place_the_points_of_the_solver(tmp_path, monkeypatch, suff
         sim.save_results('fields_002000' + suffix)
     saved = (loadmat('fields_002000.mat', squeeze_me=True) if suffix == '.mat'
              else json.loads(Path('fields_002000.json').read_text()))
-    assert bool(saved['uses_hexagonal_axes']) == (hall == 488)
+    assert int(saved['space_group_hall_number']) == hall and 'uses_hexagonal_axes' not in saved
     result = {}
     exec(compile(CODE.replace('"fields_002000.mat"', f'"fields_002000{suffix}"', 1), str(NOTEBOOK), 'exec'), result)
     np.testing.assert_array_equal(result['offsets'], [0.0, 0.0, 0.5] if hall == 488 else [0.5, 0.5, 0.5])

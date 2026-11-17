@@ -45,7 +45,8 @@ def expect_numerical(call, message):
 
 
 def numerical_failures(root):
-    """Failed computations raise NumericalError: a partition consistency check that fails, a Hamiltonian or
+    """Failed computations raise NumericalError: a partition consistency check that fails (on the first
+    fields of every run), a Hamiltonian or
     a force that is not finite at an intermediate saddle point of L-FTS, intermediate CL-FTS fields or
     forces that are not finite, and concentrations that are not finite after a CL-FTS step."""
     for cls, dtype in ((LFTS, np.float64), (CLFTS, np.complex128)):
@@ -53,14 +54,19 @@ def numerical_failures(root):
         sim._partition_checked = False
         with patch("polymerfts.theory.chains.report_partition_consistency", return_value=False):
             expect_numerical(lambda: sim.compute_concentrations(np.zeros((2, 16), dtype)), "Partition consistency")
+        # Every run checks the consistency on its first fields, also the second run of an object
+        sim = cls(diblock_parameters(root / (cls.__name__ + "_partition_per_run"), 1, cls), random_seed=5)
+        assert sim.run(diblock_fields())["status"] == "completed"
+        with patch("polymerfts.theory.chains.report_partition_consistency", return_value=False):
+            expect_numerical(lambda: sim.run(diblock_fields()), "Partition consistency")
 
     # The forces at the intermediate fields of an integrator in L-FTS (SaddlePointSearch.evaluate_force)
     lfts = LFTS(diblock_parameters(root / "LFTS_intermediate", 1), random_seed=5)
     solve = lfts.saddle.solve
 
     def non_finite_hamiltonian(w_aux):
-        phi, _, iterations, error_level = solve(w_aux)
-        return phi, np.nan, iterations, error_level
+        phi, phi_smeared, _, iterations, error_level = solve(w_aux)
+        return phi, phi_smeared, np.nan, iterations, error_level
     lfts.saddle.solve = non_finite_hamiltonian
     expect_numerical(lambda: lfts.saddle.evaluate_force(np.zeros((1, 16)), np.zeros((2, 16)), 1),
                      "Non-finite Hamiltonian at an intermediate saddle point of step 1")
@@ -91,9 +97,36 @@ def numerical_failures(root):
             phi = {m: np.full_like(values, np.nan) for m, values in phi.items()}
         return phi, elapsed_time
     clfts.compute_concentrations = non_finite_after_the_first
-    expect_numerical(lambda: clfts.run(diblock_fields()), "Non-finite complex fields or concentrations at step 1")
+    expect_numerical(lambda: clfts.run(diblock_fields()), "Non-finite concentrations at step 1")
     status = json.loads((directory / "run_status.json").read_text())
     assert status["status"] == "failed" and status["reason"].startswith("NumericalError"), status
+
+
+def non_finite_search(root):
+    """A saddle search that ends with fields that are not finite (the last update of the compressor gave
+    NaN) is not retried from them: the step fails as a saddle failure (SaddlePointError,
+    aborted_saddle_failure), not later as a numerical failure of the retry (lost material conservation)."""
+    directory = root / "non_finite_search"
+    sim = LFTS(diblock_parameters(directory), random_seed=5)
+    solve, spoiled = sim.saddle.solve, []
+
+    def non_finite_at_step_2(w_aux):
+        phi, phi_smeared, hamiltonian, iterations, error_level = solve(w_aux)
+        if sim.run_status["last_completed_step"] == 1 and not spoiled:
+            spoiled.append(True)
+            w_aux[:] = np.nan
+            return phi, phi_smeared, hamiltonian, iterations, np.inf
+        return phi, phi_smeared, hamiltonian, iterations, error_level
+    sim.saddle.solve = non_finite_at_step_2
+    try:
+        sim.run(diblock_fields())
+    except SaddlePointError as error:
+        assert "the saddle point of step 2 failed after 1 attempts" in str(error), str(error)
+    else:
+        raise AssertionError("Expected SaddlePointError")
+    status = json.loads((directory / "run_status.json").read_text())
+    assert status["status"] == "aborted_saddle_failure" and status["last_completed_step"] == 1, status
+    assert status["saddle_failures"] == 1, status
 
 
 class FailedSolveStep(LeimkuhlerMatthews):
@@ -204,6 +237,7 @@ def main():
                 status = json.loads((root / "failure" / "run_status.json").read_text())
                 assert status["status"] == "aborted_saddle_failure" and status["last_completed_step"] == 1
                 assert not (root / "failure" / "fields_000002.mat").exists()
+                non_finite_search(root)
 
                 # CL-FTS solves no saddle points: a SaddlePointError of its integrator fails the run like
                 # a step that leaves non-finite fields and a non-finite Hamiltonian, whose error holds

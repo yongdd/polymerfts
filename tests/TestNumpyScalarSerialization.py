@@ -68,7 +68,7 @@ def scalar_encodings():
 
 
 def scft_outputs(root, platform):
-    params = compressible_parameters(root, platform, zeta=None)
+    params = compressible_parameters(root, platform, zeta=None, cls=SCFT)
     params.update(relax_cell=False, max_iter=1, tolerance=np.longdouble("1e-8"),
                   optimizer={"name": "am", "max_hist": 5, "start_error": 0.01,
                              "mix_min": 0.1, "mix_init": 0.1})

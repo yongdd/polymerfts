@@ -342,10 +342,16 @@ def build_script(values):
     params.update(chain_model=choice("chain_model", ("continuous", "discrete")), ds=ds,
                   reduce_memory=bool(values["reduce_memory"]))
     if params["chain_model"] == "discrete":
-        # The library's rule (Molecules::add_polymer): a whole number of segments per block, at least one
+        # The library's rule (Molecules::add_polymer): a whole number of segments per block, at least one,
+        # rounded as ContourLengthMapping::segment_count: a ratio within 1e-9 of a half is that half,
+        # and halves round up
         for polymer in params["polymers"]:
             for block in polymer["blocks"]:
-                n_segment = max(1, math.floor(block["length"] / ds + 0.5))
+                ratio = block["length"] / ds
+                half = math.floor(2 * ratio + 0.5) / 2
+                if abs(ratio - half) < 1e-9:
+                    ratio = half
+                n_segment = max(1, math.floor(ratio + 0.5))
                 if abs(block["length"] - n_segment * ds) > 1e-9:
                     raise ValueError(f"Discrete chains: block length {block['length']:g} must be a multiple of "
                                      f"ds = {ds:g} (closest: {n_segment * ds:g}).")

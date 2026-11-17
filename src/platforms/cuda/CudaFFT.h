@@ -92,11 +92,9 @@ private:
 
     bool is_all_periodic_;                       ///< True if all dimensions are periodic
 
-    // cuFFT handles for periodic BC (cufftHandle has no null value; the flags track creation)
-    cufftHandle plan_forward_;                   ///< Forward FFT plan
-    cufftHandle plan_backward_;                  ///< Backward FFT plan
-    bool plan_forward_created_ = false;          ///< plan_forward_ holds a created plan
-    bool plan_backward_created_ = false;         ///< plan_backward_ holds a created plan
+    // cuFFT plans for periodic BC
+    CufftPlan plan_forward_;                     ///< Forward FFT plan
+    CufftPlan plan_backward_;                    ///< Backward FFT plan
 
     // Device work buffer: 2*total_complex_grid_ doubles (complex layout) for
     // periodic BC, total_grid_ doubles otherwise
@@ -113,9 +111,6 @@ private:
 
     /// Initialize CudaRealTransform for non-periodic BC.
     void initNonPeriodicFFT();
-
-    /// Free everything acquired so far (idempotent; also used when a constructor throws).
-    void release();
 
 public:
     /**
@@ -135,18 +130,6 @@ public:
 
     /// Destructor. Frees GPU memory and cuFFT plans.
     ~CudaFFT();
-
-    /// Check if all boundaries are periodic.
-    bool is_all_periodic() const { return is_all_periodic_; }
-
-    /// Get total complex grid size.
-    int get_total_complex_grid() const { return total_complex_grid_; }
-
-    /// Get total real grid size.
-    int get_total_grid() const { return total_grid_; }
-
-    /// Get boundary condition for a dimension.
-    BoundaryCondition get_bc(int dim) const { return bc_[dim]; }
 
     /**
      * @brief Forward transform (real coefficient interface) with explicit stream.

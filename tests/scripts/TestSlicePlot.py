@@ -56,14 +56,12 @@ def draw(tmp_path, monkeypatch, nx, lx, slice_index, layout='plain', types=('A',
     return drawn, {name: value.reshape(nx) for name, value in phi.items()}
 
 
-# Hexagonal axes put the points along b at the nodes: SCFT results save the flag, older SCFT results
-# only the Hall number (488: P6_3/mmc; 459: R-3m on rhombohedral axes), which gives the axes
+# Hexagonal axes put the points along b at the nodes: SCFT results with a space group save its Hall
+# number (488: P6_3/mmc; 459: R-3m on rhombohedral axes), which gives the axes
 @pytest.mark.parametrize('source, angles, group, offset_b', [
     ('angles', [75.0, 95.0, 100.0], {}, 0.5), ('checkpoint_settings_json', [110.0, 95.0, 100.0], {}, 0.5),
     ('initial_params', [80.0, 95.0, 100.0], {}, 0.5), (None, [75.0, 95.0, 100.0], {}, 0.5),
-    ('angles', [90.0, 90.0, 120.0], {'uses_hexagonal_axes': True}, 0.0),
     ('angles', [90.0, 90.0, 120.0], {'space_group_hall_number': 488}, 0.0),
-    ('angles', [75.0, 75.0, 75.0], {'uses_hexagonal_axes': False, 'space_group_hall_number': 459}, 0.5),
     ('angles', [75.0, 75.0, 75.0], {'space_group_hall_number': 459}, 0.5)])
 def test_plane_cells_surround_the_grid_points(tmp_path, monkeypatch, capsys, source, angles, group, offset_b):
     nx, lx = [4, 6, 5], [1.1, 1.3, 1.7]

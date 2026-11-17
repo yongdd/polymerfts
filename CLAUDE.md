@@ -197,6 +197,8 @@ Keep each simulation class readable from top to bottom:
   flow per method: do not merge them into a generic driver or a class hierarchy.
 - Read options directly from the `params` dictionary in the constructor, with
   defaults next to their use. Avoid introducing parameter dataclass/spec layers.
+  A new top-level option also needs its entry in `METHOD_KEYS` (`validation.py`):
+  a method warns about the keys of other methods and refuses keys no method reads.
 - Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.
@@ -276,9 +278,10 @@ field potentials use the per-reference-chain convention. See
 ## Memory, FFT and CUDA Rules
 
 - Use owning RAII buffers and smart pointers. Device memory uses
-  `CudaDeviceBuffer`, pinned host memory uses `CudaPinnedBuffer`; host arrays use
-  standard containers. Raw pointers lend access rather than transferring ownership,
-  except where an existing backend allocation interface requires it.
+  `CudaDeviceBuffer`, pinned host memory uses `CudaPinnedBuffer`, cuFFT plans use
+  `CufftPlan`; host arrays use standard containers. Raw pointers lend access rather
+  than transferring ownership, except where an existing backend allocation interface
+  requires it.
 - Preserve allocation and resource counters used by safety tests. CUDA destruction
   and release paths must not throw; use the existing release helpers.
 - Share solver mechanics through `CpuSolverPseudoBase` and `CudaSolverPseudoBase`.

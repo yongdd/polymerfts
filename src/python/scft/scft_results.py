@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import yaml
 
-from ..utils.common import atomic_savemat, atomic_write_json, json_ready, mat_ready, simulation_metadata
+from ..utils.common import atomic_savemat, atomic_write_json, atomic_write_text, json_ready, mat_ready, simulation_metadata
 
 
 @dataclass
@@ -189,8 +189,6 @@ def save_results(sim, path):
     m_dic = {"initial_params": sim.params,
         "dim":sim.prop_solver.dim, "nx":sim.prop_solver.nx, "lx":sim.prop_solver.get_lx(),
         "angles":list(sim.prop_solver.get_angles_degrees()),
-        # True when a and b are sampled at the nodes, not the cell centres (PropagatorSolver.get_grid_points)
-        "uses_hexagonal_axes": sim.sg is not None and sim.sg.uses_hexagonal_axes(),
         "monomer_types":sim.monomer_types, "chi_n":chi_n_mat, "chain_model":sim.chain_model, "ds":sim.ds,
         "eigenvalues": sim.mpt.eigenvalues, "matrix_a": sim.mpt.matrix_a, "matrix_a_inverse": sim.mpt.matrix_a_inv}
     metadata = simulation_metadata(sim)
@@ -229,9 +227,8 @@ def save_results(sim, path):
     # Get input file extension
     _, file_extension = os.path.splitext(path)
 
-    # A failure keeps an existing file: MAT and JSON are written to a new file that then replaces it,
-    # and YAML is converted before the file is opened. The converters (mat_ready, json_ready) copy the
-    # nested parameters, so sim.params stays as it is.
+    # A failure keeps an existing file: each format is written to a new file that then replaces it.
+    # The converters (mat_ready, json_ready) copy the nested parameters, so sim.params stays as it is.
 
     # Save data in matlab format (MAT files have no None: options given as None are left out)
     if file_extension == ".mat":
@@ -244,9 +241,8 @@ def save_results(sim, path):
 
     # Save data in yaml format (YAML has .inf: a non-finite number stays a number)
     elif file_extension == ".yaml":
-        text = yaml.safe_dump(json_ready(m_dic, strict=False), default_flow_style=None, width=90, sort_keys=False)
-        with open(path, "w") as f:
-            f.write(text)
+        atomic_write_text(path, yaml.safe_dump(json_ready(m_dic, strict=False), default_flow_style=None, width=90,
+                                               sort_keys=False))
     else:
         raise ValueError("Invalid output file extension. Use .mat, .json, or .yaml.")
 

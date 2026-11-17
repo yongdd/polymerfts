@@ -6,9 +6,8 @@ from typing import Dict, Optional, Callable, Union
 
 from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.propagator_solver import PropagatorSolver
 from ..theory.chains import chain_solver
-from ..utils.validation import (normalize_params, validate_scft_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_scft_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values)
 from ..utils.common import (
@@ -155,9 +154,6 @@ class SCFT:
 
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
         self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg)
-        # Box relaxation needs the stress, which cn-adi2 does not compute
-        if params["relax_cell"] and not PropagatorSolver.numerical_methods()[self.prop_solver.numerical_method]["supports_stress"]:
-            raise ValidationError(f"'relax_cell' needs the stress; '{self.prop_solver.numerical_method}' computes none")
 
         # Computation box as a public attribute (this creates the C++ objects)
         self.cb = self.prop_solver.computation_box
@@ -198,8 +194,6 @@ class SCFT:
         self.relax_cell = params["relax_cell"]
 
         self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
-        if self.max_iter < 1:
-            raise ValidationError(f"'max_iter' must be at least 1, got {self.max_iter}")
         self.tolerance = params.get("tolerance", 1e-8)     # stop when the self-consistency error is below this
 
         # The fields of an incompressible run have zero means (the free energy, computed from
@@ -234,19 +228,21 @@ class SCFT:
                                   "use the hexagonal-axes setting of the space group.")
 
         # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
-        # test of the box, and keeps them during box relaxation): with all three at 90 degrees m3, else
-        # Pmmm, else z-mirror; with alpha and beta at 90 degrees z-mirror (hexagonal-axes groups too:
-        # their hybrid grid is cell-centered along z); otherwise the irreducible basis. A basis that does
+        # test of the box, and keeps them during box relaxation). With all three at 90 degrees: m3 where
+        # the recursive 3m CrysFFT pays off on the grid (SpaceGroup.m3_crysfft_feasible: even sizes,
+        # nz/2 >= 8 and translations that fold onto the grid), else Pmmm, else the irreducible basis.
+        # With alpha and beta at 90 degrees and gamma free or fixed at another angle (hexagonal groups,
+        # trigonal groups on hexagonal axes, whose hybrid grid is cell-centered along z, and monoclinic
+        # groups with the unique axis c): z-mirror. Otherwise the irreducible basis. A basis that does
         # not apply to the group or the grid raises RuntimeError, and the next one is tried; other
-        # exceptions are real bugs and propagate. The m3 basis needs the recursive 3m CrysFFT (even
-        # grid, nz >= 16 and a compatible translation parity).
+        # exceptions are real bugs and propagate.
         alpha, beta, gamma = sg.fixed_angles()
         bases = []
         if alpha == beta == gamma == 90.0:
             if sg.m3_crysfft_feasible():
                 bases.append(sg.enable_m3_physical_basis)
             bases.append(sg.enable_pmmm_physical_basis)
-        if alpha == beta == 90.0:
+        elif alpha == beta == 90.0:
             bases.append(sg.enable_z_mirror_physical_basis)
         for enable in bases:
             try:
@@ -268,10 +264,6 @@ class SCFT:
                                                       open_charges=open_charges(params))
         es = self.electrostatics
         self.psi = np.zeros(self.prop_solver.n_grid)
-        # Box relaxation with electrostatics is limited to periodic boxes (CellRelaxation.stress also
-        # holds in closed boxes)
-        if params["relax_cell"] and not self.prop_solver.fourier.periodic:
-            raise ValidationError("'relax_cell' with 'electrostatics' needs a periodic box")
         print("Electrostatics: charges", es.charges, "coupling E = %g" % es.coupling
               + ("" if es.screening_length is None else ", screening length %g" % es.screening_length))
         for ion in es.ions:
@@ -303,8 +295,7 @@ class SCFT:
         SCFT
             Configured SCFT instance.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params)
 
     def compute_concentrations(self, w, q_init=None):

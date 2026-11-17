@@ -216,6 +216,53 @@ def bias_between_runs(root, platform):
         compare_checkpoints(sim, new, step)
 
 
+def bias_at_intermediate_fields(root, platform):
+    """The forces at the intermediate fields of a step (SaddlePointSearch.evaluate_force, which multistage
+    integrators call) carry the WTMD bias of those fields."""
+    sim = quiet(LFTS, parameters(root / "intermediate", platform), random_seed=3)
+    random = np.random.default_rng(17)
+    w_aux = random.normal(0.0, 5.0, (2, 64))
+    trial = random.normal(0.0, 5.0, (1, 64))
+    unbiased = quiet(sim.saddle.evaluate_force, trial, w_aux, 1)
+    sim.wtmd.up = np.full(sim.wtmd.bins, 40.0) / sim.wtmd.CV
+    biased = quiet(sim.saddle.evaluate_force, trial, w_aux, 1)
+    fields = w_aux.copy()
+    fields[sim.mpt.aux_fields_real_idx] = trial
+    bias = np.zeros_like(unbiased)
+    quiet(sim.wtmd.add_bias, fields, bias)
+    assert np.max(np.abs(bias)) > 1e-3 * np.max(np.abs(unbiased)), (np.max(np.abs(bias)), np.max(np.abs(unbiased)))
+    np.testing.assert_allclose(biased - unbiased, bias, rtol=0, atol=1e-9 * np.max(np.abs(bias)))
+
+
+def samples_of_the_fields_before_the_step(root, platform):
+    """Each WTMD sample holds Ψ and dH/dχN of the fields before its step, those at which Ψ and the bias of
+    the step were computed. Three monomer types make dH/dχN depend on the concentrations too."""
+    params = parameters(root / "samples", platform, 3)
+    params.update(segment_lengths={"A": 1.0, "B": 1.0, "C": 1.0}, chi_n={"A,B": 15.0, "B,C": 15.0, "A,C": 30.0},
+                  polymers=[{"volume_fraction": 1.0, "blocks": [
+                      {"type": "A", "length": 0.3}, {"type": "B", "length": 0.4}, {"type": "C", "length": 0.3}]}])
+    params["wtmd"]["update_freq"] = 10      # the run keeps all its samples
+    accepted = []
+    sim = quiet(LFTS, params, random_seed=19,
+                callbacks={"accepted": lambda sample: accepted.append((np.array(sample["w_aux"]),
+                                                                        dict(sample["phi"])))})
+    random = np.random.default_rng(23)
+    quiet(sim.run, {name: random.normal(0.0, 5.0, 64) for name in ("A", "B", "C")})
+    assert len(sim.wtmd.order_parameter_history) == 3
+    # Step n starts from the state that step n - 1 accepted
+    for step in (2, 3):
+        w_aux, phi = accepted[step - 2]
+        assert sim.wtmd.order_parameter_history[step - 1] == sim.wtmd.order_parameter(w_aux), step
+        dH = sim.mpt.compute_h_deriv_chin(w_aux=w_aux, phi=sim.smearing.apply_to_dict(phi), wtmd=True)
+        # The concentrations after the step would give other values
+        after = sim.mpt.compute_h_deriv_chin(w_aux=w_aux, phi=sim.smearing.apply_to_dict(accepted[step - 1][1]),
+                                             wtmd=True)
+        assert any(abs(after[key] - dH[key]) > 1e-6 * abs(dH[key]) for key in sim.chi_n), (step, after, dH)
+        for key in sim.chi_n:
+            stored = sim.wtmd.dH_history[key][step - 1]
+            assert abs(stored - dH[key]) <= 1e-12 * abs(dH[key]), (step, key, stored, dH[key])
+
+
 def main():
     constructor_state()
     print("[PASS] WTMD constructor copies and fresh start")
@@ -227,8 +274,10 @@ def main():
         checkpoint_restart(root, platform)
         preset_bias(root, platform)
         bias_between_runs(root, platform)
-        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart, preset bias "
-              "and a bias set between runs")
+        bias_at_intermediate_fields(root, platform)
+        samples_of_the_fields_before_the_step(root, platform)
+        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart, preset bias, "
+              "a bias set between runs, the bias of intermediate forces and the fields of the samples")
     return 0
 
 

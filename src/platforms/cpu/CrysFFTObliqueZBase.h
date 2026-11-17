@@ -69,7 +69,7 @@ public:
     {
         table.assign(M_complex_, 0.0);
 
-        const std::array<double, 6> recip_metric = reciprocal_metric_of_cell(cell);
+        const std::array<double, 6> recip_metric = cell_geometry(cell).recip_metric;
         const double G11 = recip_metric[0];
         const double G12 = recip_metric[1];
         const double G13 = recip_metric[2];
@@ -111,10 +111,6 @@ public:
     }
 
     int get_M_physical() const override { return M_physical_; }
-    const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
-    const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
-    int get_M_logical() const { return M_logical_; }
-    int get_M_complex() const { return M_complex_; }
 };
 
 #endif  // CRYS_FFT_OBLIQUEZ_BASE_H_

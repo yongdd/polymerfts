@@ -60,9 +60,9 @@ from scipy.io import loadmat
 from .clfts import CLFTS
 from ..theory.electrostatics import coulomb_coupling, homogeneous_potential, point_ions
 from ..utils.common import json_ready, input_hash
-from ..utils.validation import (ValidationError, _chain_charge, open_charges, parse_chi_n, point_ion_concentrations,
-                         polymer_block_copy_lengths, polymer_block_lengths, reference_segments, validate_gibbs_params,
-                         validate_lfts_params)
+from ..utils.validation import (METHOD_KEYS, ValidationError, _chain_charge, open_charges, parse_chi_n,
+                                point_ion_concentrations, polymer_block_copy_lengths, polymer_block_lengths,
+                                reference_segments, validate_gibbs_params, validate_lfts_params)
 
 
 def cell_volume(lx, angles=None):
@@ -169,9 +169,10 @@ class GibbsEnsemble:
         self.history = None
 
     def settings(self):
-        """Settings that a continuation must share (the number of cycles may grow)."""
+        """Settings that a continuation must share (the number of cycles may grow): the keys of the input
+        that CL-FTS reads, so that the options of other methods, which it ignores, may come and go."""
         gibbs = {key: value for key, value in self.params["gibbs_ensemble"].items() if key != "cycles"}
-        template = {key: value for key, value in self.params.items() if key != "gibbs_ensemble"}
+        template = self._clfts_input()
         template["langevin"] = {key: value for key, value in template["langevin"].items() if key != "max_step"}
         # The amounts and the chemical potentials of the history follow the order of the point ions;
         # the hash of the input does not see that order
@@ -179,10 +180,13 @@ class GibbsEnsemble:
                 "random_seed": self.random_seed, "ion_names": self.point_ion_names,
                 "effective_block_lengths": [list(lengths) for lengths in self.block_lengths]}
 
+    def _clfts_input(self):
+        """The keys of the input that CL-FTS reads (validate_gibbs_params has warned about the others)."""
+        return {key: value for key, value in self.params.items() if key in METHOD_KEYS["CL-FTS"]}
+
     def box_params(self, b, amounts, cycle):
         """CL-FTS input of box b with the given amounts for the given cycle."""
-        params = copy.deepcopy(self.params)
-        params.pop("gibbs_ensemble")
+        params = copy.deepcopy(self._clfts_input())
         chains = amounts[:self.n_polymers]
         volume = float(np.dot(self.alphas, chains))
         for p, polymer in enumerate(params["polymers"]):

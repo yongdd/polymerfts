@@ -295,11 +295,12 @@ Fddd, which has no pure mirror, ends on the standard FFT.
 
 The solver uses the basis the `SpaceGroup` holds. SCFT (`scft.py`) enables one
 automatically from the angles the group fixes (`SpaceGroup.fixed_angles()`): with
-α=β=γ=90° the m3 basis when the recursive 3m CrysFFT is feasible, otherwise the Pmmm
-basis, otherwise the z-mirror basis; with α=β=90° (γ free or 120°) the z-mirror basis;
-the irreducible basis stays when none applies. With `PropagatorSolver`, enable a
-basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
-`enable_pmmm_physical_basis()`, `enable_z_mirror_physical_basis()`).
+α=β=γ=90° the m3 basis when the recursive 3m CrysFFT pays off
+(`SpaceGroup.m3_crysfft_feasible()`), otherwise the Pmmm basis; with α=β=90° and γ
+free or 120° the z-mirror basis; the irreducible basis stays when none applies.
+With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
+(`enable_m3_physical_basis()`, `enable_pmmm_physical_basis()`,
+`enable_z_mirror_physical_basis()`).
 
 ### 6.5 Phase Support Table
 
@@ -378,11 +379,11 @@ With the Pmmm or recursive 3m engine and the stress fast path, nothing of the fu
 is used, and the solver holds none of it: the cuFFT plans of the full grid, the
 per-stream full-grid work buffers and the `CudaPseudo` tables (Boltzmann bond factors
 and Fourier basis) are created only for a path whose propagator steps or segment
-stress run on the full grid. The backend calls `provide_work()` once the space group
-has chosen the path; `update_dw()` and `prepare_stress()` call it again before their
-loops, which allocates what a later change of the path needs (the off-diagonal stress
-flag) and brings the `CudaPseudo` tables to the current cell, so that
-`update_laplacian_operator()` no longer recomputes them. The propagator steps of the
+stress run on the full grid. The solver takes the space group in its constructor and
+allocates the work of its path there; `prepare_stress()` allocates what the off-diagonal
+stress flag adds later and brings the `CudaPseudo` tables, created at their first use, to
+the current cell, which `update_laplacian_operator()` does only while the full-grid path is
+in use. The propagator steps of the
 CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
 values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
 full-grid stress and hold these as well.

@@ -146,9 +146,8 @@ std::vector<double> FourierTransform<T>::get_k_squared() const
     }
 
     // |k|² = 4π² uᵀ g⁻¹ u of the alias u of least form, as in the propagator solvers (Pseudo)
-    const IndexForm form{index_metric_of(cb_->get_recip_metric(), dim_)};
-    for_each_mode_min_alias(padded_grid(nx), padded_grid(coefficient_shape_), form.g, form,
-        [&](long long index, const std::array<int, 3>& u) { k_sq[index] = 4.0 * PI * PI * form(u[0], u[1], u[2]); });
+    alias_k_squared(padded_grid(nx), padded_grid(coefficient_shape_), index_metric_of(cb_->get_recip_metric(), dim_),
+                    k_sq.data());
     return k_sq;
 }
 
@@ -157,22 +156,9 @@ std::vector<double> FourierTransform<T>::get_alias_moments() const
 {
     if (!periodic_)
         throw_with_line_number("The alias moments need a periodic box.");
-    const std::vector<int> nx = cb_->get_nx();
-    const std::array<int, 3> grid = padded_grid(nx), shape = padded_grid(coefficient_shape_);
-    const AliasSearch search(grid, index_metric_of(cb_->get_recip_metric(), dim_));
     std::vector<double> moments(static_cast<size_t>(dim_) * dim_ * n_coefficients_);
-    long long index = 0;
-    for (int i = 0; i < shape[0]; ++i)
-        for (int j = 0; j < shape[1]; ++j)
-            for (int k = 0; k < shape[2]; ++k, ++index)
-            {
-                const std::array<double, 6> v = tied_alias_moments(
-                    {centered_index(i, grid[0]), centered_index(j, grid[1]), centered_index(k, grid[2])}, search, 1.0);
-                const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
-                for (int a = 0; a < dim_; ++a)
-                    for (int b = 0; b < dim_; ++b)
-                        moments[(a * dim_ + b) * static_cast<long long>(n_coefficients_) + index] = product[a][b];
-            }
+    alias_moments(padded_grid(cb_->get_nx()), padded_grid(coefficient_shape_),
+                  index_metric_of(cb_->get_recip_metric(), dim_), dim_, moments.data());
     return moments;
 }
 

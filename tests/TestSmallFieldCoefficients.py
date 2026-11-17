@@ -89,7 +89,7 @@ def uniform_saddle(root, platform):
             target = -(sim.mpt.h_coef_mu1[k] + sim.mpt.matrix_a[:, k] @ sim.mean_concentrations()) / (2 * coefficient)
         fields = np.zeros((2, 4))
         fields[k] = 100.0
-        phi, _, _, error = quiet(sim.saddle.solve, fields)
+        phi, _, _, _, error = quiet(sim.saddle.solve, fields)
         assert error < sim.saddle.settings["tolerance"]
         np.testing.assert_allclose(np.mean(fields[k]), target, rtol=0, atol=1e-10)
         residual = sim.mpt.compute_func_deriv(fields, phi, sim.mpt.aux_fields_imag_idx)

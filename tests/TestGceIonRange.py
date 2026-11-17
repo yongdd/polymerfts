@@ -48,8 +48,8 @@ def parameters(directory, platform, mu, method="lm", steps=4):
 
 def scft_parameters(directory, platform, mu):
     params = parameters(directory, platform, mu)
-    params.pop("langevin")
-    params.pop("recording")
+    for key in ("langevin", "recording", "verbose_level"):   # options of CL-FTS, which SCFT refuses
+        params.pop(key)
     params.update(relax_cell=False, max_iter=2, tolerance=1e-8,
                   optimizer={"name": "am", "max_hist": 10, "start_error": 0.1,
                              "mix_min": 0.1, "mix_init": 0.1})

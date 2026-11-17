@@ -13,6 +13,10 @@ import pytest
 from scipy.io import savemat
 
 
+# An export holds the options of its own method only: the validators' warning about the options of
+# other methods fails the test
+pytestmark = pytest.mark.filterwarnings("error:.*ignores the options of other methods")
+
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = runpy.run_path(str(ROOT / "scripts" / "gui" / "simulation_gui.py"))
 VALIDATION = runpy.run_path(str(ROOT / "src" / "python" / "utils" / "validation.py"))
@@ -64,7 +68,7 @@ def test_exported_presets(preset, tmp_path, monkeypatch):
     calls = execute_export(values, tmp_path, monkeypatch)
     params = calls["params"]
     if values["mode"] == "SCFT":
-        VALIDATION["validate_system_params"](params)
+        VALIDATION["validate_scft_params"](params)
     else:
         VALIDATION["validate_lfts_params"](params, complex_fields=values["mode"] == "CL-FTS")
     assert calls["cwd"] == tmp_path / "export" / values["output_dir"]

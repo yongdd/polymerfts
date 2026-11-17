@@ -108,7 +108,7 @@ enum class BoundaryCondition
  * For a 3D box with dimensions nx = [Nx, Ny, Nz]:
  * - Total grid points: M = Nx * Ny * Nz
  * - Grid spacing: dx[i] = lx[i] / nx[i]
- * - Volume element: dV = dx[0] * dx[1] * dx[2]
+ * - Volume element: dV = dx[0] * dx[1] * dx[2] (V/M in an oblique cell)
  *
  * **Memory Layout:**
  *
@@ -134,7 +134,8 @@ protected:
     int total_grid;               ///< Total number of grid points M = Nx*Ny*Nz
     std::vector<double> mask;     ///< The mask in the reduced basis while a space group is set (empty otherwise; get_mask() then returns mask_full_)
     std::vector<double> mask_full_; ///< Mask for impenetrable regions (0=blocked, 1=accessible) on the full grid, as given; empty if no mask. dv and every set_space_group() start from it
-    std::vector<double> dv;       ///< Volume element weights for integration (includes mask)
+    double dv_base_;              ///< Volume element of a grid point: Π dx[d] in an orthogonal cell, V/M in an oblique one
+    std::vector<double> dv;       ///< Volume element weights for integration (dv_base_ times the mask)
     double volume;                ///< Total system volume V = a·(b×c) for general lattice
     double accessible_volume;     ///< Accessible volume (excluding masked regions)
 
@@ -251,32 +252,20 @@ protected:
      */
     int n_basis_;
 
-    /**
-     * @brief Compute lattice vectors from box lengths and angles.
-     *
-     * Uses standard crystallographic parameterization:
-     * - a along x-axis
-     * - b in xy-plane
-     * - c general direction
-     */
-    void compute_lattice_vectors();
-
-    /**
-     * @brief Compute reciprocal lattice vectors from direct lattice.
-     *
-     * a* = (b × c) / V, etc.
-     */
-    void compute_reciprocal_lattice();
-
-    /**
-     * @brief Compute reciprocal metric tensor from reciprocal vectors.
-     *
-     * G*_ij = e*_i · e*_j
-     */
-    void compute_recip_metric();
-
     /// Computations of this box whose numerical method requires an orthogonal cell
     int orthogonal_cell_holders_ = 0;
+
+private:
+    /**
+     * @brief Grid spacing, lattice and reciprocal vectors, metric tensor, volume
+     *        elements and accessible volume of the current lx and angles.
+     *
+     * The cell geometry is cell_geometry() (ReciprocalMetric.h). The volume element
+     * dv_base_ is Π dx[d] in an orthogonal cell and V/M in an oblique one; dv is
+     * dv_base_ times the mask. The constructor and every cell change take this one
+     * update, so a box moved to a cell equals a box created there, bit for bit.
+     */
+    void update_cell();
 
 public:
     /**
@@ -425,6 +414,13 @@ public:
     double get_dv(int i) const;
 
     /**
+     * @brief Get the volume element of a grid point without the mask.
+     * @return Π dx[d] in an orthogonal cell, V/M in an oblique one: the weight of
+     *         every integral (get_dv() is it times the mask)
+     */
+    double get_dv_base() const;
+
+    /**
      * @brief Get total number of grid points.
      * @return M = Nx*Ny*Nz
      */
@@ -548,7 +544,7 @@ public:
      *   Array size: total_grid
      *
      * When space group IS set (reduced basis mode):
-     *   Computes: integral(g) = (V/M) * sum_i basis_weights[i] * g[i]
+     *   Computes: integral(g) = dv_base * sum_i basis_weights[i] * g[i]
      *   (basis_weights = orbit counts times the mask)
      *   Array size: n_basis
      *
@@ -575,7 +571,7 @@ public:
      *   Array size: total_grid
      *
      * When space group IS set (reduced basis mode):
-     *   Computes: <g|h> = (V/M) * sum_i basis_weights[i] * g[i] * h[i]
+     *   Computes: <g|h> = dv_base * sum_i basis_weights[i] * g[i] * h[i]
      *   Array size: n_basis
      *
      * @param g First field array (length: get_n_basis())

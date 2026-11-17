@@ -21,7 +21,8 @@
    the uninterrupted run bit for bit, including psi and its noise stream.
 5. Input checks: electroneutrality, monomer types, coupling, smearing, boundaries,
    random copolymers, L-FTS, and the CL-FTS option psi_dt_scaling in SCFT (whose mean-field
-   electrostatics TestScftElectrostatics checks).
+   electrostatics TestScftElectrostatics checks); initial_psi and psi_noise_prev of a run
+   continued by hand are refused before the run starts.
 6. Screening (screening_length): the force of psi, (lap - kappa^2) psi/E + c, is the derivative
    of H also along the uniform mode; the stationary variance of every mode, the uniform one
    included, is that of exp(-H); a screened system may carry a net charge, and its uniform
@@ -355,6 +356,16 @@ def restart(root):
             initial, start_langevin_step=4, initial_psi=values), "initial_psi")
     expect_validation_error(lambda: CLFTS(parameters(root / "manual", steps=4, electrostatics=False)).run(
         initial, initial_psi=psi), "needs 'electrostatics'")
+    # The previous noise of psi: real, finite values, one per grid point, with initial_psi; refused
+    # before the run starts
+    noise = fields["psi_noise_prev"]
+    for given, values, message in ((psi, noise + 1j, "real, finite"), (psi, noise[:-1], "needs 1 x"),
+                                   (None, noise, "psi_noise_prev needs initial_psi")):
+        with silenced():
+            sim = CLFTS(parameters(root / "manual", steps=4), random_seed=5)
+        expect_validation_error(lambda: sim.run(initial, start_langevin_step=4, initial_psi=given,
+                                                psi_noise_prev=values), message)
+        assert sim.run_status["status"] == "initialized", sim.run_status
     # Without Coulomb coupling psi does not move: a nonzero initial_psi is rejected
     uncoupled = parameters(root / "manual", steps=4)
     uncoupled["electrostatics"]["coupling"] = 0.0
@@ -466,7 +477,9 @@ def input_checks(root):
         return lambda: LFTS(params)
     expect_validation_error(lfts(False), "CL-FTS only")
     expect_validation_error(lfts(True), "CL-FTS only")
-    scft = parameters(root / "inputs")
+    # SCFT refuses the CL-FTS option psi_dt_scaling of 'electrostatics' (it would ignore the Langevin options)
+    scft = {key: value for key, value in parameters(root / "inputs").items()
+            if key not in ("langevin", "recording", "verbose_level")}
     scft.update(optimizer={"name": "am"}, relax_cell=False)
     expect_validation_error(lambda: SCFT(scft), "CL-FTS option")
 

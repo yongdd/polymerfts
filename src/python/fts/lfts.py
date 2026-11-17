@@ -3,8 +3,8 @@ import time
 import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
-                                finite_values, initial_field_values)
+from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
+                                initial_field_values, previous_noise_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -16,14 +16,13 @@ from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     recording_run_status,
-    prepare_run,
     RunRecord,
     initialize_extensions,
     extension_state,
     restore_extensions,
 )
 from ..theory.chains import (read_chains, chain_solver, mean_concentrations, chain_fields, solve_chains,
-                             check_partition_once)
+                             check_partition_once, prepare_run)
 from ..utils.file_formats import load_config
 from .saddle import SaddlePointSearch
 from ..theory.smearing import smearing_of
@@ -89,8 +88,7 @@ class LFTS:
         Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params, random_seed=random_seed, integrator=integrator, callbacks=callbacks)
 
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
@@ -311,12 +309,9 @@ class LFTS:
         """
         # The initial fields and the previous noise (real, finite numbers) are checked before the run starts
         fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid)
-        if normal_noise_prev is not None:
-            R = len(self.mpt.aux_fields_real_idx)
-            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
-            if normal_noise_prev.size != R * self.prop_solver.n_grid:
-                raise ValidationError(f"normal_noise_prev needs {R} x {self.prop_solver.n_grid} values (real auxiliary "
-                                      f"fields x grid points), got {normal_noise_prev.size}")
+        normal_noise_prev = previous_noise_values(normal_noise_prev, "normal_noise_prev",
+                                                  len(self.mpt.aux_fields_real_idx), self.prop_solver.n_grid,
+                                                  "real auxiliary fields")
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=True,
                                   saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
@@ -364,7 +359,7 @@ class LFTS:
         # The number of real fields
         R = len(self.mpt.aux_fields_real_idx)
 
-        # The recording directory and the auxiliary fields to start from (checkpoint.prepare_run)
+        # The architecture drawings and the auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data)
 
         if start_langevin_step is None:
@@ -373,14 +368,17 @@ class LFTS:
         # Find the saddle point of the initial fields. A continued run loads fields
         # that are already at the saddle point; solving again would change the
         # trajectory slightly, so the loop's own solve is the first one then.
+        # The smeared concentrations (smearing.py) are those of the forces and dH/dχN
         print("iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)")
         if start_langevin_step == 1:
-            phi = self.saddle.first_point(w_aux)
-        elif restored:
-            phi = {m: np.asarray(_restart_data["phi_" + m]).reshape(self.prop_solver.n_grid).copy()
-                   for m in self.monomer_types}
+            phi, phi_smeared = self.saddle.first_point(w_aux)
         else:
-            phi, _ = self.compute_concentrations(w_aux)
+            if restored:
+                phi = {m: np.asarray(_restart_data["phi_" + m]).reshape(self.prop_solver.n_grid).copy()
+                       for m in self.monomer_types}
+            else:
+                phi, _ = self.compute_concentrations(w_aux)
+            phi_smeared = self.smearing.apply_to_dict(phi)
 
         # Measurements of the run, with the pending ones of a checkpoint
         series = {"H_history": 0, "drift_history": 0} | {"dH " + key: 0 for key in self.chi_n}
@@ -392,9 +390,6 @@ class LFTS:
             normal_noise_prev = np.zeros([R, self.prop_solver.n_grid], dtype=np.float64)
         else:
             normal_noise_prev = np.reshape(normal_noise_prev, [R, self.prop_solver.n_grid])
-
-        # The smeared concentrations of the fields (smearing.py), for the forces and dH/dχN
-        phi_smeared = self.smearing.apply_to_dict(phi)
 
         # Init timers
         self.saddle.iterations = 0
@@ -415,9 +410,8 @@ class LFTS:
 
             # One Langevin step of the real fields and the saddle point of the imaginary fields
             w_aux_before, phi_smeared_before = w_aux, phi_smeared
-            w_aux, phi, hamiltonian, error_level, normal_noise_prev = self.saddle.advance(
+            w_aux, phi, phi_smeared, hamiltonian, error_level, normal_noise_prev = self.saddle.advance(
                 w_aux_before, w_lambda, normal_noise_prev, langevin_step)
-            phi_smeared = self.smearing.apply_to_dict(phi)
             self.run_status["last_completed_step"] = langevin_step
 
             # WTMD: order parameter with dH/dχN of the same fields (those before the update, at which

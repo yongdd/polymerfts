@@ -162,7 +162,7 @@ def active_real_without_saddle(root, platform):
             sim.prop_solver.molecules, fields, partitions, sim.cb,
             include_const_term=True, phi=sim.smearing.apply_to_dict(expected_phi))
         assert np.isfinite(expected_h) and abs(expected_h) > 1e-5
-        phi, hamiltonian, iterations, error = quiet(sim.saddle.solve, fields)
+        phi, _, hamiltonian, iterations, error = quiet(sim.saddle.solve, fields)
         np.testing.assert_array_equal(fields, before)
         assert iterations == 0 and error == 0.0
         np.testing.assert_allclose(hamiltonian, expected_h, rtol=0, atol=2e-13)

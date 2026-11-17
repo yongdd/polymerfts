@@ -99,54 +99,46 @@ CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(
     : nx_logical_(nx_logical),
       translational_part_(translational_part)
 {
-    try
+    for (int d = 0; d < 3; ++d)
     {
-        for (int d = 0; d < 3; ++d)
+        if (nx_logical_[d] <= 0 || (nx_logical_[d] % 2) != 0)
         {
-            if (nx_logical_[d] <= 0 || (nx_logical_[d] % 2) != 0)
-            {
-                throw_with_line_number("CudaCrysFFTRecursive3m requires even, positive grid dimensions.");
-            }
+            throw_with_line_number("CudaCrysFFTRecursive3m requires even, positive grid dimensions.");
         }
-        // The kernels here are size-agnostic (ker_apply_k_3m iterates the packed
-        // z range Nz2c = Nz2/2+1 with exact bounds; cuFFT D2Z/Z2D handles any
-        // length). The nz/2 >= 2 bound mirrors the guard in
-        // CrysFFTRecursive3mBase.h so CPU and CUDA stay constructible for exactly
-        // the same grids.
-        if ((nx_logical_[2] / 2) < 2)
-        {
-            throw_with_line_number("CudaCrysFFTRecursive3m requires Nz/2 >= 2.");
-        }
-
-        // The fold pairs twiddle r_p with the octant-transformed Boltzmann array
-        // S_{psi(p)}, where psi depends on the parities of the m3 generator
-        // translations in grid units (see Recursive3mFoldParity.h). When psi is
-        // not a bijection the even-index physical basis does not exist on this
-        // grid and the fold cannot represent the group; CrysFFTSelector rejects
-        // such grids, but guard direct construction.
-        if (!compute_m3_fold_permutation(translational_part_, nx_logical_, fold_perm_))
-        {
-            throw_with_line_number("CudaCrysFFTRecursive3m: m3 translations are "
-                "incompatible with this grid (translation-parity permutation is "
-                "not a bijection; no even-index physical basis exists).");
-        }
-
-        nx_physical_ = { nx_logical_[0] / 2, nx_logical_[1] / 2, nx_logical_[2] / 2 };
-        M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
-        M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
-        M_complex_ = nx_physical_[0] * nx_physical_[1] * (nx_physical_[2] / 2 + 1);
-
-        d_step1_.allocate(M_complex_);
-        d_step2_.allocate(M_complex_);
-
-        init_plans();
-        twiddles_ = generate_twiddle_factors();
     }
-    catch (...)
+    // The kernels here are size-agnostic (ker_apply_k_3m iterates the packed
+    // z range Nz2c = Nz2/2+1 with exact bounds; cuFFT D2Z/Z2D handles any
+    // length). The nz/2 >= 2 bound mirrors the guard in
+    // CrysFFTRecursive3mBase.h so CPU and CUDA stay constructible for exactly
+    // the same grids.
+    if ((nx_logical_[2] / 2) < 2)
     {
-        release();
-        throw;
+        throw_with_line_number("CudaCrysFFTRecursive3m requires Nz/2 >= 2.");
     }
+
+    // The fold pairs twiddle r_p with the octant-transformed Boltzmann array
+    // S_{psi(p)}, where psi depends on the parities of the m3 generator
+    // translations in grid units (see Recursive3mFoldParity.h). When psi is
+    // not a bijection the even-index physical basis does not exist on this
+    // grid and the fold cannot represent the group; CrysFFTSelector rejects
+    // such grids, but guard direct construction.
+    if (!compute_m3_fold_permutation(translational_part_, nx_logical_, fold_perm_))
+    {
+        throw_with_line_number("CudaCrysFFTRecursive3m: m3 translations are "
+            "incompatible with this grid (translation-parity permutation is "
+            "not a bijection; no even-index physical basis exists).");
+    }
+
+    nx_physical_ = { nx_logical_[0] / 2, nx_logical_[1] / 2, nx_logical_[2] / 2 };
+    M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
+    M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
+    M_complex_ = nx_physical_[0] * nx_physical_[1] * (nx_physical_[2] / 2 + 1);
+
+    d_step1_.allocate(M_complex_);
+    d_step2_.allocate(M_complex_);
+
+    init_plans();
+    twiddles_ = generate_twiddle_factors();
 }
 
 CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& other)
@@ -159,17 +151,9 @@ CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& oth
       fold_perm_(other.fold_perm_),
       twiddles_(other.twiddles_)
 {
-    try
-    {
-        d_step1_.allocate(M_complex_);
-        d_step2_.allocate(M_complex_);
-        init_plans();
-    }
-    catch (...)
-    {
-        release();
-        throw;
-    }
+    d_step1_.allocate(M_complex_);
+    d_step2_.allocate(M_complex_);
+    init_plans();
 }
 
 std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTRecursive3m::clone() const
@@ -177,44 +161,12 @@ std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTRecursive3m::clone() const
     return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTRecursive3m(*this));
 }
 
-CudaCrysFFTRecursive3m::~CudaCrysFFTRecursive3m()
-{
-    release();
-}
-
-// Idempotent; tolerates a partly built object (null buffers, plans not created).
-void CudaCrysFFTRecursive3m::release()
-{
-    // The buffers are owning; the cuFFT plans need the explicit free
-    twiddles_.reset();
-    d_step1_.release();
-    d_step2_.release();
-
-    free_plans();
-}
-
 void CudaCrysFFTRecursive3m::init_plans()
 {
-    if (plans_initialized_)
-        return;
-    if (count_cufft_plan(cufftPlan3d(&plan_r2c_, nx_physical_[0], nx_physical_[1], nx_physical_[2], CUFFT_D2Z)) != CUFFT_SUCCESS)
+    if (plan_r2c_.create(cufftPlan3d, nx_physical_[0], nx_physical_[1], nx_physical_[2], CUFFT_D2Z) != CUFFT_SUCCESS)
         throw_with_line_number("Failed to create cuFFT D2Z plan for CudaCrysFFTRecursive3m.");
-    if (count_cufft_plan(cufftPlan3d(&plan_c2r_, nx_physical_[0], nx_physical_[1], nx_physical_[2], CUFFT_Z2D)) != CUFFT_SUCCESS)
-    {
-        // plans_initialized_ covers both plans; destroy the first one here
-        release_cufft_plan(plan_r2c_);
+    if (plan_c2r_.create(cufftPlan3d, nx_physical_[0], nx_physical_[1], nx_physical_[2], CUFFT_Z2D) != CUFFT_SUCCESS)
         throw_with_line_number("Failed to create cuFFT Z2D plan for CudaCrysFFTRecursive3m.");
-    }
-    plans_initialized_ = true;
-}
-
-void CudaCrysFFTRecursive3m::free_plans()
-{
-    if (!plans_initialized_)
-        return;
-    release_cufft_plan(plan_r2c_);
-    release_cufft_plan(plan_c2r_);
-    plans_initialized_ = false;
 }
 
 std::shared_ptr<const CudaCrysFFTRecursive3m::Twiddles> CudaCrysFFTRecursive3m::generate_twiddle_factors() const
@@ -319,14 +271,16 @@ void CudaCrysFFTRecursive3m::diffusion(
 
     // The out-of-place D2Z keeps d_q_in, and the Z2D reads only d_step2_, so an
     // out-of-place call preserves its input without a copy; d_q_out may alias d_q_in.
-    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex. A field
+    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex. An input
     // at an odd offset into a larger array (the second propagator of a stress pair of an
-    // odd basis size) is not: it is copied to d_q_out, or to d_step2_ (free until the
-    // kernel below writes it) when d_q_out is not aligned either, and transformed there
+    // odd basis size) is not: it is copied to d_step2_, free until the kernel below writes
+    // it, and transformed there. The outputs (work buffers and propagators) are aligned.
+    if (!cufft_aligned(d_q_out))
+        throw_with_line_number("CudaCrysFFTRecursive3m: the output must be aligned to a cufftDoubleComplex.");
     double* d_src = d_q_in;
     if (!cufft_aligned(d_q_in))
     {
-        d_src = (d_q_out != d_q_in && cufft_aligned(d_q_out)) ? d_q_out : reinterpret_cast<double*>(d_step2_.get());
+        d_src = reinterpret_cast<double*>(d_step2_.get());
         CUDA_CHECK(cudaMemcpyAsync(d_src, d_q_in, bytes, cudaMemcpyDeviceToDevice, stream_));
     }
     CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_src, d_step1_));
@@ -343,17 +297,7 @@ void CudaCrysFFTRecursive3m::diffusion(
         nx_physical_[0], nx_physical_[1], nx_physical_[2], nx_physical_[2] / 2 + 1);
     CUDA_CHECK_LAUNCH();
 
-    // An output that is not aligned takes the result through d_step1_, free after the kernel
-    if (cufft_aligned(d_q_out))
-    {
-        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_q_out));
-    }
-    else
-    {
-        double* d_result = reinterpret_cast<double*>(d_step1_.get());
-        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_result));
-        CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_result, bytes, cudaMemcpyDeviceToDevice, stream_));
-    }
+    CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_q_out));
 }
 
 void CudaCrysFFTRecursive3m::apply_multiplier(

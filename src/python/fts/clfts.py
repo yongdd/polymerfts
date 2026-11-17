@@ -21,14 +21,15 @@ from .force_jacobian import force_jacobian, symmetric_jacobian
 from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import read_chains, chain_solver, chain_fields, solve_chains, check_partition_once
+from ..theory.chains import (read_chains, chain_solver, chain_fields, solve_chains, check_partition_once,
+                             prepare_run)
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from ..theory.electrostatics import Electrostatics
-from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
-                         initial_field_values)
+                         initial_field_values, previous_noise_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -43,7 +44,6 @@ from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     recording_run_status,
-    prepare_run,
     initialize_extensions,
     extension_state,
     restore_extensions,
@@ -95,8 +95,7 @@ class CLFTS:
         Reads the file with load_config, applies the keyword overrides
         and calls the constructor, as SCFT.from_file does.
         """
-        params = normalize_params(load_config(path))
-        params.update(normalize_params(overrides))
+        params = with_overrides(load_config(path), overrides)
         return cls(params, random_seed=random_seed, integrator=integrator, callbacks=callbacks)
 
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
@@ -106,7 +105,7 @@ class CLFTS:
         params = validate_lfts_params(params, complex_fields=True)
 
         # Compressibility parameter; complex Langevin needs a finite one (default: high compressibility)
-        self.zeta_n = 100.0 if params.get("zeta_n", None) is None else params["zeta_n"]
+        self.zeta_n = params.get("zeta_n", 100.0)
 
         # Monomer types, segment lengths, polymer chains, χN and random copolymers
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
@@ -414,18 +413,12 @@ class CLFTS:
             # Without Coulomb coupling ψ does not move, so a nonzero ψ would be a fixed potential
             if self.electrostatics.coupling <= 0 and np.any(initial_psi != 0):
                 raise ValidationError("initial_psi must be zero without Coulomb coupling (coupling E = 0)")
-        if psi_noise_prev is not None:
-            if initial_psi is None:
-                raise ValidationError("psi_noise_prev needs initial_psi")
-            psi_noise_prev = finite_values(psi_noise_prev, "psi_noise_prev")
-            if psi_noise_prev.size != self.prop_solver.n_grid:
-                raise ValidationError("psi_noise_prev must hold one real, finite value per grid point")
-        # The previous noise of the fields: real, one value per auxiliary field and grid point
-        if normal_noise_prev is not None:
-            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
-            if normal_noise_prev.size != len(self.monomer_types) * self.prop_solver.n_grid:
-                raise ValidationError(f"normal_noise_prev needs {len(self.monomer_types)} x {self.prop_solver.n_grid} "
-                                      f"values (auxiliary fields x grid points), got {normal_noise_prev.size}")
+        if psi_noise_prev is not None and initial_psi is None:
+            raise ValidationError("psi_noise_prev needs initial_psi")
+        psi_noise_prev = previous_noise_values(psi_noise_prev, "psi_noise_prev", 1, self.prop_solver.n_grid,
+                                               "electrostatic potential")
+        normal_noise_prev = previous_noise_values(normal_noise_prev, "normal_noise_prev", len(self.monomer_types),
+                                                  self.prop_solver.n_grid, "auxiliary fields")
         # CL-FTS solves no saddle points: a SaddlePointError (of an extension) fails the run like other errors
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=False):
             if _restart_data is None:
@@ -460,7 +453,7 @@ class CLFTS:
         # The number of components
         M = len(self.monomer_types)
 
-        # The recording directory and the complex auxiliary fields to start from (checkpoint.prepare_run)
+        # The architecture drawings and the complex auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data, np.complex128)
 
         if start_langevin_step is None:
@@ -543,11 +536,12 @@ class CLFTS:
                                          langevin_step)
             normal_noise_prev = noise
 
-            # Concentrations and partition functions of the updated fields
+            # Concentrations and partition functions of the updated fields (the step has checked that the
+            # fields are finite, checked_fields; the grand-canonical chains add to the concentrations)
             phi, _ = self.compute_concentrations(w_aux=w_aux)
             phi_for_force = self.smearing.apply_to_dict(phi)
-            if not np.all(np.isfinite(w_aux)) or not all(np.all(np.isfinite(v)) for v in phi.values()):
-                raise NumericalError(f"Non-finite complex fields or concentrations at step {langevin_step}",
+            if not all(np.all(np.isfinite(v)) for v in phi.values()):
+                raise NumericalError(f"Non-finite concentrations at step {langevin_step}",
                                      self.mpt.to_monomer_fields_dict(w_aux))
             if es is not None:
                 charge_density = es.charge_density(phi_for_force)
@@ -632,8 +626,8 @@ class CLFTS:
                 warnings.warn("The run continues without initial_psi: the electrostatic potential restarts "
                               "at zero and relaxes again", RuntimeWarning)
             es.psi = np.zeros_like(es.psi)
-        es.previous_noise = (np.zeros(self.prop_solver.n_grid) if psi_noise_prev is None
-                             else np.asarray(psi_noise_prev, dtype=np.float64).reshape(-1).copy())
+        # run() has checked psi_noise_prev and made it a flat array of its own (previous_noise_values)
+        es.previous_noise = np.zeros(self.prop_solver.n_grid) if psi_noise_prev is None else psi_noise_prev
 
     def _forces(self, w_aux, phi_smeared):
         """δH/δw of all auxiliary fields from the smeared concentrations, with the stabilization.

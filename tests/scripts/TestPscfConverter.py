@@ -499,6 +499,21 @@ def test_malformed_pscf_fields_are_rejected(tmp_path, problem):
     with pytest.raises(ValueError): TOOL['read_rgrid'](path)
 
 
+def test_default_monomer_names_continue_after_z_with_letters(tmp_path):
+    # Columns without names take A to Z, then AA, AB, ... as the simulation editor names its types:
+    # the library takes letters and underscores only, so a name such as M27 could not be used
+    omega = rgrid(tmp_path / 'omega', [2, 3])
+    lines = omega.read_text().replace('N_monomer 2', 'N_monomer 28').splitlines()
+    lines[lines.index('mesh 2 3') + 1:] = [' '.join(str(column) for column in range(28))] * 6
+    omega.write_text('\n'.join(lines) + '\n')
+    data = loadmat(TOOL['import_files'](omega, tmp_path / 'fields.mat'), simplify_cells=True)
+    names = [*'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'AA', 'AB']
+    assert [str(name).strip() for name in np.atleast_1d(data['monomer_types'])] == names
+    for column, name in enumerate(names):
+        np.testing.assert_array_equal(data['w_' + name], np.full(6, column))
+    assert [TOOL['default_monomer_name'](i) for i in (51, 52, 701, 702)] == ['AZ', 'BA', 'ZZ', 'AAA']
+
+
 def test_omega_rho_headers_are_checked_independently(tmp_path):
     omega = rgrid(tmp_path / 'omega', [2, 3], inline=False)
     rho = rgrid(tmp_path / 'rho', [2, 3], inline=True)

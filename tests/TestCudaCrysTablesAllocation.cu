@@ -40,6 +40,22 @@
  * (and, for discrete chains, stress multipliers), and these add the same device
  * bytes with four streams as with one. Tables kept per stream would add four
  * times as many.
+ *
+ * The work of a path is allocated only for that path. A pseudo-spectral solver
+ * (rqm4, rk2, discrete) is created alone, with one and with four streams, for the
+ * Pmmm DCT (Pmmm 32x24x16, Pmmm basis) and the recursive 3m CrysFFT (Im-3m 32^3,
+ * m3 basis), and goes through update_dw() and prepare_stress(): with the
+ * off-diagonal stress flag off (the stress fast path) its work per stream, the
+ * difference of the two stream counts, lies on the physical grid (an eighth of
+ * the full grid) and in the reduced basis: the CrysFFT engine, its input and
+ * output, the RQM4 steps and the stress sums, 0.7 to 1.5 full-grid fields (the
+ * two DCT objects of the Pmmm engine alone take 0.8), and must be less than two
+ * full-grid fields; turning the flag on, which takes the stress to the full
+ * grid, and calling prepare_stress() again must add at least two full-grid
+ * fields per stream (the full-grid input and output of the reduced basis,
+ * besides the transforms' work; about seven in all). A solver that allocated
+ * the full-grid work for the fast path as well would hold about nine per stream
+ * with the flag off and add nothing.
  */
 
 #include <algorithm>
@@ -50,9 +66,13 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CudaCommon.h"
+#include "CudaSolverPseudoDiscrete.h"
+#include "CudaSolverPseudoRK2.h"
+#include "CudaSolverPseudoRQM4.h"
 #include "AbstractFactory.h"
 #include "ComputationBox.h"
 #include "Molecules.h"
@@ -209,6 +229,83 @@ static bool tables_shared_by_streams(const Case& c)
     return ok;
 }
 
+/// The [kernel, copy] stream pairs of a solver, destroyed with this object
+struct Streams
+{
+    cudaStream_t s[MAX_STREAMS][2] = {};
+    explicit Streams(int n)
+    {
+        try
+        {
+            for (int i = 0; i < n; ++i)
+                for (int k = 0; k < 2; ++k)
+                    CUDA_CHECK(cudaStreamCreate(&s[i][k]));
+        }
+        catch (...)
+        {
+            release();   // the destructor does not run when the constructor throws
+            throw;
+        }
+    }
+    ~Streams() { release(); }
+    void release()
+    {
+        for (auto& pair : s)
+            for (cudaStream_t& stream : pair)
+                if (stream != nullptr)
+                {
+                    cudaStreamDestroy(stream);
+                    stream = nullptr;
+                }
+    }
+};
+
+/// Device bytes a solver of the computation's system holds, created alone with n_streams streams, after
+/// update_dw() and prepare_stress(): {flag off, after the off-diagonal stress flag is turned on and
+/// prepare_stress() runs again}
+template <typename Solver>
+static std::pair<long long, long long> solver_bytes(Computation& s, int n_streams)
+{
+    // The backend's index maps of the reduced basis
+    const int M = s.cb->get_total_grid();
+    const int n_basis = s.sg->get_n_reduced_basis();
+    CudaDeviceBuffer<int> d_reduced(n_basis), d_full(M);
+    CUDA_CHECK(cudaMemcpy(d_reduced, s.sg->get_reduced_basis_indices().data(), sizeof(int) * n_basis,
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_full, s.sg->get_full_to_reduced_map().data(), sizeof(int) * M, cudaMemcpyHostToDevice));
+    Streams streams(n_streams);
+
+    const CudaBufferCounters& counters = CudaDeviceMemory::counters();
+    const long long start = counters.live_bytes.load();
+    Solver solver(s.cb.get(), s.molecules.get(), n_streams, streams.s, s.sg.get(), d_reduced, d_full);
+    solver.update_dw("cpu", {{"A", s.w_a.data()}, {"B", s.w_b.data()}});
+    solver.prepare_stress();
+    const long long flag_off = counters.live_bytes.load() - start;
+    solver.set_force_off_diagonal_stress(true);
+    solver.prepare_stress();
+    const long long flag_on = counters.live_bytes.load() - start;
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return {flag_off, flag_on};
+}
+
+/// The fast path of a solver holds less than two full-grid fields per stream; the off-diagonal flag adds at
+/// least two per stream
+template <typename Solver>
+static bool path_work(const Case& c, const char* method)
+{
+    Computation s = create(c, c.lx);   // the box, molecules, group and fields (its own solver is not measured)
+    const auto [off_1, on_1] = solver_bytes<Solver>(s, 1);
+    const auto [off_4, on_4] = solver_bytes<Solver>(s, 4);
+    const long long field = static_cast<long long>(sizeof(double)) * s.cb->get_total_grid();
+    const long long per_stream = (off_4 - off_1) / 3;
+    const long long added_per_stream = ((on_4 - off_4) - (on_1 - off_1)) / 3;
+    const bool ok = per_stream < 2 * field && added_per_stream >= 2 * field;
+    printf("%s, %s solver: work per stream %.2f full-grid fields with the flag off, +%.2f with the flag on: %s\n",
+           c.name.c_str(), method, static_cast<double>(per_stream) / field,
+           static_cast<double>(added_per_stream) / field, ok ? "ok" : "FAILED");
+    return ok;
+}
+
 /// |a - b| <= 1e-13 |b| componentwise relative to the largest |b|
 static bool same_values(const char* what, const std::vector<double>& a, const std::vector<double>& b)
 {
@@ -299,6 +396,19 @@ int main()
 
             printf("%s (%lld allocations in the first call): %s\n", c.name.c_str(), first_call, ok ? "ok" : "FAILED");
             all_ok = all_ok && ok;
+        }
+
+        // The work of the stress fast path and of the full grid that the off-diagonal flag adds
+        const std::vector<Case> fast_path_cases = {
+            {"Im-3m m3 basis 32^3 (recursive 3m)", "continuous", "rqm4", {32, 32, 32}, {1.9, 1.9, 1.9}, {}, "Im-3m", 529, "m3"},
+            {"Pmmm basis 32x24x16 (Pmmm DCT)", "continuous", "rqm4", {32, 24, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
+        };
+        for (Case c : fast_path_cases)
+        {
+            all_ok = path_work<CudaSolverPseudoRQM4<double>>(c, "rqm4") && all_ok;
+            all_ok = path_work<CudaSolverPseudoRK2<double>>(c, "rk2") && all_ok;
+            c.chain_model = "discrete";
+            all_ok = path_work<CudaSolverPseudoDiscrete<double>>(c, "discrete") && all_ok;
         }
     }
     catch (std::exception& exc)

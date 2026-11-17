@@ -102,34 +102,26 @@ __global__ void ker_obliquez_spectral(
 }  // namespace
 
 //------------------------------------------------------------------------------
-// Constructor / Destructor
+// Constructors
 //------------------------------------------------------------------------------
 CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(std::array<int, 3> nx_logical)
     : nx_logical_(nx_logical)
 {
-    try
+    for (int d = 0; d < 3; ++d)
     {
-        for (int d = 0; d < 3; ++d)
-        {
-            if (nx_logical_[d] <= 0)
-                throw_with_line_number("CudaCrysFFTObliqueZ requires positive grid dimensions.");
-        }
-        if (nx_logical_[2] % 2 != 0)
-            throw_with_line_number("CudaCrysFFTObliqueZ requires even Nz.");
-
-        nx_physical_ = {nx_logical_[0], nx_logical_[1], nx_logical_[2] / 2};
-        M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
-        M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
-        M_spectral_ = nx_physical_[0] * nx_physical_[1] * (nx_physical_[2] / 2 + 1);
-        norm_factor_ = 1.0 / static_cast<double>(M_logical_);
-
-        init_transforms();
+        if (nx_logical_[d] <= 0)
+            throw_with_line_number("CudaCrysFFTObliqueZ requires positive grid dimensions.");
     }
-    catch (...)
-    {
-        release();
-        throw;
-    }
+    if (nx_logical_[2] % 2 != 0)
+        throw_with_line_number("CudaCrysFFTObliqueZ requires even Nz.");
+
+    nx_physical_ = {nx_logical_[0], nx_logical_[1], nx_logical_[2] / 2};
+    M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
+    M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
+    M_spectral_ = nx_physical_[0] * nx_physical_[1] * (nx_physical_[2] / 2 + 1);
+    norm_factor_ = 1.0 / static_cast<double>(M_logical_);
+
+    init_transforms();
 }
 
 CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(const CudaCrysFFTObliqueZ& other)
@@ -141,15 +133,7 @@ CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(const CudaCrysFFTObliqueZ& other)
       d_twiddle_(other.d_twiddle_),
       norm_factor_(other.norm_factor_)
 {
-    try
-    {
-        init_transforms();
-    }
-    catch (...)
-    {
-        release();
-        throw;
-    }
+    init_transforms();
 }
 
 std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTObliqueZ::clone() const
@@ -159,10 +143,6 @@ std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTObliqueZ::clone() const
 
 void CudaCrysFFTObliqueZ::init_transforms()
 {
-    // Called once, from a constructor: a second call would leak the plans
-    if (plans_initialized_)
-        throw_with_line_number("CudaCrysFFTObliqueZ::init_transforms() called with plans already created.");
-
     const int n = nx_physical_[2];
     if (!d_twiddle_)
     {
@@ -182,42 +162,12 @@ void CudaCrysFFTObliqueZ::init_transforms()
     d_real_.allocate(M_physical_);
     d_spectrum_.allocate(M_spectral_);
 
-    if (count_cufft_plan(cufftPlan3d(&plan_fwd_, nx_physical_[0], nx_physical_[1], n, CUFFT_D2Z)) != CUFFT_SUCCESS)
+    if (plan_fwd_.create(cufftPlan3d, nx_physical_[0], nx_physical_[1], n, CUFFT_D2Z) != CUFFT_SUCCESS)
         throw_with_line_number("CudaCrysFFTObliqueZ failed to create its cuFFT D2Z plan.");
-    if (count_cufft_plan(cufftPlan3d(&plan_bwd_, nx_physical_[0], nx_physical_[1], n, CUFFT_Z2D)) != CUFFT_SUCCESS)
-    {
-        // plans_initialized_ covers both plans; destroy the first one here
-        release_cufft_plan(plan_fwd_);
+    if (plan_bwd_.create(cufftPlan3d, nx_physical_[0], nx_physical_[1], n, CUFFT_Z2D) != CUFFT_SUCCESS)
         throw_with_line_number("CudaCrysFFTObliqueZ failed to create its cuFFT Z2D plan.");
-    }
-    plans_initialized_ = true;
     CUFFT_CHECK(cufftSetStream(plan_fwd_, stream_));
     CUFFT_CHECK(cufftSetStream(plan_bwd_, stream_));
-}
-
-CudaCrysFFTObliqueZ::~CudaCrysFFTObliqueZ()
-{
-    release();
-}
-
-// Idempotent; tolerates a partly built object. The cuFFT plans need the
-// explicit free; the buffers are owning members.
-void CudaCrysFFTObliqueZ::release()
-{
-    free_plans();
-    d_twiddle_.reset();
-    d_real_.release();
-    d_spectrum_.release();
-}
-
-void CudaCrysFFTObliqueZ::free_plans()
-{
-    if (plans_initialized_)
-    {
-        release_cufft_plan(plan_fwd_);
-        release_cufft_plan(plan_bwd_);
-        plans_initialized_ = false;
-    }
 }
 
 //------------------------------------------------------------------------------
@@ -232,7 +182,7 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
     const int nz_c = n / 2 + 1;
     std::vector<double> h_table(2 * static_cast<size_t>(M_spectral_));
 
-    const std::array<double, 6> recip_metric = reciprocal_metric_of_cell(cell);
+    const std::array<double, 6> recip_metric = cell_geometry(cell).recip_metric;
     const double G11 = recip_metric[0];
     const double G12 = recip_metric[1];
     const double G13 = recip_metric[2];
@@ -298,11 +248,8 @@ void CudaCrysFFTObliqueZ::use_stream(cudaStream_t stream)
     if (stream == stream_)
         return;
     stream_ = stream;
-    if (plans_initialized_)
-    {
-        CUFFT_CHECK(cufftSetStream(plan_fwd_, stream_));
-        CUFFT_CHECK(cufftSetStream(plan_bwd_, stream_));
-    }
+    CUFFT_CHECK(cufftSetStream(plan_fwd_, stream_));
+    CUFFT_CHECK(cufftSetStream(plan_bwd_, stream_));
 }
 
 void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,

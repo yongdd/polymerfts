@@ -12,6 +12,8 @@ import pytest
 MODEL = runpy.run_path(str(Path(__file__).with_name("TestSimulationModel.py")))
 CHECKS = MODEL["CHECKS"]
 BUILDER = MODEL["BUILDER"]
+# An export holds the options of its own method only (as in TestSimulationScript)
+pytestmark = CHECKS["pytestmark"]
 
 
 def values(shape="star"):
@@ -39,7 +41,7 @@ def test_branched_export(mode, shape, tmp_path, monkeypatch):
     calls = CHECKS["execute_export"](form, tmp_path, monkeypatch)
     params = calls["params"]
     if mode == "SCFT":
-        CHECKS["VALIDATION"]["validate_system_params"](params)
+        CHECKS["VALIDATION"]["validate_scft_params"](params)
     else:
         CHECKS["VALIDATION"]["validate_lfts_params"](params, complex_fields=mode == "CL-FTS")
     assert params["polymers"][0]["blocks"] == expected

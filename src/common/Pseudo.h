@@ -256,6 +256,17 @@ public:
     int get_total_complex_grid();
 
     /**
+     * @brief Values of the spectrum of a field on a grid of n_grid points with
+     *        n_last points along its last axis: the r2c half spectrum (n_last/2 + 1
+     *        values along that axis) for real fields with periodic BCs on every axis,
+     *        the full grid otherwise (c2c FFT, or DCT/DST coefficients).
+     *
+     * The rule of get_total_complex_grid(), for solvers that need the size without
+     * the tables.
+     */
+    static int complex_grid_size(int n_grid, int n_last, bool all_periodic);
+
+    /**
      * @brief Get Boltzmann factor for full step for given ds_index.
      *
      * @param monomer_type Monomer type (e.g., "A", "B")

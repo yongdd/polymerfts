@@ -55,7 +55,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
-#include <numbers>
 #include <optional>
 #include <type_traits>
 
@@ -81,6 +80,7 @@
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "ComputationBox.h"
+#include "MinimalFormAlias.h"
 #include "PropagatorComputation.h"
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
@@ -99,10 +99,14 @@ namespace py = pybind11;
  * (fields of a real solver, its Anderson mixing and Fourier transforms, masks and
  * space-group conversions), whether it is a function argument (the caster below)
  * or converted with cast<>(). Integer and boolean arrays convert as before.
+ *
+ * FieldTypeHint: the argument takes complex values in a solver of complex fields
+ * (the fields and their Fourier coefficients), so the message names field_type;
+ * masks and space-group fields are real for every field type.
  */
 namespace
 {
-template <typename T, int Flags>
+template <typename T, int Flags, bool FieldTypeHint>
 class real_array : public py::array_t<T, Flags>
 {
 public:
@@ -117,8 +121,13 @@ public:
         // The array itself (no copy), or what NumPy makes of a list; empty if neither
         const py::array as_array = py::array::ensure(values);
         if (as_array && as_array.dtype().kind() == 'c')
-            throw py::value_error("Expected real values, got a complex array (a conversion would drop its "
-                "imaginary part). Complex fields need a solver created with field_type=\"complex\".");
+        {
+            std::string message = "This argument takes real values, got a complex array (a conversion would "
+                "drop its imaginary part).";
+            if constexpr (FieldTypeHint)
+                message += " Complex fields need a solver created with field_type=\"complex\".";
+            throw py::value_error(message);
+        }
         return values;
     }
 };
@@ -128,10 +137,10 @@ public:
 // py::object subclass resolves to it)
 namespace pybind11::detail
 {
-template <typename T, int Flags>
-struct pyobject_caster<real_array<T, Flags>>
+template <typename T, int Flags, bool FieldTypeHint>
+struct pyobject_caster<real_array<T, Flags, FieldTypeHint>>
 {
-    using type = real_array<T, Flags>;
+    using type = real_array<T, Flags, FieldTypeHint>;
     using array_type = array_t<T, Flags>;
     PYBIND11_TYPE_CASTER(type, handle_type_name<array_type>::name);
 
@@ -159,16 +168,20 @@ struct pyobject_caster<real_array<T, Flags>>
 
 // Input arrays are taken C-contiguous and in the expected dtype: a strided
 // NumPy view or a float32 array is copied/cast, never read as if contiguous.
-// Real ones refuse complex arrays (real_array).
+// Real ones refuse complex arrays (real_array). array_in takes the fields of a
+// solver, which a solver of complex fields takes complex (the message names
+// field_type); real_in takes masks and space-group fields, real for every field type.
 template <typename T>
 using array_in = std::conditional_t<std::is_same_v<std::remove_const_t<T>, double>,
-    real_array<T, py::array::c_style | py::array::forcecast>,
+    real_array<T, py::array::c_style | py::array::forcecast, true>,
     py::array_t<T, py::array::c_style | py::array::forcecast>>;
+using real_in = real_array<double, py::array::c_style | py::array::forcecast, false>;
 
 // Arrays modified in place: taken as they are (with py::arg().noconvert()), so the
 // function can refuse those that would need a copy. Real ones refuse complex arrays.
 template <typename T>
-using array_inout = std::conditional_t<std::is_same_v<T, double>, real_array<T, 0>, py::array_t<T, 0>>;
+using array_inout = std::conditional_t<std::is_same_v<T, double>, real_array<T, 0, true>, py::array_t<T, 0>>;
+using real_inout = real_array<double, 0, false>;
 
 /**
  * @brief Helper for method overload resolution in pybind11.
@@ -186,7 +199,7 @@ using overload_cast_ = py::detail::overload_cast_impl<Args...>;
  * - get_nx(): Grid points per dimension
  * - get_lx(): Box lengths
  * - get_dx(): Grid spacing
- * - get_dv(): Volume element
+ * - get_dv(): Volume element of a grid point with the mask; get_dv_base(): without it
  * - get_total_grid(): Total grid points
  * - get_volume(): Total box volume
  * - get_angles(), get_angles_degrees(), get_lattice_vectors(), is_orthogonal(), get_recip_metric(): Cell geometry
@@ -220,6 +233,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
                 throw_with_line_number("Index (" + std::to_string(i) + ") must be in range [0, " + std::to_string(obj.get_total_grid() - 1) + "]");
             return obj.get_dv(i);
         })
+        .def("get_dv_base", &ComputationBox<T>::get_dv_base)
         .def("get_total_grid", &ComputationBox<T>::get_total_grid)
         .def("get_volume", &ComputationBox<T>::get_volume)
         .def("get_accessible_volume", &ComputationBox<T>::get_accessible_volume)
@@ -793,9 +807,9 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
         {
             // The mask is real for both field types. Converted outside the try below, so
             // that a complex mask raises the ValueError of real_array.
-            std::optional<array_in<double>> mask_values;
+            std::optional<real_in> mask_values;
             if (!mask.is_none())
-                mask_values = mask.cast<array_in<double>>();
+                mask_values = mask.cast<real_in>();
             try {
                 const int M = checked_grid_points(nx);
 
@@ -1039,6 +1053,46 @@ PYBIND11_MODULE(_core, m)
     m.attr("MAX_GRID_ARRAY") = MAX_GRID_ARRAY;
     // Default tolerance of check_total_partition (PropagatorComputation.h)
     m.attr("PARTITION_TOLERANCE") = PARTITION_TOLERANCE;
+    // The alias search of the propagator solvers (MinimalFormAlias.h) on a periodic grid of a cell
+    // that need not be the simulation box: the smearing in SCFT box relaxation, and WTMD. A box of
+    // the cell gives its reciprocal metric, from the angles in degrees as every box.
+    struct AliasGrid
+    {
+        int dim;
+        std::array<int, 3> grid;
+        IndexMetric metric;
+        AliasGrid(const std::vector<int>& nx, const std::vector<double>& lx, const std::vector<double>& angles)
+        {
+            const ComputationBox<double> box(nx, lx, std::vector<std::string>(2 * nx.size(), "periodic"), angles);
+            dim = box.get_dim();
+            grid = padded_grid(nx);
+            metric = index_metric_of(box.get_recip_metric(), dim);
+        }
+    };
+    m.def("minimal_alias_k_squared", [](const std::vector<int>& nx, const std::vector<double>& lx,
+                                        const std::vector<double>& angles)
+    {
+        const AliasGrid cell(nx, lx, angles);
+        py::array_t<double> k_squared(std::vector<py::ssize_t>(nx.begin(), nx.end()));
+        alias_k_squared(cell.grid, cell.grid, cell.metric, k_squared.mutable_data());
+        return k_squared;
+    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
+       "|k|^2 = 4 pi^2 u^T G u of every mode of the periodic grid nx on the cell lx, angles ([alpha, beta, gamma] "
+       "or [gamma] in degrees), u the alias of least |k|^2 and G the reciprocal metric of the box; shape nx. "
+       "The values of PropagatorSolver.fourier.k_squared() on every mode.");
+    m.def("minimal_alias_moments", [](const std::vector<int>& nx, const std::vector<double>& lx,
+                                      const std::vector<double>& angles)
+    {
+        const AliasGrid cell(nx, lx, angles);
+        std::vector<py::ssize_t> shape(nx.begin(), nx.end());
+        shape.insert(shape.begin(), {cell.dim, cell.dim});
+        py::array_t<double> moments(shape);
+        alias_moments(cell.grid, cell.grid, cell.metric, cell.dim, moments.mutable_data());
+        return moments;
+    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
+       "<v_a v_b>, v = G u, over the aliases u tied for the least |k|^2 of every mode of the periodic grid nx on "
+       "the cell lx, angles ([alpha, beta, gamma] or [gamma] in degrees), G the reciprocal metric of the box; "
+       "shape (dim, dim) + nx. The values of PropagatorSolver.fourier.alias_moments() on every mode.");
 
 
     py::class_<Block>(m, "Block")
@@ -1181,7 +1235,9 @@ Example:
         .def("using_pmmm_physical_basis", &SpaceGroup::using_pmmm_physical_basis,
              "Return True if Pmmm physical basis is enabled.")
         .def("m3_crysfft_feasible", &SpaceGroup::m3_crysfft_feasible,
-             "True when the recursive 3m CrysFFT, which the m3 physical basis needs, is feasible on this grid.")
+             "True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 >= 8, translations that "
+             "fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller "
+             "grid runs with the recursive 3m CrysFFT all the same.")
         .def("enable_m3_physical_basis", &SpaceGroup::enable_m3_physical_basis,
              "Enable M3 physical basis (1/8 even-index grid) mapping.")
         .def("using_m3_physical_basis", &SpaceGroup::using_m3_physical_basis,
@@ -1190,7 +1246,7 @@ Example:
              "Enable z-mirror physical basis (half grid along z).")
         .def("using_z_mirror_physical_basis", &SpaceGroup::using_z_mirror_physical_basis,
              "Return True if z-mirror physical basis is enabled.")
-        .def("to_reduced_basis", [](SpaceGroup& obj, array_in<double> full_field)
+        .def("to_reduced_basis", [](SpaceGroup& obj, real_in full_field)
         {
             py::buffer_info buf = full_field.request();
             const int n_fields = sg_field_count(buf, obj.get_total_grid(), "total_grid");
@@ -1198,7 +1254,7 @@ Example:
             obj.to_reduced_basis(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Full-grid field(s) -> reduced basis. A 1-D input gives a 1-D output, an (n_fields, total_grid) input an (n_fields, n_reduced) output.")
-        .def("symmetrize_reduced_basis", [](SpaceGroup& obj, array_inout<double> reduced_field)
+        .def("symmetrize_reduced_basis", [](SpaceGroup& obj, real_inout reduced_field)
         {
             // Modified in place (like ComputationBox.zero_mean): a converted copy would
             // leave the caller's array unchanged, so it must already be C-contiguous float64,
@@ -1211,7 +1267,7 @@ Example:
             return reduced_field;
         }, py::arg("reduced_field").noconvert(),
            "Symmetrize reduced-basis field(s) in place over the full space-group orbits; returns the same array.")
-        .def("reduced_to_irreducible", [](SpaceGroup& obj, array_in<double> reduced_field)
+        .def("reduced_to_irreducible", [](SpaceGroup& obj, real_in reduced_field)
         {
             py::buffer_info buf = reduced_field.request();
             const int n_fields = sg_field_count(buf, obj.get_n_reduced_basis(), "n_reduced_basis");
@@ -1219,7 +1275,7 @@ Example:
             obj.reduced_to_irreducible(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Reduced-basis field(s) -> irreducible basis (one value per full-group orbit). A 1-D input gives a 1-D output, an (n_fields, n_reduced) input an (n_fields, n_irreducible) output.")
-        .def("irreducible_to_reduced", [](SpaceGroup& obj, array_in<double> irreducible_field)
+        .def("irreducible_to_reduced", [](SpaceGroup& obj, real_in irreducible_field)
         {
             py::buffer_info buf = irreducible_field.request();
             const int n_fields = sg_field_count(buf, obj.get_n_reduced_basis_full(), "n_irreducible_basis");
@@ -1227,7 +1283,7 @@ Example:
             obj.irreducible_to_reduced(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Irreducible-basis field(s) -> reduced (physical) basis. A 1-D input gives a 1-D output, an (n_fields, n_irreducible) input an (n_fields, n_reduced) output.")
-        .def("from_reduced_basis", [](SpaceGroup& obj, array_in<double> reduced_field)
+        .def("from_reduced_basis", [](SpaceGroup& obj, real_in reduced_field)
         {
             py::buffer_info buf = reduced_field.request();
             const int n_fields = sg_field_count(buf, obj.get_n_reduced_basis(), "n_reduced_basis");
@@ -1235,7 +1291,7 @@ Example:
             obj.from_reduced_basis(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Reduced-basis field(s) -> full grid. A 1-D input gives a 1-D output, an (n_fields, n_reduced) input an (n_fields, total_grid) output.")
-        .def("symmetrize", [](SpaceGroup& obj, array_in<double> field)
+        .def("symmetrize", [](SpaceGroup& obj, real_in field)
         {
             py::buffer_info buf = field.request();
             const int n_fields = sg_field_count(buf, obj.get_total_grid(), "total_grid");

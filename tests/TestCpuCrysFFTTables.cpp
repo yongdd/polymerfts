@@ -24,7 +24,8 @@
  * 2. A table rebuilt for a new cell keeps its buffer and gives the diffusion
  *    of a fresh engine with a fresh table of that cell.
  * 3. A stress multiplier rebuilt in place equals a fresh one (Pmmm and
- *    recursive 3m); ObliqueZ has none and refuses to build one.
+ *    recursive 3m); ObliqueZ has none and refuses to build one. Each engine
+ *    reports which (has_multipliers()).
  * 4. A table of another size is refused.
  *
  * "Equal" means a relative difference of at most 1e-14 (the thread and fresh
@@ -137,7 +138,8 @@ bool check_engine(const std::string& name, const Make& make, std::array<double, 
     err = relative_difference(diffused(*engine, q, tables[0]), diffused(*fresh, q, fresh_table));
     ok &= check_difference(name, "diffusion of the new cell against a fresh engine", err);
 
-    // 3. Stress multipliers
+    // 3. Stress multipliers, which the engine reports (the solver's stress fast path asks it)
+    ok &= check(name, "has_multipliers()", engine->has_multipliers() == has_multipliers);
     if (has_multipliers)
     {
         std::vector<double> multiplier;

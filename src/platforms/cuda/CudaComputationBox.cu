@@ -181,13 +181,12 @@ T CudaComputationBox<T>::integral_device(const CuDeviceData<T> *d_g)
     {
         // Reduced basis mode: sum = Σ_j g[j] * weight[j] * dv_base (orbit counts times the mask)
         int N = this->n_basis_;
-        double dv_base = this->volume / this->total_grid;
 
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_basis_weights_, 1.0, N);
         CUDA_CHECK_LAUNCH();
 
         sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(this->dv_base_);
     }
     else
     {
@@ -217,7 +216,6 @@ T CudaComputationBox<T>::inner_product_device(const CuDeviceData<T>* d_g, const 
     {
         // Reduced basis mode: sum = Σ_j g[j] * h[j] * weight[j] * dv_base
         int N = this->n_basis_;
-        double dv_base = this->volume / this->total_grid;
 
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
         CUDA_CHECK_LAUNCH();
@@ -225,7 +223,7 @@ T CudaComputationBox<T>::inner_product_device(const CuDeviceData<T>* d_g, const 
         CUDA_CHECK_LAUNCH();
 
         sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(this->dv_base_);
     }
     else
     {
@@ -249,7 +247,6 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
     if (this->space_group_ != nullptr)
     {
         int N = this->n_basis_;
-        double dv_base = this->volume / this->total_grid;
 
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
         CUDA_CHECK_LAUNCH();
@@ -261,7 +258,7 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
         ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
         CUDA_CHECK_LAUNCH();
         sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(dv_base);
+        return sum * static_cast<T>(this->dv_base_);
     }
     else
     {
@@ -293,7 +290,7 @@ double CudaComputationBox<T>::absolute_inner_product_device(
     ker_absolute_product<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_g, d_h, d_divisor, d_weight, N);
     CUDA_CHECK_LAUNCH();
     const double sum = std::real(reduce_sum_to_host(N));
-    return reduced ? sum * (this->volume / this->total_grid) : sum;
+    return reduced ? sum * this->dv_base_ : sum;
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -314,7 +311,7 @@ T CudaComputationBox<T>::multi_inner_product_device(int n_comp, const CuDeviceDa
     CUDA_CHECK_LAUNCH();
     sum = reduce_sum_to_host(N);
     if (reduced)
-        return sum * static_cast<T>(this->volume / this->total_grid);
+        return sum * static_cast<T>(this->dv_base_);
     return sum;
 }
 //-----------------------------------------------------------

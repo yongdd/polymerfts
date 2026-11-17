@@ -61,6 +61,8 @@ def test_imported_script_converges(tmp_path, case):
                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
     (tmp_path / 'polymerfts.log').write_text(result.stdout + '\n' + result.stderr, encoding='utf-8')
     assert result.returncode == 0, (tmp_path / 'polymerfts.log').read_text(encoding='utf-8')[-6000:]
+    # The script holds SCFT options only: SCFT warns about none of another method
+    assert 'ignores the options of other methods' not in result.stderr, result.stderr[-3000:]
     snapshots = [bundle / 'results/out' / (name + '.mat') for name in ('omega', 'rho', 'thermo')]
     assert all(path.is_file() for path in snapshots)
     fields = loadmat(snapshots[0], simplify_cells=True)

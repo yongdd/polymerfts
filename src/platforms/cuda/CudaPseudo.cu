@@ -18,10 +18,11 @@
  *
  * **Update Mechanism:**
  *
- * update() recalculates the Fourier space operators for the current box and
- * copies them to device memory, allocating the device arrays at its first
- * call: a solver whose propagators and stress take the CrysFFT path never
- * calls it and holds none of these full-grid arrays.
+ * upload() copies the host arrays to device memory, allocating the device
+ * arrays at its first call, and update() recalculates the Fourier space
+ * operators for the current box and uploads them. The solvers create this
+ * object when a full-grid path first needs it: one whose propagators and
+ * stress take the CrysFFT path holds none of these full-grid arrays.
  *
  * **Template Instantiations:**
  *
@@ -50,7 +51,7 @@ CudaPseudo<T>::CudaPseudo(
     std::array<double, 9> recip_vec)
         : Pseudo<T>(bond_lengths, bc, nx, dx, recip_metric, recip_vec)
 {
-    // The device arrays are owning buffers, allocated by the first update()
+    // The device arrays are owning buffers, allocated by the first upload()
 }
 //----------------- Destructor -----------------------------
 template <typename T>
@@ -124,8 +125,12 @@ void CudaPseudo<T>::update(
     std::array<double, 9> recip_vec)
 {
     Pseudo<T>::update(bc, bond_lengths, dx, recip_metric, recip_vec);
+    upload();
+}
 
-    // Upload updated data to GPU
+template <typename T>
+void CudaPseudo<T>::upload()
+{
     upload_boltz_bond();
     upload_fourier_basis();
 }

@@ -93,7 +93,7 @@ def test_dropped_fields_and_keys():
         noisy = omega.copy()
         noisy[dropped] = rng.normal(0.0, 2.0, (len(dropped), 300))
         phi_dict = {t: phi[i] for i, t in enumerate(types)}
-        dH, dH_noisy = mpt.compute_h_deriv_chin(chi_n, omega, phi_dict), mpt.compute_h_deriv_chin(chi_n, noisy, phi_dict)
+        dH, dH_noisy = mpt.compute_h_deriv_chin(omega, phi_dict), mpt.compute_h_deriv_chin(noisy, phi_dict)
         error = max(abs(dH[key] - np.mean(phi[types.index(key[0])] * phi[types.index(key[2])])) for key in chi_n)
         change = max(abs(dH[key] - dH_noisy[key]) for key in chi_n)
         check(len(dropped) == 1 and error < 1e-12 and change == 0.0,
@@ -101,12 +101,25 @@ def test_dropped_fields_and_keys():
     with contextlib.redirect_stdout(io.StringIO()):
         mpt = SymmetricPolymerTheory(["A", "B"], {"B,A": 15.0}, None)
     check(np.isclose(mpt.eigenvalues[0], -15.0) and mpt.chi_n == {"A,B": 15.0}, "chi N key 'B,A' is read as 'A,B'")
+
+
+def test_release_call():
+    """The call of release 0.10.0, compute_h_deriv_chin(chi_n, w_aux, phi), raises a TypeError that names
+    the keywords (it ended in an IndexError from the shape of the chi N dictionary)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        mpt = SymmetricPolymerTheory(["A", "B"], {"A,B": 15.0}, None)
+    omega = np.zeros((2, 8))
+    phi = {"A": np.full(8, 0.3), "B": np.full(8, 0.7)}
     try:
-        mpt.compute_h_deriv_chin(np.zeros((2, 10)), {"A": np.ones(10), "B": np.zeros(10)})
-        message = ""
-    except TypeError as exc:
-        message = str(exc)
-    check("by keyword" in message, "positional fields in compute_h_deriv_chin raise a TypeError that names the keywords")
+        mpt.compute_h_deriv_chin({"A,B": 15.0}, omega, phi)
+        message = "no error"
+    except TypeError as error:
+        message = str(error)
+    except Exception as error:
+        message = f"{type(error).__name__}: {error}"
+    named = "compute_h_deriv_chin(w_aux=w_aux, phi=phi)" in message
+    check(named, "compute_h_deriv_chin(chi_n, w_aux, phi) of 0.10.0: a TypeError that names the keywords"
+          + ("" if named else f" (got {message})"))
 
 
 def test_saddle_point_model(chi0):
@@ -274,7 +287,7 @@ def main():
             check(abs(value - exact) < 1e-9 * max(1.0, abs(exact)),
                   f"{name} {model}: stationary field part {value:.12f} = interaction energy {exact:.12f}")
 
-            dH = mpt.compute_h_deriv_chin(chi_n, omega, {t: phi[i] for i, t in enumerate(types)})
+            dH = mpt.compute_h_deriv_chin(omega, {t: phi[i] for i, t in enumerate(types)})
             errors = []
             for key in chi_n:
                 a, b = [types.index(t) for t in key.split(",")]
@@ -283,6 +296,7 @@ def main():
                   f"{name} {model}: dH/dchiN = <phi_a phi_b> (max error {max(errors):.1e})")
 
     test_dropped_fields_and_keys()
+    test_release_call()
     test_singular_hamiltonian()
     test_saddle_point_model({"A,B": 1.0, "A,C": 0.6, "B,C": 1.4})
     test_saddle_point_model({"A,B": 1.0, "A,C": 1.0, "B,C": 1.00001})

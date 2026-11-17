@@ -49,10 +49,10 @@ private:
     ComputationBox<T>* cb;
     Molecules* molecules;
     int n_streams;
-    SpaceGroup* space_group_ = nullptr;          ///< propagators in its reduced basis when set
-    int* d_reduced_basis_indices_ = nullptr;     ///< reduced -> full index (lent by the backend)
-    int* d_full_to_reduced_map_ = nullptr;       ///< full -> reduced index (lent by the backend)
-    int n_basis_ = 0;                            ///< points of the propagators
+    SpaceGroup* space_group_ = nullptr;              ///< propagators in its reduced basis when set
+    const int* d_reduced_basis_indices_ = nullptr;   ///< reduced -> full index (lent by the backend)
+    const int* d_full_to_reduced_map_ = nullptr;     ///< full -> reduced index (lent by the backend)
+    int n_basis_ = 0;                                ///< points of the propagators
     cudaStream_t streams[MAX_STREAMS][2];
 
     std::map<int, std::map<std::string, DeviceKernels>> d_bond;   ///< full bonds per ds index and monomer type
@@ -80,11 +80,12 @@ private:
                   int derivative_axis = -1, const DeviceAxis* derivative = nullptr);
 
 public:
+    /// space_group (or nullptr) with the backend's device maps reduced -> full and full -> reduced index
     CudaSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules, int n_streams,
-                                cudaStream_t streams[MAX_STREAMS][2], bool reduce_memory);
+                                cudaStream_t streams[MAX_STREAMS][2], SpaceGroup* space_group,
+                                const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
     ~CudaSolverRealSpaceDiscrete() override = default;
 
-    void set_space_group(SpaceGroup* sg, int* d_reduced_basis_indices, int* d_full_to_reduced_map, int n_basis) override;
     void update_laplacian_operator() override;
     void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
     void advance_propagator(const int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out,

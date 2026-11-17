@@ -125,10 +125,10 @@ def test_every_monomer_type_of_the_file(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('suffix', ['.json', '.yaml'])
 def test_json_and_yaml_results(tmp_path, monkeypatch, suffix):
-    # SCFT saves .json and .yaml results with lists, the angles and uses_hexagonal_axes
+    # SCFT saves .json and .yaml results with lists and the angles
     nx, lx, gamma = [5, 3], [1.0, 1.2], 110.0
     phi = {name: np.random.default_rng(3).random(15) + i for i, name in enumerate(('X', 'Y'))}
-    data = {'nx': nx, 'lx': lx, 'angles': [90.0, 90.0, gamma], 'uses_hexagonal_axes': False,
+    data = {'nx': nx, 'lx': lx, 'angles': [90.0, 90.0, gamma],
             'monomer_types': ['X', 'Y'], 'initial_params': {'angles': [90.0, 90.0, 60.0]},
             **{'phi_' + name: value.tolist() for name, value in phi.items()}}
     (tmp_path / 'phases').mkdir()

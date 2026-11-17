@@ -20,11 +20,13 @@ import numpy as np
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError
 from polymerfts.theory.chains import process_random_copolymer
 from polymerfts.utils.validation import validate_system_params
-from fts_checks import python_platform, quiet
+from fts_checks import input_of, python_platform, quiet
 
 
-def parameters(platform, fractions, directory, model="continuous"):
-    return {
+def parameters(platform, fractions, directory, model="continuous", cls=SCFT):
+    """The input of cls (SCFT, LFTS or CLFTS) without the options of the other methods, which it would
+    ignore with a warning."""
+    params = {
         "nx": [16], "lx": [4.0], "chain_model": model, "ds": 0.05,
         "segment_lengths": {name: 1.0 + 0.2 * i for i, name in enumerate(sorted(fractions))},
         "chi_n": {",".join(pair): 15.0 for pair in itertools.combinations(sorted(fractions), 2)},
@@ -41,6 +43,10 @@ def parameters(platform, fractions, directory, model="continuous"):
                       "sample_interval": 1, "statistics_save_interval": 1},
         "verbose_level": 0,
     }
+    if cls is not SCFT:
+        for key in ("relax_cell", "max_iter", "tolerance", "optimizer"):
+            del params[key]
+    return input_of(cls, params)
 
 
 def expect_sum_error(call):
@@ -62,9 +68,12 @@ def check_rejected(platform, directory):
         params = parameters(platform, fractions, directory)
         before = copy.deepcopy(params)
         expect_sum_error(lambda: validate_system_params(params))
-        for cls in (SCFT, LFTS, CLFTS):
-            expect_sum_error(lambda: cls(params))
         assert params == before, "Rejected input was modified"
+        for cls in (SCFT, LFTS, CLFTS):
+            params = parameters(platform, fractions, directory, cls=cls)
+            before = copy.deepcopy(params)
+            expect_sum_error(lambda: cls(params))
+            assert params == before, "Rejected input was modified"
 
 
 def check_scft(platform, directory):
@@ -123,9 +132,7 @@ def check_scft(platform, directory):
 def check_fts_constructors(platform, directory):
     for cls in (LFTS, CLFTS):
         for fractions in ({"A": 0.3, "B": 0.7}, {"A": 0.5, "B": 0.5 + 5e-11}):
-            params = parameters(platform, fractions, directory / cls.__name__)
-            if cls is CLFTS:
-                del params["compressor"], params["saddle"]   # options of L-FTS, which CL-FTS refuses
+            params = parameters(platform, fractions, directory / cls.__name__, cls=cls)
             before = copy.deepcopy(params)
             sim = quiet(lambda: cls(params, random_seed=17))
             assert sim.random_fraction["R"] == fractions

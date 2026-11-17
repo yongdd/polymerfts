@@ -3,7 +3,8 @@
 read_chains() reads the input and chain_solver() creates the PropagatorSolver of the chains.
 chain_fields() and solve_chains() give the concentrations of the monomer types in given fields, with
 what SCFT, LFTS and CLFTS have in common; each of them adds to this what is its own, such as the
-electrostatic potential or the grand-canonical chains.
+electrostatic potential or the grand-canonical chains. prepare_run() starts a run of LFTS or CLFTS: it
+draws the chains and gives the auxiliary fields of the first step.
 """
 
 import copy
@@ -210,6 +211,29 @@ def check_partition_once(sim, fields):
         sim._partition_checked = True
         if not report_partition_consistency(sim.prop_solver):
             raise NumericalError("Partition consistency check failed (forward/backward mismatch).", fields())
+
+
+def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):
+    """The start that the runs of L-FTS and CL-FTS share; returns the auxiliary fields of the first step
+    and whether they come from the checkpoint.
+
+    The recording directory (which recording_run_status has created) gets the drawings of the chain
+    architectures (polymer_<id>.png), unless sim.draw_architectures is False. The auxiliary fields are
+    those of the monomer fields initial_fields ({type: flat array of dtype}) with the dropped modes pinned,
+    or those that the checkpoint of a continued run (restart_data) stored: transforming its monomer fields
+    would not reproduce them bit for bit. The partition consistency is checked again on the first fields
+    of the run (check_partition_once).
+    """
+    if getattr(sim, "draw_architectures", True):
+        draw_polymer_architectures(sim.polymers, sim.ds, sim.segment_lengths, directory=sim.recording["dir"])
+    sim._partition_checked = False
+    saved = None if restart_data is None else restart_data.get("w_aux")
+    if saved is not None:
+        shape = (len(sim.monomer_types), sim.prop_solver.n_grid)
+        return np.asarray(saved, dtype=dtype).reshape(shape).copy(), True
+    w_aux = sim.mpt.to_aux_fields(np.array([initial_fields[m] for m in sim.monomer_types], dtype=dtype))
+    sim.mpt.pin_dropped_fields(w_aux)
+    return w_aux, False
 
 
 def mean_concentrations(sim):

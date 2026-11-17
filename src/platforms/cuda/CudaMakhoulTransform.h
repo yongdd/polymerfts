@@ -66,7 +66,6 @@ public:
      *           ABSORBING (sine); at least one axis is periodic
      */
     CudaMakhoulTransform(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc);
-    ~CudaMakhoulTransform();
 
     CudaMakhoulTransform(const CudaMakhoulTransform&) = delete;
     CudaMakhoulTransform& operator=(const CudaMakhoulTransform&) = delete;
@@ -98,18 +97,14 @@ private:
     int n_grid_ = 0;    ///< grid points
     int n_modes_ = 0;   ///< modes of the cuFFT: the half spectrum of the last axis for a real field
 
-    cufftHandle plan_ = 0;           ///< D2Z (real field) or Z2Z (complex field, both directions)
-    cufftHandle plan_inverse_ = 0;   ///< Z2D (real field)
-    bool plan_created_ = false;
-    bool plan_inverse_created_ = false;
-
     CudaDeviceBuffer<double> d_work_;             ///< work area of the cuFFT plans, shared by both
     CudaDeviceBuffer<cuDoubleComplex> d_w_;       ///< W^k of the three axes, one after the other
     CudaDeviceBuffer<double> d_samples_;          ///< reordered samples of a real field
     CudaDeviceBuffer<cuDoubleComplex> d_modes_;   ///< modes (a complex field: also its samples, in place)
 
-    /// Free everything acquired so far (idempotent; also used when the constructor throws)
-    void release() noexcept;
+    // Declared after their work area, so they are destroyed before it
+    CufftPlan plan_;           ///< D2Z (real field) or Z2Z (complex field, both directions)
+    CufftPlan plan_inverse_;   ///< Z2D (real field)
 };
 
 #endif

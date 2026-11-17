@@ -33,6 +33,7 @@
 #include <map>
 #include <source_location>
 #include <string>
+#include <utility>
 #include <cuda_runtime.h>
 #include <cufft.h>
 
@@ -199,9 +200,9 @@ public:
  * CUDA_LAUNCH_BLOCKING=1 (or compute-sanitizer) to see them at their launch.
  * Release calls are not checked: they run in destructors and release() paths,
  * which must not throw. cudaFree/cudaFreeHost go through ignore_release_error()
- * so a failed one is not reported by a later check; plans, streams and events
- * are created and destroyed through the counting helpers (count_cufft_plan(),
- * release_cufft_plan(), ...).
+ * so a failed one is not reported by a later check; cuFFT plans are owned by
+ * CufftPlan, and streams and events are created and destroyed through the
+ * counting helpers (count_cuda_stream(), release_cuda_stream(), ...).
  *
  * @example
  * @code
@@ -253,7 +254,7 @@ inline void throw_on_cuda_error(cudaError_t code, const char *file, int line, co
  *
  * @example
  * @code
- * CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan, ...)));   // counted handle
+ * CUFFT_CHECK(plan.create(cufftPlanMany, ...));   // owning, counted handle (CufftPlan)
  * CUFFT_CHECK(cufftExecD2Z(plan, in, out));
  * @endcode
  */
@@ -308,7 +309,6 @@ inline std::atomic<long long>& cuda_release_failures()
  * @code
  * ignore_release_error(cudaFree(ptr));
  * release_cuda_stream(stream);       // counted handles have their own release
- * release_cufft_plan(plan);
  * @endcode
  */
 inline void ignore_release_error(cudaError_t code) noexcept
@@ -335,28 +335,103 @@ inline CudaHandleCounters& cuda_handle_counters()
     return counters;
 }
 
-/// Pass the result of a call that creates a cuFFT plan handle (cufftCreate,
-/// cufftPlan1d/2d/3d, cufftPlanMany) through this; a successful one is counted.
-/// @code
-/// CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan, ...)));
-/// @endcode
+/// Count a created cuFFT plan: CufftPlan::create() passes the result of the call
+/// that creates the handle (cufftCreate, cufftPlan1d/2d/3d, cufftPlanMany) through
+/// this, and a successful one is counted.
 inline cufftResult count_cufft_plan(cufftResult code) noexcept
 {
     if (code == CUFFT_SUCCESS)
         cuda_handle_counters().cufft_plans.fetch_add(1, std::memory_order_relaxed);
     return code;
 }
-/// Destroy a plan counted by count_cufft_plan(), without throwing. Like every
-/// release helper, it takes the plan off the live count whether or not the
-/// destroy call succeeded (the object no longer holds it) and counts a failure
-/// in cuda_release_failures(). cuFFT carries its own CUDA runtime (libcufft does
-/// not link libcudart), so a failure leaves nothing in this program's error slot.
+/// Destroy a plan counted by count_cufft_plan(), without throwing (CufftPlan
+/// calls it). Like every release helper, it takes the plan off the live count
+/// whether or not the destroy call succeeded (the object no longer holds it) and
+/// counts a failure in cuda_release_failures(). cuFFT carries its own CUDA runtime
+/// (libcufft does not link libcudart), so a failure leaves nothing in this
+/// program's error slot.
 inline void release_cufft_plan(cufftHandle plan) noexcept
 {
     cuda_handle_counters().cufft_plans.fetch_sub(1, std::memory_order_relaxed);
     if (cufftDestroy(plan) != CUFFT_SUCCESS)
         cuda_release_failures().fetch_add(1, std::memory_order_relaxed);
 }
+
+/**
+ * @brief Owning cuFFT plan handle.
+ *
+ * Move-only, like CudaBuffer: the plan is destroyed (release_cufft_plan(), which
+ * does not throw) by the destructor, by reset() and before create() makes a new
+ * one. A class that keeps its plans in CufftPlan members needs no flags (a
+ * cufftHandle has no null value) and no cleanup code, and leaks nothing when its
+ * constructor throws. create() takes a cuFFT call that writes a new handle into
+ * its first argument (cufftCreate, cufftPlan1d/2d/3d, cufftPlanMany) and the other
+ * arguments of that call; it counts a created plan (count_cufft_plan()) and returns
+ * the cuFFT result for CUFFT_CHECK or the caller's own message. The handle is lent
+ * by the implicit conversion, so cufftExec*, cufftSetStream and cufftMakePlan* read
+ * as before.
+ *
+ * @code
+ * CufftPlan plan;
+ * CUFFT_CHECK(plan.create(cufftPlanMany, rank, n, nullptr, 1, 0, nullptr, 1, 0, CUFFT_D2Z, 1));
+ * CUFFT_CHECK(cufftSetStream(plan, stream));
+ * CUFFT_CHECK(cufftExecD2Z(plan, d_in, d_out));
+ * @endcode
+ */
+class CufftPlan
+{
+public:
+    CufftPlan() = default;
+    ~CufftPlan() { reset(); }
+
+    CufftPlan(CufftPlan&& other) noexcept : handle_(other.handle_), created_(other.created_)
+    {
+        other.created_ = false;
+    }
+    CufftPlan& operator=(CufftPlan&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            handle_ = other.handle_;
+            created_ = other.created_;
+            other.created_ = false;
+        }
+        return *this;
+    }
+    CufftPlan(const CufftPlan&) = delete;
+    CufftPlan& operator=(const CufftPlan&) = delete;
+
+    /// Destroy the plan held, then create one with make(&handle, args...); the object
+    /// holds the new plan when the returned result is CUFFT_SUCCESS.
+    template <typename Make, typename... Args>
+    cufftResult create(Make make, Args&&... args)
+    {
+        reset();
+        cufftHandle handle = 0;
+        const cufftResult code = count_cufft_plan(make(&handle, std::forward<Args>(args)...));
+        if (code == CUFFT_SUCCESS)
+        {
+            handle_ = handle;
+            created_ = true;
+        }
+        return code;
+    }
+    /// Destroy the plan (no-op when empty).
+    void reset() noexcept
+    {
+        if (created_)
+            release_cufft_plan(handle_);
+        created_ = false;
+    }
+
+    operator cufftHandle() const noexcept { return handle_; }   ///< lends the handle (no ownership transfer)
+    bool empty() const noexcept { return !created_; }
+
+private:
+    cufftHandle handle_ = 0;
+    bool created_ = false;
+};
 /// Count a created stream (pass the result of cudaStreamCreate through this).
 inline cudaError_t count_cuda_stream(cudaError_t code) noexcept
 {

@@ -141,7 +141,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
@@ -386,8 +386,8 @@ The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
 three pseudo-spectral solvers share -- it uses the computation box and the backend's streams,
 and owns the `Pseudo` helper, the stress reduction workspace, the space-group work buffers
 and the CrysFFT fast path --
-and implements `set_space_group()`, `update_laplacian_operator()` and the shared
-`update_dw_impl()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
+and implements `update_laplacian_operator()` and the shared `update_dw_impl()`. Every CUDA
+solver takes the space group and the backend's index maps in its constructor. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
 constructor argument) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
@@ -397,10 +397,11 @@ It also implements `compute_single_segment_stress()` once for the three solvers
 work buffers through `stress_scratch()`, and the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
-tables exist only for a path that uses them (`provide_work()`, called by the backend once
-the space group is set and again before the propagator and stress loops, with the derived
-solvers' `allocate_work()`), so the Pmmm and recursive 3m CrysFFT with the stress fast
-path hold none of them.
+tables exist only for a path that uses them (`provide_work()` with the derived solvers'
+`allocate_work()`, called at the end of the derived constructors through `init_path()` and
+again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
+grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
+Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
@@ -461,7 +462,11 @@ and evaluates `backward(Σ M(k) · forward(fields))` for Fourier multipliers sto
 keeps the multipliers in device memory and runs a call on its own stream: upload,
 transforms, a grid-stride product kernel, inverse transforms and download. The
 coefficients have the layout of `FFT<T>`, and `get_k_squared()` gives |k|² in it for the
-current box with the alias convention of `Pseudo`. For real fields the multipliers and the
+current box with the alias convention of `Pseudo`; `_core.minimal_alias_k_squared(nx, lx, angles)`
+and `_core.minimal_alias_moments(nx, lx, angles)` give the same |k|² and tied-alias moments on
+every mode of a periodic grid of any cell (`alias_k_squared` and `alias_moments` of
+`MinimalFormAlias.h`, which `FourierTransform` uses too), for the smearing (whose cell follows
+SCFT box relaxation) and WTMD. For real fields the multipliers and the
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
@@ -650,10 +655,10 @@ When adding new computational features, you must implement them for both platfor
 | Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
 | Cell relaxation of SCFT: the stress, how often it is computed (`stress_interval`) and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
-| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`; the fields a run starts from: `prepare_run`) |
-| Reading, drawing and solving the polymer chains, and their `PropagatorSolver` | `src/python/theory/chains.py` (`chain_solver`) |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains) | `src/python/utils/validation.py` (`validate_system_params`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), and the top-level keys each method reads | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -678,6 +683,9 @@ that throw need no cleanup code:
   `empty()`, because the second conversion to `void*`, with which GCC and Clang reject
   `delete buffer`, makes `if (buffer)` ambiguous too); a failed allocation throws with its size and
   the caller's file, line and function (`std::source_location`);
+- cuFFT plans: `CufftPlan` (`CudaCommon.h`; move-only, `create(cufftPlanMany, ...)` destroys a plan
+  it holds, counts the new one and returns the cuFFT result, `reset()`, `empty()`, and an implicit
+  conversion that lends the handle to `cufftExec*` and `cufftSetStream`);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
   `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
 
@@ -688,11 +696,13 @@ pointers on purpose: the backends' `allocate()`/`deallocate()` and
 `allocate_checkpoint()`/`deallocate_checkpoint()` pairs,
 the allocators of the propagator handles and the reduce-memory checkpoints, which the
 computation classes free in one place; and the `CudaCommon` singleton, which is created
-with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans, CUDA streams and events are not memory and are destroyed
-explicitly where their order matters (the solver before the streams it runs on); they are
-created through `count_cufft_plan(...)`, `count_cuda_stream(...)` and `count_cuda_event(...)`
-and destroyed with `release_cufft_plan()`, `release_cuda_stream()` and
-`release_cuda_event()`, which keep live counts (`cuda_handle_counters()`); every release
+with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
+are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
+`release_cufft_plan()`. CUDA streams and events are destroyed explicitly where their order
+matters (the solver before the streams it runs on); they are created through
+`count_cuda_stream(...)` and `count_cuda_event(...)` and destroyed with
+`release_cuda_stream()` and `release_cuda_event()`. These helpers keep live counts
+(`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
 plans and descriptors in hand-written `release()` functions, which their destructors call;
@@ -752,7 +762,8 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  and destroy plans, streams and events with the counting `release_*` helpers.
+  hold cuFFT plans in `CufftPlan`, and destroy streams and events with the counting `release_*`
+  helpers.
 
 ### Python
 

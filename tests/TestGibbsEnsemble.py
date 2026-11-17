@@ -32,11 +32,15 @@ Two homopolymers A and B (discrete chains, N = 20) on 4x4 grids:
 7. Mobility: the step of boxes with point ions and unequal chain lengths, with and without the
    projection on neutral moves, against the stated mobility, and the bounded step of boxes of
    equal composition, where the Hessians of the boxes are singular.
+8. Options of other methods in the input: one warning at the line that builds the ensemble and none
+   from its runs; a continuation without them reproduces the uninterrupted run, and the hash of an
+   input without them is that of earlier histories.
 """
 
 import json
 import os
 import tempfile
+import warnings
 from pathlib import Path
 
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -45,6 +49,7 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.optimize import brentq, fsolve
 from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector, ValidationError
+from polymerfts.utils.common import input_hash, json_ready
 from cuda_part import cuda_part_missing
 from fts_checks import quiet
 
@@ -361,6 +366,39 @@ def restart(root):
     expect_validation_error(lambda: charged(2, salt()).continue_run(), "input differs")
 
 
+def input_keys(root):
+    """The options of other methods in the input: one warning, at the line that builds the ensemble, and
+    none from its runs. The boxes and the hash of the history leave them out, so that a continuation
+    may drop them; the hash of an input without them is that of the histories written before (every key
+    but gibbs_ensemble, langevin without max_step), and a key given as None is absent."""
+    def make(directory, cycles, **extra):
+        params = parameters(directory, cycles, nbar=1e4)
+        params.update(extra)
+        return quiet(lambda: GibbsEnsemble(params, random_seed=3))
+    ignored = {"relax_cell": True, "saddle": {"max_iter": 1}}
+    def warned(caught):
+        return [w for w in caught if "ignores the options of other methods" in str(w.message)]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        part = make(root / "keys_part", 1, **ignored)
+        constructed = len(warned(caught))
+        quiet(part.run)
+    texts = [str(w.message) for w in warned(caught)]
+    assert len(texts) == constructed == 1 and all(f"{key} (" in texts[0] for key in ignored), texts
+    assert os.path.realpath(warned(caught)[0].filename) == os.path.realpath(__file__), warned(caught)[0].filename
+    for b in range(2):
+        assert not set(ignored) & set(part.box_params(b, part.amounts[b], 0)), "a box takes the ignored keys"
+    part = make(root / "keys_part", 2)
+    quiet(part.continue_run)
+    full = make(root / "keys_full", 2)
+    quiet(full.run)
+    assert part.history["cycles"] == full.history["cycles"], "continuation without the ignored keys differs"
+    template = {key: value for key, value in full.params.items() if key != "gibbs_ensemble"}
+    template["langevin"] = {key: value for key, value in template["langevin"].items() if key != "max_step"}
+    assert full.settings()["input_hash"] == input_hash(json_ready(template)), "the hash of earlier histories changed"
+    assert make(root / "keys_full", 2, angles=None, smearing=None).settings() == full.settings()
+
+
 def snapped_parameters(directory, cycles, platform):
     """A native-accepted one-bead input offset that is significant relative to ds."""
     return {"nx": [4], "lx": [2.0], "chain_model": "discrete", "ds": 1e-6,
@@ -517,7 +555,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("mobility", mobility), ("blend binodal", blend), ("charged coexistence", charged),
-                            ("Donnan coexistence", donnan), ("tie line", tie_line), ("restart", restart)):
+                            ("Donnan coexistence", donnan), ("tie line", tie_line), ("restart", restart),
+                            ("input keys", input_keys)):
             check(root)
             print(f"[PASS] {name}")
         for platform in PlatformSelector.avail_platforms():
