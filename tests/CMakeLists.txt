@@ -101,7 +101,7 @@ SET(BASIC_TESTS
     TestCrysFFTObliqueZCuda
     TestCrysFFTSelector
     TestCudaCrysTablesAllocation
-    TestCrysFFTSharedTables
+    TestCudaCrysFFTStreams
 
     # Propagator solvers
     TestCrankNicolson1D

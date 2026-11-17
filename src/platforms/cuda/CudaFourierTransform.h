@@ -80,7 +80,8 @@ private:
     void copy_coefficients(double* destination, const double* source, int n_fields, bool to_device);
     /// Transform the first n_fields fields of d_fields_ into `coefficients` (device)
     void transform_forward(int n_fields, double* d_coefficients);
-    /// Inverse-transform n_fields device coefficients into d_fields_
+    /// Inverse-transform n_fields device coefficients into d_fields_; the coefficients
+    /// are scratch afterwards (a periodic real transform overwrites them)
     void transform_backward(double* d_coefficients, int n_fields);
     /// Multiply n_fields device coefficients by `factor`. The CUDA cosine and sine
     /// series are 2 Σ_j f_j φ_m(x_j) per axis (their inverse divides by 2N), the CPU

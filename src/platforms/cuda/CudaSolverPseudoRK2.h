@@ -68,6 +68,8 @@ class CudaCrysFFTBase;
  * - d_q_work: real-space workspace (2*M: advance_propagator() uses the first
  *   half, the stress computation both halves as the contiguous propagator pair)
  * - d_qk_work: Fourier-space workspace (2*M_COMPLEX, same split)
+ *
+ * Both belong to the full-grid path (see allocate_work()).
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
@@ -145,6 +147,7 @@ public:
 
     /// Scratch buffers lent to CudaSolverPseudoBase::compute_single_segment_stress()
     typename Base::StressScratch stress_scratch(int STREAM) override;
+    void allocate_work(int n_field, bool full_grid) override;
     /// CrysFFT steps of a block: full steps only
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {

@@ -22,8 +22,11 @@
  *
  * - The first compute_propagators()/compute_concentrations() may make only the
  *   counted allocations that the same system makes with the group P1, which has
- *   no CrysFFT path (the device copies of the fields); the allocation test hook
- *   fails any further one.
+ *   no CrysFFT path; the allocation test hook fails any further one. The solver
+ *   allocates its work with the computation, so the P1 call allocates only per
+ *   field: the device copy of each field and, for discrete chains, its Boltzmann
+ *   factor in the basis, at most two per monomer type, which is checked first so
+ *   that the budget cannot grow by solver work the reference does in that call.
  * - A cell change keeps the device allocations (count and bytes), and after it
  *   these calls may allocate nothing.
  * - A second compute_stress() allocates nothing and gives the same stress.
@@ -31,11 +34,18 @@
  *   compute_stress() allocates nothing either.
  * - After each change, the results (Q, and the stress after the second) equal
  *   those of a computation created for the new cell.
+ *
+ * The tables are one per coefficient for all streams: a second bond length (B
+ * of 1.3 instead of 1.0, the same polymer) adds the tables of its coefficients
+ * (and, for discrete chains, stress multipliers), and these add the same device
+ * bytes with four streams as with one. Tables kept per stream would add four
+ * times as many.
  */
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <random>
@@ -75,8 +85,8 @@ struct Computation
     std::vector<double> w_a, w_b;
 };
 
-/// The computation of a case, or with p1 the same system with the group P1
-static Computation create(const Case& c, const std::vector<double>& lx, bool p1 = false)
+/// The computation of a case, or with p1 the same system with the group P1; b_B is the bond length of B
+static Computation create(const Case& c, const std::vector<double>& lx, bool p1 = false, double b_B = 1.3)
 {
     Computation s;
     s.factory = PlatformSelector::create_factory_real("cuda", false);
@@ -88,7 +98,7 @@ static Computation create(const Case& c, const std::vector<double>& lx, bool p1 
     s.cb = c.angles.empty()
         ? s.factory->create_computation_box(c.nx, lx, periodic)
         : s.factory->create_computation_box(c.nx, lx, periodic, c.angles);
-    s.molecules = s.factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", 1.3}});
+    s.molecules = s.factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", b_B}});
     s.molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
     s.optimizer = s.factory->create_propagator_computation_optimizer(s.molecules.get(), true);
     s.computation = s.factory->create_propagator_computation(
@@ -156,6 +166,49 @@ static bool change_cell(Computation& s, const std::vector<double>& lx)
     return same;
 }
 
+#ifdef _WIN32
+// The CRT environment that getenv reads; an empty value removes the variable
+static void set_env(const char* name, const char* value) { _putenv_s(name, value); }
+static void unset_env(const char* name) { _putenv_s(name, ""); }
+#else
+static void set_env(const char* name, const char* value) { setenv(name, value, 1); }
+static void unset_env(const char* name) { unsetenv(name); }
+#endif
+
+/// Device bytes held by a computation of the case with n_streams streams (OMP_NUM_THREADS when it is
+/// created) and bond length b_B after compute() and compute_stress()
+static long long device_bytes(const Case& c, int n_streams, double b_B)
+{
+    const char* previous = std::getenv("OMP_NUM_THREADS");
+    const std::string saved = previous ? previous : "";
+    set_env("OMP_NUM_THREADS", std::to_string(n_streams).c_str());
+    const long long start = CudaDeviceMemory::counters().live_bytes.load();
+    long long bytes = 0;
+    {
+        Computation s = create(c, c.lx, /*p1=*/false, b_B);
+        compute(s);
+        s.computation->compute_stress();
+        bytes = CudaDeviceMemory::counters().live_bytes.load() - start;
+    }
+    if (previous)
+        set_env("OMP_NUM_THREADS", saved.c_str());
+    else
+        unset_env("OMP_NUM_THREADS");
+    return bytes;
+}
+
+/// The tables of a second bond length add the same bytes with one stream and with four
+static bool tables_shared_by_streams(const Case& c)
+{
+    const long long added_1 = device_bytes(c, 1, 1.3) - device_bytes(c, 1, 1.0);
+    const long long added_4 = device_bytes(c, 4, 1.3) - device_bytes(c, 4, 1.0);
+    const bool ok = added_1 > 0 && added_4 == added_1;
+    if (!ok)
+        printf("  The tables of a second bond length take %lld bytes with one stream, %lld with four\n",
+               added_1, added_4);
+    return ok;
+}
+
 /// |a - b| <= 1e-13 |b| componentwise relative to the largest |b|
 static bool same_values(const char* what, const std::vector<double>& a, const std::vector<double>& b)
 {
@@ -189,9 +242,14 @@ int main()
         {
             Computation p1 = create(c, c.lx, /*p1=*/true);
             const long long first_call = count_allocations(p1);
+            const long long per_field = 2 * 2;   // two monomer types
+            bool ok = first_call <= per_field;
+            if (!ok)
+                printf("  The first call with P1 makes %lld allocations, more than the %lld of its fields\n",
+                       first_call, per_field);
 
             Computation s = create(c, c.lx);
-            bool ok = with_allocations("The first call", first_call, [&] { compute(s); });
+            ok = with_allocations("The first call", first_call, [&] { compute(s); }) && ok;
 
             // A new cell: the tables are rebuilt in place by update_laplacian_operator()
             std::vector<double> new_lx = c.lx;
@@ -236,6 +294,8 @@ int main()
                              {fresh_2.computation->get_total_partition(0)}) && ok;
             ok = same_values("Stress after the second cell change", s.computation->get_stress(),
                              fresh_2.computation->get_stress()) && ok;
+
+            ok = tables_shared_by_streams(c) && ok;
 
             printf("%s (%lld allocations in the first call): %s\n", c.name.c_str(), first_call, ok ? "ok" : "FAILED");
             all_ok = all_ok && ok;

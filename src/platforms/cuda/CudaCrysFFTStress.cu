@@ -70,8 +70,9 @@ void cuda_crysfft_compute_single_segment_stress(
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
     // ===== Step 1: Fill physical grid from reduced basis (q2) =====
-    // Loop-invariant: apply_multiplier preserves its input (both engines copy
-    // to the output buffer before transforming), so expand once for all axes.
+    // Loop-invariant: an out-of-place apply_multiplier preserves its input (the
+    // Pmmm engine copies it to the output buffer before its in-place DCTs, the
+    // recursive 3m engine's out-of-place D2Z only reads it), so expand once for all axes.
     const double* d_q2_phys;
     if (args.identity_map)
     {

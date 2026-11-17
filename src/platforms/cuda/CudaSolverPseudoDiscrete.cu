@@ -58,28 +58,7 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
                               /*complex_requires_periodic=*/false)
 {
     try{
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
-
-        // Allocate memory for pseudo-spectral: advance_propagator()
-        for(int i=0; i<n_streams; i++)
-        {
-            d_qk_in_1_one[i].allocate(M_COMPLEX);
-            d_qk_in_1_two[i].allocate(2*M_COMPLEX);
-        }
-        if (!is_periodic_)
-        {
-            // Real-valued buffers for the non-periodic BC (DCT/DST) propagator and stress paths.
-            // For complex fields the DCT/DST coefficients of the real and
-            // imaginary parts are stored interleaved (complex pairs).
-            const int rk_size = std::is_same<T, std::complex<double>>::value
-                                ? 2 * M_COMPLEX : M_COMPLEX;
-            for(int i=0; i<n_streams; i++)
-            {
-                d_rk_in_1_one[i].allocate(rk_size);
-                d_rk_in_2_one[i].allocate(rk_size);
-            }
-        }
-
+        // The work buffers follow in allocate_work(), for the path the space group chooses
         this->update_laplacian_operator();
     }
     catch(std::exception& exc)
@@ -89,6 +68,29 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
 }
 template <typename T>
 CudaSolverPseudoDiscrete<T>::~CudaSolverPseudoDiscrete() = default;
+
+template <typename T>
+void CudaSolverPseudoDiscrete<T>::allocate_work(int, bool full_grid)
+{
+    // The CrysFFT steps need no buffer of their own; the full-grid path uses these
+    if (!full_grid)
+        return;
+    const int M_COMPLEX = pseudo->get_total_complex_grid();
+    // For complex fields the DCT/DST coefficients of the real and imaginary
+    // parts are stored interleaved (complex pairs)
+    const int rk_size = std::is_same<T, std::complex<double>>::value ? 2 * M_COMPLEX : M_COMPLEX;
+    for(int i=0; i<n_streams; i++)
+    {
+        provide(d_qk_in_1_one[i], M_COMPLEX);
+        provide(d_qk_in_1_two[i], 2*static_cast<size_t>(M_COMPLEX));
+        if (!is_periodic_)
+        {
+            // Real-valued buffers for the non-periodic BC (DCT/DST) propagator and stress paths
+            provide(d_rk_in_1_one[i], rk_size);
+            provide(d_rk_in_2_one[i], rk_size);
+        }
+    }
+}
 
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
@@ -113,8 +115,6 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
 
         // Get Boltzmann factors for the correct ds_index
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
-
         const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
         if (use_crysfft)
         {
@@ -133,6 +133,9 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
                 return;
             }
         }
+
+        // Bond factors of the full grid (the Pseudo tables exist on this path only)
+        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
 
         // Full-grid input/output (expanded from / reduced to the basis with a space group)
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
@@ -197,9 +200,6 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
 
         const int M = cb->get_total_grid();
         const int M_COMPLEX = pseudo->get_total_complex_grid();
-        // Discrete chains always use ds_index=0 (global ds)
-        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, 0);
-
         const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
         if (use_crysfft)
         {
@@ -216,6 +216,9 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
                 return;
             }
         }
+
+        // Discrete chains always use ds_index=0 (global ds); the Pseudo tables exist on the full-grid path only
+        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, 0);
 
         // Full-grid input/output (expanded from / reduced to the basis with a space group)
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);

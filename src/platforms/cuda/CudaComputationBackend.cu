@@ -190,6 +190,8 @@ CudaComputationBackend<T>::CudaComputationBackend(
         if (space_group != nullptr)
             solver->set_space_group(space_group, d_reduced_basis_indices, d_full_to_reduced_map,
                                     space_group->get_n_reduced_basis());
+        // The work of the path the group chose (the computations then allocate no solver work)
+        solver->provide_work();
     }
     catch (...)
     {

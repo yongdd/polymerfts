@@ -10,6 +10,7 @@
 #include "Recursive3mFoldParity.h"
 #include "Recursive3mHelpers.h"
 
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 #include <stdexcept>
@@ -19,6 +20,12 @@
 using namespace crys_recursive_3m;
 
 namespace {
+
+/// True when p meets cuFFT's alignment (a cufftDoubleComplex, 16 bytes)
+bool cufft_aligned(const void* p)
+{
+    return reinterpret_cast<std::uintptr_t>(p) % alignof(cufftDoubleComplex) == 0;
+}
 
 __global__ void ker_apply_k_3m(
     cufftDoubleComplex* __restrict__ dst,
@@ -307,15 +314,22 @@ void CudaCrysFFTRecursive3m::build_table_from_tempmat(
 void CudaCrysFFTRecursive3m::diffusion(
     double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
 {
-    set_stream(stream);
+    use_stream(stream);
+    const size_t bytes = sizeof(double) * M_physical_;
 
-    double* d_work = (d_q_in == d_q_out) ? d_q_in : d_q_out;
-    if (d_q_in != d_q_out)
+    // The out-of-place D2Z keeps d_q_in, and the Z2D reads only d_step2_, so an
+    // out-of-place call preserves its input without a copy; d_q_out may alias d_q_in.
+    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex. A field
+    // at an odd offset into a larger array (the second propagator of a stress pair of an
+    // odd basis size) is not: it is copied to d_q_out, or to d_step2_ (free until the
+    // kernel below writes it) when d_q_out is not aligned either, and transformed there
+    double* d_src = d_q_in;
+    if (!cufft_aligned(d_q_in))
     {
-        CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_q_in, sizeof(double) * M_physical_, cudaMemcpyDeviceToDevice, stream_));
+        d_src = (d_q_out != d_q_in && cufft_aligned(d_q_out)) ? d_q_out : reinterpret_cast<double*>(d_step2_.get());
+        CUDA_CHECK(cudaMemcpyAsync(d_src, d_q_in, bytes, cudaMemcpyDeviceToDevice, stream_));
     }
-
-    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_work, d_step1_));
+    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_src, d_step1_));
 
     const int threads = 256;
     const int blocks = grid_blocks(M_complex_, threads);
@@ -329,7 +343,17 @@ void CudaCrysFFTRecursive3m::diffusion(
         nx_physical_[0], nx_physical_[1], nx_physical_[2], nx_physical_[2] / 2 + 1);
     CUDA_CHECK_LAUNCH();
 
-    CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_work));
+    // An output that is not aligned takes the result through d_step1_, free after the kernel
+    if (cufft_aligned(d_q_out))
+    {
+        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_q_out));
+    }
+    else
+    {
+        double* d_result = reinterpret_cast<double*>(d_step1_.get());
+        CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_result));
+        CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_result, bytes, cudaMemcpyDeviceToDevice, stream_));
+    }
 }
 
 void CudaCrysFFTRecursive3m::apply_multiplier(
@@ -338,7 +362,7 @@ void CudaCrysFFTRecursive3m::apply_multiplier(
     diffusion(d_q_in, d_q_out, table, stream);
 }
 
-void CudaCrysFFTRecursive3m::set_stream(cudaStream_t stream)
+void CudaCrysFFTRecursive3m::use_stream(cudaStream_t stream)
 {
     if (stream_ == stream)
         return;

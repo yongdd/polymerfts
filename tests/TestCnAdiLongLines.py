@@ -11,7 +11,9 @@ deviation 5:
 - 1D: 4000 and 4001 points with reflecting walls and 6000 points with absorbing
   walls (shared memory, two and one lines per block), 12500 points with reflecting
   walls (global memory);
-- 2D: a 4001-point reflecting axis (global memory) next to a periodic one;
+- 1D: 13000 points with periodic boundaries (the cyclic line, global memory);
+- 2D: a 4001-point reflecting axis (global memory) next to a periodic one, and
+  a contiguous 12500-point absorbing axis (global memory) behind a periodic one;
 - 3D: a 4500-point absorbing z axis behind two periodic axes.
 check_total_partition holds on CUDA as well, and the mean total concentration is one within 1e-12.
 """
@@ -28,7 +30,9 @@ CASES = [
     ([4001], [40.0], ["reflecting"] * 2),
     ([6000], [60.0], ["absorbing"] * 2),
     ([12500], [125.0], ["reflecting"] * 2),
+    ([13000], [130.0], ["periodic"] * 2),
     ([4001, 3], [40.0, 1.0], ["reflecting", "reflecting", "periodic", "periodic"]),
+    ([3, 12500], [1.0, 125.0], ["periodic", "periodic", "absorbing", "absorbing"]),
     ([3, 2, 4500], [1.0, 1.0, 45.0], ["periodic", "periodic", "periodic", "periodic", "absorbing", "absorbing"]),
 ]
 

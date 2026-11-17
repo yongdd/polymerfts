@@ -51,7 +51,9 @@
  * @brief GPU implementation of pseudo-spectral utilities.
  *
  * Stores pseudo-spectral operators in GPU device memory for efficient
- * access during propagator computation.
+ * access during propagator computation. The device arrays are allocated
+ * and filled by the first update() (the host arrays by the constructor and
+ * finalize_ds_values()); the getters return them from then on.
  *
  * @tparam T Numeric type (double or std::complex<double>)
  *
@@ -111,8 +113,7 @@ public:
     /**
      * @brief Construct GPU pseudo-spectral utility.
      *
-     * Computes and uploads Fourier basis to GPU. Boltzmann factors are
-     * allocated and computed when finalize_ds_values() is called.
+     * Computes the host arrays; the device arrays follow at the first update().
      *
      * @param bond_lengths Relative statistical segment lengths by monomer type (not squared)
      * @param bc           Boundary conditions
@@ -124,7 +125,8 @@ public:
      *                     for k⊗k computation. Default is Cartesian basis.
      *
      * @note After construction, call add_ds_value() for each unique ds value,
-     *       then finalize_ds_values() to allocate GPU memory and compute Boltzmann factors.
+     *       then finalize_ds_values() to compute the Boltzmann factors, and update()
+     *       before the device arrays are used.
      */
     CudaPseudo(
         std::map<std::string, double> bond_lengths,
@@ -173,10 +175,11 @@ public:
     const double* get_fourier_basis_yz() override { return d_fourier_basis_yz;};
 
     /**
-     * @brief Update operators for new box dimensions.
+     * @brief Update operators for new box dimensions and upload them.
      *
-     * Called when box size changes during stress relaxation.
-     * Recomputes Boltzmann factors for all registered ds values.
+     * Recomputes the Boltzmann factors of all registered ds values and the
+     * Fourier basis, and copies them to the device, allocating the device
+     * arrays at the first call.
      *
      * @param bc           Boundary conditions
      * @param bond_lengths Segment lengths
@@ -190,13 +193,5 @@ public:
         std::vector<double> dx,
         std::array<double, 6> recip_metric = {1.0, 0.0, 0.0, 1.0, 0.0, 1.0},
         std::array<double, 9> recip_vec = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}) override;
-
-    /**
-     * @brief Finalize ds values and allocate GPU memory.
-     *
-     * Overrides base class to allocate GPU memory for new ds_index values
-     * added via add_ds_value(), then uploads all Boltzmann factors to GPU.
-     */
-    void finalize_ds_values() override;
 };
 #endif

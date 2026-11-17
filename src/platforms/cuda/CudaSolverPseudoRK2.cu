@@ -47,25 +47,7 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
                               /*complex_requires_periodic=*/true)
 {
     try{
-        const int M = cb->get_total_grid();
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
-        if (!is_periodic_)
-        {
-            // Real coefficient buffers for the DCT/DST path
-            for(int i=0; i<n_streams; i++)
-            {
-                d_rk_in_1[i].allocate(M_COMPLEX);
-                d_rk_in_2[i].allocate(M_COMPLEX);
-            }
-        }
-
-        // Workspaces: advance_propagator() uses the first half of each, the
-        // stress computation both halves as the contiguous propagator pair
-        for(int i=0; i<n_streams; i++)
-        {
-            d_q_work[i].allocate(2*M);
-            d_qk_work[i].allocate(2*M_COMPLEX);
-        }
+        // The work buffers follow in allocate_work(), for the path the space group chooses
         this->update_laplacian_operator();
     }
     catch(std::exception& exc)
@@ -76,6 +58,29 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
 
 template <typename T>
 CudaSolverPseudoRK2<T>::~CudaSolverPseudoRK2() = default;
+
+template <typename T>
+void CudaSolverPseudoRK2<T>::allocate_work(int, bool full_grid)
+{
+    // The CrysFFT steps need no buffer of their own; the full-grid path uses these
+    if (!full_grid)
+        return;
+    const int M = cb->get_total_grid();
+    const int M_COMPLEX = pseudo->get_total_complex_grid();
+    for(int i=0; i<n_streams; i++)
+    {
+        // Workspaces: advance_propagator() uses the first half of each, the
+        // stress computation both halves as the contiguous propagator pair
+        provide(d_q_work[i], 2*static_cast<size_t>(M));
+        provide(d_qk_work[i], 2*static_cast<size_t>(M_COMPLEX));
+        if (!is_periodic_)
+        {
+            // Real coefficient buffers for the DCT/DST path
+            provide(d_rk_in_1[i], M_COMPLEX);
+            provide(d_rk_in_2[i], M_COMPLEX);
+        }
+    }
+}
 
 template <typename T>
 void CudaSolverPseudoRK2<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
@@ -100,8 +105,6 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         const int M_COMPLEX = pseudo->get_total_complex_grid();
 
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
-
         const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
         if (use_crysfft)
         {
@@ -119,6 +122,9 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
                 return;
             }
         }
+
+        // Bond factors of the full grid (the Pseudo tables exist on this path only)
+        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
 
         // Full-grid input/output (expanded from / reduced to the basis with a space group)
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);

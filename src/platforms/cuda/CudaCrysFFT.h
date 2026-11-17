@@ -53,12 +53,10 @@ class CudaCrysFFTBase
 public:
     virtual ~CudaCrysFFTBase() = default;
 
-    /// An object of the same grid for another stream: plans and work buffers of
-    /// its own, the read-only grid data (twiddle factors) shared.
+    /// An object of the same grid for another stream, with plans and work buffers of
+    /// its own. The recursive 3m and ObliqueZ clones share the read-only twiddle
+    /// factors of the original; a Pmmm clone is a new object (it has no such data).
     virtual std::unique_ptr<CudaCrysFFTBase> clone() const = 0;
-
-    /// Run the transforms on `stream` (diffusion() and apply_multiplier() switch to theirs).
-    virtual void set_stream(cudaStream_t stream) = 0;
 
     /// Write the Boltzmann factors exp(-k² coeff) of `cell` into `table`
     /// (allocated when its size differs). The upload runs on `stream` and is
@@ -67,7 +65,9 @@ public:
                                  double coeff, cudaStream_t stream) const = 0;
 
     /// d_q_out = exp(coeff ∇²) d_q_in on the physical grid, with the table of
-    /// build_boltzmann(coeff). d_q_out may alias d_q_in; otherwise d_q_in is kept.
+    /// build_boltzmann(coeff), on `stream`. d_q_out may alias d_q_in; otherwise
+    /// d_q_in is kept. Either may lie at any offset into a larger array: the engines
+    /// run cuFFT on their own buffers or stage an array not aligned for it.
     virtual void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                            cudaStream_t stream) = 0;
 
@@ -119,7 +119,10 @@ private:
 
     // Normalization factor
     double norm_factor_;
-    cudaStream_t stream_{0};      ///< CUDA stream for execution
+    cudaStream_t stream_{0};      ///< Stream the transforms run on (the last call's)
+
+    /// Run the DCTs and kernels on `stream` (diffusion() and apply_multiplier() call it).
+    void use_stream(cudaStream_t stream);
 
 public:
     /**
@@ -132,7 +135,6 @@ public:
     ~CudaCrysFFT();
 
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
-    void set_stream(cudaStream_t stream) override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
 

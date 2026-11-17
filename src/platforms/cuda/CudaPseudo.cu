@@ -18,8 +18,10 @@
  *
  * **Update Mechanism:**
  *
- * When box dimensions change, update() recalculates Fourier space
- * operators and copies them to device memory.
+ * update() recalculates the Fourier space operators for the current box and
+ * copies them to device memory, allocating the device arrays at its first
+ * call: a solver whose propagators and stress take the CrysFFT path never
+ * calls it and holds none of these full-grid arrays.
  *
  * **Template Instantiations:**
  *
@@ -48,38 +50,21 @@ CudaPseudo<T>::CudaPseudo(
     std::array<double, 9> recip_vec)
         : Pseudo<T>(bond_lengths, bc, nx, dx, recip_metric, recip_vec)
 {
-    // The device arrays are owning buffers: a failed allocation below releases
-    // the ones made so far, and the Pseudo<T> base frees the host arrays.
-    const int M_COMPLEX = Pseudo<T>::get_total_complex_grid();
-
-    // Boltzmann factors are allocated in finalize_ds_values()
-    // after add_ds_value() is called for each unique ds value
-
-    // Stress calculation: compute_stress(). Diagonal terms, then the
-    // cross-terms for non-orthogonal systems
-    d_fourier_basis_x.allocate(M_COMPLEX);
-    d_fourier_basis_y.allocate(M_COMPLEX);
-    d_fourier_basis_z.allocate(M_COMPLEX);
-    d_fourier_basis_xy.allocate(M_COMPLEX);
-    d_fourier_basis_xz.allocate(M_COMPLEX);
-    d_fourier_basis_yz.allocate(M_COMPLEX);
-
-    if constexpr (std::is_same<T, std::complex<double>>::value)
-    {
-        // Mirror the host convention: the mapping exists only for
-        // periodic BCs; leave the device pointer nullptr otherwise so
-        // get_negative_frequency_mapping() returns nullptr on both
-        // sides for non-periodic boxes.
-        if (Pseudo<T>::get_negative_frequency_mapping() != nullptr)
-            d_negative_k_idx.allocate(M_COMPLEX);
-    }
-
-    // Upload Fourier basis to GPU
-    upload_fourier_basis();
+    // The device arrays are owning buffers, allocated by the first update()
 }
 //----------------- Destructor -----------------------------
 template <typename T>
 CudaPseudo<T>::~CudaPseudo() = default;
+
+namespace {
+/// Copy a host table of n values into `slot`, allocated first when it does not hold n values
+void upload_table(CudaDeviceBuffer<double>& slot, const double* h_values, int n)
+{
+    if (slot.size() != static_cast<size_t>(n))
+        slot.allocate(n);
+    CUDA_CHECK(cudaMemcpy(slot, h_values, sizeof(double) * n, cudaMemcpyHostToDevice));
+}
+}  // namespace
 
 template <typename T>
 void CudaPseudo<T>::upload_boltz_bond()
@@ -88,26 +73,12 @@ void CudaPseudo<T>::upload_boltz_bond()
 
     // Upload all ds_index values: boltz_bond[ds_index][monomer_type]
     for (const auto& ds_entry : this->boltz_bond)
-    {
-        int ds_index = ds_entry.first;
         for (const auto& item : ds_entry.second)
-        {
-            std::string monomer_type = item.first;
-            CUDA_CHECK(cudaMemcpy(d_boltz_bond.at(ds_index).at(monomer_type), item.second.data(),
-                                       sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-        }
-    }
+            upload_table(d_boltz_bond[ds_entry.first][item.first], item.second.data(), M_COMPLEX);
 
     for (const auto& ds_entry : this->boltz_bond_half)
-    {
-        int ds_index = ds_entry.first;
         for (const auto& item : ds_entry.second)
-        {
-            std::string monomer_type = item.first;
-            CUDA_CHECK(cudaMemcpy(d_boltz_bond_half.at(ds_index).at(monomer_type), item.second.data(),
-                                       sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-        }
-    }
+            upload_table(d_boltz_bond_half[ds_entry.first][item.first], item.second.data(), M_COMPLEX);
 }
 
 //----------------- Upload Fourier basis to GPU -----------------------------
@@ -117,30 +88,29 @@ void CudaPseudo<T>::upload_fourier_basis()
     const int M_COMPLEX = Pseudo<T>::get_total_complex_grid();
 
     // Diagonal terms
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_x, this->fourier_basis_x.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_y, this->fourier_basis_y.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_z, this->fourier_basis_z.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
+    upload_table(d_fourier_basis_x, this->fourier_basis_x.data(), M_COMPLEX);
+    upload_table(d_fourier_basis_y, this->fourier_basis_y.data(), M_COMPLEX);
+    upload_table(d_fourier_basis_z, this->fourier_basis_z.data(), M_COMPLEX);
     // Cross-terms for non-orthogonal systems
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_xy, this->fourier_basis_xy.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_xz, this->fourier_basis_xz.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_fourier_basis_yz, this->fourier_basis_yz.data(),
-                               sizeof(double) * M_COMPLEX, cudaMemcpyHostToDevice));
+    upload_table(d_fourier_basis_xy, this->fourier_basis_xy.data(), M_COMPLEX);
+    upload_table(d_fourier_basis_xz, this->fourier_basis_xz.data(), M_COMPLEX);
+    upload_table(d_fourier_basis_yz, this->fourier_basis_yz.data(), M_COMPLEX);
 
     // negative_k_idx for complex fields with periodic BC
     if constexpr (std::is_same<T, std::complex<double>>::value)
     {
         // The negative-frequency mapping exists only for periodic BCs
         // (conjugate symmetry of the full complex FFT); for non-periodic
-        // boxes the host pointer is nullptr and there is nothing to upload.
+        // boxes the host pointer is nullptr, nothing is uploaded and
+        // get_negative_frequency_mapping() returns nullptr on both sides.
         const int* negative_k_idx = Pseudo<T>::get_negative_frequency_mapping();
         if (negative_k_idx != nullptr)
+        {
+            if (d_negative_k_idx.size() != static_cast<size_t>(M_COMPLEX))
+                d_negative_k_idx.allocate(M_COMPLEX);
             CUDA_CHECK(cudaMemcpy(d_negative_k_idx, negative_k_idx,
                                        sizeof(int) * M_COMPLEX, cudaMemcpyHostToDevice));
+        }
     }
 }
 
@@ -158,45 +128,6 @@ void CudaPseudo<T>::update(
     // Upload updated data to GPU
     upload_boltz_bond();
     upload_fourier_basis();
-}
-
-//----------------- finalize_ds_values -----------------------------
-template <typename T>
-void CudaPseudo<T>::finalize_ds_values()
-{
-    // Call base class to compute host-side Boltzmann factors for all ds values
-    Pseudo<T>::finalize_ds_values();
-
-    const int M_COMPLEX = Pseudo<T>::get_total_complex_grid();
-
-    // Allocate GPU memory for any new ds_index values not already allocated
-    for (const auto& ds_entry : this->boltz_bond)
-    {
-        int ds_index = ds_entry.first;
-        for (const auto& item : ds_entry.second)
-        {
-            std::string monomer_type = item.first;
-            // Allocate only if no GPU memory exists for this ds_index/monomer_type
-            CudaDeviceBuffer<double>& slot = d_boltz_bond[ds_index][monomer_type];
-            if (slot.empty())
-                slot.allocate(M_COMPLEX);
-        }
-    }
-    for (const auto& ds_entry : this->boltz_bond_half)
-    {
-        int ds_index = ds_entry.first;
-        for (const auto& item : ds_entry.second)
-        {
-            std::string monomer_type = item.first;
-            // Allocate only if no GPU memory exists for this ds_index/monomer_type
-            CudaDeviceBuffer<double>& slot = d_boltz_bond_half[ds_index][monomer_type];
-            if (slot.empty())
-                slot.allocate(M_COMPLEX);
-        }
-    }
-
-    // Upload all Boltzmann factors to GPU
-    upload_boltz_bond();
 }
 
 // Explicit template instantiation

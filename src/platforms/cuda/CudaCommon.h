@@ -384,29 +384,6 @@ inline void release_cuda_event(cudaEvent_t event) noexcept
     ignore_release_error(cudaEventDestroy(event));
 }
 
-/**
- * @brief Owning CUDA event, destroyed with the object.
- *
- * The profiling paths time their steps with these, so an exception between
- * the create and the elapsed-time read does not leak the events.
- *
- * @code
- * std::vector<CudaEvent> ev(profile ? 2 : 0);   // created only when profiling
- * if (profile) CUDA_CHECK(cudaEventRecord(ev[0], stream));
- * @endcode
- */
-class CudaEvent
-{
-public:
-    CudaEvent() { CUDA_CHECK(count_cuda_event(cudaEventCreate(&event_))); }
-    ~CudaEvent() { release_cuda_event(event_); }
-    CudaEvent(const CudaEvent&) = delete;
-    CudaEvent& operator=(const CudaEvent&) = delete;
-    operator cudaEvent_t() const noexcept { return event_; }   ///< lends the handle
-private:
-    cudaEvent_t event_ = nullptr;
-};
-
 __global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M);
 
 __global__ void ker_linear_scaling(double* dst, const double* src, double a, double b, const int M);
@@ -724,6 +701,15 @@ private:
 
 template <typename T> using CudaDeviceBuffer = CudaBuffer<T, CudaDeviceMemory>;
 template <typename T> using CudaPinnedBuffer = CudaBuffer<T, CudaPinnedMemory>;
+
+/// Allocate `buffer` for `count` elements unless it holds exactly that many already
+/// (work buffers allocated on first use, before a loop)
+template <typename T, typename M>
+void provide(CudaBuffer<T, M>& buffer, size_t count, std::source_location where = std::source_location::current())
+{
+    if (buffer.size() != count)
+        buffer.allocate(count, where);
+}
 
 // The implicit pointer conversion would let a buffer be freed by hand, which
 // the buffer then frees again; these overloads make that a compile error.

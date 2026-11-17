@@ -61,18 +61,12 @@ A "point" is a grid index and a "half-point" lies halfway between two indices (a
 
 ### 2.3 FCT Algorithm (CUDA)
 
-The CUDA implementation uses the Fast Cosine Transform (FCT) method [1], which uses N-point FFT instead of the traditional 2N-point odd extension:
+The CUDA implementation (`CudaRealTransform`) runs the DCT-2 and DCT-3, the types of the reflecting walls and the Pmmm CrysFFT, with the Fast Cosine Transform (FCT) method [1], which uses N-point FFT instead of the traditional 2N-point odd extension:
 
 | DCT Type | FFT Size | FFT Type | Speedup |
 |----------|----------|----------|---------|
-| DCT-1 | N | Z2D | ~2x |
 | DCT-2 | N | Z2D | ~2x |
 | DCT-3 | N | D2Z | ~2x |
-| DCT-4 | 2N | Z2Z | Phase rotation |
-
-In 2D and 3D, DCT-1 and DST-1 transform the whole mirror-extended array
-($`2N_x \times 2N_y \times 2N_z`$ points, $`2(N_x+1) \times 2(N_y+1) \times 2(N_z+1)`$ for DST-1) with one FFT,
-so the N-point saving of the type-1 rows applies to 1D transforms only.
 
 ### 2.4 DCT and DST of a Whole Grid (CPU)
 
@@ -139,12 +133,12 @@ On CUDA, `CudaMakhoulTransform` runs the same scheme with one cuFFT of the grid.
 
 ### 3.3 FST Algorithm (CUDA)
 
+`CudaRealTransform` runs the DST-2 and DST-3 of the absorbing walls:
+
 | DST Type | FFT Size | FFT Type | Traditional Size | Speedup |
 |----------|----------|----------|-----------------|---------|
-| DST-1 | N+1 | Z2D | 2(N+1) | ~2x |
 | DST-2 | N | Z2D | 2N | ~2x |
 | DST-3 | N | D2Z | 2N | ~2x |
-| DST-4 | 2N | Z2Z | 2N | Phase rotation |
 
 ---
 
@@ -154,37 +148,28 @@ On CUDA, `CudaMakhoulTransform` runs the same scheme with one cuFFT of the grid.
 
 | Dimension | Supported Types | Mixed Types |
 |-----------|-----------------|-------------|
-| 1D | DCT/DST-1,2,3,4 | N/A |
-| 2D | DCT/DST-1,2,3,4 | DCT/DST-2,3,4 |
-| 3D | DCT/DST-1,2,3,4 | DCT/DST-2,3,4 |
+| 1D | DCT/DST-2,3 | N/A |
+| 2D | DCT/DST-2,3 | DCT/DST-2,3 |
+| 3D | DCT/DST-2,3 | DCT/DST-2,3 |
 
-**Note**: `CudaRealTransform` cannot mix type 1 with other types, because its type-1 transform of a 2D or 3D grid is one FFT of the whole extended grid. `MklRealTransform` transforms each axis on its own and accepts any mix.
+**Note**: `CudaRealTransform` provides the types 2 and 3, which the CUDA wall transforms and the Pmmm CrysFFT use. `MklRealTransform` provides the types 1 to 4, transforms each axis on its own and accepts any mix.
 
 ### 3D Transform Algorithm (CudaRealTransform)
 
 On the CPU, the wall transforms (`MakhoulFFT`) and the Pmmm CrysFFT run DCT/DST-2/3 as one real FFT of the whole grid instead (Section 2.4). `MklRealTransform` runs every type, type 1 included, as 1D transforms along z, y and x, one line at a time (Section 8.2).
 
-**Types 2,3,4 (Separable):**
+**Types 2 and 3 (separable):**
 - Batched 1D transforms along Z dimension (innermost)
 - Batched 1D transforms along Y dimension
 - Batched 1D transforms along X dimension (outermost)
-
-**Type-1 (Non-separable):**
-- Mirror/odd extension in all three dimensions
-- Single 3D D2Z FFT
-- Extract coefficients from symmetric/antisymmetric positions
 
 ### Memory Layout
 
 | Transform Type | Buffer Size per Element |
 |----------------|------------------------|
-| DCT-1 | N+1 |
 | DCT-2/3 | N |
-| DCT-4 | 2N (complex) |
-| DST-1 | N+3 (FCT/FST padded) |
 | DST-2 | N/2+1 complex |
 | DST-3 | N+2 (padded) |
-| DST-4 | 2N (complex) |
 
 ---
 
@@ -376,7 +361,9 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
   diffusion step is three kernels and two cuFFT calls
 
 `CudaSolverPseudoBase` keeps one CrysFFT object per stream, with its own cuFFT plans
-and work buffers (`clone()` shares the read-only twiddle factors). The k-space tables
+and work buffers: `clone()` makes another object of the same grid, which shares the
+read-only twiddle factors of the original for the recursive 3m and ObliqueZ engines
+(the Pmmm engine has none and builds a new object). The k-space tables
 belong to the solver, one per key for all streams: the Boltzmann factors of each step
 coefficient (`crysfft_boltz_`), built when the CrysFFT path is set up, and the stress
 multipliers of each axis group and bond coefficient (`crysfft_multipliers_`), built by
@@ -385,6 +372,19 @@ multipliers of each axis group and bond coefficient (`crysfft_multipliers_`), bu
 The engines take the table as an argument (`diffusion(in, out, table, stream)`,
 `apply_multiplier(in, out, table, stream)`), so the propagator and stress loops only look
 tables up and never build or allocate one; a missing key is an error.
+
+With the Pmmm or recursive 3m engine and the stress fast path, nothing of the full grid
+is used, and the solver holds none of it: the cuFFT plans of the full grid, the
+per-stream full-grid work buffers and the `CudaPseudo` tables (Boltzmann bond factors
+and Fourier basis) are created only for a path whose propagator steps or segment
+stress run on the full grid. The backend calls `provide_work()` once the space group
+has chosen the path; `update_dw()` and `prepare_stress()` call it again before their
+loops, which allocates what a later change of the path needs (the off-diagonal stress
+flag) and brings the `CudaPseudo` tables to the current cell, so that
+`update_laplacian_operator()` no longer recomputes them. The propagator steps of the
+CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
+values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
+full-grid stress and hold these as well.
 
 **Backward Compatibility:**
 
@@ -401,8 +401,8 @@ typedef CudaRealTransform3D CudaDCT3D;
 ```cpp
 // Transform type enumeration
 enum CudaTransformType {
-    CUDA_DCT_1 = 0, CUDA_DCT_2 = 1, CUDA_DCT_3 = 2, CUDA_DCT_4 = 3,
-    CUDA_DST_1 = 4, CUDA_DST_2 = 5, CUDA_DST_3 = 6, CUDA_DST_4 = 7
+    CUDA_DCT_2, CUDA_DCT_3,
+    CUDA_DST_2, CUDA_DST_3
 };
 
 // 3D transform
@@ -440,7 +440,7 @@ transform.execute(d_data);
 
 ### 8.1 DCT/DST Numerical Accuracy
 
-Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (all types) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `MakhoulFFT` over either library agrees with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`). With periodic axes among the walls (Section 2.5), `MakhoulTransform` over either library agrees with the DFT and the series to 3×10⁻¹⁵ on 154 grids of two and three axes with every mix of periodic, cosine and sine axes, real fields taking the real part of the inverse of coefficients without symmetry. `CudaMakhoulTransform` agrees with them to 2×10⁻¹⁴ on these grids and 40 larger ones, and to 3×10⁻¹⁵ at the corners and 16 random points of two grids of more than two million points, where every grid-stride loop of its kernels takes more than one stride; it agrees with `MakhoulTransform` to 8×10⁻¹⁶ on all of them (`TestCudaMakhoulTransform`).
+Relative error against FFTW (maximum absolute difference divided by the largest FFTW value; 3D transforms of uniform random input on 32³ and 64³ grids): the CUDA transforms (types 2 and 3) and the MKL DCT/DST types 1-3 agree to machine precision (< 7×10⁻¹⁶); the MKL DCT-4 and DST-4 (TT interface) agree to 4×10⁻¹⁴ on 32³ and 7×10⁻¹³ on 64³. `MakhoulFFT` over either library agrees with the O(N²) definitions to 6×10⁻¹⁵, relative to the largest value, on grids of one to three axes with even, odd and unit lengths, every mix of cosine and sine axes, and real and complex fields (`TestCpuMakhoulTransform`). With periodic axes among the walls (Section 2.5), `MakhoulTransform` over either library agrees with the DFT and the series to 3×10⁻¹⁵ on 154 grids of two and three axes with every mix of periodic, cosine and sine axes, real fields taking the real part of the inverse of coefficients without symmetry. `CudaMakhoulTransform` agrees with them to 2×10⁻¹⁴ on these grids and 40 larger ones, and to 3×10⁻¹⁵ at the corners and 16 random points of two grids of more than two million points, where every grid-stride loop of its kernels takes more than one stride; it agrees with `MakhoulTransform` to 8×10⁻¹⁶ on all of them (`TestCudaMakhoulTransform`).
 
 ### 8.2 FFTW vs MKL Benchmark (CPU)
 

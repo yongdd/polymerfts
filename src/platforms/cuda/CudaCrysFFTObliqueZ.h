@@ -56,6 +56,8 @@ private:
     void free_plans();
     /// Free everything acquired so far (idempotent; also used when the constructor throws).
     void release();
+    /// Run the cuFFT plans and kernels on `stream` (diffusion() calls it every time).
+    void use_stream(cudaStream_t stream);
 
 public:
     explicit CudaCrysFFTObliqueZ(std::array<int, 3> nx_logical);
@@ -63,7 +65,6 @@ public:
     ~CudaCrysFFTObliqueZ() override;
 
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
-    void set_stream(cudaStream_t stream) override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
     void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,

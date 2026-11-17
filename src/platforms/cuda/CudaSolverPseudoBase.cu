@@ -156,10 +156,6 @@ void launch_stress_dyads(TD* out, TD* partial, const TD* integrand, const Stress
 
 }  // namespace
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 template <typename T>
 CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     ComputationBox<T>* cb,
@@ -249,11 +245,9 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
                 cb->get_recip_metric(),
                 cb->get_recip_vec());
         }
-        const int M = cb->get_total_grid();
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
-
-        // Register every distinct contour step and allocate the Boltzmann
-        // factor buffers exp(-w ds) per (ds, monomer type).
+        // Register every distinct contour step and the Boltzmann factor
+        // buffers exp(-w ds) per (ds, monomer type); provide_work() allocates
+        // them for the field basis of the mode
         molecules->finalize_contour_length_mapping();
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         const int n_unique_ds = mapping.get_n_unique_ds();
@@ -264,33 +258,18 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
             for(const auto& item: molecules->get_bond_lengths())
             {
                 const std::string& monomer_type = item.first;
-                this->d_exp_dw[ds_idx][monomer_type].allocate(M);
+                this->d_exp_dw[ds_idx][monomer_type];
                 if (with_exp_dw_half)
-                    this->d_exp_dw_half[ds_idx][monomer_type].allocate(M);
+                    this->d_exp_dw_half[ds_idx][monomer_type];
             }
         }
         pseudo->finalize_ds_values();
 
-        // Stress reduction workspace
+        // The full-grid transforms, work buffers and Pseudo tables follow in
+        // provide_work(), once the space group has chosen the path, and the
+        // workspace of the CrysFFT stress fast path in prepare_stress()
         for(int i=0; i<n_streams; i++)
-        {
-            d_stress_sum[i].allocate(M_COMPLEX);
-            d_stress_sum_out[i].allocate(1);
-            d_q_multi[i].allocate(M_COMPLEX);
             d_stress_partial_[i].allocate(6*STRESS_MAX_BLOCKS);
-            if constexpr (std::is_same<T, std::complex<double>>::value)
-                d_qk_conj_[i].allocate(M_COMPLEX);
-        }
-        for(int i=0; i<n_streams; i++)
-        {
-            // the first call only queries the size of the CUB scratch
-            temp_storage_bytes[i] = 0;
-            CUDA_CHECK(cuda_reduce_sum(nullptr, temp_storage_bytes[i], d_stress_sum[i].get(), d_stress_sum_out[i].get(), M_COMPLEX, streams[i][0]));
-            d_temp_storage[i].allocate(temp_storage_bytes[i]);
-        }
-
-        // Spectral transforms: cuFFT plans (periodic) or DCT/DST objects (non-periodic)
-        init_fft();
     }
     catch(std::exception& exc)
     {
@@ -351,7 +330,8 @@ void CudaSolverPseudoBase<T>::release_base()
 template <typename T>
 void CudaSolverPseudoBase<T>::init_fft()
 {
-    // fft_ and the plan handles/flags were reset by the constructor
+    // Creates what is missing (the created flags and fft_ tell), so a call
+    // that failed part way can be repeated
     if (is_periodic_)
     {
         // One plan per stream and batch size; cufftPlanMany reads dim_ entries of total_grid
@@ -364,12 +344,18 @@ void CudaSolverPseudoBase<T>::init_fft()
         {
             for (int b = 0; b < max_fft_batch_; b++)
             {
-                CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_for_[i][b], NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::forward,  b + 1)));
-                plan_for_created_[i][b] = true;
-                CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_bak_[i][b], NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::backward, b + 1)));
-                plan_bak_created_[i][b] = true;
-                CUFFT_CHECK(cufftSetStream(plan_for_[i][b], streams[i][0]));
-                CUFFT_CHECK(cufftSetStream(plan_bak_[i][b], streams[i][0]));
+                if (!plan_for_created_[i][b])
+                {
+                    CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_for_[i][b], NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::forward,  b + 1)));
+                    plan_for_created_[i][b] = true;
+                    CUFFT_CHECK(cufftSetStream(plan_for_[i][b], streams[i][0]));
+                }
+                if (!plan_bak_created_[i][b])
+                {
+                    CUFFT_CHECK(count_cufft_plan(cufftPlanMany(&plan_bak_[i][b], NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::backward, b + 1)));
+                    plan_bak_created_[i][b] = true;
+                    CUFFT_CHECK(cufftSetStream(plan_bak_[i][b], streams[i][0]));
+                }
             }
         }
     }
@@ -380,6 +366,8 @@ void CudaSolverPseudoBase<T>::init_fft()
         auto bc_vec = cb->get_boundary_conditions();
         for (int i = 0; i < n_streams; i++)
         {
+            if (fft_[i])
+                continue;
             if (dim_ == 3)
             {
                 std::array<int, 3> nx_arr = {cb->get_nx(0), cb->get_nx(1), cb->get_nx(2)};
@@ -576,22 +564,12 @@ void CudaSolverPseudoBase<T>::set_space_group(
 
     cleanup_crysfft();
 
-    // Full-grid work buffers around the FFT (freed again when the space group is removed)
-    const int M = cb->get_total_grid();
+    // The full-grid work buffers around the FFT of a reduced-basis run are
+    // provided for the new path by provide_work()
     for(int i=0; i<n_streams; i++)
     {
-        if (sg != nullptr)
-        {
-            if (d_q_full_in_[i].empty())
-                d_q_full_in_[i].allocate(static_cast<size_t>(M) * q_full_in_factor_);
-            if (d_q_full_out_[i].empty())
-                d_q_full_out_[i].allocate(M);
-        }
-        else
-        {
-            d_q_full_in_[i].release();
-            d_q_full_out_[i].release();
-        }
+        d_q_full_in_[i].release();
+        d_q_full_out_[i].release();
     }
 
     // [type-specific algorithm] The CrysFFT fast path folds real fields on the
@@ -661,8 +639,6 @@ void CudaSolverPseudoBase<T>::setup_crysfft(
             crysfft_[i] = std::make_unique<CudaCrysFFTObliqueZ>(nx_logical);
         else
             crysfft_[i] = std::make_unique<CudaCrysFFT>(nx_logical);
-        // Its transforms run on the stream of the propagators
-        crysfft_[i]->set_stream(streams[i][0]);
 
         d_crysfft_in_[i].allocate(map.M_phys);
         d_crysfft_out_[i].allocate(map.M_phys);
@@ -712,21 +688,9 @@ template <typename T>
 void CudaSolverPseudoBase<T>::update_laplacian_operator()
 {
     try{
-        // Update Pseudo Fourier basis arrays and boltz_bond for new box dimensions
-        // Note: local_ds values are registered once in constructor via add_ds_value()
-        // pseudo->update() recomputes boltz_bond for all registered ds values
-        // Squeeze face BCs to one per dimension (see constructor note).
-        auto bc_vec_upd = this->cb->get_boundary_conditions();
-        std::vector<BoundaryCondition> bc_dim_upd;
-        for (int d = 0; d < this->cb->get_dim(); ++d)
-            bc_dim_upd.push_back(bc_vec_upd[2 * d]);
-        pseudo->update(
-            bc_dim_upd,
-            this->molecules->get_bond_lengths(),
-            this->cb->get_dx(),
-            this->cb->get_recip_metric(),
-            this->cb->get_recip_vec());
-
+        // The full-grid Pseudo tables follow when the full-grid path next needs
+        // them (provide_work()); the CrysFFT tables are rebuilt now
+        pseudo_current_ = false;
         if (use_crysfft_)
             update_crysfft_tables();
     }
@@ -734,6 +698,70 @@ void CudaSolverPseudoBase<T>::update_laplacian_operator()
     {
         throw_with_line_number(exc.what());
     }
+}
+
+template <typename T>
+void CudaSolverPseudoBase<T>::update_pseudo()
+{
+    // Pseudo Fourier basis arrays and boltz_bond of the current box: local_ds
+    // values are registered once in the constructor via add_ds_value(), and
+    // pseudo->update() recomputes boltz_bond for all of them. Squeeze face BCs
+    // to one per dimension (see constructor note).
+    auto bc_vec_upd = this->cb->get_boundary_conditions();
+    std::vector<BoundaryCondition> bc_dim_upd;
+    for (int d = 0; d < this->cb->get_dim(); ++d)
+        bc_dim_upd.push_back(bc_vec_upd[2 * d]);
+    pseudo->update(
+        bc_dim_upd,
+        this->molecules->get_bond_lengths(),
+        this->cb->get_dx(),
+        this->cb->get_recip_metric(),
+        this->cb->get_recip_vec());
+    pseudo_current_ = true;
+}
+
+template <typename T>
+bool CudaSolverPseudoBase<T>::full_grid_path() const
+{
+    // The stress fast path implies the CrysFFT propagator steps
+    return !crysfft_stress_fast_path();
+}
+
+template <typename T>
+void CudaSolverPseudoBase<T>::provide_work()
+{
+    const int M = cb->get_total_grid();
+    // Values of a field in the propagator steps: the reduced basis on the CrysFFT path
+    const int n_field = (use_crysfft_ && space_group_ != nullptr) ? n_basis_ : M;
+
+    // exp(-w ds) per contour step and monomer type (update_dw_impl() stages a
+    // reduced-basis field expanded to the full grid in one of them)
+    for (auto* tables : {&this->d_exp_dw, &this->d_exp_dw_half})
+        for (auto& [ds_idx, by_type] : *tables)
+            for (auto& [monomer_type, table] : by_type)
+                provide(table, n_field);
+
+    const bool full_grid = full_grid_path();
+    if (full_grid)
+    {
+        // Transforms, stress workspace and reduced-basis expansion buffers of the full grid
+        init_fft();
+        const int M_COMPLEX = pseudo->get_total_complex_grid();
+        for (int i = 0; i < n_streams; i++)
+        {
+            provide(d_q_multi[i], M_COMPLEX);
+            if constexpr (std::is_same<T, std::complex<double>>::value)
+                provide(d_qk_conj_[i], M_COMPLEX);
+            if (space_group_ != nullptr)
+            {
+                provide(d_q_full_in_[i], static_cast<size_t>(M) * q_full_in_factor_);
+                provide(d_q_full_out_[i], M);
+            }
+        }
+        if (!pseudo_current_)
+            update_pseudo();
+    }
+    allocate_work(n_field, full_grid);
 }
 
 template <typename T>
@@ -762,6 +790,10 @@ void CudaSolverPseudoBase<T>::update_dw_impl(
             if (use_reduced_basis)
                 throw_with_line_number("Space group reduced basis is only supported for real fields.");
         }
+
+        // The tables and work buffers of this path (all there already unless the
+        // path changed), before the propagator loop
+        provide_work();
 
         for(const auto& item: w_input)
         {
@@ -911,11 +943,26 @@ void CudaSolverPseudoBase<T>::prepare_stress()
 {
     try
     {
+        // The full-grid path, also when it serves the stress alone (see full_grid_path())
+        provide_work();
+
         // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
         if constexpr (std::is_same_v<T, double>)
         {
             if (!crysfft_stress_fast_path())
                 return;
+
+            // Per stream: the reduced-basis integrand and the CUB scratch of its sum
+            for (int i = 0; i < n_streams; i++)
+            {
+                provide(d_stress_sum[i], n_basis_);
+                provide(d_stress_sum_out[i], 1);
+                // the first call only queries the size of the CUB scratch
+                size_t bytes = 0;
+                CUDA_CHECK(cuda_reduce_sum(nullptr, bytes, d_stress_sum[i].get(), d_stress_sum_out[i].get(), n_basis_, streams[i][0]));
+                provide(d_temp_storage[i], bytes);
+                temp_storage_bytes[i] = bytes;
+            }
 
             // The multipliers of each block's monomer type, full and (discrete chains)
             // half bonds, one per axis group for all streams: the missing ones are built
@@ -930,7 +977,7 @@ void CudaSolverPseudoBase<T>::prepare_stress()
             {
                 for (const bool half : {false, true})
                 {
-                    const bool include_bond_factor = (get_stress_boltz_bond(monomer_type, half) != nullptr);
+                    const bool include_bond_factor = stress_has_bond_factor();
                     if (half && !include_bond_factor)
                         continue;   // continuous chains: one multiplier per axis group
                     for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
@@ -977,20 +1024,6 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
 
         const double bond_length_sq = stress_bond_length_sq(monomer_type, is_half_bond_length);
 
-        // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains).
-        // The discrete chain multiplies exp(-k^2 b^2 ds/6) * b^2 into the integrand
-        // and weights the basis tables with 1; continuous chains weight them with b^2.
-        const double* _d_boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
-        const double basis_factor = (_d_boltz_bond != nullptr) ? 1.0 : bond_length_sq;
-
-        const double* _d_fourier_basis_x = pseudo->get_fourier_basis_x();
-        const double* _d_fourier_basis_y = pseudo->get_fourier_basis_y();
-        const double* _d_fourier_basis_z = pseudo->get_fourier_basis_z();
-        const double* _d_fourier_basis_xy = pseudo->get_fourier_basis_xy();
-        const double* _d_fourier_basis_xz = pseudo->get_fourier_basis_xz();
-        const double* _d_fourier_basis_yz = pseudo->get_fourier_basis_yz();
-        const int* _d_negative_k_idx = pseudo->get_negative_frequency_mapping();
-
         // =====================================================================
         // CrysFFT stress fast path (reduced grid, no full-grid FFT)
         // Mirrors CpuSolverPseudoBase::compute_single_segment_stress.
@@ -1008,13 +1041,26 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             if (crysfft_stress_fast_path())
             {
                 // discrete chains carry the bond factor
-                const bool include_bond_factor = (_d_boltz_bond != nullptr);
-                const CudaCrysFFTStressArgs args = crysfft_stress_args(STREAM, bond_length_sq, include_bond_factor);
+                const CudaCrysFFTStressArgs args = crysfft_stress_args(STREAM, bond_length_sq, stress_has_bond_factor());
                 cuda_crysfft_compute_single_segment_stress(
                     args, d_q_pair, &d_q_pair[n_basis_], d_segment_stress);
                 return;
             }
         }
+
+        // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains).
+        // The discrete chain multiplies exp(-k^2 b^2 ds/6) * b^2 into the integrand
+        // and weights the basis tables with 1; continuous chains weight them with b^2.
+        const double* _d_boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
+        const double basis_factor = (_d_boltz_bond != nullptr) ? 1.0 : bond_length_sq;
+
+        const double* _d_fourier_basis_x = pseudo->get_fourier_basis_x();
+        const double* _d_fourier_basis_y = pseudo->get_fourier_basis_y();
+        const double* _d_fourier_basis_z = pseudo->get_fourier_basis_z();
+        const double* _d_fourier_basis_xy = pseudo->get_fourier_basis_xy();
+        const double* _d_fourier_basis_xz = pseudo->get_fourier_basis_xz();
+        const double* _d_fourier_basis_yz = pseudo->get_fourier_basis_yz();
+        const int* _d_negative_k_idx = pseudo->get_negative_frequency_mapping();
 
         const StressScratch scratch = stress_scratch(STREAM);
 

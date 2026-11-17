@@ -395,7 +395,12 @@ platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
 (as `CpuSolverPseudoBase` does on the CPU): the derived classes only lend their
 work buffers through `stress_scratch()`, and the discrete solver overrides
-`get_stress_boltz_bond()` (the base default, nullptr, is the continuous chain).
+`get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
+false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
+tables exist only for a path that uses them (`provide_work()`, called by the backend once
+the space group is set and again before the propagator and stress loops, with the derived
+solvers' `allocate_work()`), so the Pmmm and recursive 3m CrysFFT with the stress fast
+path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
@@ -689,8 +694,7 @@ created through `count_cufft_plan(...)`, `count_cuda_stream(...)` and `count_cud
 and destroyed with `release_cufft_plan()`, `release_cuda_stream()` and
 `release_cuda_event()`, which keep live counts (`cuda_handle_counters()`); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
-release call fails, and counts the failure in `cuda_release_failures()`. Events used
-only for profiling are `CudaEvent` objects. The CPU FFT classes keep their FFTW/MKL
+release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
 plans and descriptors in hand-written `release()` functions, which their destructors call;
 the `fftw_malloc` arrays FFTW plans on are freed after planning, and the plans run on the
 caller's arrays or on per-thread scratch of the same alignment.

@@ -74,9 +74,11 @@ class CudaCrysFFTBase;  // Forward declaration
  *
  * **Memory per Stream:**
  *
- * - d_q_step_1_one, d_q_step_2_one: Full step workspace
+ * - d_q_step_1_one, d_q_step_2_one: Full step workspace (the reduced basis on the CrysFFT path)
  * - d_q_step_1_two: Half step workspace (2*M; also lent as the propagator pair of the stress)
  * - d_qk_in_2_one, d_qk_in_1_two: Fourier space buffers
+ *
+ * All but the first two belong to the full-grid path (see allocate_work()).
  */
 template <typename T>
 class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
@@ -157,6 +159,7 @@ public:
 
     /// Scratch buffers lent to CudaSolverPseudoBase::compute_single_segment_stress()
     typename Base::StressScratch stress_scratch(int STREAM) override;
+    void allocate_work(int n_field, bool full_grid) override;
     /// CrysFFT steps of a block: a full step and two half steps
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {

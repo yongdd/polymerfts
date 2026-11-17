@@ -4,10 +4,7 @@
  *        permuted real 3D FFT, see CudaCrysFFTObliqueZ.h).
  */
 
-#include <atomic>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -295,10 +292,9 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
 //------------------------------------------------------------------------------
 // Public API
 //------------------------------------------------------------------------------
-void CudaCrysFFTObliqueZ::set_stream(cudaStream_t stream)
+void CudaCrysFFTObliqueZ::use_stream(cudaStream_t stream)
 {
-    // The plans already run on stream_ (set at construction or by the last
-    // call); diffusion() calls this every time
+    // The plans already run on stream_ (set at construction or by the last call)
     if (stream == stream_)
         return;
     stream_ = stream;
@@ -312,53 +308,22 @@ void CudaCrysFFTObliqueZ::set_stream(cudaStream_t stream)
 void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                                     cudaStream_t stream)
 {
-    set_stream(stream);
-
-    // FTS_PROFILE_CRYSFFT_HEX_DETAIL times the stages of the first call
-    static const bool do_profile = (std::getenv("FTS_PROFILE_CRYSFFT_HEX_DETAIL") != nullptr);
-    static std::atomic<bool> prof_once{false};
-    std::vector<CudaEvent> events(do_profile && !prof_once.exchange(true) ? 6 : 0);   // destroyed on every exit
-    auto mark = [&](size_t i) {
-        if (!events.empty())
-            CUDA_CHECK(cudaEventRecord(events[i], stream_));
-    };
+    use_stream(stream);
 
     const int threads = 256;
     const int n = nx_physical_[2];
 
     // The input is only read, so an out-of-place call preserves it
-    mark(0);
     ker_permute_z<<<grid_blocks(M_physical_, threads), threads, 0, stream_>>>(d_q_in, d_real_, M_physical_, n);
     CUDA_CHECK_LAUNCH();
-    mark(1);
     CUFFT_CHECK(cufftExecD2Z(plan_fwd_, d_real_, d_spectrum_));
-    mark(2);
     // Boltzmann factors in the table include the normalization
     ker_obliquez_spectral<<<grid_blocks(M_spectral_, threads), threads, 0, stream_>>>(
         d_spectrum_, reinterpret_cast<const double2*>(table.get()),
         reinterpret_cast<const double2*>(d_twiddle_->get()), nx_physical_[0], nx_physical_[1], n / 2 + 1);
     CUDA_CHECK_LAUNCH();
-    mark(3);
     // Z2D overwrites its input d_spectrum_, which the next step recomputes
     CUFFT_CHECK(cufftExecZ2D(plan_bwd_, d_spectrum_, d_real_));
-    mark(4);
     ker_unpermute_z<<<grid_blocks(M_physical_, threads), threads, 0, stream_>>>(d_real_, d_q_out, M_physical_, n);
     CUDA_CHECK_LAUNCH();
-    mark(5);
-
-    if (!events.empty())
-    {
-        CUDA_CHECK(cudaEventSynchronize(events[5]));
-        const char* stages[5] = {"permute", "fft", "spectral", "ifft", "unpermute"};
-        std::printf("[CrysFFT-ObliqueZ]");
-        for (int i = 0; i < 5; ++i)
-        {
-            float ms = 0.0f;
-            CUDA_CHECK(cudaEventElapsedTime(&ms, events[i], events[i + 1]));
-            std::printf(" %s(ms)=%.4f", stages[i], ms);
-        }
-        float ms_total = 0.0f;
-        CUDA_CHECK(cudaEventElapsedTime(&ms_total, events[0], events[5]));
-        std::printf(" total(ms)=%.4f\n", ms_total);
-    }
 }

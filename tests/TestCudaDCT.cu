@@ -1,8 +1,8 @@
 /**
  * @file TestCudaDCT.cu
- * @brief Test CUDA DCT Types 1-4 against FFTW reference.
+ * @brief Test CUDA DCT types 2 and 3 against FFTW reference.
  *
- * Compares CudaDCT output with FFTW REDFT00/10/01/11 for all DCT types.
+ * Compares CudaDCT output with FFTW REDFT10/01 for the DCT types of CudaRealTransform.
  */
 
 #include <iostream>
@@ -19,61 +19,6 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-
-//==============================================================================
-// Test 1D DCT-1 (FFTW_REDFT00)
-//==============================================================================
-bool test_dct1_1d(int N)
-{
-    printf("Testing 1D DCT-1: N=%d (N+1=%d points)\n", N, N + 1);
-
-    int size = N + 1;  // DCT-1 has N+1 points
-
-    // Allocate host memory
-    std::vector<double> h_input(size);
-    std::vector<double> h_fftw(size);
-    std::vector<double> h_cuda(size);
-
-    // Initialize with test data
-    for (int i = 0; i < size; ++i) {
-        h_input[i] = sin(M_PI * i / N) + 0.5 * cos(2 * M_PI * i / N);
-    }
-
-    // === FFTW DCT-1 (REDFT00) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_1d(size, h_fftw.data(), h_fftw.data(), FFTW_REDFT00, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA DCT-1 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * size);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * size, cudaMemcpyHostToDevice);
-
-    CudaDCT dct(size, CUDA_DCT_1);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * size, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < size; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    // Relative error (scale by max value)
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
 
 //==============================================================================
 // Test 1D DCT-2 (FFTW_REDFT10)
@@ -174,122 +119,6 @@ bool test_dct3_1d(int N)
     printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
 
     bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test 1D DCT-4 (FFTW_REDFT11)
-//==============================================================================
-bool test_dct4_1d(int N)
-{
-    printf("Testing 1D DCT-4: N=%d points\n", N);
-
-    // Allocate host memory
-    std::vector<double> h_input(N);
-    std::vector<double> h_fftw(N);
-    std::vector<double> h_cuda(N);
-
-    // Initialize with test data
-    for (int i = 0; i < N; ++i) {
-        h_input[i] = sin(M_PI * (i + 0.5) / N) + 0.5 * cos(2 * M_PI * (i + 0.5) / N);
-    }
-
-    // === FFTW DCT-4 (REDFT11) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_1d(N, h_fftw.data(), h_fftw.data(), FFTW_REDFT11, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA DCT-4 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * N);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * N, cudaMemcpyHostToDevice);
-
-    CudaDCT dct(N, CUDA_DCT_4);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * N, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < N; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test 2D DCT-1
-//==============================================================================
-bool test_dct1_2d(int Nx, int Ny)
-{
-    printf("Testing 2D DCT-1: %d x %d (data size: %d x %d)\n",
-           Nx, Ny, Nx + 1, Ny + 1);
-
-    int Nx1 = Nx + 1, Ny1 = Ny + 1;
-    int M = Nx1 * Ny1;
-
-    std::vector<double> h_input(M);
-    std::vector<double> h_fftw(M);
-    std::vector<double> h_cuda(M);
-
-    // Initialize with test data
-    for (int ix = 0; ix < Nx1; ++ix) {
-        for (int iy = 0; iy < Ny1; ++iy) {
-            int idx = ix * Ny1 + iy;
-            double r2 = ix * ix + iy * iy;
-            h_input[idx] = exp(-r2 / 50.0);
-        }
-    }
-
-    // === FFTW 2D DCT-1 (REDFT00) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_2d(Nx1, Ny1, h_fftw.data(), h_fftw.data(),
-                                       FFTW_REDFT00, FFTW_REDFT00, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA 2D DCT-1 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * M);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
-
-    CudaDCT2D dct(Nx, Ny, CUDA_DCT_1);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < M; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    // A REDFT00 round trip multiplies by 2(n-1) per axis for n = N+1 points
-    bool norm_ok = dct.get_normalization() == 4.0 * Nx * Ny && dct.get_size() == M;
-    printf("  get_normalization() = %g (expected %g)\n", dct.get_normalization(), 4.0 * Nx * Ny);
-
-    bool passed = rel_err < 1e-10 && norm_ok;
     printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
 
     return passed;
@@ -406,132 +235,6 @@ bool test_dct3_2d(int Nx, int Ny)
     printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
 
     bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test 2D DCT-4
-//==============================================================================
-bool test_dct4_2d(int Nx, int Ny)
-{
-    printf("Testing 2D DCT-4: %d x %d\n", Nx, Ny);
-
-    int M = Nx * Ny;
-
-    std::vector<double> h_input(M);
-    std::vector<double> h_fftw(M);
-    std::vector<double> h_cuda(M);
-
-    // Initialize with test data
-    for (int ix = 0; ix < Nx; ++ix) {
-        for (int iy = 0; iy < Ny; ++iy) {
-            int idx = ix * Ny + iy;
-            double r2 = (ix + 0.5) * (ix + 0.5) + (iy + 0.5) * (iy + 0.5);
-            h_input[idx] = exp(-r2 / 50.0);
-        }
-    }
-
-    // === FFTW 2D DCT-4 (REDFT11) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_2d(Nx, Ny, h_fftw.data(), h_fftw.data(),
-                                       FFTW_REDFT11, FFTW_REDFT11, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA 2D DCT-4 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * M);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
-
-    CudaDCT2D dct(Nx, Ny, CUDA_DCT_4);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < M; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test 3D DCT-1
-//==============================================================================
-bool test_dct1_3d(int Nx, int Ny, int Nz)
-{
-    printf("Testing 3D DCT-1: %d x %d x %d (data size: %d x %d x %d)\n",
-           Nx, Ny, Nz, Nx + 1, Ny + 1, Nz + 1);
-
-    int Nx1 = Nx + 1, Ny1 = Ny + 1, Nz1 = Nz + 1;
-    int M = Nx1 * Ny1 * Nz1;
-
-    // Allocate host memory
-    std::vector<double> h_input(M);
-    std::vector<double> h_fftw(M);
-    std::vector<double> h_cuda(M);
-
-    // Initialize with test data (symmetric Gaussian)
-    for (int ix = 0; ix < Nx1; ++ix) {
-        for (int iy = 0; iy < Ny1; ++iy) {
-            for (int iz = 0; iz < Nz1; ++iz) {
-                int idx = (ix * Ny1 + iy) * Nz1 + iz;
-                double r2 = ix * ix + iy * iy + iz * iz;
-                h_input[idx] = exp(-r2 / 50.0);
-            }
-        }
-    }
-
-    // === FFTW 3D DCT-1 (REDFT00) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_3d(Nx1, Ny1, Nz1, h_fftw.data(), h_fftw.data(),
-                                       FFTW_REDFT00, FFTW_REDFT00, FFTW_REDFT00,
-                                       FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA 3D DCT-1 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * M);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
-
-    CudaDCT3D dct(Nx, Ny, Nz, CUDA_DCT_1);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < M; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    // A REDFT00 round trip multiplies by 2(n-1) per axis for n = N+1 points
-    bool norm_ok = dct.get_normalization() == 8.0 * Nx * Ny * Nz && dct.get_size() == M;
-    printf("  get_normalization() = %g (expected %g)\n", dct.get_normalization(), 8.0 * Nx * Ny * Nz);
-
-    bool passed = rel_err < 1e-10 && norm_ok;
     printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
 
     return passed;
@@ -660,121 +363,6 @@ bool test_dct3_3d(int Nx, int Ny, int Nz)
 }
 
 //==============================================================================
-// Test 3D DCT-4
-//==============================================================================
-bool test_dct4_3d(int Nx, int Ny, int Nz)
-{
-    printf("Testing 3D DCT-4: %d x %d x %d\n", Nx, Ny, Nz);
-
-    int M = Nx * Ny * Nz;
-
-    // Allocate host memory
-    std::vector<double> h_input(M);
-    std::vector<double> h_fftw(M);
-    std::vector<double> h_cuda(M);
-
-    // Initialize with test data
-    for (int ix = 0; ix < Nx; ++ix) {
-        for (int iy = 0; iy < Ny; ++iy) {
-            for (int iz = 0; iz < Nz; ++iz) {
-                int idx = (ix * Ny + iy) * Nz + iz;
-                double r2 = (ix + 0.5) * (ix + 0.5) + (iy + 0.5) * (iy + 0.5) + (iz + 0.5) * (iz + 0.5);
-                h_input[idx] = exp(-r2 / 50.0);
-            }
-        }
-    }
-
-    // === FFTW 3D DCT-4 (REDFT11) ===
-    std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
-    fftw_plan plan = fftw_plan_r2r_3d(Nx, Ny, Nz, h_fftw.data(), h_fftw.data(),
-                                       FFTW_REDFT11, FFTW_REDFT11, FFTW_REDFT11,
-                                       FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
-
-    // === CUDA 3D DCT-4 ===
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * M);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
-
-    CudaDCT3D dct(Nx, Ny, Nz, CUDA_DCT_4);
-    dct.execute(d_data);
-
-    cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compare results
-    double max_err = 0;
-    for (int i = 0; i < M; ++i) {
-        double err = std::abs(h_fftw[i] - h_cuda[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_fftw);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test round-trip (forward + backward should recover input)
-//==============================================================================
-bool test_dct1_roundtrip(int N)
-{
-    printf("Testing DCT-1 round-trip: N=%d (size=%d)\n", N, N + 1);
-
-    int size = N + 1;
-
-    std::vector<double> h_input(size);
-    std::vector<double> h_result(size);
-
-    // Initialize
-    for (int i = 0; i < size; ++i) {
-        h_input[i] = sin(M_PI * i / N) + 0.5 * cos(2 * M_PI * i / N);
-    }
-
-    // FFTW: forward + backward
-    std::copy(h_input.begin(), h_input.end(), h_result.begin());
-
-    fftw_plan plan = fftw_plan_r2r_1d(size, h_result.data(), h_result.data(), FFTW_REDFT00, FFTW_ESTIMATE);
-    fftw_execute(plan);  // Forward
-    fftw_execute(plan);  // Backward (DCT-1 is self-inverse)
-    fftw_destroy_plan(plan);
-
-    // Compute actual scaling factor
-    double scale = h_result[1] / h_input[1];  // Use a middle element
-    printf("  Actual scaling factor: %.4f (expected 2*N=%.4f)\n", scale, 2.0 * N);
-
-    // FFTW DCT-1: round-trip multiplies by 2*(n-1) = 2*N for size=N+1
-    double norm = 1.0 / (2.0 * N);
-    for (int i = 0; i < size; ++i) {
-        h_result[i] *= norm;
-    }
-
-    // Check recovery
-    double max_err = 0;
-    for (int i = 0; i < size; ++i) {
-        double err = std::abs(h_input[i] - h_result[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_input);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  FFTW round-trip: Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-12;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
 // Test DCT-2/DCT-3 inverse pair
 //==============================================================================
 bool test_dct23_inverse(int N)
@@ -825,135 +413,12 @@ bool test_dct23_inverse(int N)
 }
 
 //==============================================================================
-// Test CUDA DCT-1 round-trip
-//==============================================================================
-bool test_cuda_dct1_roundtrip(int N)
-{
-    printf("Testing CUDA DCT-1 round-trip: N=%d (size=%d)\n", N, N + 1);
-
-    int size = N + 1;
-
-    std::vector<double> h_input(size);
-    std::vector<double> h_result(size);
-
-    // Initialize
-    for (int i = 0; i < size; ++i) {
-        h_input[i] = sin(M_PI * i / N) + 0.5 * cos(2 * M_PI * i / N);
-    }
-
-    // CUDA: forward + backward
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * size);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * size, cudaMemcpyHostToDevice);
-
-    CudaDCT dct(size, CUDA_DCT_1);
-    dct.execute(d_data);  // Forward
-    dct.execute(d_data);  // Backward (DCT-1 is self-inverse)
-
-    cudaMemcpy(h_result.data(), d_data, sizeof(double) * size, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compute actual scaling factor
-    double scale = h_result[1] / h_input[1];
-    printf("  Actual scaling factor: %.4f (expected 2*N=%.4f)\n", scale, 2.0 * N);
-
-    // Apply normalization: 1/(2*N)
-    double norm = 1.0 / (2.0 * N);
-    for (int i = 0; i < size; ++i) {
-        h_result[i] *= norm;
-    }
-
-    // Check recovery
-    double max_err = 0;
-    for (int i = 0; i < size; ++i) {
-        double err = std::abs(h_input[i] - h_result[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_input);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-12;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
-// Test 3D CUDA DCT-1 round-trip
-//==============================================================================
-bool test_cuda_dct1_3d_roundtrip(int Nx, int Ny, int Nz)
-{
-    printf("Testing CUDA 3D DCT-1 round-trip: %d x %d x %d\n", Nx, Ny, Nz);
-
-    int Nx1 = Nx + 1, Ny1 = Ny + 1, Nz1 = Nz + 1;
-    int M = Nx1 * Ny1 * Nz1;
-
-    std::vector<double> h_input(M);
-    std::vector<double> h_result(M);
-
-    // Initialize - use non-zero values at interior point
-    for (int ix = 0; ix < Nx1; ++ix) {
-        for (int iy = 0; iy < Ny1; ++iy) {
-            for (int iz = 0; iz < Nz1; ++iz) {
-                int idx = (ix * Ny1 + iy) * Nz1 + iz;
-                double r2 = ix * ix + iy * iy + iz * iz;
-                h_input[idx] = exp(-r2 / 50.0);
-            }
-        }
-    }
-
-    // CUDA: forward + backward
-    double* d_data;
-    cudaMalloc(&d_data, sizeof(double) * M);
-    cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
-
-    CudaDCT3D dct(Nx, Ny, Nz, CUDA_DCT_1);
-    dct.execute(d_data);  // Forward
-    dct.execute(d_data);  // Backward
-
-    cudaMemcpy(h_result.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
-    cudaFree(d_data);
-
-    // Compute actual scaling at interior point
-    int test_idx = (1 * Ny1 + 1) * Nz1 + 1;  // Point (1,1,1)
-    double scale = h_result[test_idx] / h_input[test_idx];
-    printf("  Actual scaling factor: %.4f (expected 8*Nx*Ny*Nz=%.4f)\n", scale, 8.0 * Nx * Ny * Nz);
-
-    // Normalization: 1/(8*Nx*Ny*Nz) for round-trip
-    double norm = 1.0 / (8.0 * Nx * Ny * Nz);
-    for (int i = 0; i < M; ++i) {
-        h_result[i] *= norm;
-    }
-
-    // Check recovery
-    double max_err = 0;
-    for (int i = 0; i < M; ++i) {
-        double err = std::abs(h_input[i] - h_result[i]);
-        max_err = max_or_nan(max_err, err);
-    }
-
-    double max_val = max_abs_or_nan(h_input);
-    double rel_err = max_err / std::abs(max_val);
-
-    printf("  Max abs error: %.6e, Relative error: %.6e\n", max_err, rel_err);
-
-    bool passed = rel_err < 1e-10;
-    printf("  %s\n\n", passed ? "PASSED!" : "FAILED!");
-
-    return passed;
-}
-
-//==============================================================================
 // Test 2D Mixed DCT (vs FFTW)
 //==============================================================================
 bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
 {
-    const char* type_names[] = {"DCT-1", "DCT-2", "DCT-3", "DCT-4"};
     printf("Testing 2D Mixed (%s, %s): %d x %d\n",
-           type_names[type_x], type_names[type_y], Nx, Ny);
+           getTransformName(type_x), getTransformName(type_y), Nx, Ny);
 
     int M = Nx * Ny;
 
@@ -974,8 +439,7 @@ bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
     std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
 
     // Y dimension first (contiguous)
-    fftw_r2r_kind kind_y = (type_y == CUDA_DCT_2) ? FFTW_REDFT10 :
-                           (type_y == CUDA_DCT_3) ? FFTW_REDFT01 : FFTW_REDFT11;
+    fftw_r2r_kind kind_y = (type_y == CUDA_DCT_2) ? FFTW_REDFT10 : FFTW_REDFT01;
     for (int ix = 0; ix < Nx; ++ix) {
         fftw_plan plan = fftw_plan_r2r_1d(Ny, &h_fftw[ix * Ny], &h_fftw[ix * Ny], kind_y, FFTW_ESTIMATE);
         fftw_execute(plan);
@@ -984,8 +448,7 @@ bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
 
     // X dimension (need transpose for FFTW or do row-by-row)
     std::vector<double> h_col(Nx);
-    fftw_r2r_kind kind_x = (type_x == CUDA_DCT_2) ? FFTW_REDFT10 :
-                           (type_x == CUDA_DCT_3) ? FFTW_REDFT01 : FFTW_REDFT11;
+    fftw_r2r_kind kind_x = (type_x == CUDA_DCT_2) ? FFTW_REDFT10 : FFTW_REDFT01;
     for (int iy = 0; iy < Ny; ++iy) {
         // Extract column
         for (int ix = 0; ix < Nx; ++ix) {
@@ -1034,9 +497,8 @@ bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
 //==============================================================================
 bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_y, CudaDCTType type_z)
 {
-    const char* type_names[] = {"DCT-1", "DCT-2", "DCT-3", "DCT-4"};
     printf("Testing 3D Mixed (%s, %s, %s): %d x %d x %d\n",
-           type_names[type_x], type_names[type_y], type_names[type_z], Nx, Ny, Nz);
+           getTransformName(type_x), getTransformName(type_y), getTransformName(type_z), Nx, Ny, Nz);
 
     int M = Nx * Ny * Nz;
 
@@ -1060,8 +522,7 @@ bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_
     std::copy(h_input.begin(), h_input.end(), h_fftw.begin());
 
     // Z dimension (contiguous)
-    fftw_r2r_kind kind_z = (type_z == CUDA_DCT_2) ? FFTW_REDFT10 :
-                           (type_z == CUDA_DCT_3) ? FFTW_REDFT01 : FFTW_REDFT11;
+    fftw_r2r_kind kind_z = (type_z == CUDA_DCT_2) ? FFTW_REDFT10 : FFTW_REDFT01;
     for (int ix = 0; ix < Nx; ++ix) {
         for (int iy = 0; iy < Ny; ++iy) {
             int offset = (ix * Ny + iy) * Nz;
@@ -1072,8 +533,7 @@ bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_
     }
 
     // Y dimension
-    fftw_r2r_kind kind_y = (type_y == CUDA_DCT_2) ? FFTW_REDFT10 :
-                           (type_y == CUDA_DCT_3) ? FFTW_REDFT01 : FFTW_REDFT11;
+    fftw_r2r_kind kind_y = (type_y == CUDA_DCT_2) ? FFTW_REDFT10 : FFTW_REDFT01;
     std::vector<double> h_tmp_y(Ny);
     for (int ix = 0; ix < Nx; ++ix) {
         for (int iz = 0; iz < Nz; ++iz) {
@@ -1090,8 +550,7 @@ bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_
     }
 
     // X dimension
-    fftw_r2r_kind kind_x = (type_x == CUDA_DCT_2) ? FFTW_REDFT10 :
-                           (type_x == CUDA_DCT_3) ? FFTW_REDFT01 : FFTW_REDFT11;
+    fftw_r2r_kind kind_x = (type_x == CUDA_DCT_2) ? FFTW_REDFT10 : FFTW_REDFT01;
     std::vector<double> h_tmp_x(Nx);
     for (int iy = 0; iy < Ny; ++iy) {
         for (int iz = 0; iz < Nz; ++iz) {
@@ -1139,8 +598,7 @@ bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_
 //==============================================================================
 // Main
 //==============================================================================
-// Supported lengths: DCT-2/3/4 and the 2D/3D DCT-1 accept odd lengths (verified
-// above against FFTW); the 1D DCT-1 takes the number of points and needs it odd.
+// Supported lengths: DCT-2/3 accept odd lengths (verified above against FFTW).
 // Unsupported lengths must be refused in the constructor, not computed wrongly.
 bool test_odd_length_rejected()
 {
@@ -1148,21 +606,16 @@ bool test_odd_length_rejected()
     bool ok = true;
     try
     {
-        CudaDCT a(15, CUDA_DCT_2); CudaDCT3D b(6, 5, 7, CUDA_DCT_3); CudaDCT c(17, CUDA_DCT_1);
-        CudaDCT3D d(6, 6, 5, CUDA_DCT_1); CudaDCT2D e(5, 7, CUDA_DCT_4);
+        CudaDCT a(15, CUDA_DCT_2); CudaDCT3D b(6, 5, 7, CUDA_DCT_3);
     }
     catch (const std::exception& e) { printf("  a supported length was rejected: %s\n", e.what()); ok = false; }
-    bool threw = false;
-    try { CudaDCT t(16, CUDA_DCT_1); }   // 16 points = odd logical N: unsupported
-    catch (const std::exception&) { threw = true; }
-    if (!threw) { printf("  1D DCT-1 with 16 points was NOT rejected\n"); ok = false; }
     // The 1D DCT-2/3 stage N and N + 2 values in the 48 KB of shared memory of a block: 6144 and
     // 6142 points fit, one more does not and must be refused
     try { CudaDCT f(6144, CUDA_DCT_2); CudaDCT g(6142, CUDA_DCT_3); }
     catch (const std::exception& e) { printf("  a 1D length within shared memory was rejected: %s\n", e.what()); ok = false; }
     for (auto [N, type] : {std::pair{6145, CUDA_DCT_2}, std::pair{6143, CUDA_DCT_3}})
     {
-        threw = false;
+        bool threw = false;
         try { CudaDCT t(N, type); }
         catch (const std::exception&) { threw = true; }
         if (!threw) { printf("  1D DCT of %d points beyond shared memory was NOT rejected\n", N); ok = false; }
@@ -1176,12 +629,6 @@ int main()
     std::cout << "========== CUDA DCT vs FFTW Test ==========\n\n";
 
     bool all_passed = true;
-
-    // Test 1D DCT-1
-    std::cout << "--- 1D DCT-1 Tests (vs FFTW REDFT00) ---\n\n";
-    all_passed &= test_dct1_1d(16);
-    all_passed &= test_dct1_1d(32);
-    all_passed &= test_dct1_1d(64);
 
     // Test 1D DCT-2
     std::cout << "--- 1D DCT-2 Tests (vs FFTW REDFT10) ---\n\n";
@@ -1202,18 +649,6 @@ int main()
     all_passed &= test_dct3_1d(5001);
     all_passed &= test_dct3_1d(6142);
 
-    // Test 1D DCT-4
-    std::cout << "--- 1D DCT-4 Tests (vs FFTW REDFT11) ---\n\n";
-    all_passed &= test_dct4_1d(16);
-    all_passed &= test_dct4_1d(32);
-    all_passed &= test_dct4_1d(64);
-
-    // Test 2D DCT-1
-    std::cout << "--- 2D DCT-1 Tests (vs FFTW REDFT00) ---\n\n";
-    all_passed &= test_dct1_2d(8, 8);
-    all_passed &= test_dct1_2d(16, 16);
-    all_passed &= test_dct1_2d(32, 32);
-
     // Test 2D DCT-2
     std::cout << "--- 2D DCT-2 Tests (vs FFTW REDFT10) ---\n\n";
     all_passed &= test_dct2_2d(8, 8);
@@ -1229,18 +664,6 @@ int main()
     all_passed &= test_dct3_2d(16, 16);
     all_passed &= test_dct3_2d(32, 32);
     all_passed &= test_dct3_2d(7, 9);
-
-    // Test 2D DCT-4
-    std::cout << "--- 2D DCT-4 Tests (vs FFTW REDFT11) ---\n\n";
-    all_passed &= test_dct4_2d(8, 8);
-    all_passed &= test_dct4_2d(16, 16);
-    all_passed &= test_dct4_2d(32, 32);
-
-    // Test 3D DCT-1
-    std::cout << "--- 3D DCT-1 Tests (vs FFTW REDFT00) ---\n\n";
-    all_passed &= test_dct1_3d(8, 8, 8);
-    all_passed &= test_dct1_3d(16, 16, 16);
-    all_passed &= test_dct1_3d(32, 32, 32);
 
     // Test 3D DCT-2
     std::cout << "--- 3D DCT-2 Tests (vs FFTW REDFT10) ---\n\n";
@@ -1259,24 +682,10 @@ int main()
     all_passed &= test_dct3_3d(32, 32, 32);
     all_passed &= test_dct3_3d(5, 7, 9);
 
-    // Test 3D DCT-4
-    std::cout << "--- 3D DCT-4 Tests (vs FFTW REDFT11) ---\n\n";
-    all_passed &= test_dct4_3d(8, 8, 8);
-    all_passed &= test_dct4_3d(16, 16, 16);
-    all_passed &= test_dct4_3d(32, 32, 32);
-
-    // odd lengths of the other types (verified against FFTW)
-    all_passed &= test_dct1_2d(6, 5);
-    all_passed &= test_dct1_3d(5, 7, 9);
-    all_passed &= test_dct4_1d(15);
-    all_passed &= test_dct4_3d(5, 7, 9);
     all_passed &= test_odd_length_rejected();
 
     // Test round-trip
     std::cout << "--- Round-trip Tests ---\n\n";
-    all_passed &= test_dct1_roundtrip(32);
-    all_passed &= test_cuda_dct1_roundtrip(32);
-    all_passed &= test_cuda_dct1_3d_roundtrip(16, 16, 16);
     all_passed &= test_dct23_inverse(32);
     all_passed &= test_dct23_inverse(15);
 
@@ -1284,14 +693,12 @@ int main()
     std::cout << "--- 2D Mixed DCT Tests ---\n\n";
     all_passed &= test_mixed_2d(16, 16, CUDA_DCT_2, CUDA_DCT_3);
     all_passed &= test_mixed_2d(16, 16, CUDA_DCT_3, CUDA_DCT_2);
-    all_passed &= test_mixed_2d(16, 16, CUDA_DCT_2, CUDA_DCT_4);
-    all_passed &= test_mixed_2d(16, 16, CUDA_DCT_4, CUDA_DCT_3);
 
     // Test 3D Mixed DCT
     std::cout << "--- 3D Mixed DCT Tests ---\n\n";
-    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_2, CUDA_DCT_3, CUDA_DCT_4);
-    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_4, CUDA_DCT_2, CUDA_DCT_3);
-    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_3, CUDA_DCT_4, CUDA_DCT_2);
+    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_2, CUDA_DCT_3, CUDA_DCT_2);
+    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_3, CUDA_DCT_2, CUDA_DCT_3);
+    all_passed &= test_mixed_3d(8, 8, 8, CUDA_DCT_3, CUDA_DCT_3, CUDA_DCT_2);
 
     if (all_passed)
         std::cout << "=== All tests PASSED! ===\n";

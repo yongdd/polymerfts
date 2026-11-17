@@ -392,11 +392,11 @@ int main()
         }
 
         //=======================================================================
-        // Periodic complex interface: backward() preserves its input spectrum
-        // (cuFFT Z2D may overwrite its input even out of place)
+        // Periodic complex interface: round trip (backward() may overwrite its
+        // input spectrum, which cuFFT Z2D uses as scratch)
         //=======================================================================
         {
-            std::cout << "\nPeriodic backward(complex) preserves its input" << std::endl;
+            std::cout << "\nPeriodic forward/backward(complex) round trip" << std::endl;
             const std::array<int, 3> nx_p = {8, 6, 10};
             const std::array<BoundaryCondition, 3> bc_p = {
                 BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC};
@@ -413,17 +413,9 @@ int main()
             CUDA_CHECK(cudaMemcpy(d_p, data_p.data(), sizeof(double) * MP, cudaMemcpyHostToDevice));
 
             fft_p.forward(d_p, pk);
-            std::vector<std::complex<double>> spectrum(MP_COMPLEX), spectrum_after(MP_COMPLEX);
-            CUDA_CHECK(cudaMemcpy(spectrum.data(), pk, sizeof(cuDoubleComplex) * MP_COMPLEX, cudaMemcpyDeviceToHost));
             fft_p.backward(pk, d_p_back);
-            CUDA_CHECK(cudaMemcpy(spectrum_after.data(), pk, sizeof(cuDoubleComplex) * MP_COMPLEX, cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(data_p_back.data(), d_p_back, sizeof(double) * MP, cudaMemcpyDeviceToHost));
 
-            if (spectrum != spectrum_after)
-            {
-                std::cout << "  FAILED! backward() changed its input spectrum" << std::endl;
-                return -1;
-            }
             std::vector<double> diff_p(MP);
             for (int i = 0; i < MP; ++i)
                 diff_p[i] = std::abs(data_p_back[i] - data_p[i]);

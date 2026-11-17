@@ -35,7 +35,6 @@ public:
     ~CudaCrysFFTRecursive3m() override;
 
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
-    void set_stream(cudaStream_t stream) override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
     void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
@@ -76,13 +75,15 @@ private:
     CudaDeviceBuffer<cufftDoubleComplex> d_step1_;
     CudaDeviceBuffer<cufftDoubleComplex> d_step2_;
 
-    cudaStream_t stream_{0};
+    cudaStream_t stream_{0};   ///< Stream the plans run on (the last call's)
 
     /// Clone of `other` sharing its twiddle factors (see clone()).
     explicit CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& other);
 
     void init_plans();
     void free_plans();
+    /// Run the cuFFT plans and kernels on `stream` (diffusion() calls it every time).
+    void use_stream(cudaStream_t stream);
     std::shared_ptr<const Twiddles> generate_twiddle_factors() const;
     /// Fold the logical k-space array tempmat into the 16 factor arrays of a table.
     void build_table_from_tempmat(CudaDeviceBuffer<double>& table, const std::vector<double>& tempmat,

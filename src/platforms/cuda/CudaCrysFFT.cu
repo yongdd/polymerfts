@@ -12,9 +12,6 @@
 #include "CudaCommon.h"
 #include <cmath>
 #include <stdexcept>
-#include <atomic>
-#include <cstdlib>
-#include <iostream>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -149,74 +146,32 @@ void CudaCrysFFT::build_boltzmann(CudaDeviceBuffer<double>& table, const std::ar
 void CudaCrysFFT::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                             cudaStream_t stream)
 {
-    set_stream(stream);
+    use_stream(stream);
     int threads = 256;
     int blocks = grid_blocks(M_physical_, threads);
 
-    static std::atomic<bool> profile_once{false};
-    static const bool do_profile = (std::getenv("FTS_PROFILE_CRYSFFT_PMMM") != nullptr);
-    const bool profile_this = do_profile && !profile_once.exchange(true);
-    // Created only when profiling; CudaEvent destroys them on every exit
-    std::vector<CudaEvent> ev(profile_this ? 5 : 0);
-    if (profile_this)
-    {
-        CUDA_CHECK(cudaEventRecord(ev[0], stream_));
-    }
-
-    // Determine working buffer to minimize memory copies
-    // - If in-place (d_q_in == d_q_out): work directly on input
-    // - If out-of-place: copy to output once, then work on output
-    double* d_work = (d_q_in == d_q_out) ? d_q_in : d_q_out;
-
+    // The DCTs run in place: an out-of-place call first copies its input to d_q_out
+    // and works there, which keeps d_q_in
+    double* d_work = d_q_out;
     if (d_q_in != d_q_out)
     {
-        // Single copy at start (instead of two copies before/after)
         CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_q_in, sizeof(double) * M_physical_,
                                         cudaMemcpyDeviceToDevice, stream_));
     }
 
-    if (profile_this)
-        CUDA_CHECK(cudaEventRecord(ev[1], stream_));
-
     // Step 1: Forward DCT-II (in-place)
     dct_forward_->execute(d_work);
-
-    if (profile_this)
-        CUDA_CHECK(cudaEventRecord(ev[2], stream_));
 
     // Step 2: Apply Boltzmann factor (in-place)
     kernel_apply_boltzmann_crys<<<blocks, threads, 0, stream_>>>(d_work, table.get(), M_physical_);
     CUDA_CHECK_LAUNCH();
 
-    if (profile_this)
-        CUDA_CHECK(cudaEventRecord(ev[3], stream_));
-
     // Step 3: Backward DCT-III (in-place)
     // Normalization is already included in Boltzmann factor (pre-multiplied in build_boltzmann)
     dct_backward_->execute(d_work);
-
-    if (profile_this)
-    {
-        CUDA_CHECK(cudaEventRecord(ev[4], stream_));
-        CUDA_CHECK(cudaEventSynchronize(ev[4]));
-        float t_copy = 0.0f, t_fwd = 0.0f, t_boltz = 0.0f, t_bwd = 0.0f, t_total = 0.0f;
-        CUDA_CHECK(cudaEventElapsedTime(&t_copy, ev[0], ev[1]));
-        CUDA_CHECK(cudaEventElapsedTime(&t_fwd, ev[1], ev[2]));
-        CUDA_CHECK(cudaEventElapsedTime(&t_boltz, ev[2], ev[3]));
-        CUDA_CHECK(cudaEventElapsedTime(&t_bwd, ev[3], ev[4]));
-        CUDA_CHECK(cudaEventElapsedTime(&t_total, ev[0], ev[4]));
-
-        std::cout << "[CrysFFT-Pmmm profile] M_phys=" << M_physical_
-                  << " copy(ms)=" << t_copy
-                  << " fwd(ms)=" << t_fwd
-                  << " boltz(ms)=" << t_boltz
-                  << " bwd(ms)=" << t_bwd
-                  << " total(ms)=" << t_total << std::endl;
-
-    }
 }
 
-void CudaCrysFFT::set_stream(cudaStream_t stream)
+void CudaCrysFFT::use_stream(cudaStream_t stream)
 {
     if (stream_ == stream)
         return;
@@ -233,12 +188,12 @@ void CudaCrysFFT::set_stream(cudaStream_t stream)
 void CudaCrysFFT::apply_multiplier(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                                    cudaStream_t stream)
 {
-    set_stream(stream);
+    use_stream(stream);
     int threads = 256;
     int blocks = grid_blocks(M_physical_, threads);
 
     // Same in-place strategy as diffusion(): work directly on the output buffer
-    double* d_work = (d_q_in == d_q_out) ? d_q_in : d_q_out;
+    double* d_work = d_q_out;
     if (d_q_in != d_q_out)
     {
         CUDA_CHECK(cudaMemcpyAsync(d_q_out, d_q_in, sizeof(double) * M_physical_,
