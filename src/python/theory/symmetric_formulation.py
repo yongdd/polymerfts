@@ -632,6 +632,12 @@ class SymmetricPolymerTheory:
         dH : dict
             Derivatives {monomer_pair: dH/dχN_value} at the χN of this object.
         """
+        # The call of release 0.10.0, compute_h_deriv_chin(chi_n, w_aux, phi), puts the χN dictionary here
+        if isinstance(w_aux, dict):
+            raise TypeError("compute_h_deriv_chin(w_aux, phi=None, wtmd=False) takes the auxiliary fields "
+                            "first and no chi_n (it uses the χN of this SymmetricPolymerTheory); call "
+                            "compute_h_deriv_chin(w_aux=w_aux, phi=phi)")
+
         # Volume averages <Ω_k>, <Ω_k Ω_l>, <φ_j Ω_k>, <φ_j> and <φ_i φ_j> (no conjugate: H is
         # holomorphic in complex fields)
         w_aux = np.asarray(w_aux)

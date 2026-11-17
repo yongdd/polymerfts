@@ -13,6 +13,10 @@ import pytest
 from scipy.io import savemat
 
 
+# An export holds the options of its own method only: the validators' warning about the options of
+# other methods fails the test
+pytestmark = pytest.mark.filterwarnings("error:.*ignores the options of other methods")
+
 ROOT = Path(__file__).resolve().parents[2]
 BUILDER = runpy.run_path(str(ROOT / "scripts" / "gui" / "simulation_gui.py"))
 VALIDATION = runpy.run_path(str(ROOT / "src" / "python" / "utils" / "validation.py"))

@@ -7,38 +7,9 @@ import weakref
 
 import numpy as np
 
-from ..utils.validation import ValidationError, angle_fixed_at
-
-
-# Which lattice parameters may vary during box relaxation (relax_cell=True), and the cell a crystal
-# system given without a space group needs:
-#   lx_reduced : indices of the independent box lengths among [a, b, c]
-#   lx_full    : for each of a, b, c, the independent length it follows
-#   angles     : indices of the free angles among [alpha, beta, gamma]
-#   fixed      : the angles [alpha, beta, gamma] in degrees the system fixes (None: not fixed)
-#   cell       : what the cell needs, for the error message
-# "Orthorhombic" frees every box length in any dimension and is handled in the constructor.
-# To add a crystal system, add one row here and its name to SCFT_CRYSTAL_SYSTEMS (utils/validation.py).
-CRYSTAL_SYSTEMS = {
-    "Orthorhombic": {"lx_reduced": None,      "lx_full": None,      "angles": [],
-                     "fixed": [90, 90, 90], "cell": "angles of 90 degrees"},
-    "Tetragonal":   {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # a = b != c
-                     "fixed": [90, 90, 90], "cell": "a = b and angles of 90 degrees"},
-    "Cubic":        {"lx_reduced": [0],       "lx_full": [0, 0, 0], "angles": [],          # a = b = c
-                     "fixed": [90, 90, 90], "cell": "a = b = c and angles of 90 degrees"},
-    "Hexagonal":    {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # a = b != c
-                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
-    "Trigonal":     {"lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],          # hexagonal axes (space group only)
-                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
-    "Monoclinic":   {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [1],         # beta free (a space group: see below)
-                     "fixed": [90, None, 90], "cell": "alpha = gamma = 90 degrees"},
-    "Triclinic":    {"lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [0, 1, 2],   # all free
-                     "fixed": [None, None, None], "cell": None},
-    "Hexagonal2D":  {"lx_reduced": [0],       "lx_full": [0, 0],    "angles": [],          # a = b
-                     "fixed": [None, None, 120], "cell": "a = b and gamma = 120 degrees"},
-    "Oblique2D":    {"lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2],         # gamma free
-                     "fixed": [None, None, None], "cell": None},
-}
+# The table of the crystal systems (which lattice parameters vary, the cell each needs, the
+# dimensions it exists in) lives next to the validator of 'crystal_system'
+from ..utils.validation import ValidationError, angle_fixed_at, CRYSTAL_SYSTEMS
 
 
 class CellRelaxation:
@@ -64,11 +35,14 @@ class CellRelaxation:
         # whether it belongs to the fields of the current iteration
         self.stress_array = None
         self.stress_is_current = False
+        # The angles in degrees the box was given (None: right angles). The native box keeps radians;
+        # the smearing computes |k|^2 from the same degrees as the box, so its k^2 is the solver's bit for bit
+        self.box_angles = angles
         self.n_variables = self._choose_lattice_parameters(params, angles)
 
     def _choose_lattice_parameters(self, params, angles):
         """Which lattice parameters the iteration varies; returns the number of variables of the optimizer."""
-        # Which lattice parameters may vary during box relaxation (table CRYSTAL_SYSTEMS)
+        # Which lattice parameters may vary during box relaxation (table CRYSTAL_SYSTEMS, utils/validation.py)
         dim = len(params["nx"])
         if self.sg is not None:
             # The space group fixes the crystal system (and which angles vary, below)
@@ -248,11 +222,13 @@ class CellRelaxation:
             for i, idx in enumerate(self.angles_full_indices):
                 full_angles[idx] = new_angles[i]
             self.prop_solver.set_lattice_parameters(list(np.array(new_lx)[self.lx_full_indices]), full_angles)
+            self.box_angles = full_angles
         else:
             self.prop_solver.set_lx(list(np.array(new_lx)[self.lx_full_indices]))
 
-        # The smearing kernel Γ(k) and the Coulomb kernel are functions of the physical wavenumber
-        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
+        # The smearing kernel Γ(k) and the Coulomb kernel are functions of the physical wavenumber; the
+        # smearing takes the degrees the box was given, not get_angles_degrees() (a round trip through radians)
+        self.smearing.set_box(self.prop_solver.get_lx(), self.box_angles)
         if self.electrostatics is not None:
             self.electrostatics.set_box()
         return fields

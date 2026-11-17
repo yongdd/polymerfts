@@ -5,7 +5,9 @@
 fields must be on the full grid, and its w fields must restart the run at the
 converged solution. 3D BCC with the Im-3m space group: one iteration must
 give the same full-grid fields as the same iteration without the space group,
-and a numerical failure (NumericalError) gives its fields on the full grid too.
+and a numerical failure (NumericalError) gives its fields on the full grid too:
+the partition checks of the first iteration and of the end of the iteration, a
+non-finite field residual and a non-finite error level.
 Result files are written to a new file that replaces the old one once it is on
 the disk: a failed write leaves an existing file as it was.
 """
@@ -235,6 +237,48 @@ def main():
                           f"{ {m: np.shape(f) for m, f in error.fields.items()} }")
         elif not np.allclose(error.fields["A"], 2000*w_a - np.mean(2000*w_a), rtol=0, atol=1e-9):
             failed.append("NumericalError.fields are not the fields of the failed state")
+
+    # The other failures of the iteration give the fields of the failed state on the full grid too:
+    # a non-positive partition function at the end of the iteration, a non-finite field residual and a
+    # non-finite error level (the stress of relax_cell). Each is provoked in the one iteration of the
+    # run by replacing what the iteration reads; a patch returns the on_iteration callback of the run.
+    def negative_partition_after_iteration(calc):
+        def on_iteration(info):
+            calc.prop_solver.get_partition_function = lambda p: -1.0
+        return on_iteration
+
+    def nan_concentrations(calc):
+        compute = calc.compute_concentrations
+
+        def nan_phi(w, q_init=None):
+            phi, elapsed = compute(w, q_init=q_init)
+            return {m: np.full_like(v, np.nan) for m, v in phi.items()}, elapsed
+        calc.compute_concentrations = nan_phi
+
+    def nan_stress(calc):
+        stress = calc.prop_solver.get_stress
+        calc.prop_solver.get_stress = lambda: np.full(np.shape(stress()), np.nan)
+
+    for name, expected, relax_cell, patch in (
+            ("end of the iteration", "the end of the SCFT iteration", False, negative_partition_after_iteration),
+            ("non-finite residual", "Non-finite SCFT residual", False, nan_concentrations),
+            ("non-finite error level", "Non-finite SCFT error level", True, nan_stress)):
+        with contextlib.redirect_stdout(io.StringIO()):
+            calc = SCFT(params([n]*3, [1.9]*3, max_iter=1, relax_cell=relax_cell,
+                               space_group={"symbol": "Im-3m", "hall_number": 529}))
+        on_iteration = patch(calc)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), np.errstate(all="ignore"):
+                calc.run(initial_fields={"A": w_a, "B": -w_a}, on_iteration=on_iteration)
+            failed.append(f"{name}: no NumericalError")
+        except NumericalError as error:
+            if expected not in str(error):
+                failed.append(f"{name}: NumericalError from another check: {error}")
+            elif error.fields is None or sorted(error.fields) != ["A", "B"] \
+                    or any(np.size(f) != n**3 for f in error.fields.values()):
+                failed.append(f"{name}: NumericalError.fields with a space group are not on the full grid")
+            elif not np.allclose(error.fields["A"], w_a - np.mean(w_a), rtol=0, atol=1e-12):
+                failed.append(f"{name}: NumericalError.fields are not the fields of the failed state")
 
     for f in failed:
         print("FAILED:", f)

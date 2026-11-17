@@ -10,6 +10,8 @@ from scipy.io import savemat
 
 CHECKS = runpy.run_path(str(Path(__file__).with_name("TestSimulationScript.py")))
 BUILDER = CHECKS["BUILDER"]
+# An export holds the options of its own method only (as in TestSimulationScript)
+pytestmark = CHECKS["pytestmark"]
 
 
 def values():

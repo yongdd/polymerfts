@@ -15,9 +15,14 @@ import pytest
 from scipy.io import loadmat
 
 
+# A generated script holds SCFT options only: validate_scft_params refuses a key no method reads, and
+# its warning about the options of other methods fails the test
+pytestmark = pytest.mark.filterwarnings('error:.*ignores the options of other methods')
+
 ROOT = Path(__file__).resolve().parents[2]
 CONVERTER = ROOT / 'scripts/pscf/pscf_converter.py'
 TOOL = runpy.run_path(str(CONVERTER))
+VALIDATION = runpy.run_path(str(ROOT / 'src/python/utils/validation.py'))
 PARAM = '''# Compact input with arbitrary whitespace and comments
 System{
   polymerModel thread
@@ -58,10 +63,12 @@ def imported(tmp_path, param=PARAM, command=COMMAND, **kwargs):
 
 
 def generated_params(output):
-    """The params literal of a generated simulation.py."""
+    """The params literal of a generated simulation.py, which validate_scft_params accepts."""
     module = ast.parse((output / 'simulation.py').read_text(encoding='utf-8'))
-    return next(ast.literal_eval(node.value) for node in module.body
-                if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == 'params')
+    params = next(ast.literal_eval(node.value) for node in module.body
+                  if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == 'params')
+    VALIDATION['validate_scft_params'](params)
+    return params
 
 
 def recording_solver(monkeypatch, converged=True):
@@ -69,6 +76,7 @@ def recording_solver(monkeypatch, converged=True):
 
     class SCFT:
         def __init__(self, params):
+            VALIDATION['validate_scft_params'](params)
             calls['params'] = copy.deepcopy(params)
             calls['cwd'] = Path.cwd()
 

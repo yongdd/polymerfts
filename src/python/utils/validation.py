@@ -308,11 +308,36 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
 FIXED_ANGLE_TOLERANCE = 1e-10
 
 
-# The crystal systems SCFT relaxes without a space group in each dimension (rows of CRYSTAL_SYSTEMS in
-# scft/cell_relaxation.py)
-SCFT_CRYSTAL_SYSTEMS = {1: ("Orthorhombic",),
-                        2: ("Orthorhombic", "Hexagonal2D", "Oblique2D"),
-                        3: ("Orthorhombic", "Tetragonal", "Cubic", "Hexagonal", "Monoclinic", "Triclinic")}
+# The crystal systems of SCFT box relaxation (relax_cell, scft/cell_relaxation.py), one row each:
+#   dims       : the box dimensions in which 'crystal_system' may name it without a space group (a
+#                space group sets its own system; Trigonal comes only from one)
+#   lx_reduced : indices of the independent box lengths among [a, b, c]
+#   lx_full    : for each of a, b, c, the independent length it follows
+#   angles     : indices of the free angles among [alpha, beta, gamma] without a space group (a
+#                monoclinic or triclinic group frees those it leaves free: CellRelaxation)
+#   fixed      : the angles [alpha, beta, gamma] in degrees the system fixes (None: not fixed)
+#   cell       : what the cell needs, for the error message
+# "Orthorhombic" frees every box length in any dimension. To add a crystal system, add one row.
+CRYSTAL_SYSTEMS = {
+    "Orthorhombic": {"dims": (1, 2, 3), "lx_reduced": None,      "lx_full": None,      "angles": [],
+                     "fixed": [90, 90, 90], "cell": "angles of 90 degrees"},
+    "Tetragonal":   {"dims": (3,),      "lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],
+                     "fixed": [90, 90, 90], "cell": "a = b and angles of 90 degrees"},
+    "Cubic":        {"dims": (3,),      "lx_reduced": [0],       "lx_full": [0, 0, 0], "angles": [],
+                     "fixed": [90, 90, 90], "cell": "a = b = c and angles of 90 degrees"},
+    "Hexagonal":    {"dims": (3,),      "lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],
+                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
+    "Trigonal":     {"dims": (),        "lx_reduced": [0, 2],    "lx_full": [0, 0, 1], "angles": [],  # hexagonal axes
+                     "fixed": [90, 90, 120], "cell": "a = b, alpha = beta = 90 and gamma = 120 degrees"},
+    "Monoclinic":   {"dims": (3,),      "lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [1],
+                     "fixed": [90, None, 90], "cell": "alpha = gamma = 90 degrees"},
+    "Triclinic":    {"dims": (3,),      "lx_reduced": [0, 1, 2], "lx_full": [0, 1, 2], "angles": [0, 1, 2],
+                     "fixed": [None, None, None], "cell": None},
+    "Hexagonal2D":  {"dims": (2,),      "lx_reduced": [0],       "lx_full": [0, 0],    "angles": [],
+                     "fixed": [None, None, 120], "cell": "a = b and gamma = 120 degrees"},
+    "Oblique2D":    {"dims": (2,),      "lx_reduced": [0, 1],    "lx_full": [0, 1],    "angles": [2],
+                     "fixed": [None, None, None], "cell": None},
+}
 
 
 def angle_fixed_at(degrees, fixed=90.0):
@@ -638,7 +663,7 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
     _integer(params.get("max_iter", 2000), "max_iter")
     # A crystal system given without a space group exists in the dimension (a group fixes its own)
     crystal_system = params.get("crystal_system")
-    valid_systems = SCFT_CRYSTAL_SYSTEMS[len(params["nx"])]
+    valid_systems = [name for name, row in CRYSTAL_SYSTEMS.items() if len(params["nx"]) in row["dims"]]
     if group is None and crystal_system is not None and crystal_system not in valid_systems:
         raise ValidationError(f"'crystal_system' {crystal_system!r} is not valid for a {len(params['nx'])}D box; "
                               "choose from " + ", ".join(valid_systems))

@@ -24,7 +24,11 @@ that go with them.
    of F(L) of fixed-box runs whose kernel is built at L. Until 2026-10 the
    kernel stayed at the initial box (smearing length a_int L/L0) and the
    stress had no Gamma term: the relaxed L was 16 % off here (1.5388 instead
-   of 1.8417 for a_int = 0.1).
+   of 1.8417 for a_int = 0.1). After relaxation steps the smearing |k|^2 must
+   be the solver's bit for bit (oblique, hexagonal and a 3D cell with a fixed
+   105-degree angle): until 2026-11 the kernel was rebuilt from the angles of
+   get_angles_degrees(), a round trip through radians (5e-16 of the largest
+   |k|^2 in the 3D cell; a free angle differs only at some steps).
 
 4. L-FTS and CL-FTS noise: sigma uses the cell volume (with the angle factor),
    not the product of the box lengths.
@@ -307,6 +311,40 @@ def test_scft_box_relaxation():
           f"SCFT smearing box relaxation: relaxed L {L_relaxed:.6f}, minimum of F(L) {L_min:.6f} (rel. {rel:.1e})")
 
 
+def test_scft_relaxation_wavenumbers():
+    """After relaxation steps the smearing |k|^2 is the solver's bit for bit, as at construction: with a
+    free angle (oblique 105 degrees) and with fixed angles that change in a round trip through radians
+    (hexagonal 120, a 3D cell with gamma 105 whose lengths relax)."""
+    cases = (("2D oblique 105, gamma free", [12, 14], [3.0, 3.2], [105.0], "Oblique2D"),
+             ("2D hexagonal 120", [12, 12], [3.0, 3.0], [120.0], "Hexagonal2D"),
+             ("3D gamma 105 fixed", [8, 10, 6], [2.4, 2.6, 2.2], [90.0, 90.0, 105.0], None))
+    for name, nx, lx, angles, crystal_system in cases:
+        p = {"nx": nx, "lx": lx, "angles": angles, "relax_cell": True, "stress_interval": 1,
+             "chain_model": "continuous", "ds": 1 / 20, "segment_lengths": {"A": 1.0, "B": 1.1},
+             "chi_n": {"A,B": 16.0}, "platform": cpu_platform(),
+             "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.35},
+                                                               {"type": "B", "length": 0.65}]}],
+             "smearing": {"type": "gaussian", "a_int": 0.1},
+             "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
+             "max_iter": 5, "tolerance": 1e-12}
+        if crystal_system is not None:
+            p["crystal_system"] = crystal_system
+        w = np.random.default_rng(11).normal(0.0, 5.0, (2, int(np.prod(nx))))
+        calc = quiet(scft.SCFT, params=p)
+        differences = []
+
+        def compare(info):
+            # Each iteration after the first runs in the box of a relaxation step
+            native = calc.prop_solver.fourier.k_squared()
+            smeared = calc.smearing.k_sq[tuple(slice(0, n) for n in native.shape)]
+            differences.append(np.max(np.abs(smeared - native)) / np.max(native))
+        quiet(calc.run, initial_fields={"A": w[0], "B": w[1]}, on_iteration=compare)
+        moved = calc.prop_solver.get_lx() != lx
+        check(moved and len(differences) == 5 and max(differences) == 0.0,
+              f"SCFT relaxation, {name}: the smearing |k|^2 is the solver's bit for bit in each step "
+              f"(box moved: {moved}, max rel. diff {max(differences):.1e})")
+
+
 def test_noise_volume():
     root = tempfile.mkdtemp()
     try:
@@ -374,6 +412,7 @@ def main():
     test_walls()
     test_native_transform()
     test_scft_box_relaxation()
+    test_scft_relaxation_wavenumbers()
     test_noise_volume()
     test_cell_checks()
     print(f"\n{n_pass} passed, {n_fail} failed")
