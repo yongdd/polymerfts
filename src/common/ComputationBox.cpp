@@ -151,14 +151,9 @@ namespace {
         const double ratio = std::sqrt(ratio_sq);
         if (ratio < MIN_VOLUME_RATIO)
         {
-            // Ten significant digits, or all of them when ten would round the ratio up to the bound
+            // All digits, so that a ratio just below the bound never prints as the bound
             std::ostringstream value;
-            value << std::setprecision(10) << ratio;
-            if (std::stod(value.str()) >= MIN_VOLUME_RATIO)
-            {
-                value.str("");
-                value << std::setprecision(std::numeric_limits<double>::max_digits10) << ratio;
-            }
+            value << std::setprecision(std::numeric_limits<double>::max_digits10) << ratio;
             std::ostringstream message;
             message << "The lattice angles " << combination << " give a cell volume of " << value.str()
                     << " abc, below the minimum of " << MIN_VOLUME_RATIO << " abc. "
@@ -289,6 +284,7 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         for(int d=0; d<3; d++)
             angles_[d] = std::numbers::pi / 2.0;
         is_orthogonal_ = true;
+        is_z_axis_orthogonal_ = true;
 
         // Initialize lattice vectors and metric tensor
         lattice_vec_.fill(0.0);
@@ -359,6 +355,7 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
 
         // Orthogonal: all angles are 90 degrees within tolerance
         is_orthogonal_ = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
+        is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
 
         // Grid interval
         for(int d=0; d<DIM; d++)
@@ -731,6 +728,11 @@ bool ComputationBox<T>::is_orthogonal() const
 {
     return is_orthogonal_;
 }
+template <typename T>
+bool ComputationBox<T>::is_z_axis_orthogonal() const
+{
+    return is_z_axis_orthogonal_;
+}
 //----------------- set methods-------------------------------------
 template <typename T>
 void ComputationBox<T>::set_lx(std::vector<double> new_lx)
@@ -797,6 +799,7 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
         angles_[d] = full_angles[d] * deg_to_rad;
 
     is_orthogonal_ = orthogonal;
+    is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
 
     // Grid interval
     for(int d=0; d<dim; d++)

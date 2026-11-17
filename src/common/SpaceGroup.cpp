@@ -1382,34 +1382,18 @@ void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<dou
     }
     else
     {
-        // Monoclinic and triclinic: every rotation R (lattice coordinates) must
-        // preserve the metric G of the cell, R^T G R = G; for a monoclinic group
-        // this puts the unique axis perpendicular to the other two
-        auto metric_preserved = [&](const std::vector<double>& angles) {
-            const double deg = std::acos(-1.0) / 180.0;
-            const double ca = std::cos(angles[0] * deg), cb = std::cos(angles[1] * deg), cg = std::cos(angles[2] * deg);
-            const double G[3][3] = {{lx[0] * lx[0],      lx[0] * lx[1] * cg, lx[0] * lx[2] * cb},
-                                    {lx[0] * lx[1] * cg, lx[1] * lx[1],      lx[1] * lx[2] * ca},
-                                    {lx[0] * lx[2] * cb, lx[1] * lx[2] * ca, lx[2] * lx[2]}};
-            double g_max = 0.0;
-            for (int i = 0; i < 3; ++i)
-                for (int j = 0; j < 3; ++j)
-                    g_max = std::max(g_max, std::abs(G[i][j]));
-            for (const auto& Rot : rotations_)
-                for (int i = 0; i < 3; ++i)
-                    for (int j = 0; j < 3; ++j)
-                    {
-                        double g = 0.0;
-                        for (int k = 0; k < 3; ++k)
-                            for (int l = 0; l < 3; ++l)
-                                g += Rot[k][i] * G[k][l] * Rot[l][j];
-                        if (std::abs(g - G[i][j]) > 1e-6 * g_max)
-                            return false;
-                    }
-            return true;
-        };
-        ok = metric_preserved(angles_deg) && angles_fixed;
-        need = "the unique axis perpendicular to the other two (every symmetry operation must preserve the cell metric)";
+        // Monoclinic and triclinic rotations are diagonal in lattice coordinates (every
+        // Hall setting of groups 1-15), so a rotation preserves the cell metric exactly
+        // when the angles between the axes it reverses relative to each other are right:
+        // the angles fixed_angles() names, at the unique axis of a monoclinic group.
+        // Triclinic groups fix no angle.
+        ok = angles_fixed;
+        const char* names[3] = {"alpha", "beta", "gamma"};
+        std::string right_angles;
+        for (int i = 0; i < 3; ++i)
+            if (!std::isnan(fixed[i]))
+                right_angles += std::string(right_angles.empty() ? "" : " = ") + names[i];
+        need = "the unique axis perpendicular to the other two (" + right_angles + " = 90)";
     }
     if (!ok)
     {

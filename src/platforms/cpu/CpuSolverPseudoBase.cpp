@@ -180,13 +180,9 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     const auto nx = cb->get_nx();
     const std::array<int, 3> nx_logical = {nx[0], nx[1], nx[2]};
     const auto angles = cb->get_angles();
-    const bool z_axis_orthogonal =
-        (angles.size() >= 3 &&
-         std::abs(angles[0] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE &&
-         std::abs(angles[1] - M_PI / 2.0) < FIXED_ANGLE_TOLERANCE);
     // Engine choice and its basis map, shared with the CUDA solver
     const CrysFFTPlan plan = plan_crysfft(
-        space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), z_axis_orthogonal);
+        space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), cb->is_z_axis_orthogonal());
     if (plan.mode == CrysFFTChoice::None)
         return;
 

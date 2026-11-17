@@ -7,7 +7,8 @@ the symmetry must be rejected, for every crystal system: cubic a = b = c,
 tetragonal a = b, orthorhombic right angles, hexagonal (and trigonal in
 hexagonal axes) a = b with gamma = 120, rhombohedral a = b = c with
 alpha = beta = gamma, and monoclinic with the unique axis perpendicular to the
-other two. Matching cells must be accepted. SpaceGroup.fixed_angles names the
+other two (unique axes b and c; the error names the right angles); triclinic
+cells are free. Matching cells must be accepted. SpaceGroup.fixed_angles names the
 angles each group fixes (None where free), as SCFT box relaxation reads them.
 """
 
@@ -75,6 +76,16 @@ def main():
     # Monoclinic P2/m with unique axis b: alpha = gamma = 90, beta free
     expect_accept("P2/m (unique b) with beta = 70", lambda: solver([2.0, 2.0, 2.0], "P2/m", 57, angles=[90.0, 70.0, 90.0]))
     expect_reject("P2/m (unique b) with alpha = 70", lambda: solver([2.0, 2.0, 2.0], "P2/m", 57, angles=[70.0, 90.0, 90.0]))
+    # Unique axis c (Hall 58): alpha = beta = 90, gamma free; the error names the right angles
+    expect_accept("P2/m (unique c) with gamma = 104", lambda: solver([2.0, 2.0, 2.0], "P2/m", 58, angles=[90.0, 90.0, 104.0]))
+    expect_reject("P2/m (unique c) with beta = 100", lambda: solver([2.0, 2.0, 2.0], "P2/m", 58, angles=[90.0, 100.0, 90.0]))
+    try:
+        SpaceGroup([8, 8, 8], "P2/m", 58).check_cell([2.0, 2.0, 2.0], [90.0, 100.0, 90.0])
+        failed.append("P2/m (unique c) check_cell accepted beta = 100")
+    except Exception as e:
+        if "alpha = beta = 90" not in str(e):
+            failed.append(f"P2/m (unique c): the error does not name alpha = beta = 90: {e}")
+    expect_accept("P-1 on a triclinic cell", lambda: solver([2.0, 2.1, 2.2], "P-1", angles=[80.0, 100.0, 65.0]))
 
     # The angles the group fixes
     for symbol, hall, expected in [("Im-3m", 529, [90.0] * 3), ("P6/mmm", None, [90.0, 90.0, 120.0]),

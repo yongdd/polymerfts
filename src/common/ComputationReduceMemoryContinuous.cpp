@@ -141,6 +141,8 @@ template <typename T>
 void ComputationReduceMemoryContinuous<T>::advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u)
 {
     this->check_box_space_group();
+    // The step uses the fields and the cell of the last compute_propagators()
+    this->require_propagators();
     try
     {
         const Block& block = this->molecules->get_polymer(p).get_block(v, u);

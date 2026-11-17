@@ -235,6 +235,8 @@ template <typename T>
 void ComputationReduceMemoryDiscrete<T>::advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u)
 {
     this->check_box_space_group();
+    // The step uses the fields and the cell of the last compute_propagators()
+    this->require_propagators();
     try
     {
         const std::string monomer_type = this->molecules->get_polymer(p).get_block(v, u).monomer_type;

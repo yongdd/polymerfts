@@ -36,6 +36,8 @@
 #include <cmath>
 #include <vector>
 
+#include "Exception.h"
+
 /// Reciprocal metric in the index space of the search.
 struct IndexMetric
 {
@@ -166,16 +168,11 @@ inline void search_box(
     for (int i = 0; i < n_active; ++i)
     {
         const int d = active[i];
+        // A cell of V >= 0.1 abc (ComputationBox) has a positive-definite metric with a
+        // positive, finite inverse diagonal; a window of a few periods would not be exact
         if (!(inv_diag[i] > 0.0) || !std::isfinite(inv_diag[i]))
-        {
-            // Degenerate metric: fall back to one period on each searched axis
-            for (int j = 0; j < n_active; ++j)
-            {
-                lo[active[j]] = -1;
-                hi[active[j]] = 1;
-            }
-            return;
-        }
+            throw_with_line_number("The reciprocal metric of the alias search is degenerate "
+                "(not positive definite): the cell is flat.");
         // A small slack only adds candidates, so rounding cannot drop an alias
         const double reach = std::sqrt(f_center * inv_diag[i]) * (1.0 + 1e-9) + 1e-9;
         lo[d] = static_cast<int>(std::ceil((-reach - m[d]) / n[d]));

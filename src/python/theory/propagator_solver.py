@@ -438,7 +438,6 @@ class PropagatorSolver:
             Example: {"G": delta_function_array}
         """
         self._initialize_solver()
-        self._check_real(*w_fields.values(), *(q_init or {}).values())
         # The native binding checks the sizes of w_fields and q_init against n_grid
         if q_init is not None:
             self._propagator_computation.compute_propagators(w_fields, q_init=q_init)
@@ -702,7 +701,6 @@ class PropagatorSolver:
             Integral of the field over the box volume.
         """
         self._initialize_solver()
-        self._check_real(field)
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.integral(field_use)
 
@@ -723,7 +721,6 @@ class PropagatorSolver:
             Spatial average of the field (integral / volume).
         """
         self._initialize_solver()
-        self._check_real(field)
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.mean(field_use)
 
@@ -751,7 +748,6 @@ class PropagatorSolver:
             Inner product of the two fields.
         """
         self._initialize_solver()
-        self._check_real(field1, field2)
         field1_use = self._to_active_basis(field1, basis)
         field2_use = self._to_active_basis(field2, basis)
         return self._computation_box.inner_product(field1_use, field2_use)
@@ -783,7 +779,6 @@ class PropagatorSolver:
             Sum of inner products.
         """
         self._initialize_solver()
-        self._check_real(fields1, fields2)
         fields1_use = self._to_active_basis_multi(n_fields, fields1, basis)
         fields2_use = self._to_active_basis_multi(n_fields, fields2, basis)
         return self._computation_box.multi_inner_product(n_fields, fields1_use, fields2_use)
@@ -801,7 +796,6 @@ class PropagatorSolver:
         basis : {"active", "irreducible"}
             Input representation, as for integral().
         """
-        self._check_real(field)
         self._initialize_solver()
         field_reduced = self._to_active_basis(field, basis)
         if field_reduced is field:
@@ -822,12 +816,6 @@ class PropagatorSolver:
         sizes agree. Callers therefore specify the representation explicitly.
         """
         return self._space_group is not None and self._space_group.physical_basis_name() != "irreducible"
-
-    def _check_real(self, *fields) -> None:
-        """Reject complex arrays for real fields: the conversion would drop their imaginary parts."""
-        if self.field_type == "real" and any(np.iscomplexobj(field) for field in fields):
-            raise ValueError('This solver has real fields: got a complex array. Complex fields need a '
-                             'solver created with field_type="complex".')
 
     def _to_active_basis(self, field: NDArray[np.floating], basis: str) -> NDArray[np.floating]:
         """Convert only an explicitly declared irreducible input."""
@@ -954,7 +942,6 @@ class PropagatorSolver:
             raise RuntimeError(
                 "Space group not set. Pass space_group= to PropagatorSolver()."
             )
-        self._check_real(field)
         field_2d = np.reshape(field, (1, -1))
         return self._space_group.to_reduced_basis(field_2d)[0]
 
@@ -975,7 +962,6 @@ class PropagatorSolver:
             raise RuntimeError(
                 "Space group not set. Pass space_group= to PropagatorSolver()."
             )
-        self._check_real(field_reduced)
         field_2d = np.reshape(field_reduced, (1, -1))
         return self._space_group.from_reduced_basis(field_2d)[0]
 

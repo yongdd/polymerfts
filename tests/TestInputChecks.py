@@ -7,11 +7,15 @@ of non-finite histories.
 - advance_propagator_single_segment works in the reduced basis when the
   computation has a space group, like compute_propagators, for continuous and
   discrete chains with and without reduce_memory, on fields rescaled to a
-  standard deviation of 5 after symmetrization.
+  standard deviation of 5 after symmetrization. It refuses to run before
+  compute_propagators() and after a cell change, whose fields and tables it uses.
 - Anderson mixing of a history whose residual products overflow uses no
   history and calls no LAPACK routine, which would print DLASCL warnings.
 - A solver of real fields rejects complex arrays instead of dropping their
-  imaginary parts.
+  imaginary parts, with a ValueError of the native binding: through PropagatorSolver,
+  and given directly to its native computation box, propagator computation (fields
+  and q_init), Anderson mixing, Fourier transform and space group, and as a mask.
+  Integer and boolean arrays still convert to real fields.
 """
 
 import subprocess
@@ -138,12 +142,17 @@ def test_single_segment_reduced_basis(platform):
                 mol.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
                 opt = fac.create_propagator_computation_optimizer(mol, False)
                 pc = fac.create_propagator_computation(cb, mol, opt, "rqm4", group)
+                rejects(lambda: pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1))
                 pc.compute_propagators({m: basis(w[m]) for m in "AB"})
                 out = pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1)
                 assert out.shape == (cb.get_n_basis(),)
                 q_out.append(out)
             # With a space group the full grid is rejected, like in compute_propagators
             rejects(lambda: pc.advance_propagator_single_segment(q_in, 0, 0, 1))
+            # A cell change needs a new compute_propagators() before a single step
+            cb.set_lx([3.1] * 3)
+            pc.update_laplacian_operator()
+            rejects(lambda: pc.advance_propagator_single_segment(sg.to_reduced_basis(q_in), 0, 0, 1))
             np.testing.assert_allclose(q_out[1], sg.to_reduced_basis(q_out[0]), rtol=1e-11, atol=1e-11,
                                        err_msg=f"{chain_model}, reduce_memory={reduce_memory}")
 
@@ -185,17 +194,43 @@ def test_complex_into_real(platform):
                                  bc=["periodic"] * 6, chain_model="continuous", platform=platform,
                                  space_group=_core.SpaceGroup([8, 8, 8], "Im-3m", 529))
     reduced = sg_solver.to_reduced_basis(np.ones(512))
+    solver.compute_propagators({"A": w})
+    box, computation = solver.computation_box, solver.propagator_computation
+    anderson = solver.create_anderson_mixing(64, 5, 0.1, 0.1, 0.1)
+    grafted = PropagatorSolver(nx=[8, 8], lx=[2.0, 2.0], ds=0.1, bond_lengths={"A": 1.0}, bc=["periodic"] * 4,
+                               chain_model="continuous", platform=platform)
+    grafted.add_polymer(1.0, [["A", 1.0, 0, 1]], {0: "G"})
+    sg = sg_solver.space_group
+    # Real cosine coefficients of a box with reflecting walls
+    cosine = PropagatorSolver(nx=[8, 8], lx=[2.0, 2.0], ds=0.1, bond_lengths={"A": 1.0}, bc=["reflecting"] * 4,
+                              chain_model="continuous", numerical_method="cn-adi2", platform=platform).fourier
+    fac = _core.PlatformSelector.create_factory(platform, False, "real")
     for call in (lambda: solver.compute_propagators({"A": w + 1j * w}), lambda: solver.mean(w + 1j * w),
                  lambda: solver.integral(w + 0j), lambda: solver.inner_product(w, w + 1j * w),
                  lambda: solver.zero_mean(w + 1j * w),
-                 lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j), lambda: sg_solver.from_reduced_basis(reduced + 1j)):
+                 lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j), lambda: sg_solver.from_reduced_basis(reduced + 1j),
+                 # The native objects themselves
+                 lambda: box.integral(w + 0j), lambda: box.zero_mean(w + 1j * w),
+                 lambda: computation.compute_propagators({"A": w + 1j * w}),
+                 lambda: grafted.compute_propagators({"A": w}, q_init={"G": w + 0j}),
+                 lambda: anderson.calculate_new_fields(w + 1j * w, w, 1.0, 1.0),
+                 lambda: anderson.calculate_new_fields(w, w + 1j * w, 1.0, 1.0),
+                 lambda: solver.fourier.forward(w + 1j * w), lambda: cosine.backward(np.ones((8, 8)) + 1j),
+                 lambda: sg.symmetrize(np.ones(512) + 1j), lambda: sg.symmetrize_reduced_basis(reduced + 1j),
+                 lambda: fac.create_computation_box([8, 8], [2.0, 2.0], mask=np.ones(64) + 0j)):
         try:
             call()
         except ValueError as exc:
             assert "field_type" in str(exc), exc
             continue
         raise AssertionError("A complex array was accepted for real fields")
-    solver.compute_propagators({"A": w})
+    # Integer and boolean arrays convert
+    integral = box.integral(np.ones(64, dtype=int))
+    assert np.isclose(integral, box.integral(np.ones(64))) and np.isclose(box.integral(np.ones(64, dtype=bool)), integral)
+    computation.compute_propagators({"A": np.zeros(64, dtype=int)})
+    assert np.isclose(computation.get_total_partition(0), 1.0)
+    new_fields = anderson.calculate_new_fields(np.zeros(64, dtype=bool), np.ones(64, dtype=int), 1.0, 1.0)
+    assert new_fields.dtype == np.float64 and np.all(np.isfinite(new_fields))
 
 
 def main():

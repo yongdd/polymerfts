@@ -14,6 +14,13 @@ deviation 5:
    symmetry and real input fields (converted to complex) give ifftn(Σ M fftn).
 3. Oblique cells (2D at 120 degrees with 4x32 points, 3D triclinic): k_squared() is the
    minimum over the aliases m + N t of 4π² mᵀ g⁻¹ m; after set_lx() it follows the new box.
+   The propagator solver takes the same aliases. On 4x32 points at 120 degrees (complex
+   fields), its Boltzmann factor of each mode, read with a plane-wave q_init and one contour
+   step at w = 0, is exp(-b² ds k²/6) with the minimal k²; on 6x40 points at 125 degrees
+   (real fields of standard deviation 5), the discrete-chain stress equals the central
+   differences of -ln Q in both lengths and gamma. A window of one period around the
+   centered index misses the alias of least form on 28 and 30 modes of these grids: in the
+   Boltzmann factors it fails the first check, in the factors or the stress alone the second.
 4. Walls (1D, 2D, 3D): cosine (reflecting) and sine (absorbing) series of real and complex
    fields are scipy.fft.dctn/dstn of type 2 divided by 2 per axis, with k = πm/L and
    π(m+1)/L, also with a cosine axis next to a sine axis; a multiplier applied through them
@@ -262,6 +269,58 @@ def oblique(platform):
         check(f"{platform} oblique {len(nx)}D: k_squared after set_lx", rel_err(k_sq2, k_sq / 1.3 ** 2) < 1e-13)
         results[len(nx)] = k_sq
     return results
+
+
+def solver_aliases(platform):
+    """Boltzmann factors and stress of the propagator solver on anisotropic oblique grids."""
+    # Each mode on its own: w = 0, q_init the plane wave exp(2πi m·x), one contour step
+    nx, ds = [4, 32], 0.05
+    with contextlib.redirect_stdout(io.StringIO()):
+        s = PropagatorSolver(nx=nx, lx=[4.0, 4.0], ds=ds, bond_lengths={"A": 1.0}, bc=["periodic"] * 4,
+                             chain_model="continuous", numerical_method="rqm4", platform=platform,
+                             field_type="complex", angles=[120.0])
+        s.add_polymer(1.0, [["A", 1.0, 0, 1]], {0: "G"})
+    k_sq = minimal_alias_k_sq(nx, s._computation_box.get_recip_metric()).ravel()
+    x = np.meshgrid(*[np.arange(n) / n for n in nx], indexing="ij")
+    worst = 0.0
+    for index, m in enumerate(np.ndindex(*nx)):
+        q0 = np.exp(2j * np.pi * (m[0] * x[0] + m[1] * x[1])).ravel()
+        s.compute_propagators({"A": np.zeros(q0.size, complex)}, q_init={"G": q0})
+        factor = np.vdot(q0, s.get_propagator(0, 0, 1, 1)) / q0.size
+        worst = max(worst, abs(factor / np.exp(-k_sq[index] * ds / 6) - 1))
+    check(f"{platform} oblique 4x32: the solver's Boltzmann factor of each mode takes the minimal alias",
+          worst < 1e-12, f"max rel err {worst:.1e}")
+
+    # Discrete chains: the stress is the derivative of their own ln Q. The cell is large enough
+    # that the modes the window misses carry weight (their bond factors are not negligible)
+    nx, lx, gamma = [6, 40], [4.8, 5.7], 125.0
+    with contextlib.redirect_stdout(io.StringIO()):
+        s = PropagatorSolver(nx=nx, lx=lx, ds=0.05, bond_lengths={"A": 1.0, "B": 1.3}, bc=["periodic"] * 4,
+                             chain_model="discrete", numerical_method="ps", platform=platform, angles=[gamma])
+        s.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
+    rng = np.random.default_rng(125)
+    w = {monomer: rng.normal(0.0, 5.0, int(np.prod(nx))) for monomer in "AB"}
+
+    def minus_ln_q(lengths, angle):
+        s.set_lattice_parameters(lengths, [angle])
+        s.compute_propagators(w)
+        return -np.log(s.get_partition_function(0))
+
+    minus_ln_q(lx, gamma)
+    s.compute_stress()
+    stress = np.array(s.get_stress()[:3])
+    differences = []
+    for axis in range(2):
+        h = 1e-5 * lx[axis]
+        up, down = list(lx), list(lx)
+        up[axis] += h
+        down[axis] -= h
+        differences.append((minus_ln_q(up, gamma) - minus_ln_q(down, gamma)) / (2 * h))
+    h = 1e-5   # degrees
+    differences.append((minus_ln_q(lx, gamma + h) - minus_ln_q(lx, gamma - h)) / (2 * np.radians(h)))
+    err = rel_err(stress, differences)
+    check(f"{platform} oblique 6x40: discrete-chain stress equals the central differences of -ln Q", err < 1e-6,
+          f"max rel err {err:.1e}")
 
 
 def series(grids, kinds, inverse=False):
@@ -514,6 +573,7 @@ def main():
         odd_and_1d(platform)
         input_checks(platform)
         finite_range(platform)
+        solver_aliases(platform)
 
     cpu = [p for p in platforms if p.startswith("cpu")]
     if "cuda" in platforms and cpu:

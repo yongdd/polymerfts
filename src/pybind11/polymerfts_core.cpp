@@ -28,7 +28,8 @@
  * dtype; other arrays (strided views, float32, ...) are first copied into a
  * converted temporary (see array_in). Functions that modify an array in place
  * (ComputationBox.zero_mean, SpaceGroup.symmetrize_reduced_basis) reject arrays
- * that would need such a copy. Results are returned as new NumPy arrays.
+ * that would need such a copy. Real inputs refuse complex arrays with a ValueError
+ * (real_array). Results are returned as new NumPy arrays.
  * Array sizes are checked against the grid.
  *
  * **Usage from Python:**
@@ -55,6 +56,8 @@
 #include <cctype>
 #include <cmath>
 #include <numbers>
+#include <optional>
+#include <type_traits>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -87,10 +90,85 @@
 
 namespace py = pybind11;
 
+/**
+ * @brief A NumPy array of real values (float64) given to the bindings.
+ *
+ * NumPy converts a complex array to float64 by dropping its imaginary part, with
+ * only a ComplexWarning. A real_array refuses complex arrays instead, with a
+ * ValueError, before any conversion: this one check covers every real input
+ * (fields of a real solver, its Anderson mixing and Fourier transforms, masks and
+ * space-group conversions), whether it is a function argument (the caster below)
+ * or converted with cast<>(). Integer and boolean arrays convert as before.
+ */
+namespace
+{
+template <typename T, int Flags>
+class real_array : public py::array_t<T, Flags>
+{
+public:
+    real_array() = default;
+    explicit real_array(py::array_t<T, Flags>&& values) : py::array_t<T, Flags>(std::move(values)) {}
+    // What handle.cast<real_array>() calls: pybind11 constructs a py::object subclass from the object
+    explicit real_array(const py::object& values) : py::array_t<T, Flags>(real_values(values)) {}
+
+    /// The values themselves; a ValueError if they are complex
+    static const py::object& real_values(const py::object& values)
+    {
+        // The array itself (no copy), or what NumPy makes of a list; empty if neither
+        const py::array as_array = py::array::ensure(values);
+        if (as_array && as_array.dtype().kind() == 'c')
+            throw py::value_error("Expected real values, got a complex array (a conversion would drop its "
+                "imaginary part). Complex fields need a solver created with field_type=\"complex\".");
+        return values;
+    }
+};
+}  // namespace (no wider visibility than pybind11's array_t, hidden in a module)
+
+// Specialized like pybind11's caster of array_t (pyobject_caster; the type_caster of a
+// py::object subclass resolves to it)
+namespace pybind11::detail
+{
+template <typename T, int Flags>
+struct pyobject_caster<real_array<T, Flags>>
+{
+    using type = real_array<T, Flags>;
+    using array_type = array_t<T, Flags>;
+    PYBIND11_TYPE_CASTER(type, handle_type_name<array_type>::name);
+
+    // Refused in both passes of the overload resolution: no overload takes a complex
+    // array in place of a real one, and a noconvert (in-place) argument gets the same error
+    bool load(handle src, bool convert)
+    {
+        type::real_values(reinterpret_borrow<object>(src));
+        // As pybind11 loads array_t<T, Flags>
+        if (!convert && !array_type::check_(src))
+            return false;
+        array_type converted = array_type::ensure(src);
+        if (!converted)
+            return false;
+        value = type(std::move(converted));
+        return true;
+    }
+
+    static handle cast(const type& src, return_value_policy, handle)
+    {
+        return src.inc_ref();
+    }
+};
+}  // namespace pybind11::detail
+
 // Input arrays are taken C-contiguous and in the expected dtype: a strided
 // NumPy view or a float32 array is copied/cast, never read as if contiguous.
+// Real ones refuse complex arrays (real_array).
 template <typename T>
-using array_in = py::array_t<T, py::array::c_style | py::array::forcecast>;
+using array_in = std::conditional_t<std::is_same_v<std::remove_const_t<T>, double>,
+    real_array<T, py::array::c_style | py::array::forcecast>,
+    py::array_t<T, py::array::c_style | py::array::forcecast>>;
+
+// Arrays modified in place: taken as they are (with py::arg().noconvert()), so the
+// function can refuse those that would need a copy. Real ones refuse complex arrays.
+template <typename T>
+using array_inout = std::conditional_t<std::is_same_v<T, double>, real_array<T, 0>, py::array_t<T, 0>>;
 
 /**
  * @brief Helper for method overload resolution in pybind11.
@@ -218,12 +296,13 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
             }
             return obj.multi_inner_product(n_comp, static_cast<T*>(buf_g.ptr), static_cast<T*>(buf_h.ptr));
         })
-        .def("zero_mean", [](ComputationBox<T>& obj, py::array_t<T, 0> g)
+        .def("zero_mean", [](ComputationBox<T>& obj, array_inout<T> g)
         {
             // Modified in place: a converted copy would leave the caller's array
             // unchanged, so the array must already be C-contiguous and of the field type
-            // (a wrong dtype is rejected by pybind11 before the call), and writable
-            // (a read-only memory map would crash, an immutable buffer would change).
+            // (a wrong dtype is rejected by pybind11 before the call, a complex array
+            // of real fields by real_array), and writable (a read-only memory map would
+            // crash, an immutable buffer would change).
             if (!(g.flags() & py::array::c_style) || !g.writeable())
                 throw_with_line_number("zero_mean modifies the array in place; pass a writable C-contiguous array.");
             const int N = obj.get_n_basis();
@@ -279,14 +358,18 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
         // otherwise accepts full grid w (total_grid)
         .def("compute_propagators", [](PropagatorComputation<T>& obj, std::map<std::string, array_in<const T>> w_input, py::object q_init)
         {
+            // Casts can own temporary dtype/contiguity conversions. Keep them alive until
+            // the computation has finished reading their buffers. Converted outside the
+            // try below, so that a complex q_init of real fields raises the ValueError of
+            // real_array, like w_input.
+            std::map<std::string, array_in<const T>> q_init_map;
+            if (!q_init.is_none())
+                q_init_map = q_init.cast<std::map<std::string, array_in<const T>>>();
             try{
                 const int N = obj.get_cb()->get_n_basis();
 
                 std::map<std::string, const T*> map_buf_w_input;
                 std::map<std::string, const T*> map_buf_q_init;
-                // Casts can own temporary dtype/contiguity conversions. Keep them
-                // alive until the computation has finished reading their buffers.
-                std::map<std::string, array_in<const T>> q_init_map;
 
                 // Validate and collect w_input
                 for (auto it = w_input.begin(); it != w_input.end(); ++it)
@@ -300,17 +383,13 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
 
                 // Handle q_init if provided: in the same basis as w (reduced with a space group),
                 // which is the layout the computations copy
-                if (!q_init.is_none()) {
-                    q_init_map = q_init.cast<std::map<std::string, array_in<const T>>>();
-
-                    for (auto it = q_init_map.begin(); it != q_init_map.end(); ++it)
-                    {
-                        py::buffer_info buf_q_init = it->second.request();
-                        if (buf_q_init.size != N) {
-                            throw_with_line_number("Size of input q[" + it->first + "] (" + std::to_string(buf_q_init.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-                        }
-                        map_buf_q_init[it->first] = (const T*)buf_q_init.ptr;
+                for (auto it = q_init_map.begin(); it != q_init_map.end(); ++it)
+                {
+                    py::buffer_info buf_q_init = it->second.request();
+                    if (buf_q_init.size != N) {
+                        throw_with_line_number("Size of input q[" + it->first + "] (" + std::to_string(buf_q_init.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
                     }
+                    map_buf_q_init[it->first] = (const T*)buf_q_init.ptr;
                 }
 
                 obj.compute_propagators(map_buf_w_input, map_buf_q_init);
@@ -560,13 +639,6 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
             lead.push_back(n);
         return lead;
     };
-    // The conversion to a real array would drop the imaginary part (with only a ComplexWarning)
-    auto reject_complex = [](py::handle values, bool real, const char* what)
-    {
-        if (real && py::module_::import("numpy").attr("iscomplexobj")(values).cast<bool>())
-            throw_with_line_number(std::string(what) + " of this transform are real: got a complex array. "
-                "Complex fields need a solver created with field_type=\"complex\".");
-    };
     constexpr bool real_fields = std::is_same_v<T, double>;
 
     py::class_<FourierMultiplier<T>>(m, ("FourierMultiplier_" + type_name).c_str())
@@ -618,7 +690,7 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
             const int n_in = diagonal ? 1 : static_cast<int>(buf.shape[1]);
             return obj.create_multiplier(static_cast<const std::complex<double>*>(buf.ptr), n_out, n_in, diagonal);
         }, py::arg("values"), py::keep_alive<0, 1>())
-        .def("apply", [field_count, reject_complex](FourierTransform<T>& obj, py::list terms)
+        .def("apply", [field_count](FourierTransform<T>& obj, py::list terms)
         {
             const int n_grid = obj.get_n_grid();
             std::vector<array_in<T>> inputs;   // keeps converted inputs alive
@@ -632,7 +704,6 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
                 const FourierMultiplier<T>* multiplier = pair[0].cast<const FourierMultiplier<T>*>();
                 if (multiplier == nullptr)
                     throw_with_line_number("Each term needs a multiplier made by set_multiplier().");
-                reject_complex(pair[1], real_fields, "The fields");
                 inputs.push_back(pair[1].cast<array_in<T>>());
                 py::buffer_info buf = inputs.back().request();
                 const int n_fields = field_count(buf, n_grid);
@@ -648,9 +719,8 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
             obj.apply(fourier_terms, n_out, result.mutable_data());
             return result;
         }, py::arg("terms"))
-        .def("forward", [field_count, shaped, reject_complex](FourierTransform<T>& obj, py::object values) -> py::array
+        .def("forward", [field_count, shaped](FourierTransform<T>& obj, py::object values) -> py::array
         {
-            reject_complex(values, real_fields, "The fields");
             array_in<T> fields = values.cast<array_in<T>>();
             py::buffer_info buf = fields.request();
             const int n_fields = field_count(buf, obj.get_n_grid());
@@ -666,7 +736,7 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
             obj.forward(static_cast<const T*>(buf.ptr), n_fields, result.mutable_data());
             return result;
         }, py::arg("fields"))
-        .def("backward", [coefficient_count, reject_complex](FourierTransform<T>& obj, py::object coefficients)
+        .def("backward", [coefficient_count](FourierTransform<T>& obj, py::object coefficients)
         {
             const int n_grid = obj.get_n_grid();
             auto run = [&](auto input, const double* values)
@@ -684,7 +754,6 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
                 array_in<std::complex<double>> input = coefficients.cast<array_in<std::complex<double>>>();
                 return run(input, reinterpret_cast<const double*>(input.data()));
             }
-            reject_complex(coefficients, true, "The coefficients");
             array_in<double> input = coefficients.cast<array_in<double>>();
             return run(input, input.data());
         }, py::arg("coefficients"));
@@ -722,6 +791,11 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
             py::object bc,
             py::object mask)
         {
+            // The mask is real for both field types. Converted outside the try below, so
+            // that a complex mask raises the ValueError of real_array.
+            std::optional<array_in<double>> mask_values;
+            if (!mask.is_none())
+                mask_values = mask.cast<array_in<double>>();
             try {
                 const int M = checked_grid_points(nx);
 
@@ -737,10 +811,9 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
                 }
 
                 // Check if mask is not None
-                if (!mask.is_none())
+                if (mask_values)
                 {
-                    array_in<double> mask_cast = mask.cast<array_in<double>>();   // the mask is real for both field types
-                    buf_mask = mask_cast.request();
+                    buf_mask = mask_values->request();
                     if (buf_mask.size != M) {
                         throw_with_line_number("Size of input (" + std::to_string(buf_mask.size) + ") and 'total_grid' (" + std::to_string(M) + ") must match");
                     }
@@ -1125,7 +1198,7 @@ Example:
             obj.to_reduced_basis(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Full-grid field(s) -> reduced basis. A 1-D input gives a 1-D output, an (n_fields, total_grid) input an (n_fields, n_reduced) output.")
-        .def("symmetrize_reduced_basis", [](SpaceGroup& obj, py::array_t<double, 0> reduced_field)
+        .def("symmetrize_reduced_basis", [](SpaceGroup& obj, array_inout<double> reduced_field)
         {
             // Modified in place (like ComputationBox.zero_mean): a converted copy would
             // leave the caller's array unchanged, so it must already be C-contiguous float64,

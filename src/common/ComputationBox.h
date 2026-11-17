@@ -192,6 +192,10 @@ protected:
      */
     bool is_orthogonal_;
 
+    /// Whether alpha and beta are 90° (within FIXED_ANGLE_TOLERANCE): the c axis is
+    /// perpendicular to the a-b plane, whatever gamma is
+    bool is_z_axis_orthogonal_;
+
     /**
      * @brief Boundary conditions for each face.
      *
@@ -492,6 +496,12 @@ public:
      * @return True if all angles are 90° (within FIXED_ANGLE_TOLERANCE), false otherwise
      */
     bool is_orthogonal() const;
+
+    /**
+     * @brief Check if the c axis is perpendicular to the a-b plane.
+     * @return True if alpha and beta are 90° (within FIXED_ANGLE_TOLERANCE); gamma is free
+     */
+    bool is_z_axis_orthogonal() const;
 
     // ==================== Space Group Methods ====================
 
