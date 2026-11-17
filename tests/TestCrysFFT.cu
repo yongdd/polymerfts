@@ -265,15 +265,16 @@ bool test_cuda(int Nx, int Ny, int Nz, double ds)
     expand_pmmm(h_phys.data(), h_logical.data(), Nx, Ny, Nz);
 
     // CudaCrysFFT
-    CudaCrysFFT crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
-    crys.set_contour_step(ds);
+    CudaCrysFFT crys({Nx, Ny, Nz});
+    CudaDeviceBuffer<double> boltz;
+    crys.build_boltzmann(boltz, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, ds, 0);
 
     double *d_in, *d_out;
     CUDA_CHECK(cudaMalloc(&d_in, sizeof(double)*M_physical));
     CUDA_CHECK(cudaMalloc(&d_out, sizeof(double)*M_physical));
     CUDA_CHECK(cudaMemcpy(d_in, h_phys.data(), sizeof(double)*M_physical, cudaMemcpyHostToDevice));
 
-    crys.diffusion(d_in, d_out);
+    crys.diffusion(d_in, d_out, boltz, 0);
     cudaDeviceSynchronize();
 
     std::vector<double> h_crys_out(M_physical);
@@ -420,13 +421,14 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     }
 #endif
     {
-        CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
+        CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        CudaDeviceBuffer<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds, 0);
         double *d_in, *d_out;
         CUDA_CHECK(cudaMalloc(&d_in, sizeof(double) * M_physical));
         CUDA_CHECK(cudaMalloc(&d_out, sizeof(double) * M_physical));
         CUDA_CHECK(cudaMemcpy(d_in, q_phys.data(), sizeof(double) * M_physical, cudaMemcpyHostToDevice));
-        crys.diffusion(d_in, d_out);
+        crys.diffusion(d_in, d_out, boltz, 0);
         cudaDeviceSynchronize();
         CUDA_CHECK(cudaMemcpy(got.data(), d_out, sizeof(double) * M_physical, cudaMemcpyDeviceToHost));
         cudaFree(d_in);
@@ -481,13 +483,14 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         }
 #endif
         {
-            CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
+            CudaCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            CudaDeviceBuffer<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds, 0);
             double *d_in, *d_out;
             CUDA_CHECK(cudaMalloc(&d_in, sizeof(double) * M_physical));
             CUDA_CHECK(cudaMalloc(&d_out, sizeof(double) * M_physical));
             CUDA_CHECK(cudaMemcpy(d_in, q_phys.data(), sizeof(double) * M_physical, cudaMemcpyHostToDevice));
-            crys.apply_multiplier(d_in, d_out,
-                                  CudaCrysFFTRecursive3m::MultiplierType::ExpKx2, ds, 0);
+            crys.apply_multiplier(d_in, d_out, exp_kx2, 0);
             cudaDeviceSynchronize();
             CUDA_CHECK(cudaMemcpy(got.data(), d_out, sizeof(double) * M_physical, cudaMemcpyDeviceToHost));
             cudaFree(d_in);

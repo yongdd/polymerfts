@@ -20,14 +20,13 @@
 
 #include <array>
 #include <memory>
-#include <map>
-#include <mutex>
 #include <vector>
 #include <cuda_runtime.h>
 #include <cufft.h>
 
 #include "CudaCrysFFT.h"
 
+/// Its tables hold the (S, D) pairs of the half spectrum (see the file comment).
 class CudaCrysFFTObliqueZ : public CudaCrysFFTBase
 {
 private:
@@ -36,15 +35,6 @@ private:
     int M_logical_{0};
     int M_physical_{0};
     int M_spectral_{0};   ///< Nx * Ny * (Nz/4 + 1): half spectrum of the physical grid
-
-    /// (S, D) pairs per ds (see the file comment), shared with the clones
-    /// together with the cell (see CudaCrysFFTTables.h)
-    using Table = CudaDeviceBuffer<double>;
-    enum TableKind { kBoltzmann };
-    CudaCrysFFTTableView<Table> tables_;
-
-    const double* d_boltz_current_{nullptr};   ///< Table of ds_current_ (not owning)
-    double ds_current_{0.0};
 
     cufftHandle plan_fwd_{};   ///< 3D D2Z of the physical grid
     cufftHandle plan_bwd_{};   ///< 3D Z2D of the physical grid
@@ -58,31 +48,26 @@ private:
     double norm_factor_{1.0};
     cudaStream_t stream_{0};
 
-    /// Clone of `other` sharing its twiddle factors and tables (see clone_sharing_tables()).
+    /// Clone of `other` sharing its twiddle factors (see clone()).
     explicit CudaCrysFFTObliqueZ(const CudaCrysFFTObliqueZ& other);
 
     /// Create the 3D plans, the work buffers and (unless shared) the twiddle factors.
     void init_transforms();
     void free_plans();
-    /// (S, D) table for given ds and cell, in `buffers` (a table build, see CudaCrysFFTTables::get()).
-    Table generateBoltzmann(double ds, const std::array<double, 6>& cell, Table buffers);
     /// Free everything acquired so far (idempotent; also used when the constructor throws).
     void release();
 
 public:
-    CudaCrysFFTObliqueZ(
-        std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para,
-        std::array<double, 9> trans_part = {0,0,0, 0,0,0, 0,0,0});
+    explicit CudaCrysFFTObliqueZ(std::array<int, 3> nx_logical);
 
     ~CudaCrysFFTObliqueZ() override;
 
-    void set_cell_para(const std::array<double, 6>& cell_para) override;
-    void set_contour_step(double ds) override;
-    void diffusion(double* d_q_in, double* d_q_out) override;
-    void diffusion(double* d_q_in, double* d_q_out, cudaStream_t stream) override;
+    std::unique_ptr<CudaCrysFFTBase> clone() const override;
     void set_stream(cudaStream_t stream) override;
-    std::unique_ptr<CudaCrysFFTBase> clone_sharing_tables() const override;
+    void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
+                         double coeff, cudaStream_t stream) const override;
+    void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+                   cudaStream_t stream) override;
 
     int get_M_physical() const { return M_physical_; }
 };

@@ -293,8 +293,9 @@ int main(int argc, char** argv)
     fill_full_field(h_full, Nx, Ny, Nz, Lx, Ly, Lz);
 
     // === Pmmm DCT (CudaCrysFFT) ===
-    CudaCrysFFT crys_pmmm({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2});
-    crys_pmmm.set_contour_step(coeff);
+    CudaCrysFFT crys_pmmm({Nx, Ny, Nz});
+    CudaDeviceBuffer<double> boltz_pmmm;
+    crys_pmmm.build_boltzmann(boltz_pmmm, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff, 0);
 
     double *d_pmmm_in{}, *d_pmmm_out{};
     CUDA_CHECK(cudaMalloc(&d_pmmm_in, sizeof(double) * M_phys));
@@ -303,13 +304,13 @@ int main(int argc, char** argv)
 
     for (int i = 0; i < warmup; ++i)
     {
-        crys_pmmm.diffusion(d_pmmm_in, d_pmmm_out);
+        crys_pmmm.diffusion(d_pmmm_in, d_pmmm_out, boltz_pmmm, 0);
         std::swap(d_pmmm_in, d_pmmm_out);
     }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     float ms_pmmm = time_cuda_events([&](){
-        crys_pmmm.diffusion(d_pmmm_in, d_pmmm_out);
+        crys_pmmm.diffusion(d_pmmm_in, d_pmmm_out, boltz_pmmm, 0);
         std::swap(d_pmmm_in, d_pmmm_out);
     }, iters);
 
@@ -322,8 +323,9 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    CudaCrysFFTRecursive3m crys_3m({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, trans_part);
-    crys_3m.set_contour_step(coeff);
+    CudaCrysFFTRecursive3m crys_3m({Nx, Ny, Nz}, trans_part);
+    CudaDeviceBuffer<double> boltz_3m;
+    crys_3m.build_boltzmann(boltz_3m, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff, 0);
 
     double *d_3m_in{}, *d_3m_out{};
     CUDA_CHECK(cudaMalloc(&d_3m_in, sizeof(double) * M_phys));
@@ -332,13 +334,13 @@ int main(int argc, char** argv)
 
     for (int i = 0; i < warmup; ++i)
     {
-        crys_3m.diffusion(d_3m_in, d_3m_out);
+        crys_3m.diffusion(d_3m_in, d_3m_out, boltz_3m, 0);
         std::swap(d_3m_in, d_3m_out);
     }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     float ms_3m = time_cuda_events([&](){
-        crys_3m.diffusion(d_3m_in, d_3m_out);
+        crys_3m.diffusion(d_3m_in, d_3m_out, boltz_3m, 0);
         std::swap(d_3m_in, d_3m_out);
     }, iters);
 
@@ -500,8 +502,9 @@ int main(int argc, char** argv)
         fill_hex_physical_field(h_hex_phys, h_full, Nx, Ny, Nz);
 
         // ObliqueZ CrysFFT (CudaCrysFFTObliqueZ)
-        CudaCrysFFTObliqueZ crys_hex({Nx, Ny, Nz}, cell_hex);
-        crys_hex.set_contour_step(coeff);
+        CudaCrysFFTObliqueZ crys_hex({Nx, Ny, Nz});
+        CudaDeviceBuffer<double> table_hex;
+        crys_hex.build_boltzmann(table_hex, cell_hex, coeff, 0);
 
         double *d_hex_in{}, *d_hex_out{};
         CUDA_CHECK(cudaMalloc(&d_hex_in, sizeof(double) * M_hex_phys));
@@ -510,13 +513,13 @@ int main(int argc, char** argv)
 
         for (int i = 0; i < warmup; ++i)
         {
-            crys_hex.diffusion(d_hex_in, d_hex_out);
+            crys_hex.diffusion(d_hex_in, d_hex_out, table_hex, 0);
             std::swap(d_hex_in, d_hex_out);
         }
         CUDA_CHECK(cudaDeviceSynchronize());
 
         float ms_hex = time_cuda_events([&](){
-            crys_hex.diffusion(d_hex_in, d_hex_out);
+            crys_hex.diffusion(d_hex_in, d_hex_out, table_hex, 0);
             std::swap(d_hex_in, d_hex_out);
         }, iters);
 

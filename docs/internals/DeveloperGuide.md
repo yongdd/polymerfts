@@ -657,7 +657,7 @@ Who owns whom:
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
 - A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
 - A backend owns its solver, and on CUDA the streams, events and scratch buffers.
-- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects and its Boltzmann factors.
+- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA) with their k-space tables (one per coefficient for all streams) and its Boltzmann factors.
 
 Allocations are owned by objects that release them, so destructors and constructors
 that throw need no cleanup code:

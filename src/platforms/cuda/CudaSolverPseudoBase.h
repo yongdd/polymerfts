@@ -24,9 +24,9 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <map>
-#include <set>
 #include <cufft.h>
 
 #include "Exception.h"
@@ -90,8 +90,11 @@ protected:
     std::unique_ptr<CudaCrysFFTBase> crysfft_[MAX_STREAMS];   ///< Per-stream CrysFFT objects
     CudaDeviceBuffer<double> d_crysfft_in_[MAX_STREAMS];              ///< Per-stream physical grid input
     CudaDeviceBuffer<double> d_crysfft_out_[MAX_STREAMS];             ///< Per-stream physical grid output
-    std::set<double> crysfft_coeffs_;   ///< Step coefficients whose tables update_crysfft_tables() built
-    std::set<std::pair<double, bool>> crysfft_stress_keys_;   ///< (b², bond factor) of the stress multipliers prepare_stress() built
+    // k-space tables of the current cell, one per key for all streams: built before the
+    // propagator and stress loops, which only look them up, and rebuilt in place when
+    // the cell changes (update_crysfft_tables())
+    std::map<double, CudaDeviceBuffer<double>> crysfft_boltz_;   ///< Boltzmann factors per step coefficient
+    std::map<std::pair<int, double>, CudaDeviceBuffer<double>> crysfft_multipliers_;   ///< Stress multipliers per (axis group, bond coefficient)
 
     /**
      * @param max_fft_batch             Largest number of fields the derived solver
@@ -207,8 +210,12 @@ private:
     /// Upload the index maps and create the per-stream CrysFFT objects for `mode`.
     void setup_crysfft(CudaCrysFFTMode mode, const CrysFFTBasisMapping& map,
                        const std::array<double, 9>& m3_translations);
-    /// Pass the current cell to the CrysFFT objects and build the Boltzmann tables of all steps.
+    /// Rebuild every CrysFFT table for the current cell.
     void update_crysfft_tables();
+    /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
+    std::array<double, 6> crysfft_cell() const;
+    /// Keys of the stress multipliers of a bond: per axis group, (axes, b²·ds/6 or 0 without the bond factor).
+    std::vector<std::pair<int, double>> crysfft_stress_keys(double bond_length_sq, bool include_bond_factor) const;
     /// True when the segment stress takes the CrysFFT fast path (Pmmm or 3m, orthogonal 3D cell).
     bool crysfft_stress_fast_path() const;
     /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).

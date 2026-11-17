@@ -375,6 +375,17 @@ basis on the `SpaceGroup` before passing it (`enable_m3_physical_basis()`,
   spectrum, applies both Boltzmann factors and returns to the half spectrum, so a
   diffusion step is three kernels and two cuFFT calls
 
+`CudaSolverPseudoBase` keeps one CrysFFT object per stream, with its own cuFFT plans
+and work buffers (`clone()` shares the read-only twiddle factors). The k-space tables
+belong to the solver, one per key for all streams: the Boltzmann factors of each step
+coefficient (`crysfft_boltz_`), built when the CrysFFT path is set up, and the stress
+multipliers of each axis group and bond coefficient (`crysfft_multipliers_`), built by
+`prepare_stress()` before the first segment loop. A cell change
+(`update_laplacian_operator()`) waits for the device and rebuilds every table in place.
+The engines take the table as an argument (`diffusion(in, out, table, stream)`,
+`apply_multiplier(in, out, table, stream)`), so the propagator and stress loops only look
+tables up and never build or allocate one; a missing key is an error.
+
 **Backward Compatibility:**
 
 ```cpp

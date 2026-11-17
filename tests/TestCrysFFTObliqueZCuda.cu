@@ -10,8 +10,8 @@
  * monoclinic in-plane angles, and grid spacings 8x apart in the plane, where
  * the alias search must be exact for the Boltzmann factors to be even in
  * (kx, ky) as the CUDA kernel requires. Each case also checks an in-place call, that an
- * out-of-place call keeps its input, a clone sharing the tables, and a cell
- * change followed by a new table.
+ * out-of-place call keeps its input, a clone with the same table, and the table
+ * rebuilt in place for a new cell.
  */
 
 #include <algorithm>
@@ -64,22 +64,22 @@ static bool test_case(const std::array<int, 3>& nx, const std::array<double, 6>&
     std::vector<double> q_cpu = q, reference(M_phys);
     cpu.diffusion(q_cpu.data(), reference.data());
 
-    CudaCrysFFTObliqueZ gpu(nx, cell);
-    gpu.set_contour_step(ds);
+    CudaCrysFFTObliqueZ gpu(nx);
+    CudaDeviceBuffer<double> boltz;
+    gpu.build_boltzmann(boltz, cell, ds, 0);
     CudaDeviceBuffer<double> d_in(M_phys), d_out(M_phys);
     CUDA_CHECK(cudaMemcpy(d_in, q.data(), sizeof(double) * M_phys, cudaMemcpyHostToDevice));
 
-    gpu.diffusion(d_in, d_out);
+    gpu.diffusion(d_in, d_out, boltz, 0);
     const double err_out = relative_difference(to_host(d_out, M_phys), reference);
     const double err_input = relative_difference(to_host(d_in, M_phys), q);
 
     CUDA_CHECK(cudaMemcpy(d_out, q.data(), sizeof(double) * M_phys, cudaMemcpyHostToDevice));
-    gpu.diffusion(d_out, d_out);
+    gpu.diffusion(d_out, d_out, boltz, 0);
     const double err_in_place = relative_difference(to_host(d_out, M_phys), reference);
 
-    std::unique_ptr<CudaCrysFFTBase> clone = gpu.clone_sharing_tables();
-    clone->set_contour_step(ds);
-    clone->diffusion(d_in, d_out);
+    std::unique_ptr<CudaCrysFFTBase> clone = gpu.clone();
+    clone->diffusion(d_in, d_out, boltz, 0);
     const double err_clone = relative_difference(to_host(d_out, M_phys), reference);
 
     // Cell change: lengths scaled, angles kept
@@ -90,16 +90,18 @@ static bool test_case(const std::array<int, 3>& nx, const std::array<double, 6>&
     cpu.set_contour_step(ds);
     q_cpu = q;
     cpu.diffusion(q_cpu.data(), reference.data());
-    gpu.set_cell_para(cell_new);
-    gpu.set_contour_step(ds);
-    gpu.diffusion(d_in, d_out);
+    const double* const boltz_buffer = boltz.get();
+    gpu.build_boltzmann(boltz, cell_new, ds, 0);
+    gpu.diffusion(d_in, d_out, boltz, 0);
     const double err_cell = relative_difference(to_host(d_out, M_phys), reference);
 
+    const bool same_buffer = (boltz.get() == boltz_buffer);   // rebuilt in place
+
     const double err = std::max({err_out, err_in_place, err_clone, err_cell});
-    const bool ok = (err < TOLERANCE) && (err_input == 0.0);
-    std::printf("  %3dx%3dx%3d gamma=%5.1f  out %.1e  in-place %.1e  clone %.1e  new cell %.1e  input kept %s  %s\n",
+    const bool ok = (err < TOLERANCE) && (err_input == 0.0) && same_buffer;
+    std::printf("  %3dx%3dx%3d gamma=%5.1f  out %.1e  in-place %.1e  clone %.1e  new cell %.1e  input kept %s  table kept %s  %s\n",
                 nx[0], nx[1], nx[2], cell[5] * 180.0 / M_PI, err_out, err_in_place, err_clone, err_cell,
-                err_input == 0.0 ? "yes" : "NO", ok ? "OK" : "FAIL");
+                err_input == 0.0 ? "yes" : "NO", same_buffer ? "yes" : "NO", ok ? "OK" : "FAIL");
     return ok;
 }
 

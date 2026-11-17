@@ -13,24 +13,27 @@
  * @file TestCudaCrysTablesAllocation.cu
  * @brief The CUDA CrysFFT paths allocate no tables while computing propagators.
  *
- * The Boltzmann tables of the CrysFFT steps are built when the computation is
- * created and when the cell changes (update_laplacian_operator), not lazily in
- * the propagator loop. For each CrysFFT mode (recursive 3m, Pmmm DCT, ObliqueZ)
- * and each pseudo-spectral method:
+ * The solver owns the CrysFFT tables, one per coefficient for all streams. It
+ * builds the Boltzmann tables when the computation is created, the stress
+ * multipliers in the first compute_stress() before its segment loop, and
+ * rebuilds all of them in place when the cell changes (update_laplacian_operator);
+ * the loops only look them up. For each CrysFFT mode (recursive 3m, Pmmm DCT,
+ * ObliqueZ) and each pseudo-spectral method:
  *
  * - The first compute_propagators()/compute_concentrations() may make only the
  *   counted allocations that the same system makes with the group P1, which has
  *   no CrysFFT path (the device copies of the fields); the allocation test hook
  *   fails any further one.
- * - After a cell change, these calls may allocate nothing.
- * - Neither call builds a table (the table cache reuses the buffers of dropped
- *   tables, so only its build counter shows a build in the loop).
- * - compute_stress() builds the stress multipliers before its segment loop and
- *   only once per cell: a second call builds none and gives the same stress.
- * - After the change, the results equal those of a computation created for the
- *   new cell.
+ * - A cell change keeps the device allocations (count and bytes), and after it
+ *   these calls may allocate nothing.
+ * - A second compute_stress() allocates nothing and gives the same stress.
+ * - After a second cell change, which rebuilds the stress multipliers too,
+ *   compute_stress() allocates nothing either.
+ * - After each change, the results (Q, and the stress after the second) equal
+ *   those of a computation created for the new cell.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -40,7 +43,6 @@
 #include <vector>
 
 #include "CudaCommon.h"
-#include "CudaCrysFFTTables.h"
 #include "AbstractFactory.h"
 #include "ComputationBox.h"
 #include "Molecules.h"
@@ -121,38 +123,52 @@ static long long count_allocations(Computation& s)
     return n;
 }
 
-/// compute(); false if it makes more than `allowed` counted allocations
-static bool compute_with_allocations(Computation& s, long long allowed)
+/// f(); false if it makes more than `allowed` counted allocations
+template <typename F>
+static bool with_allocations(const char* what, long long allowed, F&& f)
 {
     bool ok = true;
     cuda_buffer_fail_countdown().store(allowed);
     try
     {
-        compute(s);
+        f();
     }
     catch (std::exception& exc)
     {
-        printf("  %s\n", exc.what());
+        printf("  %s: %s\n", what, exc.what());
         ok = false;
     }
     cuda_buffer_fail_countdown().store(-1);
     return ok;
 }
 
-/// Number of CrysFFT tables built by f()
-template <typename F>
-static long long count_table_builds(F&& f)
+/// New box lengths and update_laplacian_operator(); false if the device allocations change
+static bool change_cell(Computation& s, const std::vector<double>& lx)
 {
-    const long long start = cuda_crysfft_table_build_counter().load();
-    f();
-    return cuda_crysfft_table_build_counter().load() - start;
+    const CudaBufferCounters& counters = CudaDeviceMemory::counters();
+    const long long count = counters.live_count.load(), bytes = counters.live_bytes.load();
+    s.cb->set_lx(lx);
+    s.computation->update_laplacian_operator();
+    const bool same = counters.live_count.load() == count && counters.live_bytes.load() == bytes;
+    if (!same)
+        printf("  The cell change changed the device allocations: %lld -> %lld (%lld -> %lld bytes)\n",
+               count, counters.live_count.load(), bytes, counters.live_bytes.load());
+    return same;
 }
 
-static bool no_builds(const char* what, long long builds)
+/// |a - b| <= 1e-13 |b| componentwise relative to the largest |b|
+static bool same_values(const char* what, const std::vector<double>& a, const std::vector<double>& b)
 {
-    if (builds != 0)
-        printf("  %s built %lld CrysFFT tables\n", what, builds);
-    return builds == 0;
+    double diff = 0.0, scale = 0.0;
+    for (size_t i = 0; i < b.size(); ++i)
+    {
+        diff = std::max(diff, std::abs(a[i] - b[i]));
+        scale = std::max(scale, std::abs(b[i]));
+    }
+    const bool same = a.size() == b.size() && diff <= 1e-13 * scale;
+    if (!same)
+        printf("  %s: difference %.3e (scale %.3e)\n", what, diff, scale);
+    return same;
 }
 
 int main()
@@ -175,25 +191,20 @@ int main()
             const long long first_call = count_allocations(p1);
 
             Computation s = create(c, c.lx);
-            bool ok = true;
-            long long builds = count_table_builds([&] { ok = compute_with_allocations(s, first_call); });
-            ok = no_builds("The first call", builds) && ok;
+            bool ok = with_allocations("The first call", first_call, [&] { compute(s); });
 
-            // A new cell: the tables are rebuilt by update_laplacian_operator()
+            // A new cell: the tables are rebuilt in place by update_laplacian_operator()
             std::vector<double> new_lx = c.lx;
             for (double& l : new_lx)
                 l *= 1.07;
-            s.cb->set_lx(new_lx);
-            s.computation->update_laplacian_operator();
-            builds = count_table_builds([&] { ok = compute_with_allocations(s, 0) && ok; });
-            ok = no_builds("The call after the cell change", builds) && ok;
+            ok = change_cell(s, new_lx) && ok;
+            ok = with_allocations("The call after the cell change", 0, [&] { compute(s); }) && ok;
             ok = s.computation->check_total_partition() && ok;
 
-            // Stress: multipliers before the segment loop, once per cell
+            // Stress: multipliers before the segment loop, once
             s.computation->compute_stress();
             const std::vector<double> stress = s.computation->get_stress();
-            builds = count_table_builds([&] { s.computation->compute_stress(); });
-            ok = no_builds("The second compute_stress()", builds) && ok;
+            ok = with_allocations("The second compute_stress()", 0, [&] { s.computation->compute_stress(); }) && ok;
             if (s.computation->get_stress() != stress)
             {
                 printf("  The second compute_stress() changed the stress\n");
@@ -208,6 +219,23 @@ int main()
             if (!same)
                 printf("  Q after the cell change %.15e, fresh %.15e\n", q, q_fresh);
             ok = same && ok;
+
+            // A second cell: the stress multipliers are rebuilt in place as well
+            std::vector<double> lx_2 = c.lx;
+            for (double& l : lx_2)
+                l *= 0.96;
+            ok = change_cell(s, lx_2) && ok;
+            ok = with_allocations("The calls after the second cell change", 0, [&] {
+                compute(s);
+                s.computation->compute_stress();
+            }) && ok;
+            Computation fresh_2 = create(c, lx_2);
+            compute(fresh_2);
+            fresh_2.computation->compute_stress();
+            ok = same_values("Q after the second cell change", {s.computation->get_total_partition(0)},
+                             {fresh_2.computation->get_total_partition(0)}) && ok;
+            ok = same_values("Stress after the second cell change", s.computation->get_stress(),
+                             fresh_2.computation->get_stress()) && ok;
 
             printf("%s (%lld allocations in the first call): %s\n", c.name.c_str(), first_call, ok ? "ok" : "FAILED");
             all_ok = all_ok && ok;

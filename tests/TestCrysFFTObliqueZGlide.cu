@@ -340,15 +340,16 @@ static bool test_cuda_oblique_glide(int Nx, int Ny, int Nz, double ds)
     expand_oblique_z(h_phys.data(), h_logical.data(), Nx, Ny, Nz, z_shift);
 
     // ObliqueZ CrysFFT (CUDA)
-    CudaCrysFFTObliqueZ crys({Nx, Ny, Nz}, cell_hex);
-    crys.set_contour_step(ds);
+    CudaCrysFFTObliqueZ crys({Nx, Ny, Nz});
+    CudaDeviceBuffer<double> boltz;
+    crys.build_boltzmann(boltz, cell_hex, ds, 0);
 
     double *d_in{}, *d_out{};
     CUDA_CHECK(cudaMalloc(&d_in, sizeof(double) * M_phys));
     CUDA_CHECK(cudaMalloc(&d_out, sizeof(double) * M_phys));
     CUDA_CHECK(cudaMemcpy(d_in, h_phys.data(), sizeof(double) * M_phys, cudaMemcpyHostToDevice));
 
-    crys.diffusion(d_in, d_out);
+    crys.diffusion(d_in, d_out, boltz, 0);
     cudaDeviceSynchronize();
 
     std::vector<double> h_crys_out(M_phys);

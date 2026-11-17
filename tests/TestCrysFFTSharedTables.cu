@@ -11,24 +11,23 @@
 
 /**
  * @file TestCrysFFTSharedTables.cu
- * @brief CUDA CrysFFT clones share their tables and cell consistently.
+ * @brief CUDA CrysFFT objects of different streams share one table per key.
  *
- * A solver keeps one CrysFFT object per stream; the clones share the k-space
- * tables and the cell (CudaCrysFFTTables.h). For the Pmmm DCT, recursive 3m and
- * ObliqueZ engines, with `a` and its clone `b`:
+ * A solver keeps one CrysFFT object per stream and owns the k-space tables,
+ * one per coefficient for all streams, which it rebuilds in place when the cell
+ * changes. For the Pmmm DCT, recursive 3m and ObliqueZ engines, with `a` and its
+ * clone `b` on two streams:
  *
- * 1. b uses the table a built.
- * 2. a changes the cell, which b is not told, and builds a table for a new
- *    coefficient in the buffers of the dropped ones. b's diffusion() without a
- *    new set_contour_step() throws instead of reading a dropped table.
- * 3. b's old and new coefficients give the diffusion of an object created for
- *    the new cell; a then uses the table b built.
- * 4. The stress multipliers of b after a's cell change are those of the new cell.
- * 5. When b's first call after a's cell change is a stress-multiplier lookup,
- *    b's set_contour_step() with its old coefficient still drops the table of
- *    the old cell (the lookup does not use up the report of the change).
+ * 1. b diffuses with the table a built.
+ * 2. b rebuilds that table in place for a new cell (same buffer, no
+ *    allocation); a and b then give the diffusion of the new cell.
+ * 3. b uses a table a built for a new coefficient of the new cell, and a one b
+ *    built.
+ * 4. A stress multiplier rebuilt in place by b is that of the new cell
+ *    (ObliqueZ has none and refuses to build one).
  *
- * "Equal" means a relative difference of at most 1e-14 against the fresh object.
+ * "Equal" means a relative difference of at most 1e-14 against a fresh object
+ * with fresh tables.
  */
 
 #include <array>
@@ -51,9 +50,7 @@ namespace {
 constexpr double TOLERANCE = 1e-14;
 constexpr double PI = 3.14159265358979323846;
 
-using Make = std::function<std::unique_ptr<CudaCrysFFTBase>(const std::array<double, 6>&)>;
-/// Applies a stress multiplier of the engine to d_in (does nothing for ObliqueZ)
-using ApplyMultiplier = std::function<bool(CudaCrysFFTBase&, double*, double*)>;
+using Make = std::function<std::unique_ptr<CudaCrysFFTBase>()>;
 
 std::vector<double> to_host(const double* d, int n)
 {
@@ -80,19 +77,35 @@ bool check(const char* engine, const char* what, double err)
     return ok;
 }
 
-/// diffusion(coeff) of `crysfft` on d_in, on the host
-std::vector<double> diffuse(CudaCrysFFTBase& crysfft, double coeff, double* d_in, double* d_out, int M_phys)
+bool check_flag(const char* engine, const char* what, bool ok)
 {
-    crysfft.set_contour_step(coeff);
-    crysfft.diffusion(d_in, d_out);
+    std::printf("  %-12s %-52s %s\n", engine, what, ok ? "ok" : "FAIL");
+    return ok;
+}
+
+/// diffusion() of `crysfft` with `table` on d_in, on the host
+std::vector<double> diffuse(CudaCrysFFTBase& crysfft, const CudaDeviceBuffer<double>& table,
+                            double* d_in, double* d_out, int M_phys, cudaStream_t stream)
+{
+    crysfft.diffusion(d_in, d_out, table, stream);
     CUDA_CHECK(cudaDeviceSynchronize());
     return to_host(d_out, M_phys);
 }
 
-bool run(const char* engine, const Make& make, const ApplyMultiplier& apply_multiplier, int M_phys,
+/// apply_multiplier() of `crysfft` with `table` on d_in, on the host
+std::vector<double> multiply(CudaCrysFFTBase& crysfft, const CudaDeviceBuffer<double>& table,
+                             double* d_in, double* d_out, int M_phys, cudaStream_t stream)
+{
+    crysfft.apply_multiplier(d_in, d_out, table, stream);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return to_host(d_out, M_phys);
+}
+
+/// mult_axes: axes of the stress multiplier checked (0: the engine has none)
+bool run(const char* engine, const Make& make, int mult_axes, int M_phys,
          const std::array<double, 6>& cell_a, const std::array<double, 6>& cell_b)
 {
-    const double ds1 = 0.01, ds2 = 0.015, ds3 = 0.0075;
+    const double ds1 = 0.01, ds2 = 0.015, ds3 = 0.0075, mult_coeff = 0.02;
 
     std::mt19937 rng(17);
     std::normal_distribution<double> normal(0.0, 5.0);
@@ -102,71 +115,84 @@ bool run(const char* engine, const Make& make, const ApplyMultiplier& apply_mult
     CudaDeviceBuffer<double> d_q(M_phys), d_out(M_phys);
     CUDA_CHECK(cudaMemcpy(d_q, q.data(), sizeof(double) * M_phys, cudaMemcpyHostToDevice));
 
-    // References: objects created for each cell
-    std::unique_ptr<CudaCrysFFTBase> fresh_a = make(cell_a);
-    std::unique_ptr<CudaCrysFFTBase> fresh_b = make(cell_b);
-    const std::vector<double> ref_a1 = diffuse(*fresh_a, ds1, d_q, d_out, M_phys);
-    const std::vector<double> ref_b1 = diffuse(*fresh_b, ds1, d_q, d_out, M_phys);
-    const std::vector<double> ref_b2 = diffuse(*fresh_b, ds2, d_q, d_out, M_phys);
-    const std::vector<double> ref_b3 = diffuse(*fresh_b, ds3, d_q, d_out, M_phys);
+    // References: a fresh object with fresh tables for each cell
+    auto reference = [&](const std::array<double, 6>& cell, double ds) {
+        std::unique_ptr<CudaCrysFFTBase> fresh = make();
+        CudaDeviceBuffer<double> table;
+        fresh->build_boltzmann(table, cell, ds, 0);
+        return diffuse(*fresh, table, d_q, d_out, M_phys, 0);
+    };
+    const std::vector<double> ref_a1 = reference(cell_a, ds1);
+    const std::vector<double> ref_b1 = reference(cell_b, ds1);
+    const std::vector<double> ref_b2 = reference(cell_b, ds2);
+    const std::vector<double> ref_b3 = reference(cell_b, ds3);
     std::vector<double> ref_mult_b;
-    const bool has_multiplier = apply_multiplier(*fresh_b, d_q, d_out);
-    if (has_multiplier)
+    if (mult_axes != 0)
     {
-        CUDA_CHECK(cudaDeviceSynchronize());
-        ref_mult_b = to_host(d_out, M_phys);
+        std::unique_ptr<CudaCrysFFTBase> fresh = make();
+        CudaDeviceBuffer<double> table;
+        fresh->build_multiplier(table, cell_b, mult_axes, mult_coeff, 0);
+        ref_mult_b = multiply(*fresh, table, d_q, d_out, M_phys, 0);
     }
 
-    std::unique_ptr<CudaCrysFFTBase> a = make(cell_a);
-    std::unique_ptr<CudaCrysFFTBase> b = a->clone_sharing_tables();
+    cudaStream_t stream_a{}, stream_b{};
+    CUDA_CHECK(cudaStreamCreate(&stream_a));
+    CUDA_CHECK(cudaStreamCreate(&stream_b));
+    std::unique_ptr<CudaCrysFFTBase> a = make();
+    std::unique_ptr<CudaCrysFFTBase> b = a->clone();
     bool ok = true;
 
-    // 1. b uses the table a built (and a multiplier of the old cell)
-    ok = check(engine, "a, old cell", relative_difference(diffuse(*a, ds1, d_q, d_out, M_phys), ref_a1)) && ok;
-    ok = check(engine, "b with the table a built", relative_difference(diffuse(*b, ds1, d_q, d_out, M_phys), ref_a1)) && ok;
-    if (has_multiplier)
-        apply_multiplier(*b, d_q, d_out);
+    // 1. b uses the table a built
+    CudaDeviceBuffer<double> table_1, multiplier;
+    a->build_boltzmann(table_1, cell_a, ds1, stream_a);
+    if (mult_axes != 0)
+        a->build_multiplier(multiplier, cell_a, mult_axes, mult_coeff, stream_a);
+    ok = check(engine, "a, old cell", relative_difference(diffuse(*a, table_1, d_q, d_out, M_phys, stream_a), ref_a1)) && ok;
+    ok = check(engine, "b with the table a built", relative_difference(diffuse(*b, table_1, d_q, d_out, M_phys, stream_b), ref_a1)) && ok;
 
-    // 2. a changes the cell and builds ds2 in the buffers of the dropped tables
-    a->set_cell_para(cell_b);
-    ok = check(engine, "a after its cell change", relative_difference(diffuse(*a, ds2, d_q, d_out, M_phys), ref_b2)) && ok;
-    bool threw = false;
-    try
-    {
-        b->diffusion(d_q, d_out);
-    }
-    catch (std::exception&)
-    {
-        threw = true;
-    }
-    std::printf("  %-12s %-52s %s\n", engine, "b's stale table is not used", threw ? "ok" : "FAIL");
-    ok = threw && ok;
+    // 2. b rebuilds the tables in place for the new cell
+    const double* table_1_buffer = table_1.get();
+    const double* multiplier_buffer = multiplier.get();
+    const long long live = CudaDeviceMemory::counters().live_count.load();
+    b->build_boltzmann(table_1, cell_b, ds1, stream_b);
+    if (mult_axes != 0)
+        b->build_multiplier(multiplier, cell_b, mult_axes, mult_coeff, stream_b);
+    const bool in_place = table_1.get() == table_1_buffer && multiplier.get() == multiplier_buffer
+                       && CudaDeviceMemory::counters().live_count.load() == live;
+    ok = check_flag(engine, "tables rebuilt in place, no allocation", in_place) && ok;
+    ok = check(engine, "a, rebuilt table, new cell", relative_difference(diffuse(*a, table_1, d_q, d_out, M_phys, stream_a), ref_b1)) && ok;
+    ok = check(engine, "b, rebuilt table, new cell", relative_difference(diffuse(*b, table_1, d_q, d_out, M_phys, stream_b), ref_b1)) && ok;
 
-    // 3. b's coefficients are those of the new cell; a uses the table b builds
-    ok = check(engine, "b, old coefficient, new cell", relative_difference(diffuse(*b, ds1, d_q, d_out, M_phys), ref_b1)) && ok;
-    ok = check(engine, "b, new coefficient, new cell", relative_difference(diffuse(*b, ds3, d_q, d_out, M_phys), ref_b3)) && ok;
-    ok = check(engine, "a with the table b built", relative_difference(diffuse(*a, ds3, d_q, d_out, M_phys), ref_b3)) && ok;
+    // 3. Tables of new coefficients, built by one object and used by the other
+    CudaDeviceBuffer<double> table_2, table_3;
+    a->build_boltzmann(table_2, cell_b, ds2, stream_a);
+    b->build_boltzmann(table_3, cell_b, ds3, stream_b);
+    ok = check(engine, "b with a new table a built", relative_difference(diffuse(*b, table_2, d_q, d_out, M_phys, stream_b), ref_b2)) && ok;
+    ok = check(engine, "a with a new table b built", relative_difference(diffuse(*a, table_3, d_q, d_out, M_phys, stream_a), ref_b3)) && ok;
 
-    // 4. b's stress multiplier after a's cell change
-    if (has_multiplier)
+    // 4. The stress multiplier of the new cell
+    if (mult_axes != 0)
     {
-        apply_multiplier(*b, d_q, d_out);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        ok = check(engine, "b's stress multiplier, new cell", relative_difference(to_host(d_out, M_phys), ref_mult_b)) && ok;
+        ok = check(engine, "a's stress multiplier, new cell",
+                   relative_difference(multiply(*a, multiplier, d_q, d_out, M_phys, stream_a), ref_mult_b)) && ok;
+    }
+    else
+    {
+        bool threw = false;
+        try
+        {
+            CudaDeviceBuffer<double> table;
+            a->build_multiplier(table, cell_b, 7, 0.0, stream_a);
+        }
+        catch (std::exception&)
+        {
+            threw = true;
+        }
+        ok = check_flag(engine, "no stress multipliers", threw) && ok;
     }
 
-    // 5. A multiplier lookup as the first call after the cell change
-    if (has_multiplier)
-    {
-        std::unique_ptr<CudaCrysFFTBase> c = make(cell_a);
-        std::unique_ptr<CudaCrysFFTBase> d = c->clone_sharing_tables();
-        diffuse(*c, ds1, d_q, d_out, M_phys);
-        diffuse(*d, ds1, d_q, d_out, M_phys);
-        c->set_cell_para(cell_b);
-        apply_multiplier(*d, d_q, d_out);
-        ok = check(engine, "b after a multiplier lookup, old coefficient",
-                   relative_difference(diffuse(*d, ds1, d_q, d_out, M_phys), ref_b1)) && ok;
-    }
+    CUDA_CHECK(cudaStreamDestroy(stream_a));
+    CUDA_CHECK(cudaStreamDestroy(stream_b));
     return ok;
 }
 
@@ -182,15 +208,8 @@ int main()
         // Pmmm DCT: physical grid (Nx/2, Ny/2, Nz/2)
         {
             const std::array<int, 3> nx = {8, 6, 10};
-            const Make make = [nx](const std::array<double, 6>& cell) {
-                return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFT(nx, cell));
-            };
-            const ApplyMultiplier apply = [](CudaCrysFFTBase& c, double* d_in, double* d_out) {
-                auto& pmmm = static_cast<CudaCrysFFT&>(c);
-                pmmm.apply_multiplier(d_in, d_out, pmmm.get_axis_boltz_k2_multiplier(3, 0.02), 0);
-                return true;
-            };
-            ok = run("Pmmm DCT", make, apply, 4 * 3 * 5,
+            const Make make = [nx] { return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFT(nx)); };
+            ok = run("Pmmm DCT", make, 3, 4 * 3 * 5,
                      {1.5, 1.3, 1.7, right, right, right}, {1.62, 1.25, 1.81, right, right, right}) && ok;
         }
 
@@ -198,26 +217,18 @@ int main()
         {
             const std::array<int, 3> nx = {8, 8, 8};
             const std::array<double, 9> translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-            const Make make = [nx, translations](const std::array<double, 6>& cell) {
-                return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTRecursive3m(nx, cell, translations));
+            const Make make = [nx, translations] {
+                return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTRecursive3m(nx, translations));
             };
-            const ApplyMultiplier apply = [](CudaCrysFFTBase& c, double* d_in, double* d_out) {
-                static_cast<CudaCrysFFTRecursive3m&>(c).apply_multiplier(
-                    d_in, d_out, CudaCrysFFTRecursive3m::MultiplierType::ExpKx2, 0.02, 0);
-                return true;
-            };
-            ok = run("Recursive 3m", make, apply, 4 * 4 * 4,
+            ok = run("Recursive 3m", make, 1, 4 * 4 * 4,
                      {1.6, 1.6, 1.6, right, right, right}, {1.75, 1.75, 1.75, right, right, right}) && ok;
         }
 
         // ObliqueZ: physical grid (Nx, Ny, Nz/2), gamma changes with the cell
         {
             const std::array<int, 3> nx = {8, 6, 8};
-            const Make make = [nx](const std::array<double, 6>& cell) {
-                return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTObliqueZ(nx, cell));
-            };
-            const ApplyMultiplier none = [](CudaCrysFFTBase&, double*, double*) { return false; };
-            ok = run("ObliqueZ", make, none, 8 * 6 * 4,
+            const Make make = [nx] { return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTObliqueZ(nx)); };
+            ok = run("ObliqueZ", make, 0, 8 * 6 * 4,
                      {1.5, 1.3, 1.2, right, right, 100.0 * PI / 180.0},
                      {1.55, 1.28, 1.22, right, right, 104.0 * PI / 180.0}) && ok;
         }

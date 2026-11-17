@@ -10,7 +10,6 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
-#include <mutex>
 #include <vector>
 
 #include "CudaCrysFFTObliqueZ.h"
@@ -108,12 +107,8 @@ __global__ void ker_obliquez_spectral(
 //------------------------------------------------------------------------------
 // Constructor / Destructor
 //------------------------------------------------------------------------------
-CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(
-    std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
-    std::array<double, 9> /*trans_part*/)
-    : nx_logical_(nx_logical),
-      tables_(std::make_shared<CudaCrysFFTTables<Table>>(cell_para))
+CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(std::array<int, 3> nx_logical)
+    : nx_logical_(nx_logical)
 {
     try
     {
@@ -146,7 +141,6 @@ CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(const CudaCrysFFTObliqueZ& other)
       M_logical_(other.M_logical_),
       M_physical_(other.M_physical_),
       M_spectral_(other.M_spectral_),
-      tables_(other.tables_.shared()),
       d_twiddle_(other.d_twiddle_),
       norm_factor_(other.norm_factor_)
 {
@@ -161,7 +155,7 @@ CudaCrysFFTObliqueZ::CudaCrysFFTObliqueZ(const CudaCrysFFTObliqueZ& other)
     }
 }
 
-std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTObliqueZ::clone_sharing_tables() const
+std::unique_ptr<CudaCrysFFTBase> CudaCrysFFTObliqueZ::clone() const
 {
     return std::unique_ptr<CudaCrysFFTBase>(new CudaCrysFFTObliqueZ(*this));
 }
@@ -210,11 +204,9 @@ CudaCrysFFTObliqueZ::~CudaCrysFFTObliqueZ()
 }
 
 // Idempotent; tolerates a partly built object. The cuFFT plans need the
-// explicit free; the tables and buffers are owning members.
+// explicit free; the buffers are owning members.
 void CudaCrysFFTObliqueZ::release()
 {
-    d_boltz_current_ = nullptr;
-    tables_.reset();
     free_plans();
     d_twiddle_.reset();
     d_real_.release();
@@ -232,9 +224,10 @@ void CudaCrysFFTObliqueZ::free_plans()
 }
 
 //------------------------------------------------------------------------------
-// Boltzmann cache
+// Boltzmann table
 //------------------------------------------------------------------------------
-CudaCrysFFTObliqueZ::Table CudaCrysFFTObliqueZ::generateBoltzmann(double ds, const std::array<double, 6>& cell, Table buffers)
+void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
+                                          double ds, cudaStream_t stream) const
 {
     const int Nx = nx_physical_[0];
     const int Ny = nx_physical_[1];
@@ -297,39 +290,12 @@ CudaCrysFFTObliqueZ::Table CudaCrysFFTObliqueZ::generateBoltzmann(double ds, con
         }
     }
 
-    // `buffers` hold a dropped table when one is left; upload on this object's stream
-    if (buffers.empty())
-        buffers.allocate(2 * M_spectral_);
-    CUDA_CHECK(cudaMemcpyAsync(buffers, h_table.data(), sizeof(double) * h_table.size(), cudaMemcpyHostToDevice, stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));   // h_table is about to go out of scope
-    return buffers;
+    upload_table(table, h_table, stream);
 }
 
 //------------------------------------------------------------------------------
 // Public API
 //------------------------------------------------------------------------------
-void CudaCrysFFTObliqueZ::set_cell_para(const std::array<double, 6>& cell_para)
-{
-    // Changes the cell of every object sharing the tables (no-op for the current cell)
-    tables_.shared()->set_cell(cell_para);
-    if (tables_.refresh())
-        d_boltz_current_ = nullptr;
-}
-
-void CudaCrysFFTObliqueZ::set_contour_step(double ds)
-{
-    if (tables_.refresh())   // another object changed the cell
-        d_boltz_current_ = nullptr;
-    if (d_boltz_current_ != nullptr && ds == ds_current_)
-        return;
-
-    d_boltz_current_ = tables_.get({kBoltzmann, 0, ds},
-        [&](const std::array<double, 6>& cell, Table buffers) {
-            return generateBoltzmann(ds, cell, std::move(buffers));
-        }).get();
-    ds_current_ = ds;
-}
-
 void CudaCrysFFTObliqueZ::set_stream(cudaStream_t stream)
 {
     // The plans already run on stream_ (set at construction or by the last
@@ -344,18 +310,10 @@ void CudaCrysFFTObliqueZ::set_stream(cudaStream_t stream)
     }
 }
 
-void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out)
-{
-    diffusion(d_q_in, d_q_out, stream_);
-}
-
-void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, cudaStream_t stream)
+void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+                                    cudaStream_t stream)
 {
     set_stream(stream);
-    if (tables_.refresh())   // another object changed the cell
-        d_boltz_current_ = nullptr;
-    if (d_boltz_current_ == nullptr)
-        throw_with_line_number("CudaCrysFFTObliqueZ::set_contour_step must be called before diffusion() and after a cell change.");
 
     // FTS_PROFILE_CRYSFFT_HEX_DETAIL times the stages of the first call
     static const bool do_profile = (std::getenv("FTS_PROFILE_CRYSFFT_HEX_DETAIL") != nullptr);
@@ -378,7 +336,7 @@ void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, cudaStream_
     mark(2);
     // Boltzmann factors in the table include the normalization
     ker_obliquez_spectral<<<grid_blocks(M_spectral_, threads), threads, 0, stream_>>>(
-        d_spectrum_, reinterpret_cast<const double2*>(d_boltz_current_),
+        d_spectrum_, reinterpret_cast<const double2*>(table.get()),
         reinterpret_cast<const double2*>(d_twiddle_->get()), nx_physical_[0], nx_physical_[1], n / 2 + 1);
     CUDA_CHECK_LAUNCH();
     mark(3);

@@ -151,10 +151,8 @@ private:
     int n_blocks;
     int n_threads;
 
-    /// Throw unless n_threads <= 1024, 1 <= n_blocks * n_threads <= MAX_GRID_THREADS and
-    /// both are within the limits of the current device
-    static void check_launch(int n_blocks, int n_threads);
-
+    /// Reads the launch configuration; throws unless n_threads <= 1024 and
+    /// 1 <= n_blocks * n_threads <= MAX_GRID_THREADS
     CudaCommon();
     ~CudaCommon();
     // Disable copy constructor
@@ -183,12 +181,6 @@ public:
 
     /// Get threads per block.
     int get_n_threads();
-
-    /// Set number of thread blocks.
-    void set_n_blocks(int n_blocks);
-
-    /// Set threads per block.
-    void set_n_threads(int n_threads);
 };
 
 /**

@@ -108,8 +108,14 @@ CudaCommon::CudaCommon()
         // (grid-stride kernels and CUB reductions, so the results do not depend on it)
         this->n_blocks  = launch_variable("LFTS_GPU_NUM_BLOCKS", 1024);
         this->n_threads = launch_variable("LFTS_GPU_NUM_THREADS", 256);
-        check_launch(this->n_blocks, this->n_threads);
-
+        // The grid-stride kernels rely on at most MAX_GRID_THREADS threads (see
+        // GridLimits.h); 1024 threads per block and 2^20 blocks are within the
+        // limits of every supported device
+        if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
+            static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
+            throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
+                std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
+                std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
     }
     catch(std::exception& exc)
     {
@@ -123,36 +129,6 @@ int CudaCommon::get_n_blocks()
 int CudaCommon::get_n_threads()
 {
     return n_threads;
-}
-// The grid-stride kernels launched with n_blocks x n_threads rely on at most
-// MAX_GRID_THREADS threads (see GridLimits.h), within the limits of the current device
-void CudaCommon::check_launch(int n_blocks, int n_threads)
-{
-    if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
-        static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
-        throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
-            std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
-            std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
-
-    int device = 0, max_threads = 0, max_blocks = 0;
-    CUDA_CHECK(cudaGetDevice(&device));
-    CUDA_CHECK(cudaDeviceGetAttribute(&max_threads, cudaDevAttrMaxThreadsPerBlock, device));
-    CUDA_CHECK(cudaDeviceGetAttribute(&max_blocks, cudaDevAttrMaxGridDimX, device));
-    if (n_threads > max_threads || n_blocks > max_blocks)
-        throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
-            std::to_string(n_threads) + " threads exceeds the limits of device " + std::to_string(device) +
-            ": " + std::to_string(max_threads) + " threads per block and " + std::to_string(max_blocks) +
-            " blocks (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
-}
-void CudaCommon::set_n_blocks(int n_blocks)
-{
-    check_launch(n_blocks, this->n_threads);
-    this->n_blocks = n_blocks;
-}
-void CudaCommon::set_n_threads(int n_threads)
-{
-    check_launch(this->n_blocks, n_threads);
-    this->n_threads = n_threads;
 }
 
 __global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M)
