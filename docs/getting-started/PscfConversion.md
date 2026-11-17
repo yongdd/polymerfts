@@ -73,9 +73,11 @@ The parameter dictionary must include `nx`, `lx`, `ds`, `chain_model`,
 Monomer identifiers must be nonempty and contain no whitespace.
 The canonical names `polymers`, `relax_cell`, `stress_scale` and
 `space_group.hall_number` are supported alongside the legacy input aliases.
-Supplying both an alias and its canonical name is an error. As in SCFT, a space-group
-symbol with several Hall settings (for example `P2/m`) needs `space_group.hall_number`,
-which must be a setting of that symbol.
+Supplying both an alias and its canonical name is an error. The keys of `chi_n`
+and the space group are read as in SCFT: a pair key names two monomer types (`A,B`),
+a space-group symbol is spglib's short international symbol (`P6_3/mmc`, `Ia-3d`),
+and a symbol with several Hall settings (for example `P2/m`) needs
+`space_group.hall_number`, which must be a setting of that symbol.
 
 Python scripts are not read. Run the script and export the result it saves, or write
 its `params` with `json.dump(params, file)` (or as YAML) and export that file with

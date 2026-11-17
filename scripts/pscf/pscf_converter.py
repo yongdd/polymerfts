@@ -114,21 +114,6 @@ def lattice_geometry(lattice, cell, dim):
     return lx, angles
 
 
-def spglib_call(spglib, function, *args):
-    """Call spglib with its raising error handling, which spglib 2.7+ asks for (with a
-    DeprecationWarning otherwise) and makes the only one in 3.0, without changing the
-    handling for other code. spglib's SPGLIB_OLD_ERROR_HANDLING variable takes precedence."""
-    errors = getattr(spglib, "error", None)
-    old = getattr(errors, "OLD_ERROR_HANDLING", None)
-    if old is not None:
-        errors.OLD_ERROR_HANDLING = False
-    try:
-        return function(*args)
-    finally:
-        if old is not None:
-            errors.OLD_ERROR_HANDLING = old
-
-
 def choose_lattice(params, override=None):
     nx, lx, angles = validate_cell(params["nx"], params["lx"], params.get("angles", [90.] * 3))
     dim = len(nx)
@@ -146,20 +131,20 @@ def choose_lattice(params, override=None):
         symbol = group.get("symbol")
         if symbol is not None and not isinstance(symbol, str):
             raise ValueError("space_group.symbol must be a string.")
-        # The Hall settings of the symbol; like SCFT, a symbol with several needs the hall_number
-        key = None if symbol is None else symbol.replace(" ", "").replace("_", "")
-        settings = [] if key is None else [h for h in range(1, 531) if spglib_call(
-            spglib, spglib.get_spacegroup_type, h).international_short.replace("_", "") == key]
+        # The Hall settings of the symbol: spglib's symbols that equal it after trimming spaces and
+        # tabs, as in SCFT (SpaceGroup::hall_numbers_from_symbol); like SCFT, a symbol with several
+        # needs the hall_number
+        settings = [] if symbol is None else [h for h in range(1, 531) if spglib.get_spacegroup_type(
+            h).international_short.strip(" \t") == symbol.strip(" \t")]
         hall = group.get("hall_number")
         if hall is not None:
             numbers = vector(hall, "hall_number", integer=True)
             if len(numbers) != 1 or numbers[0] > 530:
                 raise ValueError("hall_number must be an integer between 1 and 530.")
             hall = numbers[0]
-            if key is not None and hall not in settings:
+            if symbol is not None and hall not in settings:
                 raise ValueError(f"space_group.hall_number {hall} is a setting of "
-                                 f"{spglib_call(spglib, spglib.get_spacegroup_type, hall).international_short}, "
-                                 f"not of {symbol}.")
+                                 f"{spglib.get_spacegroup_type(hall).international_short}, not of {symbol}.")
         elif len(settings) > 1:
             raise ValueError(f"space_group.symbol {symbol} has several Hall settings ({', '.join(map(str, settings))}); "
                              "give space_group.hall_number, as SCFT requires, or --lattice.")
@@ -167,7 +152,7 @@ def choose_lattice(params, override=None):
             hall = settings[0] if settings else None
         if hall is None:
             raise ValueError("Could not identify the space group. Specify --lattice explicitly.")
-        sg = spglib_call(spglib, spglib.get_spacegroup_type, hall)
+        sg = spglib.get_spacegroup_type(hall)
         number = sg.number
         system = ("Triclinic" if number <= 2 else "Monoclinic" if number <= 15 else
                   "Orthorhombic" if number <= 74 else "Tetragonal" if number <= 142 else
@@ -175,12 +160,9 @@ def choose_lattice(params, override=None):
         if system == "Monoclinic":
             # PSCF's monoclinic lattice frees beta, the angle of the unique axis b. A setting with
             # the unique axis a or c keeps its fixed cell as a triclinic lattice; relaxing it would
-            # free every angle in PSCF. The unique axis is the 2-fold axis or mirror normal, which
-            # every operation keeps in place (R[u][u] = det R without mixing it with other axes)
-            rotations = spglib_call(spglib, spglib.get_symmetry_from_database, hall)["rotations"]
-            unique = next(u for u in range(3) if all(
-                round(np.linalg.det(r)) == r[u][u] and all(r[u][k] == 0 and r[k][u] == 0 for k in range(3) if k != u)
-                for r in rotations))
+            # free every angle in PSCF. spglib's choice of a monoclinic setting starts with its
+            # unique axis ("b", "c1", "-a3")
+            unique = "abc".index(sg.choice.lstrip("-")[0])
             if unique != 1:
                 if params.get("relax_cell", False):
                     raise ValueError(f"PSCF's monoclinic lattice relaxes beta (unique axis b), but space group "
@@ -343,21 +325,19 @@ def prepare_export(source, field_source=None, lattice=None):
         params = _VALIDATION["normalize_params"](params)
     except _VALIDATION["ValidationError"] as exc:
         raise ValueError(str(exc)) from None
-    # PSCF's SCFT input describes one incompressible system. CL-FTS takes zeta_n = 100 when params
-    # give none: its fields files carry that value beside w_A_real and w_A_imag, also as the --fields
-    # of a parameter file, and a parameter file with Langevin settings but without the saddle and
-    # compressor that L-FTS requires is a CL-FTS input. Saved results keep their params under
-    # initial_params, which an SCFT run may share with a Langevin method
+    # PSCF's SCFT input describes one incompressible system. A model with zeta_n is compressible,
+    # and so is CL-FTS, which takes zeta_n = 100 when params give none: its fields files carry that
+    # value beside w_A_real and w_A_imag, also as the --fields of a parameter file, and a parameter
+    # file with Langevin settings but without the saddle and compressor that L-FTS requires is a
+    # CL-FTS input. Saved results keep their params under initial_params, which an SCFT run may
+    # share with a Langevin method
     if "gibbs_ensemble" in params:
         raise ValueError("A Gibbs-ensemble input describes two boxes, which one PSCF SCFT input cannot represent.")
     parameter_file = "initial_params" not in source
-    saved = ([] if parameter_file else [source]) + ([] if field_source is None else [field_source])
-    if (any(isinstance(d, dict) and d.get("zeta_n") is not None for d in saved)
+    if (any(isinstance(d, dict) and d.get("zeta_n") is not None for d in (params, source, field_source))
             or (parameter_file and "langevin" in params and not {"saddle", "compressor"} <= params.keys())):
-        raise ValueError("CL-FTS uses a compressible model (zeta_n, 100 by default), which this "
-                         "incompressible PSCF export cannot represent.")
-    if params.get("zeta_n") is not None:
-        raise ValueError("Finite-compressibility models are not supported by this incompressible PSCF export.")
+        raise ValueError("This incompressible PSCF export cannot represent a compressible model (zeta_n, "
+                         "which CL-FTS takes as 100 by default).")
     data = field_source if field_source is not None else source
     if not isinstance(data, dict):
         raise ValueError("Field input must be a dictionary.")
@@ -387,6 +367,11 @@ def prepare_export(source, field_source=None, lattice=None):
     names = list(params["segment_lengths"])
     if any(any(c.isspace() for c in name) for name in names):
         raise ValueError("Monomer names must not contain whitespace.")
+    try:
+        # The pairs of chi_n as the simulations read them: "A,B", or a unique A_B, "A B" or A/B
+        params["chi_n"] = _VALIDATION["parse_chi_n"](params["chi_n"], params["segment_lengths"])
+    except _VALIDATION["ValidationError"] as exc:
+        raise ValueError(str(exc)) from None
     fields = []
     for name in names:
         if "w_" + name not in data:
@@ -450,26 +435,9 @@ def param_text(params, lattice):
         lines += ["      ]", f"      phi {polymer['volume_fraction']:.17g}", "    }"]
     lines += [f"    ds {params['ds']:.17g}", "  }", "  Interaction{", "    chi("]
     interactions = {}
-    for pair, chi in params["chi_n"].items():
-        try:
-            normalized = _VALIDATION["parse_chi_n"]({pair: chi}, params["segment_lengths"])
-            a, b = next(iter(normalized)).split(",")
-        except _VALIDATION["ValidationError"] as exc:
-            # Older converter inputs also accepted concatenated names (AB).
-            # A recognized separator syntax must retain its validation error,
-            # including self-interactions and ambiguous names.
-            if (not isinstance(pair, str) or "," in pair
-                    or any(pair == a + separator + b for a in names for b in names
-                           for separator in (" ", "_", "/"))):
-                raise ValueError(str(exc)) from None
-            candidates = [(a, b) for i, a in enumerate(names) for b in names[i+1:]
-                          if pair in (a+b, b+a)]
-            if len(candidates) != 1:
-                raise ValueError(str(exc)) from None
-            a, b = candidates[0]
-        key = tuple(sorted((indices[a], indices[b])))
-        if key in interactions: raise ValueError(f"Repeated interaction: {pair}.")
-        interactions[key] = chi
+    for pair, chi in params["chi_n"].items():   # "A,B" keys of parse_chi_n (prepare_export)
+        a, b = pair.split(",")
+        interactions[tuple(sorted((indices[a], indices[b])))] = chi
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             lines.append(f"      {i} {j} {interactions.get((i, j), 0.):.17g}")
@@ -764,8 +732,10 @@ def script_params(text, data, names):
     if params["tolerance"] <= 0 or params["stress_scale"] <= 0:
         raise ValueError("PSCF epsilon and scaleStress must be positive.")
     source = {"params": params, **{"w_" + name: data["fields"][i] for i, name in enumerate(names)}}
-    # Reuse the backend-free physical model and connected-tree checks.
+    # Reuse the backend-free physical model and connected-tree checks; the script lists the
+    # chi_n pairs in the monomer order of the PSCF file
     params, _, _, _ = prepare_export(source, lattice=lattice)
+    params["chi_n"] = source["params"]["chi_n"]
     return params, group
 
 

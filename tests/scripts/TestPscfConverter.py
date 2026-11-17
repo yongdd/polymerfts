@@ -17,6 +17,8 @@ from scipy.io import loadmat, savemat
 ROOT = Path(__file__).resolve().parents[2]
 CONVERTER = ROOT / 'scripts/pscf/pscf_converter.py'
 TOOL = runpy.run_path(str(CONVERTER))
+# spglib 2.7+ warns on each call that its error handling will raise; the converter passes valid Hall numbers
+pytestmark = pytest.mark.filterwarnings('ignore:Set OLD_ERROR_HANDLING:DeprecationWarning')
 
 
 def params():
@@ -162,26 +164,22 @@ def test_grafting_and_custom_propagators_are_not_dropped(key):
         TOOL['prepare_export'](result(p))
 
 
-@pytest.mark.filterwarnings('error::DeprecationWarning')
-@pytest.mark.parametrize('hall, angles, relax, lattice', (
-    (57, [90., 100., 90.], True, 'monoclinic'), (58, [90., 90., 100.], False, 'triclinic'),
-    (5, [100., 90., 90.], False, 'triclinic'), (58, [90., 90., 100.], True, None)))
-def test_monoclinic_unique_axis(hall, angles, relax, lattice, monkeypatch):
-    # PSCF's monoclinic lattice has the unique axis b; the unique axes a and c keep a fixed cell as triclinic.
-    # The spglib calls use its raising error handling (no DeprecationWarning) and restore the setting;
-    # spglib's environment variable, which overrides that setting, is left out here
-    monkeypatch.delenv('SPGLIB_OLD_ERROR_HANDLING', raising=False)
-    spglib = pytest.importorskip('spglib')
-    handling = getattr(getattr(spglib, 'error', None), 'OLD_ERROR_HANDLING', None)
+@pytest.mark.parametrize('hall, symbol, angles, relax, lattice', (
+    (57, 'P2/m', [90., 100., 90.], True, 'monoclinic'), (58, 'P2/m', [90., 90., 100.], False, 'triclinic'),
+    (5, 'P2', [100., 90., 90.], False, 'triclinic'), (58, 'P2/m', [90., 90., 100.], True, 'unique axis c'),
+    (5, 'P2', [100., 90., 90.], True, 'unique axis a'),
+    (42, 'Cc', [90., 100., 90.], True, 'monoclinic'), (48, 'Cc', [90., 90., 100.], True, 'unique axis c')))
+def test_monoclinic_unique_axis(hall, symbol, angles, relax, lattice):
+    # PSCF's monoclinic lattice has the unique axis b; the unique axes a and c keep a fixed cell as
+    # triclinic and refuse box relaxation. Hall 42 and 48 are the cell choices -b1 and -c1 of Cc
+    pytest.importorskip('spglib')
     p = params()
-    p.update(angles=angles, relax_cell=relax, space_group={'symbol': 'P2/m' if hall in (57, 58) else 'P2',
-                                                           'hall_number': hall})
-    if lattice is None:
-        with pytest.raises(ValueError, match='unique axis c'):
+    p.update(angles=angles, relax_cell=relax, space_group={'symbol': symbol, 'hall_number': hall})
+    if lattice.startswith('unique axis'):
+        with pytest.raises(ValueError, match=lattice):
             TOOL['prepare_export'](result(p))
     else:
         assert TOOL['prepare_export'](result(p))[2] == lattice
-    assert getattr(getattr(spglib, 'error', None), 'OLD_ERROR_HANDLING', None) == handling
 
 
 @pytest.mark.parametrize('hall, message', ((0, 'positive'), (531, 'between 1 and 530')))
@@ -195,8 +193,12 @@ def test_hall_number_range(hall, message):
 
 @pytest.mark.parametrize('group, outcome', (
     ({'symbol': 'Ia-3d'}, 'cubic'),                         # one Hall setting: the symbol suffices
+    ({'symbol': ' Ia-3d\t'}, 'cubic'),                      # spaces and tabs around it are trimmed
     ({'symbol': 'P2/m'}, 'several Hall settings'),         # 57, 58, 59: the unique axis is ambiguous
     ({'symbol': 'P2/m', 'hall_number': 5}, 'not of P2/m'),  # Hall 5 is P2, not P2/m
+    # SCFT takes spglib's symbols exactly: P6_3/mmc and Ia-3d
+    ({'symbol': 'P63/mmc'}, 'Could not identify'), ({'symbol': 'I a -3 d'}, 'Could not identify'),
+    ({'symbol': 'P63/mmc', 'hall_number': 488}, 'not of P63/mmc'),
 ))
 def test_space_group_symbol_and_hall_number(group, outcome):
     pytest.importorskip('spglib')
@@ -334,21 +336,9 @@ def test_saved_result_option_spellings_export_identically(tmp_path, suffix, sepa
         assert (tmp_path / 'actual' / relative).read_bytes() == (tmp_path / 'expected' / relative).read_bytes()
 
 
-@pytest.mark.parametrize('names', (('A', 'B'), ('Zed', 'long_B')))
-@pytest.mark.parametrize('reverse', (False, True))
-def test_unique_compact_interaction_keys_remain_supported(names, reverse):
-    p = params()
-    p['segment_lengths'] = dict(zip(names, (1., 1.2)))
-    for block, name in zip(p['polymers'][0]['blocks'], names):
-        block['type'] = name
-    p['chi_n'] = {''.join(names[::-1] if reverse else names): 20.}
-    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
-    assert '      0 1 20\n' in TOOL['param_text'](prepared, lattice)
-
-
 @pytest.mark.parametrize('interactions', (
     {'Zed_long_B': 20., 'long_B/Zed': 20.},
-    {'Zed,long_B': 20., 'long_BZed': 20.},
+    {'Zed,long_B': 20., 'long_BZed': 20.}, {'Zedlong_B': 20.},
     {'unknown,Zed': 20.}, {'Zed,Zed': 20.}, {'unknown': 20.}, {0: 20.},
     {'Zed_long_B': float('nan')}, {'Zed/long_B': float('inf')},
 ))
@@ -360,24 +350,6 @@ def test_invalid_interactions_still_fail_before_writing(tmp_path, interactions):
     with pytest.raises(ValueError):
         TOOL['export_files'](source, tmp_path / 'pscf')
     assert not (tmp_path / 'pscf').exists()
-
-
-@pytest.mark.parametrize('names,pair,message', (
-    (('A', 'AB', 'B', 'BB'), 'ABB', 'ambiguous'),
-    (('A', 'B_C', 'A_B', 'C'), 'A_B_C', 'ambiguous'),
-    # A unique compact interpretation must not override invalid separator syntax.
-    (('A', 'A_'), 'A_A', 'self interaction'),
-    (('A', 'B_C', 'A_B', 'C', 'A_'), 'A_B_C', 'ambiguous'),
-))
-def test_ambiguous_compact_and_legacy_interactions_are_rejected(names, pair, message):
-    p = params()
-    p['segment_lengths'] = dict.fromkeys(names, 1.)
-    for block, name in zip(p['polymers'][0]['blocks'], names):
-        block['type'] = name
-    p['chi_n'] = {pair: 20.}
-    prepared, _, lattice, _ = TOOL['prepare_export'](result(p))
-    with pytest.raises(ValueError, match=message):
-        TOOL['param_text'](prepared, lattice)
 
 
 @pytest.mark.parametrize('boundary', ('Reflecting', 'ABSORBING', None, 1))
@@ -424,7 +396,7 @@ GIBBS = {**LANGEVIN, 'gibbs_ensemble': {'cycles': 2, 'cycle_steps': 10, 'boxes':
 
 @pytest.mark.parametrize('suffix', ('.json', '.yaml'))
 @pytest.mark.parametrize('model, message', ((LFTS, None), (LANGEVIN, 'compressible model'),
-                                            ({**LFTS, 'zeta_n': 100.}, 'compressibility'), (GIBBS, 'two boxes')))
+                                            ({**LFTS, 'zeta_n': 100.}, 'compressible model'), (GIBBS, 'two boxes')))
 def test_langevin_parameter_files_export_one_incompressible_box(tmp_path, suffix, model, message):
     source = tmp_path / ('params' + suffix)
     p = {**params(), **model}
@@ -474,7 +446,7 @@ def test_langevin_fields_files(tmp_path, simulation):
         # The fields of an L-FTS parameter file are still CL-FTS fields, not a missing w_Zed
         args = (tmp_path / 'params.json', tmp_path / 'pscf', source)
         args[0].write_text(json.dumps({**params(), **LFTS}))
-    with pytest.raises(ValueError, match='CL-FTS uses a compressible model'):
+    with pytest.raises(ValueError, match='compressible model'):
         TOOL['export_files'](*args)
     assert not (tmp_path / 'pscf').exists()
 

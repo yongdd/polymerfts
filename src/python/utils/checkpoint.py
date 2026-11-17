@@ -82,12 +82,9 @@ def system_data(sim):
 
 def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
     """The system and the checkpoint of a fields file, without the fields of its model."""
-    group = sim.prop_solver.space_group
     data = {"initial_params": mat_ready(sim.params),
             "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
             "angles": list(sim.prop_solver.get_angles_degrees()),
-            # True when a and b are sampled at the nodes, not the cell centres (PropagatorSolver.get_grid_points)
-            "uses_hexagonal_axes": group is not None and group.uses_hexagonal_axes(),
             "monomer_types": sim.monomer_types, "chi_n": sim.chi_n, "chain_model": sim.chain_model, "ds": sim.ds,
             "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "eigenvalues": sim.mpt.eigenvalues,

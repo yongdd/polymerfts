@@ -140,6 +140,16 @@ jobs:
         export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
         ctest --output-on-failure -j$(nproc) --timeout 900
 
+    # The script tests that need the package (CTest leaves tests/scripts out)
+    - name: Test script utilities with the built package
+      shell: bash -l {0}
+      run: |
+        ulimit -s unlimited
+        export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+        export PYTHONPATH="$PWD/build/python"
+        python -c "import polymerfts" || exit 1     # the tests that need the package would skip without it
+        python -m pytest tests/scripts -q
+
     - name: Check installed wheel and uninstall
       shell: bash -l {0}
       run: |
@@ -208,6 +218,13 @@ jobs:
           -DPOLYMERFTS_BUILD_TESTS=ON -DPOLYMERFTS_WERROR=ON || exit /b 1
         "%BIN%\cmake.exe" --build build-tests --parallel || exit /b 1
         "%BIN%\ctest.exe" --test-dir build-tests -L basic -j 4 --output-on-failure --timeout 900 || exit /b 1
+
+    # The script tests that need the package (CTest leaves tests/scripts out)
+    - name: Test script utilities with the built package
+      run: |
+        set "PYTHONPATH=%CD%\build-tests\python"
+        python -c "import polymerfts" || exit /b 1
+        python -m pytest tests/scripts -q
 
   lint:
     name: Code Quality Checks

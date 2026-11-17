@@ -78,8 +78,8 @@ def test_lattice_vectors_follow_the_angles_of_the_file(tmp_path, monkeypatch, so
     assert L[0, 1] == L[0, 2] == L[1, 2] == 0.0     # a along x, b in the xy plane
 
 
-# Hexagonal axes put the points along a and b at the nodes: SCFT results and fields files save the
-# flag, older SCFT results only the Hall number, whose axes polymerfts.SpaceGroup gives
+# Hexagonal axes put the points along a and b at the nodes: SCFT results save the flag, older SCFT
+# results only the Hall number, which gives the axes
 @pytest.mark.parametrize('lx, angles, group, offsets', [
     ([1.3, 1.7, 2.1], [80.0, 95.0, 110.0], {}, (0.5, 0.5, 0.5)),     # triclinic, no group
     ([1.5, 1.5, 2.4], [90.0, 90.0, 120.0], {'uses_hexagonal_axes': True}, (0.0, 0.0, 0.5)),
@@ -91,19 +91,33 @@ def test_lattice_vectors_follow_the_angles_of_the_file(tmp_path, monkeypatch, so
 def test_non_orthogonal_cell_interpolates_the_periodic_field(tmp_path, monkeypatch, lx, angles, group, offsets):
     # The interpolation error is below 0.01; read with the other offsets along a and b, the field
     # is half a cell off, an error of about 0.04
-    if 'space_group_hall_number' in group and 'uses_hexagonal_axes' not in group:
-        pytest.importorskip('polymerfts')
     result = draw(tmp_path, monkeypatch, [24, 24, 24], lx, offsets=offsets, angles=np.array(angles), **group)
     assert interpolation_error(result) < 0.02
     assert result['X'].size <= 8*24**3
 
 
-def test_older_scft_result_with_a_space_group_needs_polymerfts(tmp_path, monkeypatch):
-    # Without uses_hexagonal_axes and without polymerfts, the axes of the space group are unknown
+def test_older_scft_result_with_a_space_group_needs_no_polymerfts(tmp_path, monkeypatch):
+    # The Hall number alone gives the axes of the space group
     monkeypatch.setitem(sys.modules, 'polymerfts', None)        # import polymerfts fails
-    with pytest.raises(ImportError, match='names a space group but not uses_hexagonal_axes'):
-        draw(tmp_path, monkeypatch, [24, 24, 24], [1.5, 1.5, 2.4], offsets=(0.0, 0.0, 0.5),
-             angles=np.array([90.0, 90.0, 120.0]), space_group_hall_number=488)
+    result = draw(tmp_path, monkeypatch, [24, 24, 24], [1.5, 1.5, 2.4], offsets=(0.0, 0.0, 0.5),
+                  angles=np.array([90.0, 90.0, 120.0]), space_group_hall_number=488)
+    np.testing.assert_array_equal(result['offsets'], [0.0, 0.0, 0.5])
+
+
+def test_hall_numbers_give_the_axes_of_the_solver(tmp_path, monkeypatch):
+    # The reader (the first cell) of an older SCFT result with each of the 530 Hall settings
+    # takes the axes that polymerfts.SpaceGroup uses
+    polymerfts = pytest.importorskip('polymerfts')
+    reader = compile(''.join(json.loads(NOTEBOOK.read_text(encoding='utf-8'))['cells'][0]['source']),
+                     str(NOTEBOOK), 'exec')
+    monkeypatch.chdir(tmp_path)
+    nx = [12, 12, 12]
+    for hall in range(1, 531):
+        savemat(tmp_path / 'fields_002000.mat', {'nx': np.array(nx), 'lx': np.ones(3), 'angles': np.full(3, 90.0),
+                                                 'space_group_hall_number': hall, 'phi_A': np.zeros(np.prod(nx))})
+        result = {}
+        exec(reader, result)
+        assert result['hexagonal'] == polymerfts.SpaceGroup(nx, hall).uses_hexagonal_axes(), hall
 
 
 def test_large_box_around_a_long_tilted_cell_is_coarsened(tmp_path, monkeypatch, capsys):

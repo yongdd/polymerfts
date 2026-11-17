@@ -102,12 +102,13 @@ def test_concentrations_of_every_file_layout(tmp_path, monkeypatch, layout):
 
 
 def test_every_monomer_type_of_the_file(tmp_path, monkeypatch):
-    # Types A and C: one plot for each type the file lists
+    # Types A and BB: one plot for each type the file lists. MATLAB stores the names as rows of
+    # one character array, padded with spaces ('A ')
     nx = [5, 3]
-    phi = {name: np.random.default_rng(9).random(15) + i for i, name in enumerate(('A', 'C'))}
+    phi = {name: np.random.default_rng(9).random(15) + i for i, name in enumerate(('A', 'BB'))}
     (tmp_path / 'phases').mkdir()
     savemat(tmp_path / 'phases' / 'C2D.mat', {'nx': np.array(nx), 'lx': np.array([1.0, 1.2]), 'angles': np.array([90.0, 90.0, 90.0]),
-                                              'monomer_types': ['A', 'C'], 'phi_A': phi['A'], 'phi_C': phi['C']})
+                                              'monomer_types': ['A', 'BB'], 'phi_A': phi['A'], 'phi_BB': phi['BB']})
     monkeypatch.chdir(tmp_path)
     try:
         with warnings.catch_warnings():
@@ -117,8 +118,8 @@ def test_every_monomer_type_of_the_file(tmp_path, monkeypatch):
         drawn = {ax.get_title(): np.asarray(ax.collections[0].get_array()) for ax in namespace['axes']}
     finally:
         plt.close('all')
-    assert sorted(drawn) == ['phi_A', 'phi_C']
-    for name in ('A', 'C'):
+    assert sorted(drawn) == ['phi_A', 'phi_BB']
+    for name in ('A', 'BB'):
         np.testing.assert_array_equal(drawn['phi_' + name].reshape(nx), phi[name].reshape(nx))
 
 

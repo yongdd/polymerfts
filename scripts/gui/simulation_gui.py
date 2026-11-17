@@ -290,37 +290,6 @@ def model_parameters(model):
     return params
 
 
-def imaginary_exchange_fields(types, chi_n):
-    """Number of imaginary auxiliary fields besides the pressure field of an incompressible
-    model: the positive eigenvalues of chi N on compositions with zero sum. By Sylvester's law
-    of inertia the basis e_i - e_last gives the same count as the orthonormal one of
-    symmetric_formulation; the eigenvalues come from cyclic Jacobi rotations."""
-    chi = lambda a, b: 0.0 if a == b else chi_n.get(f"{a},{b}", chi_n.get(f"{b},{a}", 0.0))
-    last, rest = types[-1], types[:-1]
-    m = [[chi(a, b) - chi(a, last) - chi(last, b) for b in rest] for a in rest]
-    n = len(m)
-    for _ in range(100):
-        if all(abs(m[p][q]) < 1e-14 * (1.0 + abs(m[p][p]) + abs(m[q][q])) for p in range(n) for q in range(p + 1, n)):
-            break
-        for p in range(n):
-            for q in range(p + 1, n):
-                if m[p][q] == 0.0:
-                    continue
-                theta = (m[q][q] - m[p][p]) / (2.0 * m[p][q])
-                t = math.copysign(1.0, theta) / (abs(theta) + math.sqrt(theta * theta + 1.0))
-                c = 1.0 / math.sqrt(t * t + 1.0)
-                s = t * c
-                m[p][p] -= t * m[p][q]
-                m[q][q] += t * m[p][q]
-                m[p][q] = m[q][p] = 0.0
-                for r in range(n):
-                    if r not in (p, q):
-                        rp, rq = m[r][p], m[r][q]
-                        m[r][p] = m[p][r] = c * rp - s * rq
-                        m[r][q] = m[q][r] = s * rp + c * rq
-    return sum(m[i][i] > 1e-8 for i in range(n))
-
-
 def build_script(values):
     """Validate form values and render a standalone, editable Python script."""
     def num(key, **kwargs):
@@ -373,10 +342,10 @@ def build_script(values):
     params.update(chain_model=choice("chain_model", ("continuous", "discrete")), ds=ds,
                   reduce_memory=bool(values["reduce_memory"]))
     if params["chain_model"] == "discrete":
-        # The library's rule (Molecules::add_polymer): a whole number of segments per block
+        # The library's rule (Molecules::add_polymer): a whole number of segments per block, at least one
         for polymer in params["polymers"]:
             for block in polymer["blocks"]:
-                n_segment = round(block["length"] / ds)
+                n_segment = max(1, math.floor(block["length"] / ds + 0.5))
                 if abs(block["length"] - n_segment * ds) > 1e-9:
                     raise ValueError(f"Discrete chains: block length {block['length']:g} must be a multiple of "
                                      f"ds = {ds:g} (closest: {n_segment * ds:g}).")
@@ -439,10 +408,6 @@ def build_script(values):
             if len(params["segment_lengths"]) == 2 and next(iter(params["chi_n"].values())) <= 0:
                 raise ValueError("This A/B L-FTS setup requires positive chi N.")
             mixing["name"] = choice("compressor", ("am", "lr", "lram"))
-            # The library's rule (saddle.py): LR needs the pressure field as the only imaginary one
-            if mixing["name"] != "am" and imaginary_exchange_fields(list(params["segment_lengths"]), params["chi_n"]):
-                raise ValueError("Compressors lr and lram need the pressure field as the only imaginary field; "
-                                 "these chi N values give another one. Choose am.")
             params.update(saddle=dict(max_iter=num("saddle_max_iter", integer=True),
                                       tolerance=num("saddle_tolerance")), compressor=mixing)
         else:
@@ -548,8 +513,9 @@ def build_script(values):
         'def main():\n'
         '    script_dir = Path(__file__).resolve().parent\n'
         + indent(field_code, '    ') + '\n'
-        '    # Keep architecture drawings and results together, away from the source tree.\n'
-        f'    output_dir = script_dir / {output_dir!r}\n'
+        + ('    # Keep the results away from the source tree.\n' if mode == 'SCFT' else
+           '    # Keep the results, with the drawings of the chain architectures in data/, away from the source tree.\n')
+        + f'    output_dir = script_dir / {output_dir!r}\n'
         '    output_dir.mkdir(parents=True, exist_ok=True)\n'
         '    os.chdir(output_dir)\n'
         f'    simulation = {constructor}\n'

@@ -56,9 +56,8 @@ def draw(tmp_path, monkeypatch, nx, lx, slice_index, layout='plain', types=('A',
     return drawn, {name: value.reshape(nx) for name, value in phi.items()}
 
 
-# Hexagonal axes put the points along b at the nodes: SCFT results and fields files save the flag,
-# older SCFT results only the Hall number (488: P6_3/mmc; 459: R-3m on rhombohedral axes), whose
-# axes polymerfts.SpaceGroup gives
+# Hexagonal axes put the points along b at the nodes: SCFT results save the flag, older SCFT results
+# only the Hall number (488: P6_3/mmc; 459: R-3m on rhombohedral axes), which gives the axes
 @pytest.mark.parametrize('source, angles, group, offset_b', [
     ('angles', [75.0, 95.0, 100.0], {}, 0.5), ('checkpoint_settings_json', [110.0, 95.0, 100.0], {}, 0.5),
     ('initial_params', [80.0, 95.0, 100.0], {}, 0.5), (None, [75.0, 95.0, 100.0], {}, 0.5),
@@ -68,9 +67,6 @@ def draw(tmp_path, monkeypatch, nx, lx, slice_index, layout='plain', types=('A',
     ('angles', [75.0, 75.0, 75.0], {'space_group_hall_number': 459}, 0.5)])
 def test_plane_cells_surround_the_grid_points(tmp_path, monkeypatch, capsys, source, angles, group, offset_b):
     nx, lx = [4, 6, 5], [1.1, 1.3, 1.7]
-    if 'space_group_hall_number' in group and 'uses_hexagonal_axes' not in group:
-        pytest.importorskip('polymerfts')
-        nx = [6, 6, 6]      # a grid that both space groups accept
     extra = {'angles': {'angles': np.array(angles)},
              'checkpoint_settings_json': {'checkpoint_settings_json': json.dumps({'angles': angles})},
              'initial_params': {'initial_params': {'nx': nx, 'angles': angles}},

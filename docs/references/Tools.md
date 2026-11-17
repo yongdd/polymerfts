@@ -19,11 +19,13 @@ This document describes the utility scripts in `scripts/analysis/` and `scripts/
 
 The notebooks read SCFT results (`.mat`, `.json` or `.yaml`) and L-FTS fields files, CL-FTS fields
 files (the real parts) and the `phi` structure of older files, with the lattice angles of the file and
-its grid points: the cell centres, or the nodes along `a` and `b` when `uses_hexagonal_axes` is set.
-The first cell of each notebook reads the file. Files without the angles take those of their
-checkpoint settings or input; an SCFT result with a space group but without `uses_hexagonal_axes`
-takes the axes of its group from `polymerfts.SpaceGroup`, so polymerfts must be importable. Each 2D
-plot fills the grid cell around each point with its value, in the unit cell of the file's lengths and
+its grid points: the cell centres, or the nodes along `a` and `b` when the SCFT result sets
+`uses_hexagonal_axes` (L-FTS and CL-FTS use no space group). The first cell of each notebook reads
+the file. Files without the angles take those of their checkpoint settings or input; an older SCFT
+result with a space group but without `uses_hexagonal_axes` takes the axes of its Hall number: the
+trigonal and hexagonal settings 430 to 488 use hexagonal axes, except the R settings on rhombohedral
+axes (434, 437, 445, 451, 453, 459, 461), as in `SpaceGroup.uses_hexagonal_axes()`. Each 2D plot
+fills the grid cell around each point with its value, in the unit cell of the file's lengths and
 angles.
 
 | File | Description |
@@ -315,7 +317,6 @@ Simulation output files (`fields_XXXXXX.mat`) contain:
 | `nx` | int array | Grid dimensions [nx, ny, nz] |
 | `lx` | float array | Box dimensions in units of $`b\sqrt{N}`$ |
 | `angles` | float array | Lattice angles [alpha, beta, gamma] in degrees |
-| `uses_hexagonal_axes` | bool | Grid points at the nodes along `a` and `b` (a space group on hexagonal axes), else at the cell centres |
 | `ds` | float | Contour step interval (= 1/N) |
 | `nbar` | float | Invariant polymerization index $`\bar{N}`$ |
 | `chain_model` | string | `"discrete"` or `"continuous"` |
@@ -327,7 +328,7 @@ Simulation output files (`fields_XXXXXX.mat`) contain:
 
 L-FTS and CL-FTS checkpoints additionally hold `checkpoint_settings_json` (the settings of the run as JSON, among them `nx`, `lx` and `angles`), `initial_params`, the auxiliary fields `w_aux`, `langevin_step`, `dt`, `eigenvalues`, `aux_fields_real`/`aux_fields_imag`, the noise array `normal_noise_prev` and the random-generator state (`random_generator`, `random_state_state`, `random_state_inc`), which `continue_run()` restores. CL-FTS stores complex fields as `w_A_real`/`w_A_imag` and `phi_A_real`/`phi_A_imag`; with `electrostatics` its checkpoints also hold $`\psi`$ (`psi_real`/`psi_imag`, `psi_k_real`/`psi_k_imag`), the previous noise `psi_noise_prev` and the random-generator state `psi_rng_state_json` of $`\psi`$, and the order of the point ions `ion_names_json`.
 
-**SCFT results** (`SCFT.save_results(path)`, `.mat`, `.json` or `.yaml` by extension) contain `initial_params`, `dim`, `nx`, `lx`, `angles`, `uses_hexagonal_axes`, `monomer_types`, `chi_n`, `chain_model`, `ds`, `eigenvalues`, `matrix_a`, `matrix_a_inverse`, `simulation_metadata_json` (run metadata, including whether the run converged), `free_energy`, `free_energy_absolute`, `free_energy_homogeneous`, `partition_functions`, `polymer_lengths`, `polymer_volume_fractions`, `chemical_potentials` and `grand_potential` (omitted for grafted chains or supplied initial propagators), `w_<type>` and `phi_<type>` on the full grid (expanded from the reduced basis when a space group was used), with `electrostatics` the potential `psi` and, with point ions, `ion_chemical_potentials`, and `space_group_symbol`/`space_group_hall_number` if one was used. Load `.json` with `json.load` and `.yaml` with `yaml.safe_load`; arrays are stored as lists there. The `.json` file is strict JSON: a non-finite number, such as the entry `-inf` of `chemical_potentials` for a species with volume fraction 0, is stored as `{"nonfinite_float": "-inf"}`.
+**SCFT results** (`SCFT.save_results(path)`, `.mat`, `.json` or `.yaml` by extension) contain `initial_params`, `dim`, `nx`, `lx`, `angles`, `uses_hexagonal_axes` (true when the grid points lie at the nodes along `a` and `b`, for a space group on hexagonal axes, else at the cell centres), `monomer_types`, `chi_n`, `chain_model`, `ds`, `eigenvalues`, `matrix_a`, `matrix_a_inverse`, `simulation_metadata_json` (run metadata, including whether the run converged), `free_energy`, `free_energy_absolute`, `free_energy_homogeneous`, `partition_functions`, `polymer_lengths`, `polymer_volume_fractions`, `chemical_potentials` and `grand_potential` (omitted for grafted chains or supplied initial propagators), `w_<type>` and `phi_<type>` on the full grid (expanded from the reduced basis when a space group was used), with `electrostatics` the potential `psi` and, with point ions, `ion_chemical_potentials`, and `space_group_symbol`/`space_group_hall_number` if one was used. Load `.json` with `json.load` and `.yaml` with `yaml.safe_load`; arrays are stored as lists there. The `.json` file is strict JSON: a non-finite number, such as the entry `-inf` of `chemical_potentials` for a species with volume fraction 0, is stored as `{"nonfinite_float": "-inf"}`.
 
 ### 5.2 Reading Files
 

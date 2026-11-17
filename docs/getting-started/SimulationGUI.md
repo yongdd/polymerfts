@@ -229,8 +229,9 @@ base directory.
 
 The **Simulation output directory** is separate: the exported script creates it
 when you run the simulation later. Relative input and output paths resolve next
-to the saved Python script. Architecture drawings and SCFT `fields.mat` go into
-the output directory; L-FTS and CL-FTS recordings go into its `data/` subdirectory.
+to the saved Python script. SCFT writes `fields.mat` into the output directory;
+L-FTS and CL-FTS write their recordings and the drawings of the chain architectures
+(`polymer_<id>.png`) into its `data/` subdirectory.
 Use a separate output directory for each run. Review the editable script and
 submit long calculations through SLURM on clusters.
 
