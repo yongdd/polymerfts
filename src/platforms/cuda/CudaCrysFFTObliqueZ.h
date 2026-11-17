@@ -36,9 +36,8 @@ private:
     int M_physical_{0};
     int M_spectral_{0};   ///< Nx * Ny * (Nz/4 + 1): half spectrum of the physical grid
 
-    cufftHandle plan_fwd_{};   ///< 3D D2Z of the physical grid
-    cufftHandle plan_bwd_{};   ///< 3D Z2D of the physical grid
-    bool plans_initialized_{false};
+    CufftPlan plan_fwd_;   ///< 3D D2Z of the physical grid
+    CufftPlan plan_bwd_;   ///< 3D Z2D of the physical grid
 
     /// (cos, sin)(pi kz/(Nz/2)) per stored kz; depends only on the grid, shared with the clones
     std::shared_ptr<const CudaDeviceBuffer<double>> d_twiddle_;
@@ -53,24 +52,17 @@ private:
 
     /// Create the 3D plans, the work buffers and (unless shared) the twiddle factors.
     void init_transforms();
-    void free_plans();
-    /// Free everything acquired so far (idempotent; also used when the constructor throws).
-    void release();
     /// Run the cuFFT plans and kernels on `stream` (diffusion() calls it every time).
     void use_stream(cudaStream_t stream);
 
 public:
     explicit CudaCrysFFTObliqueZ(std::array<int, 3> nx_logical);
 
-    ~CudaCrysFFTObliqueZ() override;
-
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
     void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                    cudaStream_t stream) override;
-
-    int get_M_physical() const { return M_physical_; }
 };
 
 #endif  // CUDA_CRYS_FFT_OBLIQUEZ_H_

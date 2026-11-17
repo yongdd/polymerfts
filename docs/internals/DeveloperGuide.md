@@ -141,7 +141,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
@@ -683,6 +683,9 @@ that throw need no cleanup code:
   `empty()`, because the second conversion to `void*`, with which GCC and Clang reject
   `delete buffer`, makes `if (buffer)` ambiguous too); a failed allocation throws with its size and
   the caller's file, line and function (`std::source_location`);
+- cuFFT plans: `CufftPlan` (`CudaCommon.h`; move-only, `create(cufftPlanMany, ...)` destroys a plan
+  it holds, counts the new one and returns the cuFFT result, `reset()`, `empty()`, and an implicit
+  conversion that lends the handle to `cufftExec*` and `cufftSetStream`);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
   `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
 
@@ -693,11 +696,13 @@ pointers on purpose: the backends' `allocate()`/`deallocate()` and
 `allocate_checkpoint()`/`deallocate_checkpoint()` pairs,
 the allocators of the propagator handles and the reduce-memory checkpoints, which the
 computation classes free in one place; and the `CudaCommon` singleton, which is created
-with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans, CUDA streams and events are not memory and are destroyed
-explicitly where their order matters (the solver before the streams it runs on); they are
-created through `count_cufft_plan(...)`, `count_cuda_stream(...)` and `count_cuda_event(...)`
-and destroyed with `release_cufft_plan()`, `release_cuda_stream()` and
-`release_cuda_event()`, which keep live counts (`cuda_handle_counters()`); every release
+with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
+are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
+`release_cufft_plan()`. CUDA streams and events are destroyed explicitly where their order
+matters (the solver before the streams it runs on); they are created through
+`count_cuda_stream(...)` and `count_cuda_event(...)` and destroyed with
+`release_cuda_stream()` and `release_cuda_event()`. These helpers keep live counts
+(`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
 plans and descriptors in hand-written `release()` functions, which their destructors call;
@@ -757,7 +762,8 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  and destroy plans, streams and events with the counting `release_*` helpers.
+  hold cuFFT plans in `CufftPlan`, and destroy streams and events with the counting `release_*`
+  helpers.
 
 ### Python
 

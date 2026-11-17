@@ -20,7 +20,10 @@ All of them take the Pmmm DCT or the recursive 3m CrysFFT with the stress fast p
 which leaves the full grid unused. After the first cell change and its propagators,
 the off-diagonal stress flag is turned on (set_force_off_diagonal_stress), which
 takes the stress to the full grid: that stress must equal the one of a solver
-created at the cell with the flag.
+created at the cell with the flag. Then the flag is turned off, the cell changes
+again (to the third lattice, or back to the first when the case has two), the
+propagators are computed and the flag is turned on again: the full-grid tables of
+the first turn are those of the previous cell and must be rebuilt for this one.
 
 A solver chooses its CrysFFT engine once, for the angles of its box: the Pmmm DCT
 and the recursive 3m CrysFFT need an orthogonal cell, the ObliqueZ CrysFFT alpha =
@@ -91,24 +94,30 @@ def results(platform, chain, case, lattices, fields):
 
 
 def flag_turned_on(platform, chain, case, lattices, fields):
-    """Stress after a computation at lattices[1] (a cell change from lattices[0]) when the off-diagonal stress
-    flag is turned on only then, and the stress of a solver created at lattices[1] with the flag"""
+    """(cell, stress, stress of a solver created at the cell with the off-diagonal stress flag) after each turn
+    of the flag: first at lattices[1], a cell change from lattices[0], the flag turned on only then; then the
+    flag turned off, a change to a third cell (lattices[2], or lattices[0] for two lattices), the propagators
+    and the flag turned on again"""
     s, w = solver(platform, chain, case, lattices[0], fields)
-    fresh, w_fresh = solver(platform, chain, case, lattices[1], fields)
-    fresh.set_force_off_diagonal_stress(True)
+    turns = []
     with contextlib.redirect_stdout(io.StringIO()):
         s.compute_propagators(w)
         s.compute_concentrations()
         s.compute_stress()
-        s.set_lattice_parameters(lattices[1], [90.0, 90.0, 90.0])
-        s.compute_propagators(w)
-        s.compute_concentrations()
-        s.set_force_off_diagonal_stress(True)
-        s.compute_stress()
-        fresh.compute_propagators(w_fresh)
-        fresh.compute_concentrations()
-        fresh.compute_stress()
-    return np.asarray(s.get_stress(), float), np.asarray(fresh.get_stress(), float)
+        for lx in (lattices[1], lattices[2 % len(lattices)]):
+            s.set_force_off_diagonal_stress(False)
+            s.set_lattice_parameters(lx, [90.0, 90.0, 90.0])
+            s.compute_propagators(w)
+            s.compute_concentrations()
+            s.set_force_off_diagonal_stress(True)
+            s.compute_stress()
+            fresh, w_fresh = solver(platform, chain, case, lx, fields)
+            fresh.set_force_off_diagonal_stress(True)
+            fresh.compute_propagators(w_fresh)
+            fresh.compute_concentrations()
+            fresh.compute_stress()
+            turns.append((lx, np.asarray(s.get_stress(), float), np.asarray(fresh.get_stress(), float)))
+    return turns
 
 
 # (engine, Hall number or symbol, nx, lx, a valid change of lx, angles, the angles the group fixes);
@@ -209,13 +218,14 @@ def main():
                     print(f"[{'PASS' if ok else 'FAIL'}] {platform} {symbol} {basis} {nx} {chain}: lattice {lattices[k]} "
                           f"updated vs fresh {d:.1e}")
                 reference[platform] = updated
-                walked, fresh = flag_turned_on(platform, chain, case, lattices, fields)
-                d = max_rel(walked, fresh) if walked.shape == fresh.shape else np.inf
-                ok = d < 1e-12
-                checks += 1
-                failures += not ok
-                print(f"[{'PASS' if ok else 'FAIL'}] {platform} {symbol} {basis} {nx} {chain}: off-diagonal flag turned on "
-                      f"after a cell change, stress vs a solver created with it {d:.1e}")
+                for turn, (lx, walked, fresh) in enumerate(flag_turned_on(platform, chain, case, lattices, fields)):
+                    d = max_rel(walked, fresh) if walked.shape == fresh.shape else np.inf
+                    ok = d < 1e-12
+                    checks += 1
+                    failures += not ok
+                    when = "after a cell change" if turn == 0 else "again after flag off and a cell change"
+                    print(f"[{'PASS' if ok else 'FAIL'}] {platform} {symbol} {basis} {nx} {chain}: off-diagonal flag turned on "
+                          f"{when} to {lx}, stress vs a solver created with it {d:.1e}")
             if "cuda" in reference and cpu:
                 d = max(max_rel(g[2], c[2]) for g, c in zip(reference["cuda"], reference[cpu[0]]))
                 ok = d < 1e-10

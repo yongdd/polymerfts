@@ -2267,85 +2267,57 @@ static void check_shared_line(CudaTransformType type, int N, const char* axis, i
 CudaRealTransform1D::CudaRealTransform1D(int N, CudaTransformType type)
     : N_(N), type_(type), initialized_(false)
 {
-    try
+    check_transform_length(type_, N_, "N", 1);
     {
-        check_transform_length(type_, N_, "N", 1);
-        {
-            int device = 0, max_shared = 0;
-            CUDA_CHECK(cudaGetDevice(&device));
-            CUDA_CHECK(cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlock, device));
-            const size_t needed = shared_bytes_1d(type_, N_);
-            if (needed > static_cast<size_t>(max_shared))
-                throw std::runtime_error("CudaRealTransform: the 1D " + std::string(transform_type_name(type_)) +
-                    " of " + std::to_string(N_) + " points stages " + std::to_string(needed) +
-                    " bytes in shared memory, more than the " + std::to_string(max_shared) +
-                    " bytes a block may use on this GPU; use a CPU platform for this 1D grid "
-                    "(the default platform for 1D).");
-        }
-        int fftSize = getFFTSize(type_, N_);
-
-        // Allocate buffers
-        int complexSize = fftSize / 2 + 1;
-        // DCT-3 runs its D2Z into d_work_ (complexSize complex values)
-        int workSize = std::max(fftSize, 2 * complexSize);
-        d_work_.allocate(workSize);
-        d_x1_.allocate(2 * static_cast<size_t>(complexSize));   // complex values
-
-        // Create FFT plan
-        if (type_ == CUDA_DCT_2) {
-            if (count_cufft_plan(cufftPlan1d(&plan_, N_, CUFFT_Z2D, 1)) != CUFFT_SUCCESS) {
-                throw std::runtime_error("Failed to create cuFFT Z2D plan");
-            }
-        } else if (type_ == CUDA_DCT_3) {
-            if (count_cufft_plan(cufftPlan1d(&plan_, N_, CUFFT_D2Z, 1)) != CUFFT_SUCCESS) {
-                throw std::runtime_error("Failed to create cuFFT D2Z plan");
-            }
-        } else if (type_ == CUDA_DST_2) {
-            // DST-2: Z2D FFT of size N (FST algorithm)
-            if (count_cufft_plan(cufftPlan1d(&plan_, N_, CUFFT_Z2D, 1)) != CUFFT_SUCCESS) {
-                throw std::runtime_error("Failed to create cuFFT Z2D plan for DST-2");
-            }
-        } else if (type_ == CUDA_DST_3) {
-            // DST-3: D2Z FFT of size N (FST algorithm)
-            if (count_cufft_plan(cufftPlan1d(&plan_, N_, CUFFT_D2Z, 1)) != CUFFT_SUCCESS) {
-                throw std::runtime_error("Failed to create cuFFT D2Z plan for DST-3");
-            }
-        } else {
-            throw std::runtime_error("Unsupported transform type");
-        }
-        plan_created_ = true;  // every failed branch above has thrown
-
-        if (type_ == CUDA_DCT_2 || type_ == CUDA_DST_2 || type_ == CUDA_DST_3)
-            allocate_dct2_lut(N_, dct2_sin_, dct2_cos_);
-        if (type_ == CUDA_DCT_3)
-            allocate_dct3_lut(N_, dct3_sin_, dct3_cos_);
-
-        initialized_ = true;
+        int device = 0, max_shared = 0;
+        CUDA_CHECK(cudaGetDevice(&device));
+        CUDA_CHECK(cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlock, device));
+        const size_t needed = shared_bytes_1d(type_, N_);
+        if (needed > static_cast<size_t>(max_shared))
+            throw std::runtime_error("CudaRealTransform: the 1D " + std::string(transform_type_name(type_)) +
+                " of " + std::to_string(N_) + " points stages " + std::to_string(needed) +
+                " bytes in shared memory, more than the " + std::to_string(max_shared) +
+                " bytes a block may use on this GPU; use a CPU platform for this 1D grid "
+                "(the default platform for 1D).");
     }
-    catch (...)
-    {
-        release();
-        throw;
+    int fftSize = getFFTSize(type_, N_);
+
+    // Allocate buffers
+    int complexSize = fftSize / 2 + 1;
+    // DCT-3 runs its D2Z into d_work_ (complexSize complex values)
+    int workSize = std::max(fftSize, 2 * complexSize);
+    d_work_.allocate(workSize);
+    d_x1_.allocate(2 * static_cast<size_t>(complexSize));   // complex values
+
+    // Create FFT plan
+    if (type_ == CUDA_DCT_2) {
+        if (plan_.create(cufftPlan1d, N_, CUFFT_Z2D, 1) != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT Z2D plan");
+        }
+    } else if (type_ == CUDA_DCT_3) {
+        if (plan_.create(cufftPlan1d, N_, CUFFT_D2Z, 1) != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT D2Z plan");
+        }
+    } else if (type_ == CUDA_DST_2) {
+        // DST-2: Z2D FFT of size N (FST algorithm)
+        if (plan_.create(cufftPlan1d, N_, CUFFT_Z2D, 1) != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT Z2D plan for DST-2");
+        }
+    } else if (type_ == CUDA_DST_3) {
+        // DST-3: D2Z FFT of size N (FST algorithm)
+        if (plan_.create(cufftPlan1d, N_, CUFFT_D2Z, 1) != CUFFT_SUCCESS) {
+            throw std::runtime_error("Failed to create cuFFT D2Z plan for DST-3");
+        }
+    } else {
+        throw std::runtime_error("Unsupported transform type");
     }
-}
 
-CudaRealTransform1D::~CudaRealTransform1D()
-{
-    release();
-}
+    if (type_ == CUDA_DCT_2 || type_ == CUDA_DST_2 || type_ == CUDA_DST_3)
+        allocate_dct2_lut(N_, dct2_sin_, dct2_cos_);
+    if (type_ == CUDA_DCT_3)
+        allocate_dct3_lut(N_, dct3_sin_, dct3_cos_);
 
-// Idempotent; tolerates a partly built object (null pointers, plan not created).
-void CudaRealTransform1D::release()
-{
-    d_work_.release();
-    d_x1_.release();
-    dct2_sin_.release();
-    dct2_cos_.release();
-    dct3_sin_.release();
-    dct3_cos_.release();
-    if (plan_created_) release_cufft_plan(plan_);
-    plan_created_ = false;
-    initialized_ = false;
+    initialized_ = true;
 }
 
 void CudaRealTransform1D::set_stream(cudaStream_t stream)
@@ -2459,21 +2431,13 @@ CudaRealTransform2D::CudaRealTransform2D(int Nx, int Ny, CudaTransformType type)
 CudaRealTransform2D::CudaRealTransform2D(int Nx, int Ny, CudaTransformType type_x, CudaTransformType type_y)
     : Nx_(Nx), Ny_(Ny), type_x_(type_x), type_y_(type_y), initialized_(false)
 {
-    try
-    {
-        check_transform_length(type_x_, Nx_, "Nx", 2);
-        check_transform_length(type_y_, Ny_, "Ny", 2);
-        check_shared_line(type_x_, Nx_, "Nx", 2);
-        check_shared_line(type_y_, Ny_, "Ny", 2);
+    check_transform_length(type_x_, Nx_, "Nx", 2);
+    check_transform_length(type_y_, Ny_, "Ny", 2);
+    check_shared_line(type_x_, Nx_, "Nx", 2);
+    check_shared_line(type_y_, Ny_, "Ny", 2);
 
-        init();
-        set_stream(stream_);
-    }
-    catch (...)
-    {
-        release();
-        throw;
-    }
+    init();
+    set_stream(stream_);
 }
 
 //------------------------------------------------------------------------------
@@ -2485,7 +2449,7 @@ CudaRealTransform2D::CudaRealTransform2D(int Nx, int Ny, CudaTransformType type_
 // axes), so its input stride and distance are passed in.
 //------------------------------------------------------------------------------
 static void create_axis_plan(
-    cufftHandle& plan, CudaTransformType type, int N, int batch,
+    CufftPlan& plan, CudaTransformType type, int N, int batch,
     const char* axis, int dct3_istride, int dct3_idist)
 {
     auto fail = [axis](const char* kind, const char* suffix) {
@@ -2496,23 +2460,23 @@ static void create_axis_plan(
         int n[1] = {N};
         int inembed[1] = {N / 2 + 1};
         int onembed[1] = {N};
-        if (count_cufft_plan(cufftPlanMany(&plan, 1, n, inembed, 1, N / 2 + 1,
-                          onembed, 1, N, CUFFT_Z2D, batch)) != CUFFT_SUCCESS)
+        if (plan.create(cufftPlanMany, 1, n, inembed, 1, N / 2 + 1,
+                        onembed, 1, N, CUFFT_Z2D, batch) != CUFFT_SUCCESS)
             fail("Z2D", "");
     } else if (type == CUDA_DCT_3) {
         int n[1] = {N};
         int inembed[1] = {N};
         int onembed[1] = {N / 2 + 1};
-        if (count_cufft_plan(cufftPlanMany(&plan, 1, n, inembed, dct3_istride, dct3_idist,
-                          onembed, 1, N / 2 + 1, CUFFT_D2Z, batch)) != CUFFT_SUCCESS)
+        if (plan.create(cufftPlanMany, 1, n, inembed, dct3_istride, dct3_idist,
+                        onembed, 1, N / 2 + 1, CUFFT_D2Z, batch) != CUFFT_SUCCESS)
             fail("D2Z", "");
     } else if (type == CUDA_DST_2) {
         // DST-2: Z2D FFT of size N - FCT/FST style (Makhoul 1980)
         int n[1] = {N};
         int inembed[1] = {N / 2 + 1};
         int onembed[1] = {N};
-        if (count_cufft_plan(cufftPlanMany(&plan, 1, n, inembed, 1, N / 2 + 1,
-                          onembed, 1, N, CUFFT_Z2D, batch)) != CUFFT_SUCCESS)
+        if (plan.create(cufftPlanMany, 1, n, inembed, 1, N / 2 + 1,
+                        onembed, 1, N, CUFFT_Z2D, batch) != CUFFT_SUCCESS)
             fail("Z2D", " (DST-2)");
     } else if (type == CUDA_DST_3) {
         // DST-3: D2Z FFT of size N - FCT/FST style (Makhoul 1980) with a padded
@@ -2520,8 +2484,8 @@ static void create_axis_plan(
         int n[1] = {N};
         int inembed[1] = {N + 2};
         int onembed[1] = {N / 2 + 1};
-        if (count_cufft_plan(cufftPlanMany(&plan, 1, n, inembed, 1, N + 2,
-                          onembed, 1, N / 2 + 1, CUFFT_D2Z, batch)) != CUFFT_SUCCESS)
+        if (plan.create(cufftPlanMany, 1, n, inembed, 1, N + 2,
+                        onembed, 1, N / 2 + 1, CUFFT_D2Z, batch) != CUFFT_SUCCESS)
             fail("D2Z", " (DST-3)");
     } else {
         throw std::runtime_error(std::string("Unsupported transform type for ") + axis);
@@ -2530,9 +2494,6 @@ static void create_axis_plan(
 
 void CudaRealTransform2D::init()
 {
-    // Called once, from the constructor: a second call would leak the plans
-    if (initialized_ || plan_x_created_ || plan_y_created_)
-        throw_with_line_number("CudaRealTransform2D::init() called on an initialized transform.");
     M_ = Nx_ * Ny_;
 
     // Calculate FFT sizes
@@ -2554,9 +2515,7 @@ void CudaRealTransform2D::init()
     // Per-axis plans. The X axis DCT-3 reads the y-major layout directly,
     // hence its strided input (istride = Ny, idist = 1).
     create_axis_plan(plan_y_, type_y_, Ny_, Nx_, "Y", 1, Ny_);
-    plan_y_created_ = true;
     create_axis_plan(plan_x_, type_x_, Nx_, Ny_, "X", Ny_, 1);
-    plan_x_created_ = true;
 
     if (type_x_ == CUDA_DCT_2 || type_x_ == CUDA_DST_2 || type_x_ == CUDA_DST_3)
         allocate_dct2_lut(Nx_, dct2_sin_x_, dct2_cos_x_);
@@ -2572,32 +2531,6 @@ void CudaRealTransform2D::init()
     set_stream(stream_);
 }
 
-CudaRealTransform2D::~CudaRealTransform2D()
-{
-    release();
-}
-
-// Idempotent; tolerates a partly built object (null pointers, plans not created).
-void CudaRealTransform2D::release()
-{
-    d_work_.release();
-    d_temp_.release();
-    d_x1_.release();
-    dct2_sin_x_.release();
-    dct2_cos_x_.release();
-    dct2_sin_y_.release();
-    dct2_cos_y_.release();
-    dct3_sin_x_.release();
-    dct3_cos_x_.release();
-    dct3_sin_y_.release();
-    dct3_cos_y_.release();
-    if (plan_y_created_) release_cufft_plan(plan_y_);
-    if (plan_x_created_) release_cufft_plan(plan_x_);
-    plan_x_ = plan_y_ = 0;
-    plan_x_created_ = plan_y_created_ = false;
-    initialized_ = false;
-}
-
 void CudaRealTransform2D::set_stream(cudaStream_t stream)
 {
     if (stream_ == stream)
@@ -2605,9 +2538,9 @@ void CudaRealTransform2D::set_stream(cudaStream_t stream)
     stream_ = stream;
     if (initialized_)
     {
-        if (plan_x_created_ && cufftSetStream(plan_x_, stream_) != CUFFT_SUCCESS)
+        if (cufftSetStream(plan_x_, stream_) != CUFFT_SUCCESS)
             throw std::runtime_error("Failed to set cuFFT stream for CudaRealTransform2D (plan_x)");
-        if (plan_y_created_ && cufftSetStream(plan_y_, stream_) != CUFFT_SUCCESS)
+        if (cufftSetStream(plan_y_, stream_) != CUFFT_SUCCESS)
             throw std::runtime_error("Failed to set cuFFT stream for CudaRealTransform2D (plan_y)");
     }
 }
@@ -2868,30 +2801,19 @@ CudaRealTransform3D::CudaRealTransform3D(int Nx, int Ny, int Nz,
     : Nx_(Nx), Ny_(Ny), Nz_(Nz), type_x_(type_x), type_y_(type_y), type_z_(type_z),
       initialized_(false)
 {
-    try
-    {
-        check_transform_length(type_x_, Nx_, "Nx", 3);
-        check_transform_length(type_y_, Ny_, "Ny", 3);
-        check_transform_length(type_z_, Nz_, "Nz", 3);
-        check_shared_line(type_x_, Nx_, "Nx", 3);
-        check_shared_line(type_y_, Ny_, "Ny", 3);
-        check_shared_line(type_z_, Nz_, "Nz", 3);
+    check_transform_length(type_x_, Nx_, "Nx", 3);
+    check_transform_length(type_y_, Ny_, "Ny", 3);
+    check_transform_length(type_z_, Nz_, "Nz", 3);
+    check_shared_line(type_x_, Nx_, "Nx", 3);
+    check_shared_line(type_y_, Ny_, "Ny", 3);
+    check_shared_line(type_z_, Nz_, "Nz", 3);
 
-        init();
-        set_stream(stream_);
-    }
-    catch (...)
-    {
-        release();
-        throw;
-    }
+    init();
+    set_stream(stream_);
 }
 
 void CudaRealTransform3D::init()
 {
-    // Called once, from the constructor: a second call would leak the plans
-    if (initialized_ || plan_x_created_ || plan_y_created_ || plan_z_created_)
-        throw_with_line_number("CudaRealTransform3D::init() called on an initialized transform.");
     // Per-dimension processing
     M_ = Nx_ * Ny_ * Nz_;
 
@@ -2921,11 +2843,8 @@ void CudaRealTransform3D::init()
     // Per-axis plans. The X axis DCT-3 reads the (y,z)-major layout directly,
     // hence its strided input (istride = Ny*Nz, idist = 1).
     create_axis_plan(plan_z_, type_z_, Nz_, Nx_ * Ny_, "Z", 1, Nz_);
-    plan_z_created_ = true;
     create_axis_plan(plan_y_, type_y_, Ny_, Nx_ * Nz_, "Y", 1, Ny_);
-    plan_y_created_ = true;
     create_axis_plan(plan_x_, type_x_, Nx_, Ny_ * Nz_, "X", Ny_ * Nz_, 1);
-    plan_x_created_ = true;
 
     if (type_x_ == CUDA_DCT_2 || type_x_ == CUDA_DST_2 || type_x_ == CUDA_DST_3)
         allocate_dct2_lut(Nx_, dct2_sin_x_, dct2_cos_x_);
@@ -2943,37 +2862,6 @@ void CudaRealTransform3D::init()
     initialized_ = true;
 }
 
-CudaRealTransform3D::~CudaRealTransform3D()
-{
-    release();
-}
-
-// Idempotent; tolerates a partly built object (null pointers, plans not created).
-void CudaRealTransform3D::release()
-{
-    d_work_.release();
-    d_temp_.release();
-    d_x1_.release();
-    dct2_sin_x_.release();
-    dct2_cos_x_.release();
-    dct2_sin_y_.release();
-    dct2_cos_y_.release();
-    dct2_sin_z_.release();
-    dct2_cos_z_.release();
-    dct3_sin_x_.release();
-    dct3_cos_x_.release();
-    dct3_sin_y_.release();
-    dct3_cos_y_.release();
-    dct3_sin_z_.release();
-    dct3_cos_z_.release();
-    if (plan_z_created_) release_cufft_plan(plan_z_);
-    if (plan_y_created_) release_cufft_plan(plan_y_);
-    if (plan_x_created_) release_cufft_plan(plan_x_);
-    plan_x_ = plan_y_ = plan_z_ = 0;
-    plan_x_created_ = plan_y_created_ = plan_z_created_ = false;
-    initialized_ = false;
-}
-
 void CudaRealTransform3D::set_stream(cudaStream_t stream)
 {
     if (stream_ == stream)
@@ -2981,11 +2869,11 @@ void CudaRealTransform3D::set_stream(cudaStream_t stream)
     stream_ = stream;
     if (initialized_)
     {
-        if (plan_x_created_ && cufftSetStream(plan_x_, stream_) != CUFFT_SUCCESS)
+        if (cufftSetStream(plan_x_, stream_) != CUFFT_SUCCESS)
             throw std::runtime_error("Failed to set cuFFT stream for CudaRealTransform3D (plan_x)");
-        if (plan_y_created_ && cufftSetStream(plan_y_, stream_) != CUFFT_SUCCESS)
+        if (cufftSetStream(plan_y_, stream_) != CUFFT_SUCCESS)
             throw std::runtime_error("Failed to set cuFFT stream for CudaRealTransform3D (plan_y)");
-        if (plan_z_created_ && cufftSetStream(plan_z_, stream_) != CUFFT_SUCCESS)
+        if (cufftSetStream(plan_z_, stream_) != CUFFT_SUCCESS)
             throw std::runtime_error("Failed to set cuFFT stream for CudaRealTransform3D (plan_z)");
     }
 }

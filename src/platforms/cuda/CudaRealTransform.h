@@ -68,8 +68,7 @@ class CudaRealTransform1D
 private:
     int N_;                      ///< Transform size
     CudaTransformType type_;     ///< Transform type
-    cufftHandle plan_;           ///< cuFFT plan
-    bool plan_created_ = false;  ///< plan_ holds a created plan
+    CufftPlan plan_;             ///< cuFFT plan
     CudaDeviceBuffer<double> d_work_;             ///< Work buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
     // Optional lookup tables for DCT2/DCT3 and DST2/3
@@ -80,9 +79,6 @@ private:
     cudaStream_t stream_{0};     ///< CUDA stream for execution
     bool initialized_;
 
-    /// Free everything acquired so far (idempotent; also used when the constructor throws).
-    void release();
-
 public:
     /**
      * @brief Construct 1D real transformer.
@@ -90,7 +86,6 @@ public:
      * @param type Transform type (DCT-2/3 or DST-2/3)
      */
     CudaRealTransform1D(int N, CudaTransformType type);
-    ~CudaRealTransform1D();
 
     /**
      * @brief Execute transform (in-place).
@@ -134,10 +129,8 @@ private:
     CudaTransformType type_x_;   ///< Transform type for X dimension
     CudaTransformType type_y_;   ///< Transform type for Y dimension
 
-    cufftHandle plan_x_{0};      ///< cuFFT plan for X dimension
-    cufftHandle plan_y_{0};      ///< cuFFT plan for Y dimension
-    bool plan_x_created_ = false; ///< plan_x_ holds a created plan
-    bool plan_y_created_ = false; ///< plan_y_ holds a created plan
+    CufftPlan plan_x_;           ///< cuFFT plan for X dimension
+    CufftPlan plan_y_;           ///< cuFFT plan for Y dimension
 
     CudaDeviceBuffer<double> d_work_;             ///< Work buffer
     CudaDeviceBuffer<double> d_temp_;             ///< Temporary buffer
@@ -157,9 +150,6 @@ private:
     cudaStream_t stream_{0};     ///< CUDA stream for execution
 
     void init();
-
-    /// Free everything acquired so far (idempotent; also used when the constructor throws).
-    void release();
 
     // Y dimension processing
     void executeY_DCT2(double* d_data);
@@ -190,8 +180,6 @@ public:
      * @param type_y Transform type for Y dimension
      */
     CudaRealTransform2D(int Nx, int Ny, CudaTransformType type_x, CudaTransformType type_y);
-
-    ~CudaRealTransform2D();
 
     /**
      * @brief Execute 2D transform (in-place).
@@ -239,12 +227,9 @@ private:
     CudaTransformType type_y_;   ///< Transform type for Y dimension
     CudaTransformType type_z_;   ///< Transform type for Z dimension
 
-    cufftHandle plan_x_{0};      ///< cuFFT plan for X dimension
-    cufftHandle plan_y_{0};      ///< cuFFT plan for Y dimension
-    cufftHandle plan_z_{0};      ///< cuFFT plan for Z dimension
-    bool plan_x_created_ = false; ///< plan_x_ holds a created plan
-    bool plan_y_created_ = false; ///< plan_y_ holds a created plan
-    bool plan_z_created_ = false; ///< plan_z_ holds a created plan
+    CufftPlan plan_x_;           ///< cuFFT plan for X dimension
+    CufftPlan plan_y_;           ///< cuFFT plan for Y dimension
+    CufftPlan plan_z_;           ///< cuFFT plan for Z dimension
 
     CudaDeviceBuffer<double> d_work_;             ///< Work buffer
     CudaDeviceBuffer<double> d_temp_;             ///< Temporary buffer
@@ -268,9 +253,6 @@ private:
     cudaStream_t stream_{0};     ///< CUDA stream for execution
 
     void init();
-
-    /// Free everything acquired so far (idempotent; also used when the constructor throws).
-    void release();
 
     // Z dimension processing
     void executeZ_DCT2(double* d_data);
@@ -311,8 +293,6 @@ public:
      */
     CudaRealTransform3D(int Nx, int Ny, int Nz,
                         CudaTransformType type_x, CudaTransformType type_y, CudaTransformType type_z);
-
-    ~CudaRealTransform3D();
 
     /**
      * @brief Execute 3D transform (in-place).

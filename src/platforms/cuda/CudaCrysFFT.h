@@ -155,8 +155,6 @@ public:
      */
     void apply_multiplier(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                           cudaStream_t stream) override;
-
-    int get_M_physical() const { return M_physical_; }
 };
 
 #endif

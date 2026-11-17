@@ -226,83 +226,53 @@ CudaMakhoulTransform<T>::CudaMakhoulTransform(const std::vector<int>& nx, const 
         throw_with_line_number("CudaMakhoulTransform needs a periodic axis: walls alone have real coefficients.");
     n_grid_ = checked_grid_points(nx);   // the kernels index the grid with int
 
-    try
+    // Axes padded to three in front; W^k on the wall axes, one table after the other
+    std::vector<std::complex<double>> w;
+    std::array<size_t, 3> w_offset{};
+    for (int d = 0; d < 3; ++d)
     {
-        // Axes padded to three in front; W^k on the wall axes, one table after the other
-        std::vector<std::complex<double>> w;
-        std::array<size_t, 3> w_offset{};
-        for (int d = 0; d < 3; ++d)
-        {
-            const int a = d - (3 - rank);
-            const int n = (a < 0) ? 1 : nx[a];
-            axes_.n[d] = n;
-            axes_.wall[d] = a >= 0 && bc[a] != BoundaryCondition::PERIODIC;
-            axes_.sine[d] = a >= 0 && bc[a] == BoundaryCondition::ABSORBING;
-            w_offset[d] = w.size();
-            if (axes_.wall[d])
-                for (int k = 0; k < n; ++k)
-                    w.push_back(std::polar(1.0, -k * std::numbers::pi / (2.0 * n)));
-        }
-        n_modes_ = REAL ? n_grid_ / axes_.n[2] * (axes_.n[2] / 2 + 1) : n_grid_;
-
-        d_w_.allocate(w.size());
-        CUDA_CHECK(cudaMemcpy(d_w_, w.data(), sizeof(cuDoubleComplex) * w.size(), cudaMemcpyHostToDevice));
-        for (int d = 0; d < 3; ++d)
-            axes_.w[d] = axes_.wall[d] ? d_w_.get() + w_offset[d] : nullptr;
-
-        d_modes_.allocate(n_modes_);
-        if constexpr (REAL)
-            d_samples_.allocate(n_grid_);
-
-        // Unnormalized periodic FFT of the grid as given (row-major, rank axes). The forward
-        // and inverse plans of a real field never run at the same time: one work area serves both.
-        std::vector<int> n(nx.begin(), nx.end());
-        size_t work_bytes = 0;
-        auto make_plan = [&](cufftHandle& plan, bool& created, cufftType type) {
-            CUFFT_CHECK(count_cufft_plan(cufftCreate(&plan)));
-            created = true;
-            CUFFT_CHECK(cufftSetAutoAllocation(plan, 0));
-            size_t bytes = 0;
-            CUFFT_CHECK(cufftMakePlanMany(plan, rank, n.data(), nullptr, 1, 0, nullptr, 1, 0, type, 1, &bytes));
-            work_bytes = std::max(work_bytes, bytes);
-        };
-        make_plan(plan_, plan_created_, REAL ? CUFFT_D2Z : CUFFT_Z2Z);
-        if constexpr (REAL)
-            make_plan(plan_inverse_, plan_inverse_created_, CUFFT_Z2D);
-        if (work_bytes > 0)
-        {
-            d_work_.allocate((work_bytes + sizeof(double) - 1) / sizeof(double));
-            CUFFT_CHECK(cufftSetWorkArea(plan_, d_work_.get()));
-            if constexpr (REAL)
-                CUFFT_CHECK(cufftSetWorkArea(plan_inverse_, d_work_.get()));
-        }
+        const int a = d - (3 - rank);
+        const int n = (a < 0) ? 1 : nx[a];
+        axes_.n[d] = n;
+        axes_.wall[d] = a >= 0 && bc[a] != BoundaryCondition::PERIODIC;
+        axes_.sine[d] = a >= 0 && bc[a] == BoundaryCondition::ABSORBING;
+        w_offset[d] = w.size();
+        if (axes_.wall[d])
+            for (int k = 0; k < n; ++k)
+                w.push_back(std::polar(1.0, -k * std::numbers::pi / (2.0 * n)));
     }
-    catch (...)
+    n_modes_ = REAL ? n_grid_ / axes_.n[2] * (axes_.n[2] / 2 + 1) : n_grid_;
+
+    d_w_.allocate(w.size());
+    CUDA_CHECK(cudaMemcpy(d_w_, w.data(), sizeof(cuDoubleComplex) * w.size(), cudaMemcpyHostToDevice));
+    for (int d = 0; d < 3; ++d)
+        axes_.w[d] = axes_.wall[d] ? d_w_.get() + w_offset[d] : nullptr;
+
+    d_modes_.allocate(n_modes_);
+    if constexpr (REAL)
+        d_samples_.allocate(n_grid_);
+
+    // Unnormalized periodic FFT of the grid as given (row-major, rank axes). The forward
+    // and inverse plans of a real field never run at the same time: one work area serves both.
+    std::vector<int> n(nx.begin(), nx.end());
+    size_t work_bytes = 0;
+    auto make_plan = [&](CufftPlan& plan, cufftType type) {
+        CUFFT_CHECK(plan.create(cufftCreate));
+        CUFFT_CHECK(cufftSetAutoAllocation(plan, 0));
+        size_t bytes = 0;
+        CUFFT_CHECK(cufftMakePlanMany(plan, rank, n.data(), nullptr, 1, 0, nullptr, 1, 0, type, 1, &bytes));
+        work_bytes = std::max(work_bytes, bytes);
+    };
+    make_plan(plan_, REAL ? CUFFT_D2Z : CUFFT_Z2Z);
+    if constexpr (REAL)
+        make_plan(plan_inverse_, CUFFT_Z2D);
+    if (work_bytes > 0)
     {
-        release();
-        throw;
+        d_work_.allocate((work_bytes + sizeof(double) - 1) / sizeof(double));
+        CUFFT_CHECK(cufftSetWorkArea(plan_, d_work_.get()));
+        if constexpr (REAL)
+            CUFFT_CHECK(cufftSetWorkArea(plan_inverse_, d_work_.get()));
     }
-}
-
-template <typename T>
-CudaMakhoulTransform<T>::~CudaMakhoulTransform()
-{
-    release();
-}
-
-template <typename T>
-void CudaMakhoulTransform<T>::release() noexcept
-{
-    if (plan_created_)
-        release_cufft_plan(plan_);
-    if (plan_inverse_created_)
-        release_cufft_plan(plan_inverse_);
-    plan_created_ = false;
-    plan_inverse_created_ = false;
-    d_work_.release();
-    d_w_.release();
-    d_samples_.release();
-    d_modes_.release();
 }
 
 template <typename T>

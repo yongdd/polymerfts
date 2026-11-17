@@ -15,7 +15,10 @@
  * - the space-group reduced basis and the CrysFFT fast path.
  *
  * Derived classes own only their propagator work buffers, because the number
- * and size of those buffers is what distinguishes the three methods.
+ * and size of those buffers is what distinguishes the three methods. Every
+ * resource is held by an owning member (CudaDeviceBuffer, CufftPlan,
+ * std::unique_ptr), so the solvers have no cleanup code and leave nothing behind
+ * when a constructor throws.
  *
  * Nothing the chosen path does not use is allocated: the space group, a
  * constructor argument, decides it. The constructor of each derived solver ends
@@ -66,10 +69,10 @@ protected:
     bool is_periodic_;            ///< True if all BCs are periodic
     cudaStream_t streams[MAX_STREAMS][2];  ///< CUDA streams [kernel, memcpy] per index
 
-    // Spectral transforms of the full-grid path (created by init_fft(), released by release_base())
+    // Spectral transforms of the full-grid path (created by init_fft())
     int max_fft_batch_;                      ///< Largest batch a derived solver transforms at once (1 or 2)
-    cufftHandle plan_for_[MAX_STREAMS][2];   ///< Periodic BC: forward plans, index = batch - 1
-    cufftHandle plan_bak_[MAX_STREAMS][2];   ///< Periodic BC: backward plans, index = batch - 1
+    CufftPlan plan_for_[MAX_STREAMS][2];     ///< Periodic BC: forward plans, index = batch - 1
+    CufftPlan plan_bak_[MAX_STREAMS][2];     ///< Periodic BC: backward plans, index = batch - 1
     std::unique_ptr<CudaFFTBase<T>> fft_[MAX_STREAMS];       ///< Non-periodic BC: per-stream DCT/DST transform objects (issued on streams[i][0])
 
     // Stress reduction workspace (per stream). The CrysFFT fast path sums its
@@ -159,9 +162,6 @@ protected:
     void fft_forward(int stream, CuDeviceData<T>* d_in, cuDoubleComplex* d_out, int batch = 1);
     /// Backward (unnormalized) FFT, inverse of fft_forward() (periodic BC only).
     void fft_backward(int stream, cuDoubleComplex* d_in, CuDeviceData<T>* d_out, int batch = 1);
-
-    /// Release the CrysFFT objects and device maps (safe to call repeatedly).
-    void cleanup_crysfft();
 
     /**
      * @brief Full-grid input of a spectral step: d_q_in itself, or its expansion
@@ -268,12 +268,8 @@ protected:
     virtual std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const = 0;
 
 private:
-    bool plan_for_created_[MAX_STREAMS][2];  ///< plan_for_[i][b] exists (cufftHandle has no null value)
-    bool plan_bak_created_[MAX_STREAMS][2];  ///< plan_bak_[i][b] exists
     bool pseudo_current_ = false;            ///< pseudo's tables are those of the current cell (see update_pseudo())
 
-    /// Free everything the base owns (idempotent; safe on a partly built object).
-    void release_base();
     /// Create the missing cuFFT plans (periodic BC) or DCT/DST objects (non-periodic BC).
     void init_fft();
     /// Compute and upload the Pseudo tables (Boltzmann bond factors, Fourier basis) of the
