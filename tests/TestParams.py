@@ -16,6 +16,7 @@ import contextlib
 import numpy as np
 
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError, NumericalError, PlatformSelector
+from polymerfts.utils.validation import validate_scft_params
 from fts_checks import cpu_platform, scft_parameters, silenced
 
 
@@ -303,6 +304,19 @@ def main():
         params = scft_parameters(); params["space_group"] = group
         ok &= expect_error(SCFT, params, what)
 
+    # ---- the smearing works on full-grid fields: the input validation refuses it with a space group,
+    # before any solver is built
+    params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}
+    params["smearing"] = {"type": "gaussian", "a_int": 0.1}
+    try:
+        validate_scft_params(params)
+        print("FAILED: smearing with a space group passed the input validation")
+        ok = False
+    except ValidationError as error:
+        if "not available with 'space_group'" not in str(error):
+            print("FAILED: smearing with a space group:", error)
+            ok = False
+
     # ---- box relaxation needs the stress, which the real-space method does not compute
     params = scft_parameters(); params.update(numerical_method="cn-adi2", relax_cell=True)
     ok &= expect_error(SCFT, params, "relax_cell with cn-adi2")
@@ -431,6 +445,21 @@ def main():
     if not (calc.cell.crystal_system == "Hexagonal2D" and calc.cell.lx_reduced_indices == [0]):
         print("FAILED: Hexagonal2D classification", calc.cell.crystal_system, calc.cell.lx_reduced_indices)
         ok = False
+    # The angles a crystal system fixes, and the classification of a 2D cell, use the test of the box
+    # (1e-10 rad): 1e-8 degrees (1.7e-10 rad) from 90 or 120 is another cell, 1e-9 degrees is not
+    for offset, accepted in ((1e-9, True), (1e-8, False)):
+        params = scft_parameters(); params.update(lx=[4.0, 4.0, 6.0], angles=[90.0, 90.0 + offset, 90.0],
+                                                  relax_cell=True, crystal_system="Tetragonal")
+        try:
+            build(SCFT, params)
+            passed = True
+        except ValidationError:
+            passed = False
+        params = scft_parameters(); params.update(nx=[8, 8], lx=[4.0, 4.0], angles=[120.0 + offset], relax_cell=True)
+        system = build(SCFT, params).cell.crystal_system
+        if passed != accepted or system != ("Hexagonal2D" if accepted else "Oblique2D"):
+            print(f"FAILED: an angle {offset} degrees off: Tetragonal accepted {passed}, 2D classified {system}")
+            ok = False
 
     # ---- LFTS / CLFTS options
     for key in ("compressor", "recording", "verbose_level"):

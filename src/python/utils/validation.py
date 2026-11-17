@@ -289,6 +289,16 @@ def polymer_block_copy_lengths(params: Dict[str, Any], polymer: Dict[str, Any]) 
                                                           polymer_block_copies(polymer)))
 
 
+# An angle the cell fixes lies within this many radians of its value: the orthogonality test of the
+# native box (FIXED_ANGLE_TOLERANCE in ComputationBox.h), which SpaceGroup.check_cell applies too
+FIXED_ANGLE_TOLERANCE = 1e-10
+
+
+def right_angle(degrees):
+    """Whether an angle in degrees is 90 degrees for the native box (within FIXED_ANGLE_TOLERANCE rad)."""
+    return abs(degrees * (math.pi / 180.0) - math.pi / 2.0) < FIXED_ANGLE_TOLERANCE
+
+
 def _check_angles(angles, dim: int) -> None:
     """Lattice angles [alpha, beta, gamma] in degrees; a 2D box may give gamma alone, and the angles
     of the axes that a 1D or 2D box lacks are 90 degrees (the native box checks the cell itself)."""
@@ -302,8 +312,7 @@ def _check_angles(angles, dim: int) -> None:
         if len(angles) not in (0, 1, 3):
             raise ValidationError("angles must have 0, 1 or 3 entries for a 1D or 2D box.")
         fixed = angles if dim == 1 else (angles[:2] if len(angles) == 3 else [])
-        # Within 1e-10 rad of 90 degrees, as the native box (FIXED_ANGLE_TOLERANCE in ComputationBox.h)
-        if not np.all(np.abs(np.asarray(fixed, dtype=float) * (np.pi / 180.0) - np.pi / 2.0) < 1e-10):
+        if not all(right_angle(angle) for angle in np.asarray(fixed, dtype=float)):
             raise ValidationError("A 1D box requires all angles to be 90 degrees; "
                                   "a 2D box requires alpha and beta to be 90 degrees.")
 
@@ -508,6 +517,11 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
         if hall is not None and (isinstance(hall, (bool, np.bool_)) or not isinstance(hall, (int, np.integer))
                                  or not 1 <= hall <= 530):
             raise ValidationError(f"'space_group.hall_number' must be an integer from 1 to 530, got {hall!r}")
+        # 'electrostatics' needs the smearing (validate_electrostatics), so this refuses it too
+        if params.get("smearing") is not None:
+            raise ValidationError("'smearing' (and 'electrostatics', which needs it) is not available with "
+                                  "'space_group': the smearing works on full-grid fields, the fields of a space "
+                                  "group live in its reduced basis")
     for key in ("optimizer", "relax_cell"):
         if key not in params:
             raise ValidationError(f"Missing required parameter for SCFT: '{key}'")
@@ -522,9 +536,6 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
                                   "(E = 4 pi l_B rho0 N R0^2)")
         if isinstance(electrostatics, dict) and "psi_dt_scaling" in electrostatics:
             raise ValidationError("'electrostatics.psi_dt_scaling' is a CL-FTS option")
-        if group is not None:
-            raise ValidationError("SCFT 'electrostatics' is not available with 'space_group': the Poisson "
-                                  "equation and the smearing it needs work on the full grid")
     # Before validate_electrostatics, which reads the smearing length of the charges
     _validate_smearing(params, complex_fields=False)
     if electrostatics is not None:

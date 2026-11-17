@@ -8,6 +8,7 @@ import numpy as np
 import scipy.fft
 
 from .. import _core
+from ..utils.validation import right_angle
 
 
 def periodic_transform(nx, lx, angles):
@@ -16,7 +17,7 @@ def periodic_transform(nx, lx, angles):
     Its k_squared() and alias_moments() give, on the full grid, |k|² of the alias of least
     |k|² of every mode and the moments of g⁻¹m over the aliases tied for it: the search of
     the propagator solvers (PropagatorSolver.fourier.k_squared(), MinimalFormAlias.h), for
-    a cell that the simulation box need not have. Returns (transform, box); the box takes
+    a cell that the simulation box does not have. Returns (transform, box); the box takes
     set_lattice_parameters(). A CPU platform is preferred: no FFT of it runs.
     """
     platforms = _core.PlatformSelector.avail_platforms()
@@ -91,7 +92,7 @@ class Smearing:
         Square of k magnitude at each grid point (with the cell metric).
     """
 
-    def __init__(self, nx, lx, smearing_params, angles=None, bc=None, transform=None):
+    def __init__(self, nx, lx, smearing_params, angles=None, bc=None, transform=None, box=None):
         """Initialize smearing function.
 
         Parameters
@@ -110,6 +111,10 @@ class Smearing:
         transform : FourierTransform or None
             PropagatorSolver.fourier of the simulation, with which apply() multiplies by
             Γ(k) (on the GPU with CUDA). Without it apply() transforms with NumPy/SciPy.
+        box : ComputationBox or None
+            The box of `transform` (PropagatorSolver.computation_box). While it has the cell
+            of set_box(), |k|² of an oblique cell and its alias moments come from `transform`,
+            the values of the propagator solvers; otherwise from periodic_transform().
         """
         self.nx = list(nx)
         self.lx = list(lx)
@@ -129,8 +134,9 @@ class Smearing:
         # apply() multiplies by Γ(k) with the Fourier transform of the simulation
         # (PropagatorSolver.fourier, on the GPU with CUDA)
         self._transform = transform
+        self._box = box
         self._multipliers = {}
-        self._metric = None   # periodic_transform() of an oblique cell
+        self._metric = None   # periodic_transform() of an oblique cell that the box does not have
 
         self.species_fourier = None
         if smearing_params is None:
@@ -196,7 +202,7 @@ class Smearing:
                              [np.sin(beta), np.sin(alpha), 0.0]])
         self._cos = cos_full[:self.dim, :self.dim]
         self._sin = sin_full[:self.dim, :self.dim]
-        self.orthogonal = bool(np.allclose(self._cos, np.identity(self.dim), rtol=0.0, atol=1e-12))
+        self.orthogonal = all(right_angle(angle) for angle in self.angles)   # the test of the native box
         if not self.periodic and not self.orthogonal:
             raise ValueError("Smearing with reflecting or absorbing boundaries needs an orthogonal box.")
         if not self.enabled:
@@ -219,13 +225,8 @@ class Smearing:
             self.k_sq = sum(k ** 2 for k in k_grids)
         else:
             # |k|^2 = 4π² mᵀ g⁻¹ m with the alias representative that minimizes the form
-            # (first Brillouin zone), from the search of the propagator solvers on a box of
-            # its own: set_box() takes any cell, not only that of the simulation
-            if self._metric is None:
-                self._metric = periodic_transform(self.nx, self.lx, self.angles)
-            else:
-                self._metric[1].set_lattice_parameters(self.lx, self.angles)
-            self.k_sq = self._metric[0].k_squared()
+            # (first Brillouin zone), from the search of the propagator solvers
+            self.k_sq = self._full_grid(self._cell_transform().k_squared())
         self.k_mag = np.sqrt(self.k_sq)
 
         if self.per_species:
@@ -318,7 +319,8 @@ class Smearing:
             return derivatives
 
         if self._metric_moments is None:
-            self._metric_moments = self._metric[0].alias_moments().reshape(self.dim, self.dim, self.n_grid)
+            moments = self._full_grid(self._cell_transform().alias_moments())
+            self._metric_moments = moments.reshape(self.dim, self.dim, self.n_grid)
         # <u_a u_b>, u = g^-1 m, averaged over all aliases tied for the exact minimum.
         moments = self._metric_moments
         derivatives = {a: -8 * np.pi ** 2 * np.sum((self._cos[a] * L)[:, None] * moments[a], axis=0)
@@ -326,6 +328,37 @@ class Smearing:
         for (a, b), slot in angle_slots.items():
             derivatives[slot] = 8 * np.pi ** 2 * moments[a, b] * L[a] * L[b] * self._sin[a, b]
         return derivatives
+
+    def _cell_transform(self):
+        """A periodic Fourier transform on the cell of set_box(): that of the simulation while its
+        box has this cell, else periodic_transform() on a box of its own (set_box() takes any cell).
+
+        The box stores its angles in radians: they are compared with those a box of the cell would
+        store, so that both give the same |k|², bit for bit.
+        """
+        box = self._box
+        if (box is not None and self._transform is not None and list(box.get_nx()) == self.nx and list(box.get_lx()) == self.lx
+                and list(box.get_angles()) == [angle * (np.pi / 180.0) for angle in self.angles]):
+            return self._transform
+        if self._metric is None:
+            self._metric = periodic_transform(self.nx, self.lx, self.angles)
+        else:
+            self._metric[1].set_lattice_parameters(self.lx, self.angles)
+        return self._metric[0]
+
+    def _full_grid(self, values):
+        """values on the coefficients of a periodic transform (its last axes), on the full grid of k_sq.
+
+        The rfftn half spectrum of real fields lacks the modes m beyond it, whose |k|² and
+        alias moments are those of -m (u -> -u maps the aliases of m onto those of -m).
+        """
+        n_last = values.shape[-1]
+        if n_last == self.nx[-1]:
+            return values
+        index = np.indices(self.nx)
+        beyond = index[-1] >= n_last
+        index[:, beyond] = (-index[:, beyond]) % np.array(self.nx)[:, None]
+        return values[(Ellipsis,) + tuple(index)]
 
     def dilation(self, field, name=None):
         """(∂Γ/∂ln V) * field for a uniform dilation of the box at fixed grid values.
@@ -479,7 +512,10 @@ class Smearing:
 
 
 def smearing_of(params, prop_solver):
-    """The Smearing of a simulation. Γ(k) is applied with the platform FFT (PropagatorSolver.fourier)."""
+    """The Smearing of a simulation. Γ(k) is applied with the platform FFT (PropagatorSolver.fourier), and
+    on an oblique cell it takes |k|² from there."""
+    enabled = params.get("smearing") is not None
     return Smearing(prop_solver.nx, prop_solver.get_lx(), params.get("smearing", None),
                     angles=prop_solver.get_angles_degrees(), bc=prop_solver.bc,
-                    transform=prop_solver.fourier if params.get("smearing") is not None else None)
+                    transform=prop_solver.fourier if enabled else None,
+                    box=prop_solver.computation_box if enabled else None)

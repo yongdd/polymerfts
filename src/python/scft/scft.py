@@ -165,14 +165,7 @@ class SCFT:
         # Display factory info
         self.prop_solver.display_platform_info()
 
-        # Initialize smearing (must be after self.cb is set)
-        if params.get("smearing", None) is not None and self.sg is not None:
-            # Smearing operates on full-grid fields, but with a space group the
-            # fields live in the reduced basis; Smearing.apply would reshape a
-            # reduced-basis array to the full grid and crash (or corrupt data).
-            raise NotImplementedError(
-                "'smearing' is not supported together with 'space_group'. "
-                "Disable one of the two options.")
+        # Smearing of the interactions, on full-grid fields (validate_scft_params refuses it with a space group)
         self.smearing = smearing_of(params, self.prop_solver)
 
         # Electrostatics: the charged types feel z_i ψ, and ψ solves the Poisson equation with the
@@ -222,49 +215,12 @@ class SCFT:
             sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"], params["space_group"]["hall_number"])
         else:
             sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"])
-        # Auto-enable physical basis when possible (m3 → pmmm → z-mirror).
-        # NOTE: reuse the (possibly axis_ordering-reordered) local `angles`;
-        # missing angles means an orthogonal cell for classification, while
-        # `angles` itself stays None so the computation box is not
-        # needlessly recreated below.
-        alpha, beta, gamma = angles if angles is not None else (90.0, 90.0, 90.0)   # a space group is 3D
-        # The test of the native box and solvers (1e-10 rad): a looser one could enable a
-        # basis whose CrysFFT the solver then refuses
-        def right_angle(angle):
-            return abs(angle * (np.pi / 180.0) - np.pi / 2.0) < 1e-10
-        is_orthogonal = right_angle(alpha) and right_angle(beta) and right_angle(gamma)
-        z_axis_orthogonal = right_angle(alpha) and right_angle(beta)
-
-        if is_orthogonal:
-            # Fall back down the basis hierarchy when a basis is not
-            # applicable to this group/grid (the C++ side throws
-            # RuntimeError). Other exception types indicate real bugs
-            # and must propagate.
-            # (the m3 basis needs the recursive 3m CrysFFT: even grid, nz >= 16
-            # and a compatible translation parity)
-            try:
-                if not sg.m3_crysfft_feasible():
-                    raise RuntimeError("recursive 3m CrysFFT is not feasible on this grid")
-                sg.enable_m3_physical_basis()
-            except RuntimeError:
-                try:
-                    sg.enable_pmmm_physical_basis()
-                except RuntimeError:
-                    pass  # keep the irreducible (full-group) basis
-        elif z_axis_orthogonal:
-            # Hexagonal/trigonal (hexagonal-axes) space groups use a hybrid
-            # orbit convention (node-centered x,y; cell-centered z), making
-            # all in-plane symmetry maps exact on the grid. The z-mirror
-            # physical basis (cell-centered z fold) remains valid.
-            try:
-                sg.enable_z_mirror_physical_basis()
-            except RuntimeError:
-                pass  # keep the irreducible (full-group) basis
 
         # The cell must belong to the crystal system of the space group. Otherwise
         # the symmetry operations are not isometries of the box and the run would
         # silently converge to a constrained, unphysical state. The native check
         # (SpaceGroup::check_cell) is the one the computation box applies later.
+        # `angles` (reordered by axis_ordering) is None for an orthogonal cell.
         lx_sg = [float(v) for v in params["lx"]]
         angles_sg = [float(v) for v in angles] if angles is not None else [90.0, 90.0, 90.0]
         try:
@@ -276,6 +232,28 @@ class SCFT:
             # a = b = c and alpha = beta = gamma would have to vary together
             raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
                                   "use the hexagonal-axes setting of the space group.")
+
+        # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
+        # test of the box, and keeps them during box relaxation): with all three at 90 degrees m3, else
+        # Pmmm, else z-mirror; with alpha and beta at 90 degrees z-mirror (hexagonal-axes groups too:
+        # their hybrid grid is cell-centered along z); otherwise the irreducible basis. A basis that does
+        # not apply to the group or the grid raises RuntimeError, and the next one is tried; other
+        # exceptions are real bugs and propagate. The m3 basis needs the recursive 3m CrysFFT (even
+        # grid, nz >= 16 and a compatible translation parity).
+        alpha, beta, gamma = sg.fixed_angles()
+        bases = []
+        if alpha == beta == gamma == 90.0:
+            if sg.m3_crysfft_feasible():
+                bases.append(sg.enable_m3_physical_basis)
+            bases.append(sg.enable_pmmm_physical_basis)
+        if alpha == beta == 90.0:
+            bases.append(sg.enable_z_mirror_physical_basis)
+        for enable in bases:
+            try:
+                enable()
+                break
+            except RuntimeError:
+                pass
         sg.display_info()
         return sg
 
@@ -664,7 +642,7 @@ class SCFT:
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
         check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)",
-                                  self._full_grid_fields(w))
+                                  lambda: self._full_grid_fields(w))
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start

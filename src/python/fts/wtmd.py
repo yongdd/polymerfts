@@ -14,7 +14,7 @@ import scipy.signal
 from ..theory.smearing import periodic_transform
 from ..utils.common import atomic_savemat
 from ..utils.checkpoint import pair_suffix
-from ..utils.validation import ValidationError, _finite_number
+from ..utils.validation import ValidationError, _finite_number, right_angle
 
 
 class WTMD:
@@ -64,7 +64,7 @@ class WTMD:
 
         # Cell volume and metric (angles [alpha, beta, gamma] in degrees; None: orthogonal)
         cos_a, cos_b, cos_g = np.cos(np.deg2rad(angles)) if angles is not None else (0.0, 0.0, 0.0)
-        self.orthogonal = bool(np.allclose([cos_a, cos_b, cos_g], 0.0, rtol=0.0, atol=1e-12))
+        self.orthogonal = angles is None or all(right_angle(angle) for angle in angles)   # the test of the native box
         if self.orthogonal:
             self.V = lx[0] * lx[1] * lx[2]
         else:

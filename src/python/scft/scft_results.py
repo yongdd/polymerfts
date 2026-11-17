@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import yaml
 
-from ..utils.common import atomic_savemat, json_ready, mat_ready, numpy_scalar, simulation_metadata
+from ..utils.common import atomic_savemat, atomic_write_json, json_ready, mat_ready, simulation_metadata
 
 
 @dataclass
@@ -226,40 +226,25 @@ def save_results(sim, path):
         if sim.ion_chemical_potentials is not None:
             m_dic["ion_chemical_potentials"] = sim.ion_chemical_potentials
 
-    # Convert nested parameters too, without modifying sim.params.
-    def plain(value):
-        if isinstance(value, np.ndarray):
-            return plain(value.tolist())
-        if isinstance(value, np.generic):
-            return plain(numpy_scalar(value))
-        if isinstance(value, dict):
-            return {plain(key): plain(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [plain(item) for item in value]
-        if isinstance(value, os.PathLike):
-            return os.fspath(value)
-        return value
-
-    m_dic = plain(m_dic)
-
     # Get input file extension
     _, file_extension = os.path.splitext(path)
 
-    # Save data in matlab format (MAT files have no None: options given as None are left out).
-    # Every format is converted before the file is opened, so that a failure keeps an existing file
+    # A failure keeps an existing file: MAT and JSON are written to a new file that then replaces it,
+    # and YAML is converted before the file is opened. The converters (mat_ready, json_ready) copy the
+    # nested parameters, so sim.params stays as it is.
+
+    # Save data in matlab format (MAT files have no None: options given as None are left out)
     if file_extension == ".mat":
         atomic_savemat(path, mat_ready(m_dic), long_field_names=True, do_compression=True)
 
     # Save data in json format (strict JSON: a non-finite number, such as the chemical
     # potential -inf of a species with volume fraction 0, becomes {"nonfinite_float": "-inf"})
     elif file_extension == ".json":
-        text = json.dumps(json_ready(m_dic), indent=2, allow_nan=False)
-        with open(path, "w") as f:
-            f.write(text)
+        atomic_write_json(path, m_dic)
 
-    # Save data in yaml format
+    # Save data in yaml format (YAML has .inf: a non-finite number stays a number)
     elif file_extension == ".yaml":
-        text = yaml.safe_dump(m_dic, default_flow_style=None, width=90, sort_keys=False)
+        text = yaml.safe_dump(json_ready(m_dic, strict=False), default_flow_style=None, width=90, sort_keys=False)
         with open(path, "w") as f:
             f.write(text)
     else:

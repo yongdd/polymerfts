@@ -220,22 +220,23 @@ When CrysFFT is available (periodic 3D only), the reduced basis can be switched
 from the irreducible mesh to a **physical basis** to avoid gather/scatter
 mapping during diffusion. SCFT makes this choice automatically; with
 `PropagatorSolver`, enable a basis on the `SpaceGroup` (`enable_*_physical_basis()`)
-before passing it in. SCFT chooses:
+before passing it in. SCFT chooses from the angles the group fixes
+(`SpaceGroup.fixed_angles()`; the cell has them and keeps them in box relaxation):
 
-- **Orthogonal boxes** (α = β = γ = 90°, even grid): the 3m physical basis
-  (1/8 grid) is preferred when the space group provides the required 3m
-  translations, the translation-parity fold permutation is valid (each
-  generator translation must be an integral number of grid cells with a
+- **α, β and γ fixed at 90°** (cubic, tetragonal and orthorhombic groups): the
+  3m physical basis (1/8 grid) is preferred when the space group provides the
+  required 3m translations, the translation-parity fold permutation is valid
+  (each generator translation must be an integral number of grid cells with a
   bijective parity map — e.g. for Fddd's quarter-cell d-glides at most one
   of $`n_x/4`$, $`n_y/4`$, $`n_z/4`$ may be odd), and $`n_z/2 \ge 8`$; otherwise the
-  Pmmm physical basis is used (1/8 grid, requires mirror
-  planes along x, y, z).
-- **Non-orthogonal cells with an orthogonal z-axis** (α = β = 90°, γ
-  arbitrary — e.g. hexagonal cells): the z-mirror (ObliqueZ)
-  physical basis (1/2 grid) is used when the space group has a z-mirror
-  $`(x, y, -z + t_z)`$ with integral x and y translations and $`t_z = 0`$ or
-  $`\tfrac{1}{2}`$, and $`n_z`$ is even ($`n_z`$ must be a multiple of 4 when
-  $`t_z = \tfrac{1}{2}`$, as for P6_3/mmc).
+  Pmmm physical basis (1/8 grid, requires an even grid and mirror planes along
+  x, y, z); otherwise the z-mirror physical basis below.
+- **α and β fixed at 90°** (hexagonal groups, trigonal groups on hexagonal
+  axes, monoclinic groups with the unique axis c, also when their γ is 90°):
+  the z-mirror (ObliqueZ) physical basis (1/2 grid) is used when the space
+  group has a z-mirror $`(x, y, -z + t_z)`$ with integral x and y translations
+  and $`t_z = 0`$ or $`\tfrac{1}{2}`$, and $`n_z`$ is even ($`n_z`$ must be a
+  multiple of 4 when $`t_z = \tfrac{1}{2}`$, as for P6_3/mmc).
 - If no physical basis applies, the irreducible basis is used.
 
 ## Crystal Systems and Grid Constraints

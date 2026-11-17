@@ -87,6 +87,32 @@ def main():
         s.compute_propagators({"A": np.zeros(sg_hex.get_n_reduced_basis())})
     expect_error(run_pmmm_basis_on_hexagonal_cell, "orthogonal cell")
 
+    # SCFT chooses the basis from the angles the group fixes (SpaceGroup.fixed_angles): with all three
+    # at 90 degrees m3, else Pmmm, else z-mirror; with alpha and beta at 90 degrees z-mirror, also when
+    # the free gamma of a monoclinic group is 90 degrees; otherwise the irreducible basis
+    import contextlib
+    import io
+    from polymerfts import SCFT
+    for symbol, hall, grid, angles, expected in (
+            ("Im-3m", 529, [16, 16, 16], [90.0, 90.0, 90.0], "m3"),
+            ("Pmmm", -1, [8, 10, 12], [90.0, 90.0, 90.0], "pmmm"),
+            ("Pmmm", -1, [9, 10, 12], [90.0, 90.0, 90.0], "z-mirror"),    # odd nx: no Pmmm basis
+            ("P4/m", -1, [8, 8, 8], [90.0, 90.0, 90.0], "z-mirror"),       # no mirror x -> -x
+            ("P6/mmm", -1, [8, 8, 8], [90.0, 90.0, 120.0], "z-mirror"),
+            ("P2/m", 58, [8, 8, 8], [90.0, 90.0, 90.0], "z-mirror"),       # unique axis c, gamma free
+            ("P2/m", 58, [8, 8, 8], [90.0, 90.0, 100.0], "z-mirror"),
+            ("P2/m", 57, [8, 8, 8], [90.0, 90.0, 90.0], "irreducible"),    # unique axis b, beta free
+            ("P-1", -1, [8, 8, 8], [90.0, 90.0, 90.0], "irreducible")):
+        params = {"nx": grid, "lx": [2.0, 2.0, 2.0], "angles": angles, "chain_model": "continuous", "ds": 0.1,
+                  "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0}, "relax_cell": False,
+                  "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5},
+                                                                   {"type": "B", "length": 0.5}]}],
+                  "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
+                  "space_group": {"symbol": symbol, "hall_number": None if hall < 0 else hall}, "platform": cpu}
+        with contextlib.redirect_stdout(io.StringIO()):
+            basis = SCFT(params).sg.physical_basis_name()
+        assert basis == expected, f"{symbol} ({hall}) at angles {angles}: {basis}, expected {expected}"
+
     # Grid compatibility is checked per axis: the 6_3 screw of P6_3/mmc (1/2 along z)
     # constrains only nz, so odd in-plane sizes are accepted and an odd nz is not
     sg_odd = _core.SpaceGroup([9, 9, 8], "P6_3/mmc", 488)
