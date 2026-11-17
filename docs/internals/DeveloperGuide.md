@@ -386,8 +386,8 @@ The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
 three pseudo-spectral solvers share -- it uses the computation box and the backend's streams,
 and owns the `Pseudo` helper, the stress reduction workspace, the space-group work buffers
 and the CrysFFT fast path --
-and implements `set_space_group()`, `update_laplacian_operator()` and the shared
-`update_dw_impl()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
+and implements `update_laplacian_operator()` and the shared `update_dw_impl()`. Every CUDA
+solver takes the space group and the backend's index maps in its constructor. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
 constructor argument) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
@@ -397,10 +397,11 @@ It also implements `compute_single_segment_stress()` once for the three solvers
 work buffers through `stress_scratch()`, and the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
-tables exist only for a path that uses them (`provide_work()`, called by the backend once
-the space group is set and again before the propagator and stress loops, with the derived
-solvers' `allocate_work()`), so the Pmmm and recursive 3m CrysFFT with the stress fast
-path hold none of them.
+tables exist only for a path that uses them (`provide_work()` with the derived solvers'
+`allocate_work()`, called at the end of the derived constructors through `init_path()` and
+again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
+grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
+Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the

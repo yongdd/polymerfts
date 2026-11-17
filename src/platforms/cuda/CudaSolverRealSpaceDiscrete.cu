@@ -179,13 +179,16 @@ __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ o
 template <typename T>
 CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
-    [[maybe_unused]] bool reduce_memory)
-    : cb(cb), molecules(molecules), n_streams(n_streams)
+    SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
+    : cb(cb), molecules(molecules), n_streams(n_streams), space_group_(space_group),
+      d_reduced_basis_indices_(d_reduced_basis_indices), d_full_to_reduced_map_(d_full_to_reduced_map)
 {
     try
     {
         if (molecules->get_model_name() != "discrete")
             throw_with_line_number("The rs method is for discrete chains.");
+        if (space_group != nullptr && !std::is_same_v<T, double>)
+            throw_with_line_number("Space groups need real fields.");
 
         for (int i = 0; i < n_streams; ++i)
         {
@@ -194,7 +197,7 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
         }
 
         const int M = cb->get_total_grid();
-        n_basis_ = M;
+        n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : M;
         molecules->finalize_contour_length_mapping();
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
@@ -204,6 +207,12 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
         {
             d_work_a[i].allocate(M);
             d_work_b[i].allocate(M);
+            if (space_group != nullptr)
+            {
+                // The full grid around the bonds of a reduced-basis run
+                d_q_full_in[i].allocate(M);
+                d_q_full_out[i].allocate(M);
+            }
         }
 
         update_laplacian_operator();
@@ -211,28 +220,6 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     catch (std::exception& exc)
     {
         throw_without_line_number(exc.what());   // the owning members release what was acquired
-    }
-}
-
-template <typename T>
-void CudaSolverRealSpaceDiscrete<T>::set_space_group(
-    SpaceGroup* sg, int* d_reduced_basis_indices, int* d_full_to_reduced_map, int n_basis)
-{
-    if (sg != nullptr && !std::is_same_v<T, double>)
-        throw_with_line_number("Space groups need real fields.");
-    space_group_ = sg;
-    d_reduced_basis_indices_ = d_reduced_basis_indices;
-    d_full_to_reduced_map_ = d_full_to_reduced_map;
-    n_basis_ = sg != nullptr ? n_basis : cb->get_total_grid();
-    if (sg != nullptr)
-    {
-        for (int i = 0; i < n_streams; ++i)
-        {
-            if (d_q_full_in[i].empty())
-                d_q_full_in[i].allocate(cb->get_total_grid());
-            if (d_q_full_out[i].empty())
-                d_q_full_out[i].allocate(cb->get_total_grid());
-        }
     }
 }
 

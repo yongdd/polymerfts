@@ -145,9 +145,6 @@ public:
     /// Get total real grid size.
     int get_total_grid() const { return total_grid_; }
 
-    /// Get boundary condition for a dimension.
-    BoundaryCondition get_bc(int dim) const { return bc_[dim]; }
-
     /**
      * @brief Forward transform (real coefficient interface) with explicit stream.
      *

@@ -51,9 +51,11 @@
  * @brief GPU implementation of pseudo-spectral utilities.
  *
  * Stores pseudo-spectral operators in GPU device memory for efficient
- * access during propagator computation. The device arrays are allocated
- * and filled by the first update() (the host arrays by the constructor and
- * finalize_ds_values()); the getters return them from then on.
+ * access during propagator computation. The constructor and
+ * finalize_ds_values() compute the host arrays, upload() copies them to the
+ * device (allocating the device arrays at its first call), and update()
+ * recomputes and uploads them for a new box; the getters return the device
+ * arrays once uploaded.
  *
  * @tparam T Numeric type (double or std::complex<double>)
  *
@@ -125,8 +127,8 @@ public:
      *                     for k⊗k computation. Default is Cartesian basis.
      *
      * @note After construction, call add_ds_value() for each unique ds value,
-     *       then finalize_ds_values() to compute the Boltzmann factors, and update()
-     *       before the device arrays are used.
+     *       then finalize_ds_values() to compute the Boltzmann factors, and upload()
+     *       (or update()) before the device arrays are used.
      */
     CudaPseudo(
         std::map<std::string, double> bond_lengths,
@@ -173,6 +175,10 @@ public:
 
     /// Get yz cross-term Fourier basis (device pointer).
     const double* get_fourier_basis_yz() override { return d_fourier_basis_yz;};
+
+    /// Copy the host arrays (Boltzmann factors, Fourier basis) to the device,
+    /// allocating the device arrays at the first call.
+    void upload();
 
     /**
      * @brief Update operators for new box dimensions and upload them.

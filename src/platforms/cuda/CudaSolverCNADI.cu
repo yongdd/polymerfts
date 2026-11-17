@@ -56,16 +56,19 @@ CudaSolverCNADI::CudaSolverCNADI(
     Molecules *molecules,
     int n_streams,
     cudaStream_t streams[MAX_STREAMS][2],
-    [[maybe_unused]] bool reduce_memory)
+    SpaceGroup* space_group,
+    const int* d_reduced_basis_indices,
+    const int* d_full_to_reduced_map)
 {
     try{
         this->cb = cb;
         this->molecules = molecules;
         this->n_streams = n_streams;
-        this->space_group_ = nullptr;
-        this->d_reduced_basis_indices_ = nullptr;
-        this->d_full_to_reduced_map_ = nullptr;
-        this->n_basis_ = 0;
+        // The solver expands/reduces around its finite-difference steps when a space group is set
+        this->space_group_ = space_group;
+        this->d_reduced_basis_indices_ = d_reduced_basis_indices;
+        this->d_full_to_reduced_map_ = d_full_to_reduced_map;
+        this->n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : 0;
 
         if(molecules->get_model_name() != "continuous")
             throw_with_line_number("Real-space method only support 'continuous' chain model.");
@@ -199,6 +202,16 @@ CudaSolverCNADI::CudaSolverCNADI(
             CUDA_CHECK(cudaMemset(d_offset, 0, sizeof(int)));
         }
 
+        // The full grid around the steps of a reduced-basis run
+        if (space_group_ != nullptr)
+        {
+            for (int i = 0; i < n_streams; i++)
+            {
+                d_q_full_in_[i].allocate(M);
+                d_q_full_out_[i].allocate(M);
+            }
+        }
+
         // Allow tridiagonal_lines_shared() up to 96000 bytes of dynamic shared memory, or the
         // device's opt-in limit when that is smaller (see solve_lines())
         int device = 0, optin_shmem = 0;
@@ -217,30 +230,6 @@ CudaSolverCNADI::CudaSolverCNADI(
 }
 CudaSolverCNADI::~CudaSolverCNADI() = default;
 
-
-void CudaSolverCNADI::set_space_group(
-    SpaceGroup* sg,
-    int* d_reduced_basis_indices,
-    int* d_full_to_reduced_map,
-    int n_basis)
-{
-    space_group_ = sg;
-    d_reduced_basis_indices_ = d_reduced_basis_indices;
-    d_full_to_reduced_map_ = d_full_to_reduced_map;
-    n_basis_ = n_basis;
-
-    const int M = cb->get_total_grid();
-    if (space_group_ != nullptr)
-    {
-        for (int i = 0; i < n_streams; i++)
-        {
-            if (d_q_full_in_[i].empty())
-                d_q_full_in_[i].allocate(M);
-            if (d_q_full_out_[i].empty())
-                d_q_full_out_[i].allocate(M);
-        }
-    }
-}
 void CudaSolverCNADI::update_laplacian_operator()
 {
     try

@@ -17,13 +17,14 @@
  * Derived classes own only their propagator work buffers, because the number
  * and size of those buffers is what distinguishes the three methods.
  *
- * Nothing the chosen path does not use is allocated: the space group (set
- * after construction) decides it. The backend calls provide_work() once the
- * group is set, which allocates the buffers and plans of that path; update_dw()
- * and prepare_stress() call it again before their loops, which allocates only
- * what a later change of the path needs (the force-off-diagonal flag turns the
- * stress to the full grid). With the Pmmm or recursive 3m CrysFFT and its stress
- * fast path the solver holds no full-grid transform, work buffer or Pseudo table.
+ * Nothing the chosen path does not use is allocated: the space group, a
+ * constructor argument, decides it. The constructor of each derived solver ends
+ * with init_path(), which sets up the CrysFFT path of the group and allocates the
+ * buffers and plans of the path (provide_work()); prepare_stress() calls
+ * provide_work() again before its loop, which allocates what the stress needs
+ * when the force-off-diagonal flag has turned it to the full grid since. With the
+ * Pmmm or recursive 3m CrysFFT and its stress fast path the solver holds no
+ * full-grid transform, work buffer or Pseudo table.
  */
 
 #ifndef CUDA_SOLVER_PSEUDO_BASE_H_
@@ -40,7 +41,7 @@
 #include "Exception.h"
 #include "Molecules.h"
 #include "ComputationBox.h"
-#include "Pseudo.h"
+#include "CudaPseudo.h"
 #include "FFT.h"
 #include "CudaFFT.h"
 #include "CudaSolver.h"
@@ -57,7 +58,9 @@ class CudaSolverPseudoBase : public CudaSolver<T>
 protected:
     ComputationBox<T>* cb;        ///< Computation box
     Molecules *molecules;         ///< Molecules container
-    std::unique_ptr<Pseudo<T>> pseudo;   ///< Pseudo-spectral utilities (Fourier basis, Boltzmann bond factors)
+    /// Pseudo-spectral tables of the full grid (Fourier basis, Boltzmann bond factors),
+    /// created when a full-grid path first needs them (update_pseudo())
+    std::unique_ptr<CudaPseudo<T>> pseudo;
     int n_streams;                ///< Number of parallel streams
     int dim_;                     ///< Number of dimensions (1, 2, or 3)
     bool is_periodic_;            ///< True if all BCs are periodic
@@ -72,7 +75,7 @@ protected:
     // Stress reduction workspace (per stream). The CrysFFT fast path sums its
     // reduced-basis integrand in d_stress_sum with the CUB scratch d_temp_storage
     // (allocated by prepare_stress()); the full-grid path forms the integrand in
-    // d_q_multi (see provide_work()) and sums it by blocks
+    // d_q_multi and sums it by blocks into d_stress_partial_ (see provide_work())
     size_t temp_storage_bytes[MAX_STREAMS];
     CudaDeviceBuffer<unsigned char> d_temp_storage[MAX_STREAMS];
     CudaDeviceBuffer<CuDeviceData<T>> d_stress_sum[MAX_STREAMS];
@@ -83,15 +86,15 @@ protected:
 
     // Space group symmetry (reduced basis)
     SpaceGroup* space_group_;                        ///< Space group pointer (nullptr if not used)
-    int* d_reduced_basis_indices_;                   ///< Device array: reduced -> full index mapping (lent by the backend)
-    int* d_full_to_reduced_map_;                     ///< Device array: full -> reduced index mapping (lent by the backend)
-    int n_basis_;                                    ///< Number of reduced basis points
+    const int* d_reduced_basis_indices_;             ///< Device array: reduced -> full index mapping (lent by the backend)
+    const int* d_full_to_reduced_map_;               ///< Device array: full -> reduced index mapping (lent by the backend)
+    int n_basis_;                                    ///< Number of reduced basis points (0 without a space group)
     CudaDeviceBuffer<CuDeviceData<T>> d_q_full_in_[MAX_STREAMS];      ///< Work buffer: full grid input (per stream; full-grid path)
     CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out_[MAX_STREAMS];     ///< Work buffer: full grid output (per stream; full-grid path)
     int q_full_in_factor_;                           ///< d_q_full_in_ holds this many full-grid fields (2 for discrete stress)
 
     // CrysFFT fast path (crystallographic FFT on the physical sub-grid)
-    bool use_crysfft_;                               ///< True when the CrysFFT path is enabled
+    bool use_crysfft_;                               ///< True when the CrysFFT path is enabled (a space group, 3D, periodic, real fields)
     CudaCrysFFTMode crysfft_mode_;
     bool crysfft_identity_map_;                      ///< True when reduced basis matches physical grid
     int crysfft_physical_size_;
@@ -108,6 +111,11 @@ protected:
     std::map<std::pair<int, double>, CudaDeviceBuffer<double>> crysfft_multipliers_;   ///< Stress multipliers per (axis group, bond coefficient)
 
     /**
+     * The derived constructor ends with init_path(), which needs its overrides.
+     *
+     * @param space_group               Space group of the reduced basis, or nullptr
+     * @param d_reduced_basis_indices   Device map reduced -> full index (lent by the backend; nullptr without a group)
+     * @param d_full_to_reduced_map     Device map full -> reduced index (lent by the backend; nullptr without a group)
      * @param max_fft_batch             Largest number of fields the derived solver
      *                                  transforms in one cuFFT call (1 or 2).
      * @param q_full_in_factor          Number of full-grid fields d_q_full_in_ must hold.
@@ -117,7 +125,35 @@ protected:
     CudaSolverPseudoBase(
         ComputationBox<T>* cb, Molecules *molecules, int n_streams,
         cudaStream_t streams[MAX_STREAMS][2],
+        SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map,
         int max_fft_batch, int q_full_in_factor, bool with_exp_dw_half, bool complex_requires_periodic);
+
+    /**
+     * @brief Set up the CrysFFT path of the space group (3D, periodic, real fields)
+     *        and allocate the work of the path (provide_work()).
+     *
+     * Called at the end of the derived constructors: it uses their
+     * crysfft_block_coeffs() and allocate_work().
+     */
+    void init_path();
+
+    /**
+     * @brief Allocate what the path in use needs and is missing.
+     *
+     * The exp(-w ds) tables (reduced basis on the CrysFFT path, full grid
+     * otherwise) and, when full_grid_path(), the full-grid transforms, stress
+     * workspace, reduced-basis expansion buffers and Pseudo tables of the current
+     * cell; then the derived solver's buffers (allocate_work()). Buffers are kept
+     * once allocated; one of another size is replaced. Called by init_path() and,
+     * as the force-off-diagonal flag can turn the stress to the full grid, by
+     * prepare_stress() before its loop.
+     */
+    void provide_work();
+
+    /// Values of the spectrum of a full-grid field, as Pseudo::get_total_complex_grid()
+    /// counts them (the r2c half spectrum for real fields with periodic BCs, the full
+    /// grid otherwise), without the Pseudo tables
+    int total_complex_grid() const;
 
     /// Forward FFT of `batch` consecutive full-grid fields on stream `stream` (periodic BC only).
     void fft_forward(int stream, CuDeviceData<T>* d_in, cuDoubleComplex* d_out, int batch = 1);
@@ -240,7 +276,8 @@ private:
     void release_base();
     /// Create the missing cuFFT plans (periodic BC) or DCT/DST objects (non-periodic BC).
     void init_fft();
-    /// Recompute and upload the Pseudo tables (Boltzmann bond factors, Fourier basis) of the current cell.
+    /// Compute and upload the Pseudo tables (Boltzmann bond factors, Fourier basis) of the
+    /// current cell, creating them at the first call.
     void update_pseudo();
     /// Select and build the CrysFFT fast path for the current space group (3D periodic, real fields).
     void init_crysfft();
@@ -285,26 +322,9 @@ public:
         CuDeviceData<T> *d_q_pair, CuDeviceData<T> *d_segment_stress,
         std::string monomer_type, bool is_half_bond_length) override;
 
-    void set_space_group(
-        SpaceGroup* sg,
-        int* d_reduced_basis_indices,
-        int* d_full_to_reduced_map,
-        int n_basis) override;
-
-    /**
-     * @brief Allocate what the path in use needs and is missing.
-     *
-     * The exp(-w ds) tables (reduced basis on the CrysFFT path, full grid
-     * otherwise) and, when full_grid_path(), the full-grid transforms, stress
-     * workspace, reduced-basis expansion buffers and Pseudo tables of the current
-     * cell; then the derived solver's buffers (allocate_work()). Buffers are kept
-     * once allocated; one of another size is replaced. Called by the backend
-     * after set_space_group(), and by update_dw() and prepare_stress() before
-     * their loops.
-     */
-    void provide_work() override;
-
-    /// A new cell: rebuilds the CrysFFT tables; the full-grid Pseudo tables follow in provide_work().
+    /// A new cell: rebuilds the CrysFFT tables, and the Pseudo tables when the full-grid
+    /// path is in use (otherwise prepare_stress() brings them to the cell if the flag
+    /// turns the stress to the full grid).
     void update_laplacian_operator() override;
 
     /// Provide the stress path before the segment loop: the full-grid work, or the

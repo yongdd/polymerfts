@@ -41,14 +41,17 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
     Molecules *molecules,
     int n_streams,
     cudaStream_t streams[MAX_STREAMS][2],
-    [[maybe_unused]] bool reduce_memory)
-    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, /*max_fft_batch=*/2,
+    SpaceGroup* space_group,
+    const int* d_reduced_basis_indices,
+    const int* d_full_to_reduced_map)
+    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
+                              space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/2,
                               /*q_full_in_factor=*/1, /*with_exp_dw_half=*/false,
                               /*complex_requires_periodic=*/true)
 {
     try{
-        // The work buffers follow in allocate_work(), for the path the space group chooses
-        this->update_laplacian_operator();
+        // The CrysFFT objects and the work buffers (allocate_work()) of the path the space group chooses
+        this->init_path();
     }
     catch(std::exception& exc)
     {
@@ -66,7 +69,7 @@ void CudaSolverPseudoRK2<T>::allocate_work(int, bool full_grid)
     if (!full_grid)
         return;
     const int M = cb->get_total_grid();
-    const int M_COMPLEX = pseudo->get_total_complex_grid();
+    const int M_COMPLEX = this->total_complex_grid();
     for(int i=0; i<n_streams; i++)
     {
         // Workspaces: advance_propagator() uses the first half of each, the
@@ -102,11 +105,10 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
         const int M = cb->get_total_grid();
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
+        const int M_COMPLEX = this->total_complex_grid();
 
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        const bool use_crysfft = (use_crysfft_ && space_group_ != nullptr);
-        if (use_crysfft)
+        if (use_crysfft_)
         {
             // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
             if constexpr (!std::is_same_v<T, double>)

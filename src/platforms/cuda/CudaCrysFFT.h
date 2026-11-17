@@ -66,8 +66,10 @@ public:
 
     /// d_q_out = exp(coeff ∇²) d_q_in on the physical grid, with the table of
     /// build_boltzmann(coeff), on `stream`. d_q_out may alias d_q_in; otherwise
-    /// d_q_in is kept. Either may lie at any offset into a larger array: the engines
-    /// run cuFFT on their own buffers or stage an array not aligned for it.
+    /// d_q_in is kept. d_q_in may lie at any offset into a larger array (the engines
+    /// run cuFFT on their own buffers or stage an input not aligned for it); d_q_out
+    /// must be aligned to a cufftDoubleComplex, as the work buffers and propagators
+    /// are (the recursive 3m engine refuses another).
     virtual void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                            cudaStream_t stream) = 0;
 
@@ -154,10 +156,6 @@ public:
     void apply_multiplier(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                           cudaStream_t stream) override;
 
-    // Getters
-    const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
-    const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
-    int get_M_logical() const { return M_logical_; }
     int get_M_physical() const { return M_physical_; }
 };
 

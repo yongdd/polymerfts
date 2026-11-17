@@ -61,8 +61,12 @@ private:
     cudaEvent_t copy_done[MAX_STREAMS];             ///< Stress: copy stream reached this point
     CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
 
-    /// Discrete chains with a space group: exp(-w ds) in the reduced basis
+    /// Discrete chains with a space group: exp(-w ds) in the reduced basis, unless the
+    /// solver stores it there itself (exp_dw_in_solver_basis())
     std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_exp_dw_reduced;
+
+    /// The discrete solver's exp(-w ds) tables are in the reduced basis already (its CrysFFT path)
+    bool exp_dw_in_solver_basis() const;
 
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }

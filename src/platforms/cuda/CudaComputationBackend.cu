@@ -130,27 +130,37 @@ CudaComputationBackend<T>::CudaComputationBackend(
             CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&copy_done[i], cudaEventDisableTiming)));
         }
 
+        // The solver of the method, with the space group and the maps above (nullptr without
+        // a group): it expands and reduces around its full-grid steps and allocates the work
+        // of its path, so that the computations allocate no solver work
+        const int* d_reduced = d_reduced_basis_indices.get();
+        const int* d_full = d_full_to_reduced_map.get();
         switch (method_info.id)
         {
         case NumericalMethodId::PS:
         {
-            auto discrete = std::make_unique<CudaSolverPseudoDiscrete<T>>(cb, molecules, n_streams, streams, false);
+            auto discrete = std::make_unique<CudaSolverPseudoDiscrete<T>>(
+                cb, molecules, n_streams, streams, space_group, d_reduced, d_full);
             solver_discrete = discrete.get();
             solver = std::move(discrete);
             break;
         }
         case NumericalMethodId::RS:
-            solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(cb, molecules, n_streams, streams, false);
+            solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(
+                cb, molecules, n_streams, streams, space_group, d_reduced, d_full);
             break;
         case NumericalMethodId::RQM4:
-            solver = std::make_unique<CudaSolverPseudoRQM4<T>>(cb, molecules, n_streams, streams, false);
+            solver = std::make_unique<CudaSolverPseudoRQM4<T>>(
+                cb, molecules, n_streams, streams, space_group, d_reduced, d_full);
             break;
         case NumericalMethodId::RK2:
-            solver = std::make_unique<CudaSolverPseudoRK2<T>>(cb, molecules, n_streams, streams, false);
+            solver = std::make_unique<CudaSolverPseudoRK2<T>>(
+                cb, molecules, n_streams, streams, space_group, d_reduced, d_full);
             break;
         case NumericalMethodId::CNADI2:
             if constexpr (std::is_same_v<T, double>)
-                solver = std::make_unique<CudaSolverCNADI>(cb, molecules, n_streams, streams, false);
+                solver = std::make_unique<CudaSolverCNADI>(
+                    cb, molecules, n_streams, streams, space_group, d_reduced, d_full);
             else
                 throw_with_line_number("The cn-adi2 method is only available for real fields.");
             break;
@@ -183,15 +193,6 @@ CudaComputationBackend<T>::CudaComputationBackend(
             d_block_stress[i].allocate(6);
             h_block_stress[i].allocate(6);
         }
-
-        solver->update_laplacian_operator();
-
-        // The solver expands/reduces around its FFTs when a space group is set
-        if (space_group != nullptr)
-            solver->set_space_group(space_group, d_reduced_basis_indices, d_full_to_reduced_map,
-                                    space_group->get_n_reduced_basis());
-        // The work of the path the group chose (the computations then allocate no solver work)
-        solver->provide_work();
     }
     catch (...)
     {
@@ -325,9 +326,10 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
 {
     solver->update_dw("cpu", w_input);
 
-    // The discrete solvers keep exp(-w ds) on the full grid unless the CrysFFT
-    // path of the pseudo-spectral one stores it in the reduced basis already
-    if (discrete_chains && space_group != nullptr)
+    // The discrete solvers keep exp(-w ds) on the full grid, reduced here to the basis,
+    // unless the CrysFFT path of the pseudo-spectral one stores it in the basis already
+    // (boltzmann_factor() then returns the solver's table)
+    if (discrete_chains && space_group != nullptr && !exp_dw_in_solver_basis())
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -340,22 +342,18 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
                 // Enter the buffer only once it exists, so a failed allocation can be retried
                 found = d_exp_dw_reduced.emplace(monomer_type, CudaDeviceBuffer<CuDeviceData<T>>(n_basis)).first;
             }
-            CuDeviceData<T>* d_exp_dw_basis  = found->second.get();
-            CuDeviceData<T>* d_exp_dw_solver = solver->d_exp_dw.at(0).at(monomer_type);
-            if (solver_discrete != nullptr && solver_discrete->exp_dw_stored_reduced())
-            {
-                CUDA_CHECK(cudaMemcpy(d_exp_dw_basis, d_exp_dw_solver,
-                                           sizeof(T)*n_basis, cudaMemcpyDeviceToDevice));
-            }
-            else
-            {
-                ker_reduce_to_basis<<<N_BLOCKS, N_THREADS>>>(
-                    d_exp_dw_basis, d_exp_dw_solver, d_reduced_basis_indices, n_basis);
-                CUDA_CHECK_LAUNCH();
-            }
+            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS>>>(
+                found->second.get(), solver->d_exp_dw.at(0).at(monomer_type), d_reduced_basis_indices, n_basis);
+            CUDA_CHECK_LAUNCH();
         }
         CUDA_CHECK(cudaDeviceSynchronize());
     }
+}
+
+template <typename T>
+bool CudaComputationBackend<T>::exp_dw_in_solver_basis() const
+{
+    return solver_discrete != nullptr && solver_discrete->exp_dw_stored_reduced();
 }
 
 template <typename T>
@@ -382,7 +380,8 @@ void CudaComputationBackend<T>::advance_propagator_half_bond_step(
 template <typename T>
 BackendArray<T>* CudaComputationBackend<T>::boltzmann_factor(const std::string& monomer_type)
 {
-    if (space_group != nullptr)
+    // exp(-w ds) of the global ds in the propagator basis
+    if (space_group != nullptr && !exp_dw_in_solver_basis())
         return wrap(d_exp_dw_reduced.at(monomer_type));
     return wrap(solver->d_exp_dw.at(0).at(monomer_type));
 }

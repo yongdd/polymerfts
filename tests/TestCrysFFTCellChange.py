@@ -16,6 +16,11 @@ rescaled to a standard deviation of 5, continuous and discrete chains):
 - Im-3m 16^3, m3 physical basis: the recursive 3m CrysFFT on a cubic cell;
 - Im-3m 18^3, m3 physical basis: an odd basis size (9^3), so the second propagator
   of a stress pair lies at an odd offset that cuFFT cannot read directly.
+All of them take the Pmmm DCT or the recursive 3m CrysFFT with the stress fast path,
+which leaves the full grid unused. After the first cell change and its propagators,
+the off-diagonal stress flag is turned on (set_force_off_diagonal_stress), which
+takes the stress to the full grid: that stress must equal the one of a solver
+created at the cell with the flag.
 
 A solver chooses its CrysFFT engine once, for the angles of its box: the Pmmm DCT
 and the recursive 3m CrysFFT need an orthogonal cell, the ObliqueZ CrysFFT alpha =
@@ -53,17 +58,24 @@ def space_group(symbol, hall, nx, basis):
     return sg
 
 
-def results(platform, chain, case, lattices, fields):
-    """Q, phi_A and the stress after each lattice of `lattices` (one solver, updated in turn)."""
+def solver(platform, chain, case, lx, fields):
+    """A solver of the case at lx and the fields in its basis"""
     symbol, hall, nx, basis, _ = case
     sg = space_group(symbol, hall, nx, basis)
-    out = []
     with contextlib.redirect_stdout(io.StringIO()):
-        s = PropagatorSolver(nx=nx, lx=lattices[0], ds=0.025, bond_lengths={"A": 1.0, "B": 1.2}, bc=["periodic"] * 6,
+        s = PropagatorSolver(nx=nx, lx=lx, ds=0.025, bond_lengths={"A": 1.0, "B": 1.2}, bc=["periodic"] * 6,
                              chain_model=chain, numerical_method="rqm4" if chain == "continuous" else None,
                              platform=platform, space_group=sg)
         s.add_polymer(1.0, [["A", 0.4, 0, 1], ["B", 0.6, 1, 2]])
-        w = {m: sg.to_reduced_basis(fields[m]) for m in "AB"}
+    return s, {m: sg.to_reduced_basis(fields[m]) for m in "AB"}
+
+
+def results(platform, chain, case, lattices, fields):
+    """Q, phi_A and the stress after each lattice of `lattices` (one solver, updated in turn)."""
+    symbol, _, _, basis, _ = case
+    out = []
+    s, w = solver(platform, chain, case, lattices[0], fields)
+    with contextlib.redirect_stdout(io.StringIO()):
         for i, lx in enumerate(lattices):
             if i:
                 s.set_lattice_parameters(lx, [90.0, 90.0, 90.0])
@@ -76,6 +88,27 @@ def results(platform, chain, case, lattices, fields):
             out.append((s.get_partition_function(0), np.asarray(s.get_concentration("A"), float).copy(),
                         np.asarray(s.get_stress(), float).copy()))
     return out
+
+
+def flag_turned_on(platform, chain, case, lattices, fields):
+    """Stress after a computation at lattices[1] (a cell change from lattices[0]) when the off-diagonal stress
+    flag is turned on only then, and the stress of a solver created at lattices[1] with the flag"""
+    s, w = solver(platform, chain, case, lattices[0], fields)
+    fresh, w_fresh = solver(platform, chain, case, lattices[1], fields)
+    fresh.set_force_off_diagonal_stress(True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        s.compute_propagators(w)
+        s.compute_concentrations()
+        s.compute_stress()
+        s.set_lattice_parameters(lattices[1], [90.0, 90.0, 90.0])
+        s.compute_propagators(w)
+        s.compute_concentrations()
+        s.set_force_off_diagonal_stress(True)
+        s.compute_stress()
+        fresh.compute_propagators(w_fresh)
+        fresh.compute_concentrations()
+        fresh.compute_stress()
+    return np.asarray(s.get_stress(), float), np.asarray(fresh.get_stress(), float)
 
 
 # (engine, Hall number or symbol, nx, lx, a valid change of lx, angles, the angles the group fixes);
@@ -176,6 +209,13 @@ def main():
                     print(f"[{'PASS' if ok else 'FAIL'}] {platform} {symbol} {basis} {nx} {chain}: lattice {lattices[k]} "
                           f"updated vs fresh {d:.1e}")
                 reference[platform] = updated
+                walked, fresh = flag_turned_on(platform, chain, case, lattices, fields)
+                d = max_rel(walked, fresh) if walked.shape == fresh.shape else np.inf
+                ok = d < 1e-12
+                checks += 1
+                failures += not ok
+                print(f"[{'PASS' if ok else 'FAIL'}] {platform} {symbol} {basis} {nx} {chain}: off-diagonal flag turned on "
+                      f"after a cell change, stress vs a solver created with it {d:.1e}")
             if "cuda" in reference and cpu:
                 d = max(max_rel(g[2], c[2]) for g, c in zip(reference["cuda"], reference[cpu[0]]))
                 ok = d < 1e-10

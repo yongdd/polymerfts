@@ -73,21 +73,6 @@ __global__ void ker_real_to_complex_part(cuDoubleComplex* dst, const double* src
     }
 }
 
-__global__ void ker_complex_to_real(double* dst, const cuDoubleComplex* src, int M)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M; idx += blockDim.x * gridDim.x)
-        dst[idx] = src[idx].x;
-}
-
-__global__ void ker_real_to_complex(cuDoubleComplex* dst, const double* src, int M)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M; idx += blockDim.x * gridDim.x)
-    {
-        dst[idx].x = src[idx];
-        dst[idx].y = 0.0;
-    }
-}
-
 __global__ void ker_complex_to_interleaved(double* dst, const cuDoubleComplex* src, int M_COMPLEX)
 {
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M_COMPLEX; idx += blockDim.x * gridDim.x)
