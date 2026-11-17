@@ -275,6 +275,15 @@ protected:
      */
     void compute_recip_metric();
 
+    /**
+     * @brief Volume elements dv and the accessible volume of the current cell.
+     *
+     * dv = Π dx[d] in an orthogonal cell and V/M in an oblique one, times the
+     * mask. Every constructor and cell change uses it, so a box moved to a cell
+     * has the dv of a box created there, bit for bit.
+     */
+    void update_volume_elements();
+
     /// Computations of this box whose numerical method requires an orthogonal cell
     int orthogonal_cell_holders_ = 0;
 

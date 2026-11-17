@@ -15,7 +15,9 @@ of non-finite histories.
   imaginary parts, with a ValueError of the native binding: through PropagatorSolver,
   and given directly to its native computation box, propagator computation (fields
   and q_init), Anderson mixing, Fourier transform and space group, and as a mask.
-  Integer and boolean arrays still convert to real fields.
+  The message names field_type="complex" for the fields only, not for space-group
+  fields and masks, which are real for every field type. Integer and boolean arrays
+  still convert to real fields.
 """
 
 import subprocess
@@ -205,25 +207,32 @@ def test_complex_into_real(platform):
     cosine = PropagatorSolver(nx=[8, 8], lx=[2.0, 2.0], ds=0.1, bond_lengths={"A": 1.0}, bc=["reflecting"] * 4,
                               chain_model="continuous", numerical_method="cn-adi2", platform=platform).fourier
     fac = _core.PlatformSelector.create_factory(platform, False, "real")
-    for call in (lambda: solver.compute_propagators({"A": w + 1j * w}), lambda: solver.mean(w + 1j * w),
-                 lambda: solver.integral(w + 0j), lambda: solver.inner_product(w, w + 1j * w),
-                 lambda: solver.zero_mean(w + 1j * w),
-                 lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j), lambda: sg_solver.from_reduced_basis(reduced + 1j),
-                 # The native objects themselves
-                 lambda: box.integral(w + 0j), lambda: box.zero_mean(w + 1j * w),
-                 lambda: computation.compute_propagators({"A": w + 1j * w}),
-                 lambda: grafted.compute_propagators({"A": w}, q_init={"G": w + 0j}),
-                 lambda: anderson.calculate_new_fields(w + 1j * w, w, 1.0, 1.0),
-                 lambda: anderson.calculate_new_fields(w, w + 1j * w, 1.0, 1.0),
-                 lambda: solver.fourier.forward(w + 1j * w), lambda: cosine.backward(np.ones((8, 8)) + 1j),
-                 lambda: sg.symmetrize(np.ones(512) + 1j), lambda: sg.symmetrize_reduced_basis(reduced + 1j),
-                 lambda: fac.create_computation_box([8, 8], [2.0, 2.0], mask=np.ones(64) + 0j)):
-        try:
-            call()
-        except ValueError as exc:
-            assert "field_type" in str(exc), exc
-            continue
-        raise AssertionError("A complex array was accepted for real fields")
+    # Fields, which a solver of complex fields takes complex: the message names field_type
+    fields = (lambda: solver.compute_propagators({"A": w + 1j * w}), lambda: solver.mean(w + 1j * w),
+              lambda: solver.integral(w + 0j), lambda: solver.inner_product(w, w + 1j * w),
+              lambda: solver.zero_mean(w + 1j * w),
+              # The native objects themselves
+              lambda: box.integral(w + 0j), lambda: box.zero_mean(w + 1j * w),
+              lambda: computation.compute_propagators({"A": w + 1j * w}),
+              lambda: grafted.compute_propagators({"A": w}, q_init={"G": w + 0j}),
+              lambda: anderson.calculate_new_fields(w + 1j * w, w, 1.0, 1.0),
+              lambda: anderson.calculate_new_fields(w, w + 1j * w, 1.0, 1.0),
+              lambda: solver.fourier.forward(w + 1j * w), lambda: cosine.backward(np.ones((8, 8)) + 1j))
+    # Space-group fields and masks, real for every field type: no field_type in the message
+    always_real = (lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j),
+                   lambda: sg_solver.from_reduced_basis(reduced + 1j),
+                   lambda: sg.symmetrize(np.ones(512) + 1j), lambda: sg.symmetrize_reduced_basis(reduced + 1j),
+                   lambda: sg.reduced_to_irreducible(reduced + 1j),
+                   lambda: fac.create_computation_box([8, 8], [2.0, 2.0], mask=np.ones(64) + 0j))
+    for calls, names_field_type in ((fields, True), (always_real, False)):
+        for call in calls:
+            try:
+                call()
+            except ValueError as exc:
+                assert "takes real values" in str(exc), exc
+                assert ("field_type" in str(exc)) == names_field_type, exc
+                continue
+            raise AssertionError("A complex array was accepted for real fields")
     # Integer and boolean arrays convert
     integral = box.integral(np.ones(64, dtype=int))
     assert np.isclose(integral, box.integral(np.ones(64))) and np.isclose(box.integral(np.ones(64, dtype=bool)), integral)

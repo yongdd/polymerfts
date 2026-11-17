@@ -11,7 +11,7 @@
  *
  * - Supports 1D, 2D, and 3D grids
  * - Grid spacing: dx[d] = lx[d] / nx[d]
- * - Volume element: dv[i] = Π dx[d] × mask[i]
+ * - Volume element: dv[i] = Π dx[d] × mask[i] (V/M × mask[i] in an oblique cell)
  *
  * **Boundary Conditions:**
  *
@@ -211,28 +211,6 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         }
         // else: mask remains empty (no mask)
 
-        // Weight factor for integral
-        dv.resize(total_grid);
-        for(int i=0; i<total_grid; i++)
-        {
-            dv[i] = 1.0;
-            for(int d=0; d<DIM; d++)
-                dv[i] *= dx[d];
-        }
-        if (!mask_full_.empty())
-            for(int i=0; i<total_grid; i++)
-                dv[i] *= mask_full_[i];
-
-        // Volume of simulation box
-        volume = 1.0;
-        for(int d=0; d<DIM; d++)
-            volume *= lx[d];
-
-        // Accessible volume
-        accessible_volume = 0.0;
-        for(int i=0; i<total_grid; i++)
-            accessible_volume += dv[i];
-
         // Set boundary conditions
         if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
         {
@@ -291,10 +269,13 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         recip_vec_.fill(0.0);
         recip_metric_.fill(0.0);
 
-        // Compute lattice vectors, reciprocal lattice, and metric tensor
+        // Compute lattice vectors (and the cell volume), reciprocal lattice, and metric tensor
         compute_lattice_vectors();
         compute_reciprocal_lattice();
         compute_recip_metric();
+
+        // Weight factor for integral
+        update_volume_elements();
 
         // Initialize space group (disabled by default)
         space_group_ = nullptr;
@@ -382,19 +363,8 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         compute_reciprocal_lattice();
         compute_recip_metric();
 
-        // Weight factor for integral (using volume from lattice vectors)
-        dv.resize(total_grid);
-        double dv_base = volume / total_grid;  // Volume element
-        for(int i=0; i<total_grid; i++)
-            dv[i] = dv_base;
-        if (!mask_full_.empty())
-            for(int i=0; i<total_grid; i++)
-                dv[i] *= mask_full_[i];
-
-        // Accessible volume
-        accessible_volume = 0.0;
-        for(int i=0; i<total_grid; i++)
-            accessible_volume += dv[i];
+        // Weight factor for integral
+        update_volume_elements();
 
         // Set boundary conditions
         if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
@@ -460,6 +430,36 @@ ComputationBox<T>::~ComputationBox()
 }
 
 //----------------- Lattice computation methods -----------------------------
+/**
+ * @brief Volume elements of the current cell, with the mask, and the accessible volume.
+ *
+ * dv = Π dx[d] in an orthogonal cell, the cell volume over the grid points V/M in
+ * an oblique one (the two agree to round-off for right angles). The mask is the full
+ * grid one: `mask` is in the reduced basis while a space group is set.
+ */
+template <typename T>
+void ComputationBox<T>::update_volume_elements()
+{
+    double dv_base = 1.0;
+    if (is_orthogonal_)
+    {
+        for (int d = 0; d < dim; d++)
+            dv_base *= dx[d];
+    }
+    else
+    {
+        dv_base = volume / total_grid;
+    }
+    dv.assign(total_grid, dv_base);
+    if (!mask_full_.empty())
+        for (int i = 0; i < total_grid; i++)
+            dv[i] *= mask_full_[i];
+
+    accessible_volume = 0.0;
+    for (int i = 0; i < total_grid; i++)
+        accessible_volume += dv[i];
+}
+
 /**
  * @brief Compute lattice vectors from box lengths and angles.
  *
@@ -753,17 +753,8 @@ void ComputationBox<T>::set_lx(std::vector<double> new_lx)
     compute_reciprocal_lattice();
     compute_recip_metric();
 
-    // Weight factor for integral (using volume from lattice vectors). The full
-    // grid mask: `mask` is in the reduced basis while a space group is set.
-    double dv_base = volume / total_grid;
-    for(int i=0; i<total_grid; i++)
-        dv[i] = dv_base;
-    if (!mask_full_.empty())
-        for(int i=0; i<total_grid; i++)
-            dv[i] *= mask_full_[i];
-    accessible_volume = 0.0;
-    for(int i=0; i<total_grid; i++)
-        accessible_volume += dv[i];
+    // Weight factor for integral, as a box created at this cell gets it
+    update_volume_elements();
 }
 
 template <typename T>
@@ -810,17 +801,8 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
     compute_reciprocal_lattice();
     compute_recip_metric();
 
-    // Weight factor for integral (using volume from lattice vectors). The full
-    // grid mask: `mask` is in the reduced basis while a space group is set.
-    double dv_base = volume / total_grid;
-    for(int i=0; i<total_grid; i++)
-        dv[i] = dv_base;
-    if (!mask_full_.empty())
-        for(int i=0; i<total_grid; i++)
-            dv[i] *= mask_full_[i];
-    accessible_volume = 0.0;
-    for(int i=0; i<total_grid; i++)
-        accessible_volume += dv[i];
+    // Weight factor for integral, as a box created at this cell gets it
+    update_volume_elements();
 }
 // ==================== Space Group Methods ====================
 

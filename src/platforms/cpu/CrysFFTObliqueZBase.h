@@ -111,10 +111,6 @@ public:
     }
 
     int get_M_physical() const override { return M_physical_; }
-    const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
-    const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
-    int get_M_logical() const { return M_logical_; }
-    int get_M_complex() const { return M_complex_; }
 };
 
 #endif  // CRYS_FFT_OBLIQUEZ_BASE_H_

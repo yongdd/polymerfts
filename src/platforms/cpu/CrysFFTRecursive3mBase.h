@@ -55,7 +55,6 @@ class CrysFFTRecursive3mBase : public CpuCrysFFT
 protected:
     std::array<int, 3> nx_logical_;
     std::array<int, 3> nx_physical_;
-    int M_logical_;
     int M_physical_;
     std::array<double, 9> translational_part_;
 
@@ -212,7 +211,6 @@ public:
             nx_logical_[2] / 2
         };
 
-        M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
         M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
         table_stride_ = (static_cast<size_t>(M_physical_) + 7) / 8 * 8 + 8;
     }
@@ -233,6 +231,8 @@ public:
         derived().apply_with_table(table.data(), q_in, q_out);
     }
 
+    bool has_multipliers() const override { return true; }
+
     /// Folded table of Σ_{d in axes} k_d², times exp(-k² coeff) when coeff is not
     /// 0 (the bond factor of discrete chains), for apply_multiplier().
     void build_multiplier(std::vector<double>& table, const std::array<double, 6>& cell,
@@ -252,10 +252,6 @@ public:
         check_table(table, 16 * table_stride_);
         derived().apply_with_table(table.data(), q_in, q_out);
     }
-
-    const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
-    const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
-    int get_M_logical() const { return M_logical_; }
 };
 
 #endif  // CRYS_FFT_RECURSIVE_3M_BASE_H_

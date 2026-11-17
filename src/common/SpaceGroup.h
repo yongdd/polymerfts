@@ -318,11 +318,11 @@ public:
      */
     void enable_m3_physical_basis();
     /**
-     * @brief Whether the recursive 3m CrysFFT is feasible on this grid.
+     * @brief Whether the recursive 3m CrysFFT pays off on this grid.
      *
-     * The m3 physical basis only pays off with that transform (even grid,
-     * nz >= 16, compatible translation parity); SCFT checks this before
-     * enabling the basis and otherwise uses the Pmmm basis.
+     * Even sizes, nz/2 >= 8 and translations that fold onto the grid: the rule
+     * by which SCFT chooses the m3 physical basis. An m3 basis enabled on a
+     * smaller grid runs with the recursive 3m CrysFFT all the same.
      */
     bool m3_crysfft_feasible() const;
     bool using_m3_physical_basis() const { return physical_basis_ == PhysicalBasis::M3; }

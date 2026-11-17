@@ -203,28 +203,13 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
         {
             if (crysfft_path)
             {
-                std::vector<double>& phys_in = work.phys_in;
-                std::vector<double>& phys_out = work.phys_out;
-                const int M_phys = this->get_crysfft_physical_size();
-                const bool identity = this->use_crysfft_identity_map();
-                if (static_cast<int>(phys_in.size()) != M_phys)
-                {
-                    phys_in.resize(M_phys);
-                    phys_out.resize(M_phys);
-                }
-
-                this->fill_crysfft_from_reduced(q_in, phys_in.data());
-                double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_full);
-
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_out[i] *= _exp_dw[ridx];
-                }
-
+                // Bond function ĝ(k), then exp(-w*ds), on the CrysFFT physical grid
+                auto [phys_in, phys_out] = this->crysfft_grids(work);
+                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+                this->fill_crysfft_from_reduced(q_in, phys_in);
+                this->crysfft_step(phys_in, phys_out, coeff_full, nullptr, _exp_dw);
                 q_full_out_local.resize(M_reduced);
-                this->reduce_crysfft_to_reduced(phys_out.data(), q_full_out_local.data());
+                this->reduce_crysfft_to_reduced(phys_out, q_full_out_local.data());
                 fft_out = q_full_out_local.data();
             }
             else
@@ -334,21 +319,13 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         {
             if (crysfft_path)
             {
-                std::vector<double>& phys_in = work.phys_in;
-                std::vector<double>& phys_out = work.phys_out;
-                const int M_phys = this->get_crysfft_physical_size();
-                if (static_cast<int>(phys_in.size()) != M_phys)
-                {
-                    phys_in.resize(M_phys);
-                    phys_out.resize(M_phys);
-                }
-
-                this->fill_crysfft_from_reduced(q_in, phys_in.data());
-                double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_half);
-
+                // Half-bond function ĝ^(1/2)(k) on the CrysFFT physical grid
+                auto [phys_in, phys_out] = this->crysfft_grids(work);
+                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
+                this->fill_crysfft_from_reduced(q_in, phys_in);
+                this->crysfft_step(phys_in, phys_out, coeff_half, nullptr, nullptr);
                 q_full_out_local.resize(M_reduced);
-                this->reduce_crysfft_to_reduced(phys_out.data(), q_full_out_local.data());
+                this->reduce_crysfft_to_reduced(phys_out, q_full_out_local.data());
                 fft_out = q_full_out_local.data();
             }
             else

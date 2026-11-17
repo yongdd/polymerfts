@@ -206,34 +206,12 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         {
             if (crysfft_path)
             {
-                std::vector<double>& phys_in = work.phys_in;
-                std::vector<double>& phys_out = work.phys_out;
-                const int M_phys = this->get_crysfft_physical_size();
-                const bool identity = this->use_crysfft_identity_map();
-                if (static_cast<int>(phys_in.size()) != M_phys)
-                {
-                    phys_in.resize(M_phys);
-                    phys_out.resize(M_phys);
-                }
-
-                // exp(-w·ds/2) on Pmmm grid
-                this->fill_crysfft_from_reduced(q_in, phys_in.data());
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_in[i] *= _exp_dw[ridx];
-                }
-
-                double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_full);
-
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_out[i] *= _exp_dw[ridx];
-                }
-
-                this->reduce_crysfft_to_reduced(phys_out.data(), q_out1.data());
+                // exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2) on the CrysFFT physical grid
+                auto [phys_in, phys_out] = this->crysfft_grids(work);
+                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+                this->fill_crysfft_from_reduced(q_in, phys_in);
+                this->crysfft_step(phys_in, phys_out, coeff_full, _exp_dw, _exp_dw);
+                this->reduce_crysfft_to_reduced(phys_out, q_out1.data());
             }
             else
             {
@@ -266,41 +244,13 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         {
             if (crysfft_path)
             {
-                std::vector<double>& phys_in = work.phys_in;
-                std::vector<double>& phys_out = work.phys_out;
-                const int M_phys = this->get_crysfft_physical_size();
-                const bool identity = this->use_crysfft_identity_map();
-                if (static_cast<int>(phys_in.size()) != M_phys)
-                {
-                    phys_in.resize(M_phys);
-                    phys_out.resize(M_phys);
-                }
-
-                double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
-
-                // First half step
-                this->fill_crysfft_from_reduced(q_in, phys_in.data());
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_in[i] *= _exp_dw_half[ridx];
-                }
-                this->crysfft_diffusion(phys_in.data(), phys_out.data(), coeff_half);
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_out[i] *= _exp_dw[ridx];
-                }
-
-                // Second half step
-                this->crysfft_diffusion(phys_out.data(), phys_in.data(), coeff_half);
-                for (int i = 0; i < M_phys; ++i)
-                {
-                    const int ridx = identity ? i : this->crysfft_reduced_indices_[i];
-                    phys_in[i] *= _exp_dw_half[ridx];
-                }
-
-                this->reduce_crysfft_to_reduced(phys_in.data(), q_out2.data());
+                // Two half steps on the CrysFFT physical grid (exp(-w·ds/4) outside, exp(-w·ds/2) between them)
+                auto [phys_in, phys_out] = this->crysfft_grids(work);
+                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
+                this->fill_crysfft_from_reduced(q_in, phys_in);
+                this->crysfft_step(phys_in, phys_out, coeff_half, _exp_dw_half, _exp_dw);   // first half step
+                this->crysfft_step(phys_out, phys_in, coeff_half, nullptr, _exp_dw_half);   // second half step
+                this->reduce_crysfft_to_reduced(phys_in, q_out2.data());
             }
             else
             {

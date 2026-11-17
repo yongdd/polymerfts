@@ -144,6 +144,8 @@ public:
         apply_spectral(q_in, q_out, table);
     }
 
+    bool has_multipliers() const override { return true; }
+
     /// Σ_{d in axes} k_d², times exp(-k² coeff) when coeff is not 0 (the bond
     /// factor of discrete chains), on the physical grid.
     void build_multiplier(std::vector<double>& table, const std::array<double, 6>& cell,
@@ -184,11 +186,6 @@ public:
     {
         apply_spectral(q_in, q_out, table);
     }
-
-    // Accessors
-    const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
-    const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
-    int get_M_logical() const { return M_logical_; }
 };
 
 #endif  // CRYS_FFT_PMMM_H_
