@@ -95,7 +95,7 @@ def fts_restart(root, platform):
         ("A", "B"), np.random.default_rng(19).normal(0.0, 5.0, (2, 4)))}
     for cls in (LFTS, CLFTS):
         def make(name, steps, seed):
-            params = compressible_parameters(root / cls.__name__ / name, platform, zeta=100.0, steps=steps)
+            params = compressible_parameters(root / cls.__name__ / name, platform, zeta=100.0, steps=steps, cls=cls)
             params["langevin"]["nbar"] = np.longdouble(10000.0)
             before = copy.deepcopy(params)
             sim = quiet(cls, params, random_seed=seed)

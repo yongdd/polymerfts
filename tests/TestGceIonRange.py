@@ -3,9 +3,9 @@
 
 Densities, thermodynamic operators and dynamics depend on exp(mu-u), and ln Q stays
 finite where Q itself would under- or overflow. SCFT must reject a genuinely
-non-finite state instead of reporting convergence. LM/Euler runs exercise both
-noise streams and keep finite pending records. The ion densities are Python:
-the first CPU platform runs them.
+non-finite state with a NumericalError instead of reporting convergence. LM/Euler
+runs exercise both noise streams and keep finite pending records. The ion
+densities are Python: the first CPU platform runs them.
 """
 
 import os
@@ -17,7 +17,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import CLFTS, SCFT, ValidationError
+from polymerfts import CLFTS, SCFT, NumericalError, ValidationError
 from polymerfts.utils.checkpoint import validate_checkpoint
 from fts_checks import python_platform, quiet
 
@@ -198,8 +198,10 @@ def true_overflow_rejected(root, platform):
         try:
             quiet(mean.run, {name: np.zeros(4) for name in FRACTIONS},
                   initial_psi=np.zeros(4), return_result=True)
-        except ValidationError as exc:
-            assert "Non-finite SCFT" in str(exc), str(exc)
+        except NumericalError as exc:
+            # A numerical failure, not an input error; it keeps the fields of the failed iteration
+            assert "Non-finite SCFT" in str(exc) and not isinstance(exc, ValidationError), str(exc)
+            assert sorted(exc.fields) == sorted(FRACTIONS) and all(np.size(w) == 4 for w in exc.fields.values())
         else:
             raise AssertionError("A non-finite physical state must not return a converged SCFT result")
 

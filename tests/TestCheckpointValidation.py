@@ -35,11 +35,11 @@ def read_checkpoint(path):
 
 def check_corruption(root, cls):
     original_dir = root / (cls.__name__ + "original")
-    original = cls(diblock_parameters(original_dir, 1), random_seed=11, callbacks={"count": Counter()})
+    original = cls(diblock_parameters(original_dir, 1, cls), random_seed=11, callbacks={"count": Counter()})
     original.run(diblock_fields())
     data = read_checkpoint(original_dir / "fields_000001.mat")
     counter = Counter(7)
-    candidate = cls(diblock_parameters(root / (cls.__name__ + "candidate")), random_seed=99,
+    candidate = cls(diblock_parameters(root / (cls.__name__ + "candidate"), cls=cls), random_seed=99,
                     callbacks={"count": counter})
     monomer_key = "w_A" if cls is LFTS else "w_A_real"
     corruptions = [

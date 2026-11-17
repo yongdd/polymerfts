@@ -36,7 +36,8 @@ def energy(sim, fields):
 
 def quadratic_and_gradient(root, platform):
     for zeta in (1e6, 1e8):
-        sim = quiet(CLFTS, compressible_parameters(root / f"quadratic_{zeta}", platform, zeta), random_seed=17)
+        sim = quiet(CLFTS, compressible_parameters(root / f"quadratic_{zeta}", platform, zeta, cls=CLFTS),
+                    random_seed=17)
         k = sim.mpt.aux_fields_imag_idx[-1]
         fields = np.zeros((2, 4), dtype=complex)
         fields[k] = 100.0
@@ -57,7 +58,7 @@ def quadratic_and_gradient(root, platform):
 
 
 def small_linear_term(root, platform):
-    params = compressible_parameters(root / "linear", platform, zeta=100.0)
+    params = compressible_parameters(root / "linear", platform, zeta=100.0, cls=CLFTS)
     params.update(segment_lengths={"A": 1.0, "B": 1.0, "C": 1.0},
                   chi_n={"A,B": 10.0, "A,C": 12.0 + 1e-7, "B,C": 12.0},
                   polymers=[{"volume_fraction": 1.0, "blocks": [
@@ -105,7 +106,8 @@ def dynamics(root, platform):
             def observe(sample):
                 np.testing.assert_allclose(np.mean(sum(sample["phi"].values())), 1.0, rtol=0, atol=5e-8)
                 snapshots.append(sample)
-            sim = quiet(cls, compressible_parameters(root / f"{cls.__name__}_{method}", platform, method=method),
+            sim = quiet(cls, compressible_parameters(root / f"{cls.__name__}_{method}", platform, method=method,
+                                                     cls=cls),
                         random_seed=17, callbacks={"observe": observe})
             sim.draw_architectures = False
             status = quiet(sim.run, initial)

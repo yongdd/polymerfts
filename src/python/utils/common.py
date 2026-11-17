@@ -17,7 +17,7 @@ from types import MappingProxyType
 from pathlib import Path
 import numpy as np
 
-from .validation import ValidationError
+from .validation import NumericalError
 from .mat_fields import _encode_mat_fields
 
 
@@ -169,8 +169,8 @@ def report_partition_consistency(prop_solver):
     return all(np.isfinite(error) and error <= _core.PARTITION_TOLERANCE for error in errors)
 
 
-def check_partition_functions(prop_solver, state):
-    """Reject an accepted state with a non-positive or non-finite occupied partition.
+def check_partition_functions(prop_solver, state, fields=None):
+    """Reject an accepted state with a non-positive or non-finite occupied partition (NumericalError).
 
     With real fields Q is a sum of positive Boltzmann weights. Intermediate iterates can
     still give Q <= 0 (the Richardson extrapolation of rqm4 or Crank-Nicolson steps on a
@@ -178,6 +178,7 @@ def check_partition_functions(prop_solver, state):
     fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
     finite. An absent canonical polymer contributes no log Q term, including when
     a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
+    `fields` are the monomer fields of the state, kept as NumericalError.fields.
     """
     if prop_solver.field_type != "real":
         return
@@ -186,12 +187,12 @@ def check_partition_functions(prop_solver, state):
             continue
         Q = prop_solver.get_partition_function(p)
         if not (np.isfinite(Q) and Q > 0):
-            raise ValidationError(
+            raise NumericalError(
                 f"The partition function of polymer {p} is {Q:.6e} at {state}, but with real fields it must "
                 "be positive and finite. Either the discretization is too coarse for the fields (refine the "
                 "grid or the contour step), or the propagators fell below the round-off level of the spectral "
                 "transforms, which is relative to their largest value on the grid (for example strong fields "
-                "next to absorbing walls or a grafted source).")
+                "next to absorbing walls or a grafted source).", fields)
 
 
 def simulation_metadata(sim, random_seed=None):

@@ -8,8 +8,9 @@ from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..theory.propagator_solver import PropagatorSolver
 from ..theory.chains import chain_solver
-from ..utils.validation import (normalize_params, validate_scft_params, ValidationError,
-                         point_ion_concentrations, open_charges, reference_segments)
+from ..utils.validation import (normalize_params, validate_scft_params, ValidationError, NumericalError,
+                         point_ion_concentrations, open_charges, reference_segments, finite_values,
+                         initial_field_values)
 from ..utils.common import (
     report_partition_consistency,
     display_system,
@@ -26,22 +27,6 @@ from ..theory.electrostatics import MeanFieldElectrostatics
 # OpenMP environment variables
 os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
 os.environ.setdefault("OMP_STACKSIZE", "1G")
-
-
-def real_values(values, label):
-    """values as a new flat float64 array (the caller's array stays as it is); ValidationError unless they
-    are booleans, integers or real numbers that are finite at float64 precision."""
-    try:
-        array = np.asarray(values)   # a ragged list raises ValueError
-        # Not complex numbers, strings or objects (such as Python integers beyond 64 bits)
-        if array.dtype.kind in "biuf":
-            with np.errstate(over="ignore"):
-                array = array.astype(np.float64).reshape(-1)   # a long double beyond float64 becomes inf
-            if np.all(np.isfinite(array)):
-                return array
-    except (TypeError, ValueError, OverflowError):
-        pass
-    raise ValidationError(f"{label} must contain real, finite values at float64 precision")
 
 
 class SCFT:
@@ -376,16 +361,15 @@ class SCFT:
                 Time (seconds) for concentration integration.
         """
         # Field optimizer operates on irreducible grid when space group is set.
-        if self.sg is not None:
-            w = self.sg.irreducible_to_reduced(w)
+        w_reduced = w if self.sg is None else self.sg.irreducible_to_reduced(w)
 
         # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ (self.psi)
-        w_input = chain_fields(self, w)
+        w_input = chain_fields(self, w_reduced)
         if self.electrostatics is not None:
             self.electrostatics.add_potential(w_input, self.psi)
 
         phi, elapsed_time = solve_chains(self, w_input, q_init)
-        check_partition_once(self)
+        check_partition_once(self, lambda: self._full_grid_fields(w))
 
         # Convert concentrations back to irreducible grid for optimizer.
         if self.sg is not None:
@@ -575,13 +559,22 @@ class SCFT:
             Final convergence error (L2 norm of field residuals).
         iter : int
             Number of iterations performed.
+
+        Raises
+        ------
+        ValidationError
+            Invalid initial_fields, q_init or initial_psi, before the run changes any state.
+        NumericalError
+            A non-finite residual or error level, a failed partition consistency check, or a final
+            partition function that is not positive and finite; its `fields` are the fields of
+            that iteration.
         """
 
         # ψ of SCFT is real (the mean field of the Coulomb interaction)
         if initial_psi is not None:
             if self.electrostatics is None:
                 raise ValidationError("initial_psi needs 'electrostatics'")
-            initial_psi = real_values(initial_psi, "initial_psi")
+            initial_psi = finite_values(initial_psi, "initial_psi")
             if initial_psi.size != self.prop_solver.n_grid:
                 raise ValidationError("initial_psi must hold one real, finite value per grid point")
 
@@ -636,7 +629,7 @@ class SCFT:
             w_diff = self._field_residual(w, phi_array)
             psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
             if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
-                raise ValidationError(f"Non-finite SCFT residual at iteration {iter}")
+                raise NumericalError(f"Non-finite SCFT residual at iteration {iter}", self._full_grid_fields(w))
             old_error_level = error_level
             field_error_level = self._error_level(w, w_diff, psi_diff)
             mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
@@ -645,7 +638,7 @@ class SCFT:
             # error (computed every stress_interval iterations: CellRelaxation.error_at)
             error_level = field_error_level + self.cell.error_at(iter, w, phi, field_error_level)
             if not np.isfinite(error_level):
-                raise ValidationError(f"Non-finite SCFT error level at iteration {iter}")
+                raise NumericalError(f"Non-finite SCFT error level at iteration {iter}", self._full_grid_fields(w))
 
             # Print this iteration
             self._print_iteration(iter, mass_error, total_partitions, energy_total, error_level)
@@ -670,7 +663,8 @@ class SCFT:
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
-        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)")
+        check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)",
+                                  self._full_grid_fields(w))
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start
@@ -698,19 +692,7 @@ class SCFT:
     def _initial_fields(self, initial_fields, q_init):
         """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
         M = len(self.monomer_types)
-
-        if not isinstance(initial_fields, dict):
-            raise ValidationError("initial_fields must be a dict {monomer_type: field_array}")
-        prepared = {}
-        for name in self.monomer_types:
-            if name not in initial_fields:
-                raise ValidationError(f"initial_fields is missing monomer {name!r}")
-            field = real_values(initial_fields[name], f"initial_fields[{name!r}]")
-            if field.size != self.prop_solver.total_grid:
-                raise ValidationError(f"initial_fields[{name!r}] needs {self.prop_solver.total_grid} values, "
-                                      f"got {field.size}")
-            prepared[name] = field
-        initial_fields = prepared
+        initial_fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.total_grid)
 
         # With axis_ordering the arrays are given in the axis order of nx and lx and are
         # transposed to the standard [a, b, c] order (the results are in that order)
@@ -750,7 +732,7 @@ class SCFT:
         prepared = {}
         full_size, reduced_size = self.prop_solver.total_grid, self.prop_solver.n_grid
         for label, values in q_init.items():
-            profile = real_values(values, f"q_init[{label!r}]")
+            profile = finite_values(values, f"q_init[{label!r}]")
             is_full = profile.size == full_size
             if is_full:
                 if self._axis_perm is not None:
@@ -865,6 +847,10 @@ class SCFT:
             error_level += self.prop_solver.inner_product(psi_diff, psi_diff, basis="irreducible")
             error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
         return np.sqrt(error_level/error_normal)
+
+    def _full_grid_fields(self, w):
+        """The fields w (M, n) of the working basis as {monomer type: array on the full grid}, as SCFTResult.w."""
+        return {name: self._to_full_grid(w[i]) for i, name in enumerate(self.monomer_types)}
 
     def _print_iteration(self, iter, mass_error, total_partitions, energy_total, error_level):
         print("%8d %12.3E " % (iter, mass_error), end=" [ ")

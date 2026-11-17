@@ -17,7 +17,8 @@ reports values; the simulation loops reject accepted states:
   the round-off noise depends on the FFT plan.
 - W = 10 (Q = 8.46e-7) passes both checks, with the same Q on every platform.
 - SCFT final fields and an L-FTS saddle point with a non-positive Q (simulated by
-  negating Q) raise ValidationError naming the partition function.
+  negating Q) raise NumericalError naming the partition function, a numerical failure
+  rather than an input error; its fields are the monomer fields of that state.
 """
 
 import os
@@ -29,7 +30,7 @@ import tempfile
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import SCFT, LFTS, PropagatorSolver, PlatformSelector, ValidationError
+from polymerfts import SCFT, LFTS, PropagatorSolver, PlatformSelector, NumericalError
 from polymerfts.utils.common import check_partition_functions
 from cuda_part import cuda_part_missing
 from fts_checks import diblock_fields, diblock_parameters, silenced
@@ -53,8 +54,8 @@ def accepted(solver):
     """Whether check_partition_functions accepts the state."""
     try:
         check_partition_functions(solver, "the test state")
-    except ValidationError as exc:
-        assert "partition function of polymer 0" in str(exc), str(exc)
+    except NumericalError as exc:
+        assert "partition function of polymer 0" in str(exc) and exc.fields is None, str(exc)
         return False
     return True
 
@@ -73,11 +74,16 @@ def negate_partition_functions(sim):
 
 
 def expect_partition_error(run, state):
+    """run() raises a NumericalError for the partition function at state, with the 16-point
+    monomer fields of that state."""
     try:
         with np.errstate(invalid="ignore"), silenced():
             run()
-    except ValidationError as exc:
-        return "partition function of polymer 0" in str(exc) and state in str(exc)
+    except NumericalError as exc:
+        fields = exc.fields
+        return ("partition function of polymer 0" in str(exc) and state in str(exc)
+                and isinstance(fields, dict) and sorted(fields) == ["A", "B"]
+                and all(np.shape(fields[m]) == (16,) and np.all(np.isfinite(fields[m])) for m in fields))
     return False
 
 

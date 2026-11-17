@@ -15,7 +15,7 @@ import io
 import contextlib
 import numpy as np
 
-from polymerfts import SCFT, LFTS, CLFTS, ValidationError, PlatformSelector
+from polymerfts import SCFT, LFTS, CLFTS, ValidationError, NumericalError, PlatformSelector
 from fts_checks import cpu_platform, scft_parameters, silenced
 
 
@@ -28,6 +28,14 @@ def lfts_params():
         "recording": {"dir": "data", "checkpoint_interval": 10, "sample_interval": 1, "statistics_save_interval": 10},
         "verbose_level": 1,
     })
+    return params
+
+
+def clfts_params(params=None):
+    """A copy of params (by default lfts_params()) without the compressor and saddle of L-FTS,
+    which CL-FTS refuses."""
+    params = copy.deepcopy(lfts_params() if params is None else params)
+    del params["compressor"], params["saddle"]
     return params
 
 
@@ -73,7 +81,7 @@ def main():
     # L-FTS and CL-FTS refuse bad angles with the message of SCFT (validate_system_params)
     for nx, angles in (([8, 8], [120, 90, 90]), ([8, 8, 8], [90, 90])):
         messages = []
-        for cls, p in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
+        for cls, p in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
             p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
             try:
                 build(cls, p)
@@ -87,15 +95,16 @@ def main():
         p = scft_parameters(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
         assert build(SCFT, p).cell.crystal_system == "Orthorhombic"
 
-    # NaN mass errors must raise, rather than pass the comparison to tolerance.
+    # NaN mass errors must raise, rather than pass the comparison to tolerance: a numerical
+    # failure, not an input error
     for cls in (LFTS, CLFTS):
-        sim = build(cls, lfts_params())
+        sim = build(cls, lfts_params() if cls is LFTS else clfts_params())
         sim.prop_solver.mean = lambda value: np.nan
         try:
             with silenced():
                 sim.compute_concentrations(np.zeros((2, sim.prop_solver.n_grid)))
             raise AssertionError(f"{cls.__name__} accepted NaN mass error")
-        except ValidationError:
+        except NumericalError:
             pass
 
     p = lfts_params(); p["verbose_level"] = 0; p["langevin"]["max_step"] = 1
@@ -115,7 +124,7 @@ def main():
     lfts = build(LFTS, p)
     assert np.all(np.isfinite(lfts.dt_scaling))
     assert np.all(lfts.dt_scaling[lfts.mpt.aux_fields_dropped_idx] == 0)
-    sim = build(CLFTS, p)
+    sim = build(CLFTS, clfts_params(p))
     assert sim.mpt.aux_fields_dropped_idx and np.all(np.isfinite(sim.dt_scaling))
     assert np.all(sim.dt_scaling[sim.mpt.aux_fields_dropped_idx] == 0)
     compute = sim.compute_concentrations
@@ -191,7 +200,7 @@ def main():
         ok = False
 
     # ---- the user's dictionary is left unchanged
-    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, lfts_params())):
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         snapshot = copy.deepcopy(params)
         build(cls, params)
         if params != snapshot:
@@ -205,13 +214,13 @@ def main():
             and sim.zeta_n is None):
         print("FAILED: LFTS options")
         ok = False
-    params = lfts_params()
+    params = clfts_params()
     params.update({"dynamic_stabilization": 0.05})
     sim = build(CLFTS, params)
     if not (sim.alpha_ds == 0.05 and sim.zeta_n == 100.0 and sim.prop_solver.field_type == "complex"):
         print("FAILED: CLFTS options", sim.alpha_ds, sim.zeta_n)
         ok = False
-    params = lfts_params(); params.update({"alpha_ds": 0.02})
+    params = clfts_params(); params.update({"alpha_ds": 0.02})
     if build(CLFTS, params).alpha_ds != 0.02:
         print("FAILED: CLFTS alpha_ds alias")
         ok = False
@@ -244,7 +253,8 @@ def main():
         ok &= expect_error(SCFT, params, what)
     # L-FTS and CL-FTS take no q_init: grafted chains are rejected at construction
     for cls in (LFTS, CLFTS):
-        params = lfts_params(); params["polymers"][0]["initial_conditions"] = {0: "G"}
+        params = lfts_params() if cls is LFTS else clfts_params()
+        params["polymers"][0]["initial_conditions"] = {0: "G"}
         try:
             build(cls, params)
             print(f"FAILED: {cls.__name__} accepted a grafted chain")
@@ -428,24 +438,28 @@ def main():
         ok &= expect_error(LFTS, params, f"LFTS without {key}")
     params = scft_parameters(); del params["relax_cell"]
     ok &= expect_error(SCFT, params, "SCFT without relax_cell")
-    params = lfts_params(); del params["langevin"]
+    params = clfts_params(); del params["langevin"]
     ok &= expect_error(CLFTS, params, "CLFTS without langevin")
-    if build(CLFTS, lfts_params()).alpha_ds != 0.0:
+    for key in ("saddle", "compressor"):
+        params = clfts_params(); params[key] = lfts_params()[key]
+        ok &= expect_error(CLFTS, params, f"CLFTS with the L-FTS option '{key}'")
+    if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
     for level in (0, 1, 2):
         params = lfts_params(); params["verbose_level"] = level
-        if not (build(LFTS, params).verbose_level == level and build(CLFTS, params).verbose_level == level):
+        if not (build(LFTS, params).verbose_level == level
+                and build(CLFTS, clfts_params(params)).verbose_level == level):
             print(f"FAILED: verbose_level {level}")
             ok = False
     params = lfts_params(); params["verbose_level"] = 3
     ok &= expect_error(LFTS, params, "LFTS verbose_level 3")
-    ok &= expect_error(CLFTS, params, "CLFTS verbose_level 3")
+    ok &= expect_error(CLFTS, clfts_params(params), "CLFTS verbose_level 3")
     params = lfts_params(); params["compressor"]["name"] = "foo"
     ok &= expect_error(LFTS, params, "LFTS unknown compressor")
     params = lfts_params(); params["wtmd"] = {"ell": 4}; params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]
     ok &= expect_error(LFTS, params, "WTMD on a 2D grid")
-    params = lfts_params(); params["wtmd"] = {"ell": 4}
+    params = clfts_params(); params["wtmd"] = {"ell": 4}
     ok &= expect_error(CLFTS, params, "CL-FTS with a wtmd block")
     # A bin width that does not divide the range is refused when a new run starts; the
     # constructor accepts it, so that a run started with such a width still continues
@@ -460,7 +474,7 @@ def main():
     for chi_n in (0.0, -5.0):   # no real auxiliary (exchange) field for the order parameter
         params = lfts_params(); params["wtmd"] = {"ell": 4}; params["chi_n"] = {"A,B": chi_n}
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")
-    params = lfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
+    params = clfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
     for value in (0, -1, 1.5, "fast"):
         params = scft_parameters(); params["stress_interval"] = value

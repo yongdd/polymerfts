@@ -13,7 +13,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import (LFTS, CLFTS, PropagatorSolver, PlatformSelector,
-                        LeimkuhlerMatthews, EulerMaruyama, ValidationError, SaddlePointError)
+                        LeimkuhlerMatthews, EulerMaruyama, ValidationError, SaddlePointError, NumericalError)
 from polymerfts.utils.common import atomic_savemat, settings_json, input_hash
 from polymerfts.fts.integrators import checked_fields
 from cuda_part import cuda_part_missing
@@ -38,6 +38,8 @@ def check_stochastic_moments():
         noise_direction=np.ones(1), evaluate_force=None)
     assert result.dtype == np.complex128 and np.all(result.imag < 0)
     expect_error(lambda: checked_fields(np.array([["bad", "fields"]]), reference), ValidationError)
+    # A step that leaves non-finite fields is a numerical failure, not a broken extension
+    expect_error(lambda: checked_fields(np.array([[np.nan, 0.0]]), reference), NumericalError)
 
     # Exact quadrature over independent +/- Gaussian-strength kicks. First two
     # moments agree with Gaussian noise for these linear harmonic dynamics.
@@ -90,9 +92,9 @@ def check_observers_and_restart(root):
             expect_error(lambda: sample["phi"]["A"].__setitem__(0, 0), ValueError)
             expect_error(lambda: sample.__setitem__("step", -1), AttributeError)
 
-        baseline = cls(diblock_parameters(root / (prefix + "baseline")), random_seed=11)
+        baseline = cls(diblock_parameters(root / (prefix + "baseline"), cls=cls), random_seed=11)
         baseline.run(diblock_fields())
-        monitored = cls(diblock_parameters(root / (prefix + "monitored")), random_seed=11,
+        monitored = cls(diblock_parameters(root / (prefix + "monitored"), cls=cls), random_seed=11,
                         callbacks={"monitor": observer, "sparse": sparse})
         monitored.run(diblock_fields())
         assert seen == [1, 2, 3, 4]
@@ -106,7 +108,7 @@ def check_observers_and_restart(root):
             def create(name, steps, seed):
                 integral = example.PredictorCorrector() if method == "heun" else "euler"
                 observables[name] = example.CompositionVariance(every=2)
-                return cls(diblock_parameters(root / (prefix + method + name), steps), random_seed=seed,
+                return cls(diblock_parameters(root / (prefix + method + name), steps, cls), random_seed=seed,
                            integrator=integral, callbacks={"variance": observables[name]})
 
             sims = exact_restart(create, lambda sim: sim.run(diblock_fields()), 4, 1, {"fields_000004.mat": FIELD_KEYS})
@@ -127,7 +129,7 @@ def check_observers_and_restart(root):
                 expect_error(lambda: bad.continue_run(root / "bad-state.mat"), ValidationError)
                 assert bad.random_bg.state == before_rng and obs.count == 0
                 assert bad.integrator.force_evaluations == 0
-            incompatible = cls(diblock_parameters(root / "incompatible"), random_seed=99)
+            incompatible = cls(diblock_parameters(root / "incompatible", cls=cls), random_seed=99)
             rng = copy.deepcopy(incompatible.random_bg.state)
             expect_error(lambda: incompatible.continue_run(checkpoint), ValidationError)
             assert incompatible.random_bg.state == rng
@@ -140,7 +142,7 @@ def check_observers_and_restart(root):
                    checkpoint_settings_hash=input_hash(settings))
         old.pop("extension_state_json")
         atomic_savemat(root / "version1.mat", {k: v for k, v in old.items() if not k.startswith("__")})
-        legacy = cls(diblock_parameters(root / (prefix + "version1")), random_seed=99)
+        legacy = cls(diblock_parameters(root / (prefix + "version1"), cls=cls), random_seed=99)
         legacy.continue_run(root / "version1.mat")
         compare_files(root / (prefix + "baseline"), root / (prefix + "version1"), "fields_000004.mat", FIELD_KEYS)
 
@@ -217,7 +219,7 @@ class ResponseScaledEuler:
 
 def check_prepared_method_state(root):
     def create(name, steps, seed):
-        params = diblock_parameters(root / name, steps)
+        params = diblock_parameters(root / name, steps, CLFTS)
         params["langevin"]["dt"] = 0.001
         original = ResponseScaledEuler()
         sim = CLFTS(params, random_seed=seed, integrator=original)

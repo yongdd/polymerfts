@@ -5,7 +5,8 @@ import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from .integrators import checked_fields
-from ..utils.validation import normalize_params, validate_lfts_params, ValidationError, SaddlePointError
+from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, SaddlePointError,
+                                NumericalError, initial_field_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -19,6 +20,7 @@ from ..utils.checkpoint import (
     recording_run_status,
     RunRecord,
     initialize_extensions,
+    extension_state,
     restore_extensions,
 )
 from ..theory.chains import (read_chains, chain_solver, mean_concentrations, draw_polymer_architectures, chain_fields,
@@ -162,6 +164,8 @@ class LFTS:
         if getattr(self.integrator, "linear_response", False):
             raise ValidationError(f"The integrator '{self.integrator.name}' (linear_response) is supported in CL-FTS only")
         self.run_status = {"status": "initialized", "last_completed_step": 0}
+        # The state of the integrator and the callbacks after the setup, which a fresh run restores
+        self._initial_extension_state = extension_state(self)
 
     def _create_wtmd(self, params):
         # Well-Tempered Metadynamics (WTMD), if parameters are provided. The WTMD class
@@ -225,9 +229,10 @@ class LFTS:
         # Material conservation: mean(sum phi) must stay 1 (a numerical blow-up shows up here first)
         mass_error = self.prop_solver.mean(sum(phi[m] for m in self.monomer_types) - 1.0)
         if not abs(mass_error) <= 5e-8:
-            raise ValidationError(f"Material conservation failed: mean(sum(phi) - 1) = {mass_error:.3e}")
+            raise NumericalError(f"Material conservation failed: mean(sum(phi) - 1) = {mass_error:.3e}",
+                                 self.mpt.to_monomer_fields_dict(w_aux))
 
-        check_partition_once(self)
+        check_partition_once(self, lambda: self.mpt.to_monomer_fields_dict(w_aux))
         return phi, elapsed_time
 
     def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):
@@ -305,10 +310,12 @@ class LFTS:
         ``'resample'`` explicitly opts into the former noise-selection policy.
         ``saddle.max_retries`` defaults to five. Failed steps are never recorded.
         """
-        # The WTMD bins (unless a checkpoint restores the statistics) are checked before the run starts
+        # The WTMD bins (unless a checkpoint restores the statistics) and the initial fields (real,
+        # finite numbers) are checked before the run starts
         if self.wtmd is not None:
             self.wtmd.check_bin_width(_restart_data)
-        with recording_run_status(self, start_langevin_step, initial_fields, _restart_data, saddle_search=True,
+        fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid)
+        with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=True,
                                   saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
                 restore_extensions(self)
@@ -316,7 +323,7 @@ class LFTS:
                 # left pending; a manual continuation (start_langevin_step > 1) keeps both
                 if self.wtmd is not None and start_langevin_step in (None, 1):
                     self.wtmd.start_fresh_run()
-            self._run(initial_fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
+            self._run(fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
         return dict(self.run_status)
 
     def _run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, _restart_data=None):
@@ -498,20 +505,21 @@ class LFTS:
             phi, hamiltonian, iterations, error = self.saddle.solve(trial)
             self._intermediate_saddle_iterations += iterations
             if not np.isfinite(hamiltonian) or not np.all(np.isfinite(trial)):
-                raise ValidationError("Non-finite intermediate LFTS state")
+                raise NumericalError("Non-finite intermediate LFTS state", self.mpt.to_monomer_fields_dict(trial))
             if np.isfinite(error) and error < self.saddle.settings["tolerance"]:
                 break
             self.run_status["saddle_failures"] += 1
             if self.saddle.settings.get("failure_policy", "retry") == "abort":
                 break
         if not np.isfinite(error) or error >= self.saddle.settings["tolerance"]:
-            raise SaddlePointError(f"Intermediate saddle failed at step {step} (error={error})")
+            raise SaddlePointError(f"Intermediate saddle failed at step {step} (error={error})",
+                                   self.mpt.to_monomer_fields_dict(trial))
         force = self.mpt.compute_func_deriv(trial, self.smearing.apply_to_dict(phi), indices)
         if self.wtmd is not None:
             psi = self.wtmd.compute_order_parameter(step, trial)
             self.wtmd.add_bias_to_langevin(psi, force)
         if not np.all(np.isfinite(force)):
-            raise ValidationError("Non-finite intermediate LFTS force")
+            raise NumericalError("Non-finite intermediate LFTS force", self.mpt.to_monomer_fields_dict(trial))
         return force
 
     def mean_concentrations(self):

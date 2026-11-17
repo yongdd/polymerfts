@@ -218,7 +218,7 @@ def check_scft(root):
 
     # A keyword override must win even when its spelling differs from the file.
     for cls in (SCFT, LFTS, CLFTS):
-        config = diblock_parameters(root / (cls.__name__ + "config"))
+        config = diblock_parameters(root / (cls.__name__ + "config"), cls=cls)
         config.update(relax_cell=True, stress_scale=0.5, optimizer=params["optimizer"])
         path = root / (cls.__name__ + ".json")
         path.write_text(json.dumps(legacy_params(config)))
@@ -229,7 +229,7 @@ def check_scft(root):
 
 def check_checkpoint(root, cls):
     output = root / (cls.__name__ + "full")
-    params = diblock_parameters(output)
+    params = diblock_parameters(output, cls=cls)
     params["polymers"][0]["volume_fraction"] = 0.6
     params["polymers"].append({"volume_fraction": 0.4, "blocks": [
         {"type": "R", "length": 1.0, "monomer_fractions": {"A": 0.3, "B": 0.7}}]})

@@ -13,7 +13,7 @@ import numpy as np
 from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
 from ..utils.common import check_partition_functions
-from ..utils.validation import ValidationError, SaddlePointError
+from ..utils.validation import ValidationError, SaddlePointError, NumericalError
 
 
 class LR:
@@ -226,15 +226,17 @@ class SaddlePointSearch:
             phi, hamiltonian, _, error_level = self.solve(w_aux=w_aux)
             if not np.isfinite(hamiltonian):
                 # H contains log Q: name a partition function that is not positive as the cause
-                check_partition_functions(self.prop_solver, "the initial saddle point")
-                raise ValidationError("Non-finite initial Hamiltonian")
+                fields = self.mpt.to_monomer_fields_dict(w_aux)
+                check_partition_functions(self.prop_solver, "the initial saddle point", fields)
+                raise NumericalError("Non-finite initial Hamiltonian", fields)
             if np.isfinite(error_level) and error_level < self.settings["tolerance"]:
                 break
             self.sim.run_status["saddle_failures"] += 1
             if self.settings.get("failure_policy", "retry") == "abort":
                 break
         if not np.isfinite(error_level) or error_level >= self.settings["tolerance"]:
-            raise SaddlePointError(f"Initial saddle point failed after {attempt + 1} attempts (error={error_level})")
+            raise SaddlePointError(f"Initial saddle point failed after {attempt + 1} attempts (error={error_level})",
+                                   self.mpt.to_monomer_fields_dict(w_aux))
         return phi
 
     def advance(self, w_aux_start, forces, noise_prev, langevin_step):
@@ -278,8 +280,9 @@ class SaddlePointSearch:
             phi, hamiltonian, saddle_iter, error_level = self.solve(w_aux=w_aux)
             if not np.isfinite(hamiltonian):
                 # H contains log Q: name a partition function that is not positive as the cause
-                check_partition_functions(self.prop_solver, f"the saddle point of step {langevin_step}")
-                raise ValidationError(f"Non-finite Hamiltonian at step {langevin_step}")
+                fields = self.mpt.to_monomer_fields_dict(w_aux)
+                check_partition_functions(self.prop_solver, f"the saddle point of step {langevin_step}", fields)
+                raise NumericalError(f"Non-finite Hamiltonian at step {langevin_step}", fields)
             self.iterations += saddle_iter
             saddle_failed = not np.isfinite(error_level) or error_level >= self.settings["tolerance"]
             if not saddle_failed:
@@ -290,7 +293,8 @@ class SaddlePointSearch:
         if saddle_failed:
             if hasattr(self.sim.integrator, "load_state_dict"):
                 self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
-            raise SaddlePointError(f"Saddle point failed at step {langevin_step} after {attempt + 1} attempts (error={error_level})")
+            raise SaddlePointError(f"Saddle point failed at step {langevin_step} after {attempt + 1} attempts "
+                                   f"(error={error_level})", self.mpt.to_monomer_fields_dict(w_aux))
         return w_aux, phi, hamiltonian, error_level, noise
 
     def solve(self, w_aux):

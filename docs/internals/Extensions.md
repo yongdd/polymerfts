@@ -93,7 +93,10 @@ every field the deterministic increment is `-dt * mobility[:, None] * force`.
 remain fixed.
 
 Returned fields are converted to the simulation's storage dtype (`float64` for
-LFTS, `complex128` for CLFTS) and must remain finite at that precision.
+LFTS, `complex128` for CLFTS) and must remain finite at that precision. Fields of
+another shape or a non-numeric dtype, and complex fields in LFTS, raise
+`ValidationError`; non-finite fields raise `NumericalError`, the type of the
+numerical failures of a run.
 
 `noise` is a real Gaussian array with the simulation's sigma, already including
 the time-step dependence. Multiply by `sqrt(mobility)` and `noise_direction`

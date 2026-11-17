@@ -1,4 +1,8 @@
-"""Failure semantics, restart compatibility, pending samples and atomic writes."""
+"""Failure semantics, restart compatibility, pending samples, initial fields and atomic writes.
+
+A failed computation raises NumericalError, of which SaddlePointError is a subclass; L-FTS records a
+SaddlePointError as aborted_saddle_failure, CL-FTS every error as failed with its type and message.
+"""
 import copy
 import json
 import os
@@ -11,11 +15,54 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError, SaddlePointError
+from polymerfts import (LFTS, CLFTS, PlatformSelector, LeimkuhlerMatthews, ValidationError, SaddlePointError,
+                        NumericalError)
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
 from fts_checks import (FailingLFTS, diblock_fields, diblock_parameters, exact_restart, expect_error,
                         silenced)
+
+
+def expect_refused(sim, fields, *messages):
+    """sim.run(fields) raises a ValidationError whose message contains messages."""
+    try:
+        sim.run(fields)
+    except ValidationError as error:
+        assert all(message in str(error) for message in messages), str(error)
+    else:
+        raise AssertionError(f"{type(sim).__name__} accepted invalid initial fields: expected {messages}")
+
+
+class FailedSolveStep(LeimkuhlerMatthews):
+    """An integrator whose step fails like a saddle-point solve inside it."""
+    name = "test-failed-solve"
+
+    def step(self, fields, force, **kwargs):
+        raise SaddlePointError("Test failure of a solve inside the step")
+
+
+class NonFiniteStep(LeimkuhlerMatthews):
+    """An integrator whose step leaves non-finite fields."""
+    name = "test-non-finite"
+
+    def step(self, fields, force, **kwargs):
+        return np.full_like(fields, np.nan)
+
+
+def failed_clfts_run(directory, kind, integrator="lm", partition=None):
+    """The error of kind that stops a CL-FTS run, which run_status.json records as failed with
+    its type and message; partition replaces every partition function."""
+    sim = CLFTS(diblock_parameters(directory, cls=CLFTS), random_seed=5, integrator=integrator)
+    if partition is not None:
+        sim.prop_solver.get_partition_function = lambda polymer: partition
+    try:
+        sim.run(diblock_fields())
+    except kind as error:
+        status = json.loads((directory / "run_status.json").read_text())
+        assert status["status"] == "failed" and status["reason"] == f"{kind.__name__}: {error}", status
+        assert status["last_completed_step"] == 0, status
+        return error
+    raise AssertionError(f"Expected {kind.__name__}")
 
 
 def main():
@@ -29,7 +76,8 @@ def main():
             with silenced():
                 for cls in (LFTS, CLFTS):
                     exact_restart(
-                        lambda name, steps, seed: cls(diblock_parameters(root / (cls.__name__ + name), steps), random_seed=seed),
+                        lambda name, steps, seed: cls(diblock_parameters(root / (cls.__name__ + name), steps, cls),
+                                                      random_seed=seed),
                         lambda sim: sim.run(diblock_fields()), 4, 1, {
                             "fields_000004.mat": ("w_", "phi_"),
                             "dH_000002.mat": ("H_history", "dH_history", "drift_max_history"),
@@ -39,13 +87,13 @@ def main():
                     assert (root / (cls.__name__ + "full") / "polymer_0.png").is_file(), cls.__name__
                     assert not (root / "polymer_0.png").exists(), cls.__name__
                     checkpoint = root / (cls.__name__ + "partial") / "fields_000001.mat"
-                    equivalent_params = diblock_parameters(root / (cls.__name__ + "equivalent"))
+                    equivalent_params = diblock_parameters(root / (cls.__name__ + "equivalent"), cls=cls)
                     equivalent_params["langevin"]["nbar"] = 10000.0
                     equivalent_params["chi_n"] = {"A,B": 15.0}
                     equivalent = cls(equivalent_params, random_seed=99)
                     assert equivalent.continue_run(checkpoint)["status"] == "completed"
                     for key in ("dt", "nbar"):
-                        params = diblock_parameters(root / "incompatible")
+                        params = diblock_parameters(root / "incompatible", cls=cls)
                         params["langevin"][key] *= 2
                         bad = cls(params, random_seed=13)
                         rng_before = copy.deepcopy(bad.random_bg.state)
@@ -81,10 +129,31 @@ def main():
                 assert initial.random_bg.state == rng_before
                 FailingLFTS.fail_calls = tuple(range(3, 20))
                 failing = FailingLFTS(diblock_parameters(root / "failure"), random_seed=5)
-                expect_error(lambda: failing.run(diblock_fields()), SaddlePointError)
+                try:
+                    failing.run(diblock_fields())
+                except SaddlePointError as error:
+                    # A numerical failure with the monomer fields of the failed step
+                    assert isinstance(error, NumericalError) and not isinstance(error, ValidationError)
+                    assert sorted(error.fields) == ["A", "B"], error.fields
+                    assert all(np.shape(w) == (16,) and np.all(np.isfinite(w)) for w in error.fields.values())
+                else:
+                    raise AssertionError("Expected SaddlePointError")
                 status = json.loads((root / "failure" / "run_status.json").read_text())
                 assert status["status"] == "aborted_saddle_failure" and status["last_completed_step"] == 1
                 assert not (root / "failure" / "fields_000002.mat").exists()
+
+                # CL-FTS solves no saddle points: a SaddlePointError of its integrator fails the run like
+                # a step that leaves non-finite fields and a non-finite Hamiltonian, whose error holds
+                # the complex monomer fields of the step
+                failed_clfts_run(root / "CLFTS_saddle", SaddlePointError, FailedSolveStep())
+                error = failed_clfts_run(root / "CLFTS_non_finite", NumericalError, NonFiniteStep())
+                assert "Integrator fields must be finite" in str(error) and error.fields is None
+                with np.errstate(invalid="ignore"):
+                    error = failed_clfts_run(root / "CLFTS_hamiltonian", NumericalError, partition=np.nan)
+                assert "Non-finite Hamiltonian at step 1" in str(error), str(error)
+                assert sorted(error.fields) == ["A", "B"], error.fields
+                assert all(np.shape(w) == (16,) and np.iscomplexobj(w) and np.all(np.isfinite(w))
+                           for w in error.fields.values())
 
                 # Explicit legacy opt-in and corrupt pending state are checked before RNG mutation.
                 checkpoint = root / "LFTSpartial" / "fields_000001.mat"
@@ -102,7 +171,7 @@ def main():
 
                 # MATLAB squeezes a one-species field basis to a scalar.
                 for cls in (LFTS, CLFTS):
-                    params = diblock_parameters(root / (cls.__name__ + "_homopolymer"), 1)
+                    params = diblock_parameters(root / (cls.__name__ + "_homopolymer"), 1, cls)
                     params["segment_lengths"] = {"A": 1.0}
                     params["chi_n"] = {}
                     params["polymers"] = [{"volume_fraction": 1.0,
@@ -117,18 +186,41 @@ def main():
                 # Options given as None (their defaults) are left out of the saved parameters,
                 # which MAT files could not hold
                 for cls, extra in ((LFTS, {"zeta_n": None, "wtmd": None}), (CLFTS, {"electrostatics": None})):
-                    params = diblock_parameters(root / (cls.__name__ + "_none"), 2)
+                    params = diblock_parameters(root / (cls.__name__ + "_none"), 2, cls)
                     params.update(smearing=None, angles=None, bc=None, **extra)
                     assert cls(params, random_seed=5).run(diblock_fields())["status"] == "completed"
                     for name in ("fields_000002.mat", "structure_function_000002.mat"):
                         saved = loadmat(root / (cls.__name__ + "_none") / name, squeeze_me=True)["initial_params"]
                         assert "nx" in saved.dtype.names and "smearing" not in saved.dtype.names, (cls.__name__, name)
 
+                # Initial fields that are not finite numbers at float64 precision (strings, ragged
+                # lists, NaN, values beyond float64 and, in L-FTS, complex numbers), of another size or
+                # without a monomer type are refused before the run changes any state
+                zeros = np.zeros(16)
+                for cls in (LFTS, CLFTS):
+                    directory = root / (cls.__name__ + "_fields")
+                    sim = cls(diblock_parameters(directory, 1, cls), random_seed=5)
+                    rng_before = copy.deepcopy(sim.random_bg.state)
+                    refused = [(np.full(16, "0.5"), "finite"), ([[0.0] * 15, [0.0]], "finite"),
+                               (np.full(16, np.nan), "finite"), (np.full(16, np.nan * 1j), "finite"),
+                               ([10**400] + [0] * 15, "finite"), (zeros[:15], "needs 16 values")]
+                    if cls is LFTS:
+                        refused.append((zeros + 1j, "real, finite"))
+                    for values, message in refused:
+                        expect_refused(sim, {"A": values, "B": zeros}, "initial_fields['A']", message)
+                    expect_refused(sim, {"A": zeros}, "missing monomer 'B'")
+                    assert sim.random_bg.state == rng_before and sim.run_status["status"] == "initialized"
+                    assert not (directory / "run_status.json").exists(), cls.__name__
+                # CL-FTS takes complex initial fields
+                clfts = CLFTS(diblock_parameters(root / "CLFTS_complex", 1, CLFTS), random_seed=5)
+                assert clfts.run({name: values + 0.5j for name, values in diblock_fields().items()})["status"] \
+                    == "completed"
+
             for complex_fields in (False, True):
                 for section, key, value in ((None, "ds", np.nan), ("langevin", "dt", np.inf),
                                             ("langevin", "nbar", -1), ("langevin", "max_step", True),
                                             ("recording", "sample_interval", 0)):
-                    params = diblock_parameters(root)
+                    params = diblock_parameters(root, cls=CLFTS if complex_fields else LFTS)
                     (params if section is None else params[section])[key] = value
                     expect_error(lambda: validate_lfts_params(params, complex_fields=complex_fields), ValidationError)
 

@@ -136,7 +136,7 @@ The thresholds belong to this model, whose $`\bar{N}`$ is very small; they are n
 
 ## 4. Hot Spots and Dynamical Stabilization
 
-The imaginary part of a real field can grow without bound at a few grid points ("hot spots"), most often at small $`\bar{N}`$ and with contact interactions (Reference 5). `CLFTS` stops with a `ValidationError` in either of two cases:
+The imaginary part of a real field can grow without bound at a few grid points ("hot spots"), most often at small $`\bar{N}`$ and with contact interactions (Reference 5). `CLFTS` stops with a `NumericalError` in either of two cases:
 
 - the fields, the concentrations or $`H`$ become non-finite;
 - the spatial mean of $`\sum_i \phi_i - 1`$ exceeds $`5 \times 10^{-8}`$ in magnitude, which is usually the first sign of a hot spot.

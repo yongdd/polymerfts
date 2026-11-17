@@ -22,7 +22,7 @@ import copy
 
 import numpy as np
 
-from ..utils.validation import ValidationError
+from ..utils.validation import ValidationError, NumericalError
 
 
 class LeimkuhlerMatthews:
@@ -229,7 +229,8 @@ def make_integrator(method):
 
 
 def checked_fields(candidate, reference):
-    """Catch a broken extension before it reaches native array operations."""
+    """Catch a broken extension (ValidationError) or a step whose fields are not finite
+    (NumericalError) before the fields reach native array operations."""
     candidate = np.asarray(candidate)
     if candidate.shape != reference.shape or candidate.dtype.kind not in "fciu":
         raise ValidationError("Integrator fields must have the original shape and a numeric dtype")
@@ -240,5 +241,5 @@ def checked_fields(candidate, reference):
     with np.errstate(over="ignore", invalid="ignore"):
         candidate = np.asarray(candidate, dtype=reference.dtype)
     if not np.all(np.isfinite(candidate)):
-        raise ValidationError("Integrator fields must be finite at the simulation precision")
+        raise NumericalError("Integrator fields must be finite at the simulation precision")
     return candidate

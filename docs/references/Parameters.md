@@ -269,7 +269,7 @@ Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° �
 
 ### Axis Ordering
 
-`SCFT.run(initial_fields=...)` requires one real, finite value per full-grid point for each monomer type. Complex arrays and values that become non-finite at double precision raise `ValidationError` before the optimizer is reset or the fields are symmetrized.
+`SCFT.run(initial_fields=...)` requires one value per full-grid point for each monomer type, each a number that converts to a finite double (integers too, within the double range). Strings, ragged lists, complex arrays and values that are not finite at double precision raise `ValidationError` before the optimizer is reset or the fields are symmetrized. L-FTS and CL-FTS check their `initial_fields` the same way before a run starts; CL-FTS takes complex values. A computation that fails during a run raises `NumericalError` (a `RuntimeError`, `polymerfts.NumericalError`) rather than `ValidationError`: in `SCFT.run` a residual or error level that is not finite, a failed forward/backward partition consistency check, or a final partition function that is not positive and finite with real fields. Its `fields` attribute holds the monomer fields of the failed iteration on the full grid.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -317,7 +317,7 @@ SCFT accepts `electrostatics` as described under [Electrostatics](#electrostatic
 | `failure_policy` | str | `"retry"`: continue the saddle solve with the same proposed real fields and noise; `"abort"`: stop on the first failure; `"resample"`: explicitly opt into selecting fresh noise | `"retry"` |
 | `max_retries` | int | Additional saddle solves after the first failed attempt | `5` |
 
-The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. Other numerical errors propagate and are recorded as `failed`.
+The initial saddle must converge before drawing Langevin noise. By default a failed step keeps its proposed real fields and noise and continues from the last imaginary-field iterate with a reset compressor history. After exhausting the retries, `SaddlePointError` is raised. The failed step contributes no measurements. `run()` and `continue_run()` return a status dictionary on success; `sim.run_status` and `recording.dir/run_status.json` identify completion or failure and the last accepted step. `SaddlePointError` is a `NumericalError`, the type of the numerical failures that an L-FTS or CL-FTS run checks: also a non-finite Hamiltonian, force, field, concentration or electrostatic potential, lost material conservation, a failed partition consistency check, and, in L-FTS, a partition function that is not positive and finite at a saddle point whose Hamiltonian is not finite. L-FTS records a `SaddlePointError` as `aborted_saddle_failure`; other errors, and every error of CL-FTS, propagate and are recorded as `failed` with the type and message. The `fields` attribute of the error holds the monomer fields `{type: array}` of the failed state where the check has them (complex in CL-FTS), else `None`.
 
 When no imaginary auxiliary fields remain (for example, the ideal reference limit with `zeta_n=0` and zero interactions), L-FTS evaluates concentrations and energy directly, with zero saddle iterations and error. Checkpointing and recording still run at the requested intervals.
 
@@ -414,7 +414,7 @@ derivative diverges at zero coefficients. A zero bias derivative adds no force.
 
 ## CL-FTS Parameters
 
-`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate; a `wtmd` block raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
+`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and each of these keys raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|

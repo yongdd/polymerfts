@@ -182,6 +182,8 @@ def fts_parameters(directory, platform, name, cls, steps):
                              "sample_interval": 1, "statistics_save_interval": 3})
     if cls is LFTS:
         params["wtmd"] = {"update_freq": 3, "recording_period": 3, "dpsi": 0.1}
+    else:
+        del params["compressor"], params["saddle"]   # options of L-FTS, which CL-FTS refuses
     return params
 
 

@@ -81,8 +81,12 @@ def system_data(sim):
 
 def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
     """The system and the checkpoint of a fields file, without the fields of its model."""
+    group = sim.prop_solver.space_group
     data = {"initial_params": mat_ready(sim.params),
             "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
+            "angles": list(sim.prop_solver.get_angles_degrees()),
+            # True when a and b are sampled at the nodes, not the cell centres (PropagatorSolver.get_grid_points)
+            "uses_hexagonal_axes": group is not None and group.uses_hexagonal_axes(),
             "monomer_types": sim.monomer_types, "chi_n": sim.chi_n, "chain_model": sim.chain_model, "ds": sim.ds,
             "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "eigenvalues": sim.mpt.eigenvalues,
@@ -436,7 +440,9 @@ class RunRecord:
         self.first_step = first_step - len(self.lists.get("drift_step_history", []))
 
 
-def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=True):
+def initialize_extensions(sim, integrator, callbacks):
+    """The integrator and the callbacks of sim, checked; the simulation records their state
+    (extension_state) as the last step of its setup, which a fresh run restores."""
     from ..fts.integrators import make_integrator
     sim.integrator = make_integrator(integrator)
     if callbacks is not None and not isinstance(callbacks, dict):
@@ -456,10 +462,6 @@ def initialize_extensions(sim, integrator, callbacks, *, capture_initial_state=T
         load = callable(getattr(obj, "load_state_dict", None))
         if save != load:
             raise ValidationError("Extensions must implement both state_dict and load_state_dict, or neither")
-    # CLFTS captures after preparing any linear response. Other simulations
-    # finish setup here and validate state before the first scheduled checkpoint.
-    if capture_initial_state:
-        sim._initial_extension_state = copy.deepcopy(extension_state(sim))
     sim.metadata["extensions"] = extension_settings(sim)
 
 

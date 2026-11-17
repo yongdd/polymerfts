@@ -7,7 +7,8 @@ run continued from the checkpoint of a shorter run ends where the uninterrupted 
 bit on the same backend. expect_error() expects an exception. The inputs that several tests run:
 diblock_parameters() and diblock_fields() (a 1D L-FTS or CL-FTS diblock melt), FailingLFTS (its
 saddle search fails at chosen calls), compressible_parameters() (a 4-point diblock with zeta_n)
-and scft_parameters() (an SCFT diblock on 8^3 points).
+and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
+with the saddle and compressor entries, or of CL-FTS (cls=CLFTS), which refuses them.
 """
 
 import contextlib
@@ -17,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import LFTS, PlatformSelector
+from polymerfts import LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
 
 
@@ -118,10 +119,17 @@ def exact_restart(make, start, steps, split, files, inspect=None, exclude=(), sa
     return sims
 
 
-def diblock_parameters(directory, steps=4):
+def input_of(cls, params):
+    """params for the simulation class cls: CL-FTS takes no saddle and compressor entries."""
+    if issubclass(cls, CLFTS):
+        del params["compressor"], params["saddle"]
+    return params
+
+
+def diblock_parameters(directory, steps=4, cls=LFTS):
     """An AB diblock melt in 1D (16 points), continuous chains, for L-FTS (the compressor and
-    saddle entries) or CL-FTS, on the first CPU platform, recording into directory."""
-    return {
+    saddle entries) or CL-FTS (cls=CLFTS), on the first CPU platform, recording into directory."""
+    return input_of(cls, {
         "nx": [16], "lx": [3.0], "ds": 0.05, "chain_model": "continuous",
         "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0},
         "polymers": [{"volume_fraction": 1.0, "blocks": [
@@ -132,7 +140,7 @@ def diblock_parameters(directory, steps=4):
         "saddle": {"max_iter": 200, "tolerance": 1e-6},
         "recording": {"dir": str(directory), "checkpoint_interval": 1, "sample_interval": 1, "statistics_save_interval": 2},
         "verbose_level": 0,
-    }
+    })
 
 
 def diblock_fields():
@@ -156,9 +164,9 @@ class FailingLFTS(LFTS):
         self.saddle.solve = failing_solve
 
 
-def compressible_parameters(directory, platform, zeta=1e8, method="lm", steps=4):
-    """An AB diblock melt on 4 points with compressibility zeta_n, for L-FTS or CL-FTS."""
-    return {
+def compressible_parameters(directory, platform, zeta=1e8, method="lm", steps=4, cls=LFTS):
+    """An AB diblock melt on 4 points with compressibility zeta_n, for L-FTS or CL-FTS (cls=CLFTS)."""
+    return input_of(cls, {
         "nx": [4], "lx": [2.0], "ds": 0.25, "chain_model": "continuous",
         "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0}, "zeta_n": zeta,
         "polymers": [{"volume_fraction": 1.0, "blocks": [
@@ -171,7 +179,7 @@ def compressible_parameters(directory, platform, zeta=1e8, method="lm", steps=4)
         "recording": {"dir": str(directory), "checkpoint_interval": 1,
                       "sample_interval": 1, "statistics_save_interval": 4},
         "verbose_level": 0,
-    }
+    })
 
 
 def scft_parameters():

@@ -16,7 +16,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 
 from ..utils.common import report_partition_consistency
-from ..utils.validation import ValidationError, parse_chi_n
+from ..utils.validation import ValidationError, NumericalError, parse_chi_n
 from .propagator_solver import PropagatorSolver
 
 DEFAULT_MONOMER_COLORS: List[str] = [
@@ -200,12 +200,16 @@ def solve_chains(sim, w_input, q_init=None):
     return phi, elapsed_time
 
 
-def check_partition_once(sim):
-    """Partition consistency check (forward vs backward propagators), once per run."""
+def check_partition_once(sim, fields):
+    """Partition consistency check (forward vs backward propagators), once per run (NumericalError).
+
+    `fields` is a function that returns the monomer fields of the state for NumericalError.fields;
+    it is called only when the check fails.
+    """
     if not getattr(sim, "_partition_checked", False):
         sim._partition_checked = True
         if not report_partition_consistency(sim.prop_solver):
-            raise ValidationError("Partition consistency check failed (forward/backward mismatch).")
+            raise NumericalError("Partition consistency check failed (forward/backward mismatch).", fields())
 
 
 def mean_concentrations(sim):

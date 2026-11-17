@@ -24,13 +24,16 @@ force_jacobian.py).
    limit of psi, <|psi(k)|^2> and the holomorphic <psi(k) psi(-k)> (which tells the rotated
    contour); an ordered charged lamella with strong screening, which diverged when unstable
    wavevectors took the plain LM step for all fields, runs like LM; a field dropped at a zero
-   eigenvalue stays fixed; simulations sharing one integrator object keep their own response.
+   eigenvalue stays fixed, and the drift summary of the run names it dropped; simulations
+   sharing one integrator object keep their own response.
 4. Input checks: L-FTS and walls reject the integrator; a step without the linear
    response, or with another time step, raises, and so does a Fourier transform of another
    grid, of real fields or of a box with walls; a copy of a prepared integrator keeps its
    settings but has no linear response.
 """
+import contextlib
 import copy
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -356,11 +359,18 @@ def runs(root):
     sim = quiet(lambda: CLFTS(params, random_seed=5))
     dropped = sim.mpt.aux_fields_dropped_idx
     assert dropped, "polyampholyte without chi has a dropped field"
-    with silenced():
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     w_aux = loadmat(root / "dropped" / "fields_000003.mat", squeeze_me=True)["w_aux"]
     expected = sim.mpt._vector_large_s[dropped[0]] / 2
     assert np.all(np.reshape(w_aux, (2, -1))[dropped[0]] == expected), "dropped field stays fixed"
+    # The drift summary at the end of the run names the dropped field as such, not as an imaginary one
+    (other,) = set(range(2)) - set(dropped)
+    kind = "real" if other in sim.mpt.aux_fields_real_idx else "imaginary"
+    for label in (f"auxiliary field {dropped[0]} (dropped): no drift", f"auxiliary field {other} ({kind}): ",
+                  "psi: "):
+        assert label in output.getvalue(), (label, output.getvalue())
 
 
 def expect_validation_error(make, message):

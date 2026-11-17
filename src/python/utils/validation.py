@@ -7,6 +7,8 @@ The checks raise ValidationError (never assert, which disappears under
 import copy
 import itertools
 import math
+import numbers
+from collections.abc import Mapping
 from typing import Any, Dict
 from os import PathLike
 
@@ -18,8 +20,67 @@ class ValidationError(Exception):
     pass
 
 
-class SaddlePointError(RuntimeError):
-    """A Langevin run stopped before accepting a step; see ``sim.run_status``."""
+class NumericalError(RuntimeError):
+    """The computation of a run failed: a numerical failure, not an input error.
+
+    Non-finite residuals, fields, concentrations or Hamiltonians, lost material conservation and
+    partition functions that are not positive or not consistent raise it. ``fields`` holds the
+    monomer fields {type: array} of the failed state where the check has them, else None: SCFT
+    gives them on the full grid, as SCFTResult.w, L-FTS and CL-FTS on their grid (complex in
+    CL-FTS), the form run() takes as initial_fields.
+    """
+
+    def __init__(self, message, fields=None):
+        super().__init__(message)
+        self.fields = fields
+
+
+class SaddlePointError(NumericalError):
+    """A saddle-point search failed, and the Langevin run stopped before accepting the step;
+    see ``sim.run_status``."""
+
+
+def finite_values(values, label, dtype=np.float64):
+    """values as a new flat array of dtype, float64 or complex128 (the caller's array stays as it is).
+
+    Any number that converts to a finite float64 is accepted: booleans, integers of any size
+    and floats, and with complex128 also complex numbers with finite parts. Strings, ragged
+    lists, complex numbers for float64, NaN, infinities and numbers beyond float64 raise
+    ValidationError.
+    """
+    complex_values = np.dtype(dtype) == np.complex128
+    try:
+        # A long double beyond float64 becomes inf, which the last check refuses
+        with np.errstate(over="ignore"):
+            array = np.asarray(values)   # a ragged list raises ValueError
+            # Numbers that NumPy keeps as objects, such as Python integers beyond 64 bits (float() and
+            # complex() raise OverflowError beyond float64); strings are not numbers
+            number = numbers.Complex if complex_values else numbers.Real
+            if array.dtype.kind == "O" and all(isinstance(value, number) for value in array.flat):
+                array = np.array([complex(value) if complex_values else float(value) for value in array.flat])
+            if array.dtype.kind in ("biufc" if complex_values else "biuf"):
+                array = array.astype(dtype).reshape(-1)
+                if np.all(np.isfinite(array)):
+                    return array
+    except (TypeError, ValueError, OverflowError):
+        pass
+    kind = "finite real or complex" if complex_values else "real, finite"
+    raise ValidationError(f"{label} must contain {kind} values at float64 precision")
+
+
+def initial_field_values(fields, monomer_types, size, dtype=np.float64):
+    """The initial fields {monomer type: values} of a run as flat arrays of dtype with `size` values
+    each (finite_values; the caller's arrays stay as they are). Keys of other names are left out."""
+    if not isinstance(fields, Mapping):
+        raise ValidationError("initial_fields must be a dict {monomer_type: field_array}")
+    checked = {}
+    for name in monomer_types:
+        if name not in fields:
+            raise ValidationError(f"initial_fields is missing monomer {name!r}")
+        checked[name] = finite_values(fields[name], f"initial_fields[{name!r}]", dtype)
+        if checked[name].size != size:
+            raise ValidationError(f"initial_fields[{name!r}] needs {size} values, got {checked[name].size}")
+    return checked
 
 
 def _rename_parameter(mapping, old, new, path=""):
@@ -542,7 +603,14 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
             if "chemical_potential" in polymer and (polymer.get("initial_conditions") or _has_random_copolymer(
                     {"polymers": [polymer]})):
                 raise ValidationError(f"polymers[{i}]: grand-canonical polymers cannot be grafted or random copolymers")
-    if not complex_fields:
+    if complex_fields:
+        # All fields of CL-FTS fluctuate. Its input has neither key, so that tools (the PSCF converter)
+        # tell it apart from L-FTS input
+        for key in ("saddle", "compressor"):
+            if key in params:
+                raise ValidationError(f"'{key}' is supported in L-FTS only: CL-FTS solves no saddle point "
+                                      "(all its fields fluctuate); remove it")
+    else:
         saddle = params.get("saddle")
         if not isinstance(saddle, dict):
             raise ValidationError("Missing required dict: 'saddle'")
