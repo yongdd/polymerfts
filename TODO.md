@@ -60,6 +60,14 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
     CPU. Lifting the limit needs another kernel layout (for example lines split across
     blocks, or the staging in global memory). Explain the layout, its cost and the
     alternatives to the maintainer before changing it.
+37. Propagator keys grow with the chain (found 2026-11-17): each key spells out the whole
+    subtree it depends on, so a linear chain of N blocks holds keys of O(N) characters and
+    the optimizer O(N^2) memory and time (one thread: 1000 blocks 0.2 s and 107 MB, 4000 blocks
+    3.9 s and 441 MB, 8000 blocks 17 s and 1.5 GB; about 13 GB estimated at 24,000 blocks).
+    The iterative traversal of 2026-11-14 removed the stack overflow, not this growth.
+    Hash-cons the keys instead: give each directed edge an id built from its monomer type,
+    its length index and the sorted ids of its children, so that a key has constant size
+    and equal subtrees still share one id (the aggregation compares them).
 
 ## Tests
 
@@ -98,7 +106,7 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
     private research notes; the model parameters and required checks are given above.
 
     Guard (2026-10-26): SCFT (final fields) and L-FTS (a saddle point whose Hamiltonian
-    is not finite) raise `ValidationError` when a partition function with real fields
+    is not finite) raise `NumericalError` when a partition function with real fields
     is not positive and finite (`TestPartitionGuard`); the native library only reports
     values. Intermediate iterates are not checked: with `rqm4`, the L-FTS/WTMD run of
     `TestCheckpointValidation` passes through Q <= 0 during saddle iterations and still
