@@ -24,7 +24,7 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, SCFT, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
-from fts_checks import exact_restart, python_platform, silenced
+from fts_checks import exact_restart, input_of, python_platform, silenced
 
 
 def read_mat(path):
@@ -49,9 +49,7 @@ def parameters(directory, platform, names, steps=4, wtmd=False, nx=(4, 4, 4), cl
     }
     if wtmd:
         result["wtmd"] = {"update_freq": 3, "recording_period": 3, "dpsi": 0.1}
-    if cls is CLFTS:
-        del result["compressor"], result["saddle"]   # options of L-FTS, which CL-FTS refuses
-    return result
+    return input_of(cls, result)   # without the options of the other methods, which cls refuses
 
 
 def fields(names, size=64):
@@ -73,9 +71,9 @@ def refused(root, platform):
         assert "w_aux" in str(error), str(error)
     else:
         raise AssertionError("L-FTS accepted a monomer type 'aux', whose field would be w_aux")
-    params = parameters(root / "refused", platform, ("A,B", "C"))
-    params["chi_n"] = {}
     for cls in (SCFT, LFTS, CLFTS):
+        params = parameters(root / "refused", platform, ("A,B", "C"), cls=cls)
+        params["chi_n"] = {}
         try:
             cls(params)
         except ValidationError as error:

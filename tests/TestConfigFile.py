@@ -4,8 +4,8 @@
 Writes small YAML and JSON files and checks that numpy expressions are
 evaluated, that nothing outside the allowed expressions is executed, that bad
 files raise ConfigError, and that the three simulation classes build from a
-file with keyword overrides applied; CL-FTS refuses the saddle and compressor
-entries of L-FTS.
+file with keyword overrides applied: one file serves the three, each warning about
+the options of the other methods it ignores, and a key no method reads is refused.
 """
 
 import contextlib
@@ -96,22 +96,27 @@ def main():
             except FileNotFoundError:
                 pass
 
-            # The simulation classes build from the file, with overrides applied (the warnings
-            # were checked above); CL-FTS refuses the saddle and compressor of L-FTS
-            with open("c.yaml", "w") as f:
+            # The simulation classes build from one file, with overrides applied, each warning about the
+            # options of the other methods that it ignores; a key that no method reads is refused
+            with open("shared.yaml", "w") as f:
                 f.writelines(line for line in YAML.replace("PLATFORM", cpu_platform()).splitlines(keepends=True)
-                             if not line.startswith(("compressor:", "saddle:")))
-            with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                scft = SCFT.from_file("p.yaml", max_iter=7)
-                lfts = LFTS.from_file("p.yaml", random_seed=1, ds=0.05)
-                clfts = CLFTS.from_file("c.yaml", random_seed=1)
+                             if not line.startswith(("note:", "complex:")))
+            with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                scft = SCFT.from_file("shared.yaml", max_iter=7)
+                lfts = LFTS.from_file("shared.yaml", random_seed=1, ds=0.05)
+                clfts = CLFTS.from_file("shared.yaml", random_seed=1)
+                ignored = [str(w.message) for w in caught if "ignores the options of other methods" in str(w.message)]
+                for method, key in (("SCFT", "langevin (L-FTS and CL-FTS)"), ("L-FTS", "relax_cell (SCFT)"),
+                                    ("CL-FTS", "compressor (L-FTS)")):
+                    if not any(text.startswith(method + " ") and key in text for text in ignored):
+                        failed.append(f"{method} gave no warning that it ignores {key}: {ignored}")
                 try:
-                    CLFTS.from_file("p.yaml", random_seed=1)
-                    failed.append("CLFTS.from_file accepted 'saddle' and 'compressor'")
+                    LFTS.from_file("p.yaml")
+                    failed.append("LFTS.from_file accepted the key 'note'")
                 except ValidationError as error:
-                    if "'saddle' is supported in L-FTS only" not in str(error):
-                        failed.append(f"CLFTS.from_file refused 'saddle' with {error}")
+                    if "L-FTS does not take a 'note' parameter" not in str(error):
+                        failed.append(f"LFTS.from_file refused p.yaml with {error}")
             if scft.max_iter != 7:
                 failed.append("SCFT.from_file override")
             if abs(lfts.ds - 0.05) > 1e-15:

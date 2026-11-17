@@ -1,6 +1,7 @@
 """Input aliases, serialized graft nodes and exact parameter-name continuation."""
 
 import copy
+import warnings
 import json
 import os
 from pathlib import Path
@@ -69,8 +70,13 @@ def check_aliases(root):
     assert normalize_params(old) == params
     assert old == before
     assert normalize_params(params) == params
-    # L-FTS takes the legacy names; it refuses space_group, an SCFT key
-    validate_lfts_params({key: value for key, value in old.items() if key != "space_group"})
+    # L-FTS takes the legacy names; it ignores the SCFT keys, also given by their legacy names, with one
+    # warning that names them
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validate_lfts_params(old)
+    ignored = " ".join(str(w.message) for w in caught)
+    assert all(f"{key} (SCFT)" in ignored for key in ("relax_cell", "stress_scale", "space_group")), ignored
     assert normalize_params(old)["wtmd"]["recording_period"] == 100
     # Every alias is rejected when both spellings are supplied; values need
     # not be valid because ambiguity is caught before numerical construction.

@@ -138,7 +138,7 @@ def mean_field_underflow(root, platform):
     simulations = []
     for concentration in (0.0, None):
         params = parameters(root / "scft", platform, concentration=concentration)
-        for key in ("langevin", "recording"):
+        for key in ("langevin", "recording", "verbose_level"):   # options of CL-FTS, which SCFT refuses
             params.pop(key)
         params.update(relax_cell=False, max_iter=1, tolerance=1e-8,
                       optimizer={"name": "am", "max_hist": 10, "start_error": 0.1,

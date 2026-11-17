@@ -74,7 +74,7 @@ def plates(d_tilde):
                            "fixed_charge": fixed_charge,
                            "ions": {"Ci": {"valence": q, "concentration": 0.0, "smearing_length": smearing}}},
         "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
-        "relax_cell": False, "max_iter": 20000, "tolerance": 1e-10, "verbose_level": 0,
+        "relax_cell": False, "max_iter": 20000, "tolerance": 1e-10,
     }
     with contextlib.redirect_stdout(io.StringIO()):
         calculation = SCFT(params=params)

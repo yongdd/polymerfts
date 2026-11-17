@@ -86,11 +86,11 @@ def check_lfts(params, expected_mean, directory):
                               "mix_min": 0.1, "mix_init": 0.1},
                   saddle={"max_iter": 2, "tolerance": 1e-8},
                   recording={"dir": directory, "checkpoint_interval": 1,
-                             "sample_interval": 1, "statistics_save_interval": 1})
+                             "sample_interval": 1, "statistics_save_interval": 1}, verbose_level=0)
     original = copy.deepcopy(params)
     sim = quiet(LFTS, params, random_seed=5)
     fields = np.zeros((len(sim.monomer_types), 4))
-    phi, hamiltonian, _, error = quiet(sim.saddle.solve, fields)
+    phi, _, hamiltonian, _, error = quiet(sim.saddle.solve, fields)
     assert params == original
     assert_input_lengths(sim, original)
     assert np.isfinite(hamiltonian) and error < sim.saddle.settings["tolerance"]
@@ -120,7 +120,7 @@ def charged_parameters(platform, chain_model, ds, lengths):
               "electrostatics": {"charges": {"A": 1.0, "B": -1.0}, "coupling": 1.0,
                                  "ions": {"X": {"valence": -1.0, "concentration": 0.0,
                                                 "smearing_length": 0.1}}, "counterion": "X"},
-              "platform": platform, "verbose_level": 0}
+              "platform": platform}
     if chain_model == "continuous":
         params["electrostatics"]["n_segments"] = 100
     return params
@@ -163,7 +163,7 @@ def check_counterions(platform, directory):
         clfts_directory = os.path.join(directory, name)
         clfts_params.update(langevin={"nbar": 1e8, "dt": 0.01, "max_step": 1},
                             recording={"dir": clfts_directory, "checkpoint_interval": 1,
-                                       "sample_interval": 1, "statistics_save_interval": 1})
+                                       "sample_interval": 1, "statistics_save_interval": 1}, verbose_level=0)
         sim = quiet(CLFTS, clfts_params, random_seed=19)
         sim.draw_architectures = False
         phi, _ = quiet(sim.compute_concentrations, np.zeros((2, 4), dtype=complex))
@@ -207,7 +207,7 @@ def check_grand_canonical_charge(platform, directory):
         params.update(langevin={"nbar": 1e8, "dt": 0.01, "max_step": 1},
                       recording={"dir": os.path.join(directory, "grand-" + str(charged)),
                                  "checkpoint_interval": 1, "sample_interval": 1,
-                                 "statistics_save_interval": 1})
+                                 "statistics_save_interval": 1}, verbose_level=0)
         original = copy.deepcopy(params)
         assert open_charges(params) is charged
         sim = quiet(CLFTS, params, random_seed=23)
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         for name, ds, segments, chi_n, polymers, mean, mu, shifted in cases():
             params = {"nx": [4], "lx": [2.0], "chain_model": "discrete", "ds": ds,
                       "segment_lengths": segments, "chi_n": chi_n, "zeta_n": 100.0,
-                      "polymers": polymers, "platform": platform, "verbose_level": 0}
+                      "polymers": polymers, "platform": platform}
             check_scft(params, mean, mu, shifted)
             with tempfile.TemporaryDirectory(prefix="polymerfts_discrete_composition_") as directory:
                 check_lfts(params, mean, directory)

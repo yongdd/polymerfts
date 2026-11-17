@@ -653,10 +653,10 @@ When adding new computational features, you must implement them for both platfor
 | Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
 | Cell relaxation of SCFT: the stress, how often it is computed (`stress_interval`) and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
-| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`; the fields a run starts from: `prepare_run`) |
-| Reading, drawing and solving the polymer chains, and their `PropagatorSolver` | `src/python/theory/chains.py` (`chain_solver`) |
+| What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains) | `src/python/utils/validation.py` (`validate_system_params`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), and the top-level keys each method reads | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid

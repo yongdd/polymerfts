@@ -127,7 +127,9 @@ def inputs(root):
 
     params = parameters(root / "inputs")
     params.pop("electrostatics")
-    expect_validation_error(lambda: validate_scft_params({**params, "optimizer": {"name": "am"}, "relax_cell": False}),
+    # The input of SCFT, without the options of CL-FTS (which SCFT refuses)
+    scft = {key: value for key, value in params.items() if key not in ("langevin", "recording", "verbose_level")}
+    expect_validation_error(lambda: validate_scft_params({**scft, "optimizer": {"name": "am"}, "relax_cell": False}),
                             "CL-FTS only, not in SCFT")
     params.update(saddle={"max_iter": 10, "tolerance": 1e-4},
                   compressor={"name": "am", "max_hist": 20, "start_error": 1e-1, "mix_min": 0.1, "mix_init": 0.1})

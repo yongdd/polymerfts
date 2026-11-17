@@ -3,7 +3,8 @@
 
 Checks that the run loops work for every compressor and verbose level, that the
 recorded files are written, that a run continued from a checkpoint reproduces
-the uninterrupted run exactly, and that invalid options are rejected.
+the uninterrupted run exactly, that the CL-FTS forces carry the dynamical
+stabilization, and that invalid options are rejected.
 """
 
 import os
@@ -16,7 +17,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, ValidationError, PlatformSelector
+from polymerfts import LFTS, CLFTS, ValidationError, PlatformSelector, LeimkuhlerMatthews
 from fts_checks import exact_restart, quiet
 
 
@@ -50,6 +51,19 @@ def params_for(work_dir, max_step, compressor="am", verbose_level=1):
 def initial_fields(seed=3):
     rng = np.random.default_rng(seed)
     return {"A": rng.normal(0.0, 0.5, 256), "B": rng.normal(0.0, 0.5, 256)}
+
+
+class RecordingSteps(LeimkuhlerMatthews):
+    """Leimkuhler-Matthews steps that keep the fields and the forces each step starts from."""
+    name = "test-recording-lm"
+
+    def __init__(self):
+        super().__init__()
+        self.steps = []
+
+    def step(self, fields, force, **kwargs):
+        self.steps.append((fields.copy(), force.copy()))
+        return super().step(fields, force, **kwargs)
 
 
 def main():
@@ -94,6 +108,31 @@ def main():
             and np.all(np.isfinite(data["H_history_real"]))):
         print("FAILED: CL-FTS run")
         ok = False
+
+    # ---- the forces of every CL-FTS step carry the dynamical stabilization i alpha_ds Im[w] of the
+    # real-type fields (fields with imaginary parts from the start)
+    work_dir = os.path.join(root, "clfts_stabilization")
+    params = params_for(work_dir, 2)
+    del params["compressor"], params["saddle"]
+    params["dynamic_stabilization"] = 0.05
+    integrator = RecordingSteps()
+    sim = quiet(CLFTS, params, random_seed=5, integrator=integrator)
+    rng = np.random.default_rng(7)
+    quiet(sim.run, initial_fields={name: values + 1j * rng.normal(0.0, 0.5, 256)
+                                   for name, values in initial_fields().items()})
+    for step, (fields, force) in enumerate(integrator.steps, start=1):
+        phi, _ = quiet(sim.compute_concentrations, fields)
+        expected = sim.mpt.compute_func_deriv(fields, sim.smearing.apply_to_dict(phi), range(len(sim.monomer_types)))
+        stabilization = np.zeros_like(expected)
+        for i in sim.mpt.aux_fields_real_idx:
+            stabilization[i] = 1j * 0.05 * np.imag(fields[i])
+        expected += stabilization
+        difference = np.max(np.abs(force - expected))
+        if not (len(integrator.steps) == 2 and difference <= 1e-10 * np.max(np.abs(expected))
+                and np.max(np.abs(stabilization)) > 1e-3):
+            print(f"FAILED: CL-FTS forces of step {step} with dynamical stabilization differ by {difference:.2e} "
+                  f"(stabilization {np.max(np.abs(stabilization)):.2e})")
+            ok = False
 
     # ---- invalid options
     for bad, what in ((("compressor", "name", "foo"), "unknown compressor"),

@@ -1,8 +1,7 @@
 """What a Langevin run saves and restores: its status, measurements, checkpoints and the state of extensions.
 
-recording_run_status() keeps the status of a run in run_status.json, from its start to its end, and
-prepare_run() gives a run the fields to start from, new or those of a checkpoint. RunRecord holds what
-a run has measured since its last statistics file. checkpoint_data() writes the settings and
+recording_run_status() keeps the status of a run in run_status.json, from its start to its end. RunRecord
+holds what a run has measured since its last statistics file. checkpoint_data() writes the settings and
 measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a continuation
 changes any state. The extension functions capture and restore the state of an integrator and of
 callbacks.
@@ -178,30 +177,6 @@ def _write_run_status(sim):
     directory = Path(sim.recording["dir"])
     directory.mkdir(parents=True, exist_ok=True)
     atomic_write_json(directory / "run_status.json", {**sim.run_status, "metadata": sim.metadata})
-
-
-def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):
-    """The start that the runs of L-FTS and CL-FTS share; returns the auxiliary fields of the first step
-    and whether they come from the checkpoint.
-
-    The recording directory gets the drawings of the chain architectures (polymer_<id>.png), unless
-    sim.draw_architectures is False. The auxiliary fields are those of the monomer fields initial_fields
-    ({type: flat array of dtype}) with the dropped modes pinned, or those that the checkpoint of a
-    continued run (restart_data) stored: transforming its monomer fields would not reproduce them bit for
-    bit. The partition consistency is checked again on the first fields of the run (check_partition_once).
-    """
-    from ..theory.chains import draw_polymer_architectures
-    Path(sim.recording["dir"]).mkdir(parents=True, exist_ok=True)
-    if getattr(sim, "draw_architectures", True):
-        draw_polymer_architectures(sim.polymers, sim.ds, sim.segment_lengths, directory=sim.recording["dir"])
-    sim._partition_checked = False
-    saved = None if restart_data is None else restart_data.get("w_aux")
-    if saved is not None:
-        shape = (len(sim.monomer_types), sim.prop_solver.n_grid)
-        return np.asarray(saved, dtype=dtype).reshape(shape).copy(), True
-    w_aux = sim.mpt.to_aux_fields(np.array([initial_fields[m] for m in sim.monomer_types], dtype=dtype))
-    sim.mpt.pin_dropped_fields(w_aux)
-    return w_aux, False
 
 
 def _measurement_key(kind, pair):

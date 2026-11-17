@@ -383,6 +383,7 @@ def concentrations(root):
     params = options(root / "c_input", 2, concentrations="yes")
     expect_validation_error(lambda: CLFTS(params), "'recording.concentrations' must be True or False")
     params = options(root / "c_input", 2, pressure=False)
+    params.pop("electrostatics")   # an option of CL-FTS, which L-FTS refuses
     expect_validation_error(lambda: validate_lfts_params(params), "'recording.concentrations' is supported in CL-FTS only")
 
 

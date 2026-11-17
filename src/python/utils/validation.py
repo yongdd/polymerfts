@@ -5,9 +5,11 @@ The checks raise ValidationError (never assert, which disappears under
 """
 
 import copy
+import difflib
 import itertools
 import math
 import numbers
+import warnings
 from collections.abc import Mapping
 from typing import Any, Dict
 from os import PathLike
@@ -81,6 +83,18 @@ def initial_field_values(fields, monomer_types, size, dtype=np.float64):
         if checked[name].size != size:
             raise ValidationError(f"initial_fields[{name!r}] needs {size} values, got {checked[name].size}")
     return checked
+
+
+def previous_noise_values(noise, label, n_fields, n_grid, fields):
+    """The previous noise of a run continued by hand (the noise of the Leimkuhler-Matthews step before the
+    first step) as a flat float64 array of n_fields x n_grid real, finite values (finite_values; the
+    caller's array stays as it is), or None without one. `fields` names the fields in the error."""
+    if noise is None:
+        return None
+    noise = finite_values(noise, label)
+    if noise.size != n_fields * n_grid:
+        raise ValidationError(f"{label} needs {n_fields} x {n_grid} values ({fields} x grid points), got {noise.size}")
+    return noise
 
 
 def _rename_parameter(mapping, old, new, path=""):
@@ -526,10 +540,54 @@ def _numerical_method(params: Dict[str, Any]) -> tuple:
     return name, _core.numerical_methods()[name]
 
 
+# The top-level keys of the input that each method reads, in its constructor and the objects it
+# builds, with the names of normalize_params. check_method_keys warns about the options of the other
+# methods, which a method ignores, and refuses the keys no method reads (a misspelled key)
+_SYSTEM_KEYS = {"nx", "lx", "angles", "bc", "ds", "chain_model", "segment_lengths", "chi_n", "polymers", "zeta_n",
+                "platform", "numerical_method", "reduce_memory", "aggregate_propagator_computation", "smearing"}
+_LANGEVIN_KEYS = {"langevin", "recording", "verbose_level"}
+METHOD_KEYS = {
+    "SCFT": _SYSTEM_KEYS | {"optimizer", "relax_cell", "max_iter", "tolerance", "stress_scale", "stress_interval",
+                           "crystal_system", "space_group", "axis_ordering", "electrostatics", "polymer_figure_dir",
+                           "fts_consistent_energy"},
+    "L-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"saddle", "compressor", "wtmd"},
+    "CL-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"dynamic_stabilization", "electrostatics"},
+}
+# Why no method reads a key that users give
+_UNREAD_KEY_HINTS = {"mask": "impenetrable regions are available through PropagatorSolver(mask=...) only",
+                     "gibbs_ensemble": "a Gibbs-ensemble input runs with GibbsEnsemble(params)"}
+
+
+def check_method_keys(params: Dict[str, Any], method: str) -> None:
+    """The top-level keys that the method ("SCFT", "L-FTS" or "CL-FTS") does not read (METHOD_KEYS):
+    the options of another method are ignored with one warning that lists them, so that one input serves
+    SCFT and the Langevin methods; a key that no method reads (a misspelled or unsupported option)
+    raises ValidationError naming it and the closest key. params has the names of normalize_params."""
+    known = sorted(set().union(*METHOD_KEYS.values()))
+    ignored = []
+    for key, value in params.items():
+        if key in METHOD_KEYS[method] or value is None:   # None asks for nothing
+            continue
+        readers = [other for other, keys in METHOD_KEYS.items() if key in keys]
+        if not readers:
+            hint = _UNREAD_KEY_HINTS.get(key)
+            if hint is None:
+                close = difflib.get_close_matches(str(key), known, n=1)
+                hint = (f"did you mean '{close[0]}'?" if close
+                        else "no method reads it (docs/references/Parameters.md lists the keys)")
+            raise ValidationError(f"{method} does not take a '{key}' parameter: {hint}")
+        if value is not None:
+            ignored.append(f"{key} ({' and '.join(readers)})")
+    if ignored:
+        # stacklevel: the caller of the simulation class (check_method_keys < validate_* < the constructor)
+        warnings.warn(f"{method} ignores the options of other methods: {', '.join(ignored)}", stacklevel=4)
+
+
 def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the SCFT options before constructing numerical objects; returns the copy with the
     names of normalize_params that the simulation uses."""
     params = normalize_params(params)
+    check_method_keys(params, "SCFT")
     validate_system_params(params)
     group = params.get("space_group")
     if group is not None:
@@ -567,7 +625,6 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
             raise ValidationError("SCFT needs a positive 'electrostatics.coupling'; leave out 'electrostatics' "
                                   "for uncharged chains")
     _reject_grand_canonical(params, "SCFT")
-    _reject_mask(params, "SCFT")
     if params.get("stress_interval", 1) != "adaptive":
         _integer(params.get("stress_interval", 1), "stress_interval")
     optimizer = params["optimizer"]
@@ -605,6 +662,12 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
     """Validate the shared Langevin options before constructing numerical objects; returns the copy with
     the names of normalize_params that the simulation uses."""
     params = normalize_params(params)
+    # 'electrostatics' defines the system (its Hamiltonian), not an option of the method: L-FTS, which has
+    # no electrostatic potential, refuses it rather than simulating a neutral system
+    if not complex_fields and params.get("electrostatics") is not None:
+        raise ValidationError("'electrostatics' is supported in SCFT and CL-FTS only: L-FTS has no "
+                              "electrostatic potential and would simulate a neutral system; remove it")
+    check_method_keys(params, "CL-FTS" if complex_fields else "L-FTS")
     validate_system_params(params)
     # The files name the measurements of a monomer pair by the two names joined with '_'
     # (structure_function_A_B, dH_history_A_B, I1_A_B), which must differ for distinct pairs
@@ -638,7 +701,6 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
     _integer(params.get("verbose_level"), "verbose_level", minimum=0)
     if params["verbose_level"] > 2:
         raise ValidationError("'verbose_level' must be 0, 1 or 2")
-    _reject_mask(params, "CL-FTS" if complex_fields else "L-FTS")
     if complex_fields:
         # A non-integer multiplicity raises complex propagators to a real power, which has no unique value.
         for i, polymer in enumerate(params["polymers"]):
@@ -653,14 +715,8 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
             if "chemical_potential" in polymer and (polymer.get("initial_conditions") or _has_random_copolymer(
                     {"polymers": [polymer]})):
                 raise ValidationError(f"polymers[{i}]: grand-canonical polymers cannot be grafted or random copolymers")
-    if complex_fields:
-        # All fields of CL-FTS fluctuate. Its input has neither key, so that tools (the PSCF converter)
-        # tell it apart from L-FTS input
-        for key in ("saddle", "compressor"):
-            if key in params:
-                raise ValidationError(f"'{key}' is supported in L-FTS only: CL-FTS solves no saddle point "
-                                      "(all its fields fluctuate); remove it")
-    else:
+    # All fields of CL-FTS fluctuate: it solves no saddle point (and ignores 'saddle' and 'compressor')
+    if not complex_fields:
         saddle = params.get("saddle")
         if not isinstance(saddle, dict):
             raise ValidationError("Missing required dict: 'saddle'")
@@ -681,26 +737,15 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
         if polymer.get("initial_conditions"):
             raise ValidationError(f"polymers[{i}]: L-FTS and CL-FTS need free chains; grafted chains "
                                   "(initial_conditions) need q_init, which only SCFT takes")
-    # The keys that the other methods ignore: dynamical stabilization acts on the imaginary parts of the
-    # complex fields of CL-FTS, and the space group of SCFT has no counterpart in the full-grid
-    # simulations of L-FTS and CL-FTS
-    if "dynamic_stabilization" in params:
-        if not complex_fields:
-            raise ValidationError("'dynamic_stabilization' (or 'alpha_ds') is supported in CL-FTS only: "
-                                  "the fields of L-FTS have no imaginary parts to stabilize; remove it")
+    # The options of one of the two methods, checked where they are read (the other method ignores
+    # them, check_method_keys): dynamical stabilization and electrostatics of CL-FTS, WTMD of L-FTS
+    if complex_fields and "dynamic_stabilization" in params:
         _finite_number(params["dynamic_stabilization"], "dynamic_stabilization", nonnegative=True)
-    if params.get("space_group") is not None:
-        raise ValidationError("'space_group' is supported in SCFT only: L-FTS and CL-FTS sample the fields "
-                              "on the full grid; remove it")
     _validate_smearing(params, complex_fields)
-    if params.get("electrostatics") is not None:
-        if not complex_fields:
-            raise ValidationError("'electrostatics' is supported in CL-FTS only")
+    if complex_fields and params.get("electrostatics") is not None:
         validate_electrostatics(params)
     wtmd = params.get("wtmd")
-    if wtmd is not None:
-        if complex_fields:
-            raise ValidationError("'wtmd' is supported in L-FTS only")
+    if not complex_fields and wtmd is not None:
         if not isinstance(wtmd, dict):
             raise ValidationError("'wtmd' must be a dict or None")
         for key in ("update_freq", "recording_period"):
@@ -733,13 +778,6 @@ def _reject_grand_canonical(params: Dict[str, Any], method: str) -> None:
     if any("chemical_potential" in polymer for polymer in params["polymers"]):
         raise ValidationError(f"Grand-canonical polymers ('chemical_potential') are supported in CL-FTS only, "
                               f"not in {method}")
-
-
-def _reject_mask(params: Dict[str, Any], method: str) -> None:
-    # Impenetrable regions exist in the propagator solver only; the simulation loops do not mask their fields
-    if params.get("mask") is not None:
-        raise ValidationError(f"{method} does not take a 'mask': impenetrable regions are available through "
-                              "PropagatorSolver(mask=...) only")
 
 
 def validate_electrostatics(params: Dict[str, Any]) -> None:

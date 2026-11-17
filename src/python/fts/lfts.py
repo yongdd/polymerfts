@@ -4,7 +4,7 @@ import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..utils.validation import (normalize_params, validate_lfts_params, ValidationError, NumericalError,
-                                finite_values, initial_field_values)
+                                initial_field_values, previous_noise_values)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -16,14 +16,13 @@ from ..utils.checkpoint import (
     fields_data,
     load_checkpoint,
     recording_run_status,
-    prepare_run,
     RunRecord,
     initialize_extensions,
     extension_state,
     restore_extensions,
 )
 from ..theory.chains import (read_chains, chain_solver, mean_concentrations, chain_fields, solve_chains,
-                             check_partition_once)
+                             check_partition_once, prepare_run)
 from ..utils.file_formats import load_config
 from .saddle import SaddlePointSearch
 from ..theory.smearing import smearing_of
@@ -311,12 +310,9 @@ class LFTS:
         """
         # The initial fields and the previous noise (real, finite numbers) are checked before the run starts
         fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.n_grid)
-        if normal_noise_prev is not None:
-            R = len(self.mpt.aux_fields_real_idx)
-            normal_noise_prev = finite_values(normal_noise_prev, "normal_noise_prev")
-            if normal_noise_prev.size != R * self.prop_solver.n_grid:
-                raise ValidationError(f"normal_noise_prev needs {R} x {self.prop_solver.n_grid} values (real auxiliary "
-                                      f"fields x grid points), got {normal_noise_prev.size}")
+        normal_noise_prev = previous_noise_values(normal_noise_prev, "normal_noise_prev",
+                                                  len(self.mpt.aux_fields_real_idx), self.prop_solver.n_grid,
+                                                  "real auxiliary fields")
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=True,
                                   saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
@@ -364,7 +360,7 @@ class LFTS:
         # The number of real fields
         R = len(self.mpt.aux_fields_real_idx)
 
-        # The recording directory and the auxiliary fields to start from (checkpoint.prepare_run)
+        # The recording directory and the auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data)
 
         if start_langevin_step is None:
@@ -415,9 +411,8 @@ class LFTS:
 
             # One Langevin step of the real fields and the saddle point of the imaginary fields
             w_aux_before, phi_smeared_before = w_aux, phi_smeared
-            w_aux, phi, hamiltonian, error_level, normal_noise_prev = self.saddle.advance(
+            w_aux, phi, phi_smeared, hamiltonian, error_level, normal_noise_prev = self.saddle.advance(
                 w_aux_before, w_lambda, normal_noise_prev, langevin_step)
-            phi_smeared = self.smearing.apply_to_dict(phi)
             self.run_status["last_completed_step"] = langevin_step
 
             # WTMD: order parameter with dH/dχN of the same fields (those before the update, at which

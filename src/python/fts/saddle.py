@@ -223,7 +223,7 @@ class SaddlePointSearch:
 
     def first_point(self, w_aux):
         """Saddle point of the initial fields, found in place; returns their concentrations."""
-        phi, _, _ = self.solve_with_retries(w_aux, "the initial saddle point")
+        phi, _, _, _ = self.solve_with_retries(w_aux, "the initial saddle point")
         return phi
 
     def advance(self, w_aux_start, forces, noise_prev, langevin_step):
@@ -231,7 +231,8 @@ class SaddlePointSearch:
 
         A failed saddle search goes on from where it stopped ("retry", solve_with_retries), or the step
         is drawn again ("resample", which can change the sampled distribution). Returns the new fields
-        w_aux, their concentrations and Hamiltonian, the error level and the noise of the step.
+        w_aux, their concentrations and smeared concentrations, their Hamiltonian, the error level and the
+        noise of the step.
         """
         R = len(self.mpt.aux_fields_real_idx)
         real = self.mpt.aux_fields_real_idx
@@ -260,9 +261,9 @@ class SaddlePointSearch:
                 w_aux[real] = checked_fields(proposed, active)
 
                 # Find saddle point of the pressure field (one search per draw with "resample")
-                phi, hamiltonian, error_level = self.solve_with_retries(
+                phi, phi_smeared, hamiltonian, error_level = self.solve_with_retries(
                     w_aux, f"the saddle point of step {langevin_step}", retry=not resample)
-                return w_aux, phi, hamiltonian, error_level, noise
+                return w_aux, phi, phi_smeared, hamiltonian, error_level, noise
             except SaddlePointError:
                 if hasattr(self.sim.integrator, "load_state_dict"):
                     self.sim.integrator.load_state_dict(copy.deepcopy(integrator_state))
@@ -276,8 +277,8 @@ class SaddlePointSearch:
         trial = w_aux.copy()
         real = self.mpt.aux_fields_real_idx
         trial[real] = checked_fields(fields, trial[real])
-        phi, _, _ = self.solve_with_retries(trial, f"an intermediate saddle point of step {langevin_step}")
-        force = self.mpt.compute_func_deriv(trial, self.smearing.apply_to_dict(phi), real)
+        _, phi_smeared, _, _ = self.solve_with_retries(trial, f"an intermediate saddle point of step {langevin_step}")
+        force = self.mpt.compute_func_deriv(trial, phi_smeared, real)
         if self.wtmd is not None:
             self.wtmd.add_bias(trial, force)
         if not np.all(np.isfinite(force)):
@@ -285,7 +286,8 @@ class SaddlePointSearch:
         return force
 
     def solve_with_retries(self, w_aux, where, retry=True):
-        """The saddle point of w_aux, found in place; returns its concentrations, Hamiltonian and error level.
+        """The saddle point of w_aux, found in place; returns its concentrations and smeared concentrations,
+        its Hamiltonian and the error level.
 
         A search that does not converge goes on from where it stopped, saddle.max_retries times at most:
         not with failure_policy "abort" or retry=False, nor from fields that are not finite. `where` names
@@ -296,7 +298,7 @@ class SaddlePointSearch:
         if not retry or self.settings.get("failure_policy", "retry") == "abort":
             retries = 0
         for attempt in range(retries + 1):
-            phi, hamiltonian, iterations, error_level = self.solve(w_aux)
+            phi, phi_smeared, hamiltonian, iterations, error_level = self.solve(w_aux)
             self.iterations += iterations
             if not np.isfinite(hamiltonian):
                 # H contains log Q: name a partition function that is not positive as the cause
@@ -304,7 +306,7 @@ class SaddlePointSearch:
                 check_partition_functions(self.prop_solver, where, lambda: fields)
                 raise NumericalError(f"Non-finite Hamiltonian at {where}", fields)
             if np.isfinite(error_level) and error_level < self.settings["tolerance"]:
-                return phi, hamiltonian, error_level
+                return phi, phi_smeared, hamiltonian, error_level
             self.sim.run_status["saddle_failures"] += 1
             if not np.all(np.isfinite(w_aux)):
                 break
@@ -332,6 +334,8 @@ class SaddlePointSearch:
         -------
         phi : dict
             Final monomer concentration fields {monomer_type: array}.
+        phi_smeared : dict
+            The same concentrations smeared (smearing.py), as the forces and dH/dχN take them.
         hamiltonian : float
             Hamiltonian value at converged saddle point.
         saddle_iter : int
@@ -350,11 +354,12 @@ class SaddlePointSearch:
         if I == 0:
             # There is no saddle search, but the run still needs the concentrations and H of this state.
             phi, _ = self.sim.compute_concentrations(w_aux)
+            phi_smeared = self.smearing.apply_to_dict(phi)
             total_partitions = [self.prop_solver.get_partition_function(p)
                                 for p in range(self.prop_solver.get_n_polymer_types())]
             hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                      include_const_term=True, phi=self.smearing.apply_to_dict(phi))
-            return phi, hamiltonian, 0, 0.0
+                                                      include_const_term=True, phi=phi_smeared)
+            return phi, phi_smeared, hamiltonian, 0, 0.0
 
         # Assign large initial value for error
         error_level = 1e20
@@ -385,8 +390,8 @@ class SaddlePointSearch:
             phi, _ = self.sim.compute_concentrations(w_aux)
 
             # Compute functional derivatives of Hamiltonian w.r.t. imaginary fields
-            phi_for_saddle = self.smearing.apply_to_dict(phi)
-            h_deriv = self.mpt.compute_func_deriv(w_aux, phi_for_saddle, self.mpt.aux_fields_imag_idx)
+            phi_smeared = self.smearing.apply_to_dict(phi)
+            h_deriv = self.mpt.compute_func_deriv(w_aux, phi_smeared, self.mpt.aux_fields_imag_idx)
 
             # Compute total error
             old_error_level = error_level
@@ -398,7 +403,7 @@ class SaddlePointSearch:
             if self.sim.verbose_level == 2 or is_last:
                 total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
                 hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                          include_const_term=True, phi=phi_for_saddle)
+                                                          include_const_term=True, phi=phi_smeared)
 
             # Print iteration # and error levels
             if self.sim.verbose_level == 2 or (self.sim.verbose_level == 1 and is_last):
@@ -426,4 +431,4 @@ class SaddlePointSearch:
         if self.zeta_n is None:
             w_aux[M-1] -= self.cb.mean(w_aux[M-1])
 
-        return phi, hamiltonian, saddle_iter, error_level
+        return phi, phi_smeared, hamiltonian, saddle_iter, error_level

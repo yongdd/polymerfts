@@ -194,8 +194,8 @@ class FailingLFTS(LFTS):
 
         def failing_solve(w_aux):
             self.calls += 1
-            phi, hamiltonian, saddle_iter, error_level = solve(w_aux)
-            return phi, hamiltonian, saddle_iter, np.inf if self.calls in self.fail_calls else error_level
+            phi, phi_smeared, hamiltonian, saddle_iter, error_level = solve(w_aux)
+            return phi, phi_smeared, hamiltonian, saddle_iter, np.inf if self.calls in self.fail_calls else error_level
         self.saddle.solve = failing_solve
 
 
@@ -262,7 +262,7 @@ def test_lr_walls(root):
                 p["saddle"] = {"max_iter": 100, "tolerance": 1e-6}
                 p["compressor"] = {"name": name, "max_hist": 20, "start_error": 5e-1, "mix_min": 0.01, "mix_init": 0.01}
                 sim = quiet(LFTS, p, random_seed=1)
-                _, _, iterations, error = quiet(sim.saddle.solve, w.copy())
+                _, _, _, iterations, error = quiet(sim.saddle.solve, w.copy())
                 lr = sim.saddle.compressor.lr if name == "lram" else sim.saddle.compressor
                 jk[platform] = np.array(lr.jk)
                 check(iterations <= 10 and error < 1e-6, f"{platform} {name} with walls {bc[::2]} {list(extra)}: "
@@ -300,7 +300,7 @@ def test_lr_uniform_mode(root):
             n = int(np.prod(nx))
             w = np.zeros([2, n])
             w[0] = np.random.default_rng(5).normal(0.0, 2.0, n)
-            _, _, iterations, error = quiet(sim.saddle.solve, w)
+            _, _, _, iterations, error = quiet(sim.saddle.solve, w)
             check(lr.jk.flat[0] == 1.0 and error < 1e-4,
                   f"{name} {extra['bc'][::2]} nx {nx}: J(0) = {lr.jk.flat[0]}, saddle point in {iterations} iterations ({error:.1e})")
     p = params(work, [16, 16], [3.0, 3.0], 2, zeta_n=100.0)

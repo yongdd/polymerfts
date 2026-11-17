@@ -13,6 +13,7 @@ import os
 import tempfile
 import io
 import contextlib
+import warnings
 import numpy as np
 
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError, NumericalError, PlatformSelector
@@ -21,7 +22,10 @@ from fts_checks import cpu_platform, scft_parameters, silenced
 
 
 def lfts_params():
+    """The system of scft_parameters() with the options of L-FTS, without the optimizer and relax_cell of
+    SCFT, which L-FTS ignores."""
     params = scft_parameters()
+    del params["optimizer"], params["relax_cell"]
     params.update({
         "langevin": {"nbar": 10000, "dt": 8.0, "max_step": 10},
         "compressor": {"name": "am", "max_hist": 20, "start_error": 1e-1, "mix_min": 0.1, "mix_init": 0.1},
@@ -34,7 +38,7 @@ def lfts_params():
 
 def clfts_params(params=None):
     """A copy of params (by default lfts_params()) without the compressor and saddle of L-FTS,
-    which CL-FTS refuses."""
+    which CL-FTS ignores."""
     params = copy.deepcopy(lfts_params() if params is None else params)
     del params["compressor"], params["saddle"]
     return params
@@ -56,6 +60,21 @@ def expect_error(cls, params, what, message=""):
         print(f"FAILED: the ValidationError of {what} does not name {message!r}: {error}")
         return False
     print(f"FAILED: {what} did not raise ValidationError")
+    return False
+
+
+def expect_ignored(cls, params, what, key):
+    """Constructing cls with params succeeds with one warning that names the ignored key."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            build(cls, params)
+        except ValidationError as error:
+            print(f"FAILED: {what} raised {error}")
+            return False
+    if any("ignores the options of other methods" in str(w.message) and key in str(w.message) for w in caught):
+        return True
+    print(f"FAILED: {what} gave no warning naming {key!r}")
     return False
 
 
@@ -499,17 +518,30 @@ def main():
     ok &= expect_error(SCFT, params, "SCFT without relax_cell")
     params = clfts_params(); del params["langevin"]
     ok &= expect_error(CLFTS, params, "CLFTS without langevin")
+    # Each method ignores the options of the other methods with a warning that names them, so that one
+    # input serves SCFT and the Langevin methods: the saddle and compressor of L-FTS in CL-FTS, the CL-FTS
+    # option dynamic_stabilization (also by its alias) in L-FTS, the space group and the other options of
+    # SCFT in L-FTS and CL-FTS, and the Langevin options in SCFT; a key that no method reads is refused
     for key in ("saddle", "compressor"):
         params = clfts_params(); params[key] = lfts_params()[key]
-        ok &= expect_error(CLFTS, params, f"CLFTS with the L-FTS option '{key}'")
-    # L-FTS refuses the CL-FTS option dynamic_stabilization (also by its alias), and neither method takes
-    # the space group of SCFT, which they would ignore
+        ok &= expect_ignored(CLFTS, params, f"CLFTS with the L-FTS option '{key}'", key)
     for key in ("dynamic_stabilization", "alpha_ds"):
         params = lfts_params(); params[key] = 0.05
-        ok &= expect_error(LFTS, params, f"LFTS with the CL-FTS option '{key}'", "dynamic_stabilization")
+        ok &= expect_ignored(LFTS, params, f"LFTS with the CL-FTS option '{key}'", "dynamic_stabilization")
+    scft_options = {"relax_cell": True, "crystal_system": "Cubic", "optimizer": scft_parameters()["optimizer"],
+                    "stress_scale": 0.5, "stress_interval": 2, "max_iter": 10, "tolerance": 1e-6,
+                    "space_group": {"symbol": "Im-3m"}}
     for cls, params in ((LFTS, lfts_params()), (CLFTS, clfts_params())):
-        params["space_group"] = {"symbol": "Im-3m"}
-        ok &= expect_error(cls, params, f"{cls.__name__} with a space group", "space_group")
+        for key, value in scft_options.items():
+            ok &= expect_ignored(cls, {**params, key: value}, f"{cls.__name__} with the SCFT option '{key}'",
+                                 f"{key} (SCFT")
+    for key, value in lfts_params().items():
+        if key not in scft_parameters():
+            ok &= expect_ignored(SCFT, {**scft_parameters(), key: value}, f"SCFT with the Langevin option '{key}'",
+                                 key)
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
+        ok &= expect_error(cls, {**params, "relax_cel": False}, f"{cls.__name__} with a misspelled key",
+                           "does not take a 'relax_cel' parameter: did you mean 'relax_cell'?")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
@@ -527,7 +559,7 @@ def main():
     params = lfts_params(); params["wtmd"] = {"ell": 4}; params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]
     ok &= expect_error(LFTS, params, "WTMD on a 2D grid")
     params = clfts_params(); params["wtmd"] = {"ell": 4}
-    ok &= expect_error(CLFTS, params, "CL-FTS with a wtmd block")
+    ok &= expect_ignored(CLFTS, params, "CL-FTS with a wtmd block", "wtmd (L-FTS)")
     # A bin width that does not divide the range is refused by the constructor
     params = lfts_params(); params["wtmd"] = {"psi_min": 0.0, "psi_max": 1.0, "dpsi": 0.3}
     try:

@@ -466,7 +466,9 @@ def input_checks(root):
         return lambda: LFTS(params)
     expect_validation_error(lfts(False), "CL-FTS only")
     expect_validation_error(lfts(True), "CL-FTS only")
-    scft = parameters(root / "inputs")
+    # SCFT refuses the CL-FTS option psi_dt_scaling of 'electrostatics' (and the Langevin options)
+    scft = {key: value for key, value in parameters(root / "inputs").items()
+            if key not in ("langevin", "recording", "verbose_level")}
     scft.update(optimizer={"name": "am"}, relax_cell=False)
     expect_validation_error(lambda: SCFT(scft), "CL-FTS option")
 

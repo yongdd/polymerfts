@@ -197,6 +197,8 @@ Keep each simulation class readable from top to bottom:
   flow per method: do not merge them into a generic driver or a class hierarchy.
 - Read options directly from the `params` dictionary in the constructor, with
   defaults next to their use. Avoid introducing parameter dataclass/spec layers.
+  A new top-level option also needs its entry in `METHOD_KEYS` (`validation.py`):
+  a method warns about the keys of other methods and refuses keys no method reads.
 - Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.

@@ -62,7 +62,6 @@ def main() -> int:
         },
         "max_iter": 5,
         "tolerance": 1e-8,
-        "verbose": 0,
     }
 
     calc = scft.SCFT(params=params)

@@ -2,6 +2,13 @@
 
 This document provides a complete reference for all simulation parameters.
 
+`SCFT`, `LFTS` and `CLFTS` read the keys of their own sections and the shared ones (system, chains,
+numerical method, platform, memory, smearing; `electrostatics` in SCFT and CL-FTS). One input can serve all
+three at its top level: a method ignores the options of the others, such as `relax_cell` in L-FTS or
+`langevin` in SCFT, with one warning that lists them (options nested in a section are checked by the
+method that reads the section, and L-FTS refuses `electrostatics`, which defines a charged system). A top-level key that no method reads, such as a misspelled key, raises
+`ValidationError` naming the key and the closest valid one.
+
 ## Table of Contents
 
 1. [Simulation Setup](#simulation-setup)
@@ -216,7 +223,7 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 
 ## SCFT Parameters
 
-`SCFT(params)` reads the shared parameters above plus the keys below. These keys are read by `SCFT` only; `LFTS` and `CLFTS` ignore them. `space_group` is also read by `SCFT` only: `LFTS` and `CLFTS` raise `ValidationError` for it.
+`SCFT(params)` reads the shared parameters above plus the keys below. These keys and `space_group` are read by `SCFT` only: `LFTS` and `CLFTS` ignore them with a warning.
 
 ### Optimizer
 
@@ -414,12 +421,12 @@ derivative diverges at zero coefficients. A zero bias derivative adds no force.
 
 ## CL-FTS Parameters
 
-`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and each of these keys raises `ValidationError`), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
+`CLFTS(params, random_seed=None)` (complex Langevin) reads the shared parameters, `langevin` and `recording` exactly as L-FTS does (no `compressor`, `saddle` or `wtmd`: all fields fluctuate, and CL-FTS ignores these keys with a warning), and `verbose_level` (0, 1 or 2; 0 prints nothing per Langevin step, 1 and 2 both print one status line per step), plus:
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `zeta_n` | float | Compressibility parameter; complex Langevin needs a finite value. Give 0 to a neutral solvent of one segment that only serves as the reference chain of point ions: it then has no field ([CL-FTS theory, Section 6](../theory/ComplexLangevinSimulation.md#6-charged-systems)) | `100.0` |
-| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, raises `ValidationError` for either name. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
+| `dynamic_stabilization` | float | Dynamical stabilization constant αds (Willis & Matsen, *J. Chem. Phys.* **2024**, 161, 244903): adds $`i\,\alpha_{ds}\,\mathrm{Im}[W_-]`$ to the exchange-field force to suppress runaway solutions. `alpha_ds` is accepted as an alias; L-FTS, whose fields have no imaginary parts, ignores either name with a warning. Willis & Matsen used 0.001 at $`\bar{N} = 10^6`$–$`10^7`$ and 0.01–0.02 at $`\bar{N} = 10^5`$; 0.1 already biased their results | `0.0` |
 | `smearing` | dict | (Optional) Finite-range interactions, see [Smearing](#smearing); recommended for CL-FTS stability. CL-FTS also accepts one Gaussian length per monomer type | none |
 | `electrostatics` | dict | (Optional) Smeared Coulomb interactions, see [Electrostatics](#electrostatics) | none |
 
@@ -523,7 +530,7 @@ When `True`:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS raise `ValidationError`) |
+| `space_group` | dict | Space group constraints (SCFT only; L-FTS and CL-FTS ignore it with a warning) |
 
 ```python
 "space_group": {
