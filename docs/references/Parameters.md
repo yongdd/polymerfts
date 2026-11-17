@@ -519,7 +519,7 @@ When `True`:
 
 `reduce_memory=True` works with every chain model and with space-group symmetry, including **discrete chains combined with a space group**, on both CPU and CUDA (see [SpaceGroup.md](../theory/SpaceGroup.md)).
 
-### Space Group Symmetry (Beta)
+### Space Group Symmetry
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

@@ -136,10 +136,11 @@ The thresholds belong to this model, whose $`\bar{N}`$ is very small; they are n
 
 ## 4. Hot Spots and Dynamical Stabilization
 
-The imaginary part of a real field can grow without bound at a few grid points ("hot spots"), most often at small $`\bar{N}`$ and with contact interactions (Reference 5). `CLFTS` stops with a `NumericalError` in either of two cases:
+The imaginary part of a real field can grow without bound at a few grid points ("hot spots"), most often at small $`\bar{N}`$ and with contact interactions (Reference 5). `CLFTS` stops with a `NumericalError` when:
 
-- the fields, the concentrations or $`H`$ become non-finite;
-- the spatial mean of $`\sum_i \phi_i - 1`$ exceeds $`5 \times 10^{-8}`$ in magnitude, which is usually the first sign of a hot spot.
+- the fields (also those an integrator evaluates or returns), the concentrations, the forces, $`H`$ or the electrostatic potential $`\psi`$ become non-finite;
+- the spatial mean of $`\sum_i \phi_i`$ of the canonical chains differs from their total volume fraction (1 without grand-canonical species) by more than $`5 \times 10^{-8}`$, which is usually the first sign of a hot spot;
+- the forward and backward propagators give different partition functions in the consistency check of the first fields of a run.
 
 Two remedies are available:
 

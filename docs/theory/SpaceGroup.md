@@ -2,8 +2,6 @@
 
 This document describes the `SpaceGroup` class, which applies crystallographic symmetry constraints to reduce computational cost in polymer field theory simulations.
 
-**Note**: This is a **beta feature**. Validate results against full simulations without symmetry constraints.
-
 ## Overview
 
 Many polymer phases (BCC, gyroid, HCP, etc.) have crystallographic symmetry. By exploiting this symmetry, fields can be represented using only **irreducible mesh points** rather than the full simulation grid.
@@ -304,7 +302,7 @@ Metadata is exposed through getter methods (not attributes):
 | `get_n_reduced_basis()` | Number of reduced-basis points (irreducible mesh points, or the physical sub-grid size when a physical basis is enabled) |
 | `get_n_reduced_basis_full()` | Number of irreducible-orbit points of the full space group (equals `get_n_reduced_basis()` unless a physical basis is active) |
 | `physical_basis_name()` | Active physical basis: `'irreducible'`, `'pmmm'`, `'m3'` or `'z-mirror'` |
-| `m3_crysfft_feasible()` | True when the recursive 3m CrysFFT (required by the m3 basis) is feasible on this grid |
+| `m3_crysfft_feasible()` | True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 ≥ 8, translations that fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller grid runs with the recursive 3m CrysFFT all the same |
 | `enable_pmmm_physical_basis()` / `using_pmmm_physical_basis()` | Switch the reduced basis to the Pmmm physical sub-grid (1/8 grid) / query whether it is active |
 | `enable_m3_physical_basis()` / `using_m3_physical_basis()` | Switch to the M3 physical sub-grid (1/8 even-index grid) / query whether it is active |
 | `enable_z_mirror_physical_basis()` / `using_z_mirror_physical_basis()` | Switch to the z-mirror physical basis (half grid along z) / query whether it is active |
@@ -473,7 +471,6 @@ Note: The reduction factor (32x) is less than the number of symmetry operations 
   unique axis perpendicular to the other two; triclinic: any cell). `SCFT` raises a
   `ValidationError` otherwise. With box relaxation, a monoclinic group frees the angle
   between the two axes perpendicular to its unique axis and a triclinic group all three.
-- Beta feature - validate results carefully
 - Requires `spglib` library
 - **Initial-field symmetry**: input fields are projected onto the **full**
   space group (orbit average over all operations) before the first iteration,
