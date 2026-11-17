@@ -233,5 +233,12 @@ public:
     virtual std::vector<T> compute_single_segment_stress(
         T *q_1, T *q_2, std::string monomer_type, bool is_half_bond_length) = 0;
 
+    /**
+     * @brief Build what compute_single_segment_stress() needs before the stress
+     *        loop runs its blocks in parallel (the CrysFFT stress multipliers of
+     *        the pseudo-spectral solvers); the default does nothing.
+     */
+    virtual void prepare_stress() {}
+
 };
 #endif

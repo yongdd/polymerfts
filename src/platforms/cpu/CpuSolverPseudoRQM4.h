@@ -88,6 +88,13 @@ template <typename T>
 class CpuSolverPseudoRQM4 : public CpuSolverPseudoBase<T>
 {
 protected:
+    /// CrysFFT steps of a block: a full step and two half steps
+    std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
+    {
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false),
+                this->get_effective_diffusion_coeff(monomer_type, ds_index, true)};
+    }
+
 public:
     /**
      * @brief Construct pseudo-spectral solver for continuous chains.

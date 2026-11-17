@@ -26,9 +26,8 @@ inline size_t align_up(size_t value, size_t alignment)
 //------------------------------------------------------------------------------
 MklCrysFFTRecursive3m::MklCrysFFTRecursive3m(
     std::array<int, 3> nx_logical,
-    std::array<double, 6> cell_para,
     std::array<double, 9> translational_part)
-    : Base(nx_logical, cell_para, translational_part)
+    : Base(nx_logical, translational_part)
 {
     try
     {
@@ -86,10 +85,10 @@ void MklCrysFFTRecursive3m::init_fft_plans()
 }
 
 //------------------------------------------------------------------------------
-// Apply FFT with cached Boltzmann factors
+// Apply FFT with a folded table (Boltzmann factors or stress multiplier)
 //------------------------------------------------------------------------------
-void MklCrysFFTRecursive3m::apply_with_cache(
-    const KCache& cache, const double* q_in, double* q_out) const
+void MklCrysFFTRecursive3m::apply_with_table(
+    const double* table, const double* q_in, double* q_out) const
 {
     struct ThreadBuffers {
         std::vector<double> iomat;
@@ -122,8 +121,13 @@ void MklCrysFFTRecursive3m::apply_with_cache(
         align_up(static_cast<size_t>(Nz2 / 2 + 1), kAlignment / 8),
         static_cast<size_t>(Nz2));
 
-    const auto& k_re = cache.re;
-    const auto& k_im = cache.im;
+    // The real parts of the eight folded octants, then their imaginary parts
+    std::array<const double*, 8> k_re, k_im;
+    for (int i = 0; i < 8; ++i)
+    {
+        k_re[i] = table + i * table_stride_;
+        k_im[i] = table + (8 + i) * table_stride_;
+    }
 
     for (int ix = 0; ix < Nx2; ++ix)
     {
@@ -149,16 +153,16 @@ void MklCrysFFTRecursive3m::apply_with_cache(
                 double src100_im = src100[iz].imag();
 
                 double dst_re
-                    = src000_re * k_re[0].get()[idx] - src000_im * k_im[7].get()[idx]
-                    + src110_re * k_re[6].get()[idx] - src110_im * k_im[1].get()[idx]
-                    + src010_re * k_re[2].get()[idx] - src010_im * k_im[5].get()[idx]
-                    + src100_re * k_re[4].get()[idx] - src100_im * k_im[3].get()[idx];
+                    = src000_re * k_re[0][idx] - src000_im * k_im[7][idx]
+                    + src110_re * k_re[6][idx] - src110_im * k_im[1][idx]
+                    + src010_re * k_re[2][idx] - src010_im * k_im[5][idx]
+                    + src100_re * k_re[4][idx] - src100_im * k_im[3][idx];
 
                 double dst_im
-                    = src000_re * k_im[0].get()[idx] + src000_im * k_re[7].get()[idx]
-                    + src110_re * k_im[6].get()[idx] + src110_im * k_re[1].get()[idx]
-                    + src010_re * k_im[2].get()[idx] + src010_im * k_re[5].get()[idx]
-                    + src100_re * k_im[4].get()[idx] + src100_im * k_re[3].get()[idx];
+                    = src000_re * k_im[0][idx] + src000_im * k_re[7][idx]
+                    + src110_re * k_im[6][idx] + src110_im * k_re[1][idx]
+                    + src010_re * k_im[2][idx] + src010_im * k_re[5][idx]
+                    + src100_re * k_im[4][idx] + src100_im * k_re[3][idx];
 
                 dst[iz] = std::complex<double>(dst_re, dst_im);
             }

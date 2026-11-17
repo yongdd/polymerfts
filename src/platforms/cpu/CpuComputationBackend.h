@@ -103,6 +103,7 @@ public:
                                   BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
     void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
+    void prepare_stress() override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;
     T solvent_concentration(BackendArray<T>* phi, BackendArray<T>* w, double ds, double volume_fraction) override;

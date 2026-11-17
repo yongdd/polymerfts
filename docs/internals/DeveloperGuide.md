@@ -143,7 +143,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
 | Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
 
 ### Platform Selection
@@ -349,8 +349,12 @@ CpuSolver<T>                                  [Abstract Base]
         │   ├── fft_               - std::unique_ptr<FFT<T>> for transforms
         │   ├── transform_forward()
         │   ├── transform_backward()
+        │   ├── crysfft_           - std::unique_ptr<CpuCrysFFT>, with a space group; its k-space tables
+        │   │                        are the solver's (crysfft_boltz_, crysfft_multipliers_)
         │   ├── update_laplacian_operator()
+        │   ├── prepare_stress()                 [the CrysFFT stress multipliers]
         │   ├── compute_single_segment_stress()  [shared implementation]
+        │   ├── crysfft_block_coeffs()           [pure virtual; the CrysFFT steps of a block]
         │   └── get_stress_boltz_bond()          [virtual; base returns nullptr]
         │       │
         │       ├── CpuSolverPseudoRQM4<T>
@@ -657,7 +661,7 @@ Who owns whom:
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
 - A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
 - A backend owns its solver, and on CUDA the streams, events and scratch buffers.
-- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA) with their k-space tables (one per coefficient for all streams) and its Boltzmann factors.
+- A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
 Allocations are owned by objects that release them, so destructors and constructors
 that throw need no cleanup code:

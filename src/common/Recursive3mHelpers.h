@@ -189,43 +189,6 @@ inline void mul_add_sub_by_seq(
     }
 }
 
-/// Stress multipliers: k_d² summed over some axes (Kxy2: x and y, K2: all),
-/// times exp(-k² coeff) for the Exp types (discrete chains).
-enum class MultiplierType
-{
-    Kx2,
-    Ky2,
-    Kz2,
-    ExpKx2,
-    ExpKy2,
-    ExpKz2,
-    Kxy2,
-    K2,
-    ExpKxy2,
-    ExpK2
-};
-
-/// Axes a multiplier sums k_d² over (bit 0: x, 1: y, 2: z).
-inline int multiplier_axes(MultiplierType type)
-{
-    switch (type)
-    {
-        case MultiplierType::Kx2:  case MultiplierType::ExpKx2:  return 1;
-        case MultiplierType::Ky2:  case MultiplierType::ExpKy2:  return 2;
-        case MultiplierType::Kz2:  case MultiplierType::ExpKz2:  return 4;
-        case MultiplierType::Kxy2: case MultiplierType::ExpKxy2: return 3;
-        case MultiplierType::K2:   case MultiplierType::ExpK2:   return 7;
-    }
-    return 0;
-}
-
-/// Whether a multiplier carries the bond factor exp(-k² coeff).
-inline bool multiplier_has_bond(MultiplierType type)
-{
-    return type == MultiplierType::ExpKx2 || type == MultiplierType::ExpKy2 || type == MultiplierType::ExpKz2
-        || type == MultiplierType::ExpKxy2 || type == MultiplierType::ExpK2;
-}
-
 /**
  * @brief value_at(kx², ky², kz²) / M_logical on the logical grid nx of the
  *        orthogonal cell (lengths cell[0..2]), k_d = 2π m_d / L_d with the

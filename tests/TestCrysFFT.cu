@@ -200,9 +200,10 @@ bool test_cpu_engine(const char* label, FFTBackend backend, int Nx, int Ny, int 
     }
     expand_pmmm(q_phys.data(), q_logical.data(), Nx, Ny, Nz);
 
-    CrysFFTPmmm crys({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, backend);
-    crys.set_contour_step(ds);
-    crys.diffusion(q_phys.data(), q_phys_out.data());
+    CrysFFTPmmm crys({Nx, Ny, Nz}, backend);
+    std::vector<double> boltz;
+    crys.build_boltzmann(boltz, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, ds);
+    crys.diffusion(q_phys.data(), q_phys_out.data(), boltz);
 
     diffusion_standard_fft(q_logical.data(), q_logical_out.data(), Nx, Ny, Nz, Lx, Ly, Lz, ds);
 
@@ -401,9 +402,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     std::vector<double> got(M_physical);
 
     {
-        FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
-        crys.diffusion(q_phys.data(), got.data());
+        FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        std::vector<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds);
+        crys.diffusion(q_phys.data(), got.data(), boltz);
         double rel = max_rel(got);
         bool pass = rel < 1e-10;
         printf("  CPU (FFTW 3m):  %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -411,9 +413,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     }
 #ifdef USE_CPU_MKL
     {
-        MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-        crys.set_contour_step(ds);
-        crys.diffusion(q_phys.data(), got.data());
+        MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+        std::vector<double> boltz;
+        crys.build_boltzmann(boltz, cell, ds);
+        crys.diffusion(q_phys.data(), got.data(), boltz);
         double rel = max_rel(got);
         bool pass = rel < 1e-10;
         printf("  CPU (MKL 3m):   %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -463,9 +466,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         };
 
         {
-            FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-            crys.apply_multiplier(q_phys.data(), got.data(),
-                                  FftwCrysFFTRecursive3m::MultiplierType::ExpKx2, ds);
+            FftwCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            std::vector<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds);
+            crys.apply_multiplier(q_phys.data(), got.data(), exp_kx2);
             double rel = max_rel_m(got);
             bool pass = rel < 1e-10;
             printf("  CPU (FFTW 3m, ExpKx2): %.2e %s\n", rel, pass ? "OK" : "FAIL");
@@ -473,9 +477,10 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
         }
 #ifdef USE_CPU_MKL
         {
-            MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, cell, trans);
-            crys.apply_multiplier(q_phys.data(), got.data(),
-                                  MklCrysFFTRecursive3m::MultiplierType::ExpKx2, ds);
+            MklCrysFFTRecursive3m crys({Nx, Ny, Nz}, trans);
+            std::vector<double> exp_kx2;   // ExpKx2: exp(-k² ds)·kx²
+            crys.build_multiplier(exp_kx2, cell, 1, ds);
+            crys.apply_multiplier(q_phys.data(), got.data(), exp_kx2);
             double rel = max_rel_m(got);
             bool pass = rel < 1e-10;
             printf("  CPU (MKL 3m, ExpKx2):  %.2e %s\n", rel, pass ? "OK" : "FAIL");

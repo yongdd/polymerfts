@@ -337,6 +337,12 @@ void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi
 }
 
 template <typename T>
+void CpuComputationBackend<T>::prepare_stress()
+{
+    solver->prepare_stress();
+}
+
+template <typename T>
 std::array<T, 6> CpuComputationBackend<T>::block_stress(
     int, const std::vector<SegmentPair<T>>& pairs, const std::string& monomer_type)
 {

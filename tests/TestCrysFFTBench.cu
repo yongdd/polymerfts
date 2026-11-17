@@ -408,34 +408,36 @@ int main(int argc, char** argv)
         // Pmmm (FFTW DCT-II/III)
         std::vector<double> cpu_pmmm_in = h_phys;
         std::vector<double> cpu_pmmm_out(M_phys, 0.0);
-        CrysFFTPmmm crys_cpu_pmmm({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, FFTBackend::FFTW);
-        crys_cpu_pmmm.set_contour_step(coeff);
+        CrysFFTPmmm crys_cpu_pmmm({Nx, Ny, Nz}, FFTBackend::FFTW);
+        std::vector<double> cpu_boltz_pmmm;
+        crys_cpu_pmmm.build_boltzmann(cpu_boltz_pmmm, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff);
 
         for (int i = 0; i < warmup; ++i)
         {
-            crys_cpu_pmmm.diffusion(cpu_pmmm_in.data(), cpu_pmmm_out.data());
+            crys_cpu_pmmm.diffusion(cpu_pmmm_in.data(), cpu_pmmm_out.data(), cpu_boltz_pmmm);
             std::swap(cpu_pmmm_in, cpu_pmmm_out);
         }
 
         double cpu_ms_pmmm = time_cpu_iters([&](){
-            crys_cpu_pmmm.diffusion(cpu_pmmm_in.data(), cpu_pmmm_out.data());
+            crys_cpu_pmmm.diffusion(cpu_pmmm_in.data(), cpu_pmmm_out.data(), cpu_boltz_pmmm);
             std::swap(cpu_pmmm_in, cpu_pmmm_out);
         }, iters);
 
         // 3m recursive
         std::vector<double> cpu_m3_in = h_phys;
         std::vector<double> cpu_m3_out(M_phys, 0.0);
-        FftwCrysFFTRecursive3m crys_cpu_3m({Nx, Ny, Nz}, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, trans_part);
-        crys_cpu_3m.set_contour_step(coeff);
+        FftwCrysFFTRecursive3m crys_cpu_3m({Nx, Ny, Nz}, trans_part);
+        std::vector<double> cpu_boltz_3m;
+        crys_cpu_3m.build_boltzmann(cpu_boltz_3m, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff);
 
         for (int i = 0; i < warmup; ++i)
         {
-            crys_cpu_3m.diffusion(cpu_m3_in.data(), cpu_m3_out.data());
+            crys_cpu_3m.diffusion(cpu_m3_in.data(), cpu_m3_out.data(), cpu_boltz_3m);
             std::swap(cpu_m3_in, cpu_m3_out);
         }
 
         double cpu_ms_3m = time_cpu_iters([&](){
-            crys_cpu_3m.diffusion(cpu_m3_in.data(), cpu_m3_out.data());
+            crys_cpu_3m.diffusion(cpu_m3_in.data(), cpu_m3_out.data(), cpu_boltz_3m);
             std::swap(cpu_m3_in, cpu_m3_out);
         }, iters);
 
@@ -575,17 +577,18 @@ int main(int argc, char** argv)
 
             std::vector<double> cpu_hex_in = h_hex_phys;
             std::vector<double> cpu_hex_out(M_hex_phys, 0.0);
-            FftwCrysFFTObliqueZ crys_cpu_hex({Nx, Ny, Nz}, cell_hex);
-            crys_cpu_hex.set_contour_step(coeff);
+            FftwCrysFFTObliqueZ crys_cpu_hex({Nx, Ny, Nz});
+            std::vector<double> cpu_boltz_hex;
+            crys_cpu_hex.build_boltzmann(cpu_boltz_hex, cell_hex, coeff);
 
             for (int i = 0; i < warmup; ++i)
             {
-                crys_cpu_hex.diffusion(cpu_hex_in.data(), cpu_hex_out.data());
+                crys_cpu_hex.diffusion(cpu_hex_in.data(), cpu_hex_out.data(), cpu_boltz_hex);
                 std::swap(cpu_hex_in, cpu_hex_out);
             }
 
             double cpu_ms_hex = time_cpu_iters([&](){
-                crys_cpu_hex.diffusion(cpu_hex_in.data(), cpu_hex_out.data());
+                crys_cpu_hex.diffusion(cpu_hex_in.data(), cpu_hex_out.data(), cpu_boltz_hex);
                 std::swap(cpu_hex_in, cpu_hex_out);
             }, iters);
 

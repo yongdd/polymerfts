@@ -59,10 +59,11 @@ static bool test_case(const std::array<int, 3>& nx, const std::array<double, 6>&
     for (double& v : q)
         v = normal(rng);
 
-    FftwCrysFFTObliqueZ cpu(nx, cell);
-    cpu.set_contour_step(ds);
+    FftwCrysFFTObliqueZ cpu(nx);
+    std::vector<double> cpu_boltz;
+    cpu.build_boltzmann(cpu_boltz, cell, ds);
     std::vector<double> q_cpu = q, reference(M_phys);
-    cpu.diffusion(q_cpu.data(), reference.data());
+    cpu.diffusion(q_cpu.data(), reference.data(), cpu_boltz);
 
     CudaCrysFFTObliqueZ gpu(nx);
     CudaDeviceBuffer<double> boltz;
@@ -86,10 +87,9 @@ static bool test_case(const std::array<int, 3>& nx, const std::array<double, 6>&
     std::array<double, 6> cell_new = cell;
     for (int d = 0; d < 3; ++d)
         cell_new[d] *= 1.1;
-    cpu.set_cell_para(cell_new);
-    cpu.set_contour_step(ds);
+    cpu.build_boltzmann(cpu_boltz, cell_new, ds);
     q_cpu = q;
-    cpu.diffusion(q_cpu.data(), reference.data());
+    cpu.diffusion(q_cpu.data(), reference.data(), cpu_boltz);
     const double* const boltz_buffer = boltz.get();
     gpu.build_boltzmann(boltz, cell_new, ds, 0);
     gpu.diffusion(d_in, d_out, boltz, 0);

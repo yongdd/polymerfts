@@ -246,9 +246,10 @@ static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int
 
     expand_oblique_z(q_phys.data(), q_logical.data(), Nx, Ny, Nz, z_shift);
 
-    Engine crys({Nx, Ny, Nz}, cell_hex);
-    crys.set_contour_step(ds);
-    crys.diffusion(q_phys.data(), q_phys_out.data());
+    Engine crys({Nx, Ny, Nz});
+    std::vector<double> boltz;
+    crys.build_boltzmann(boltz, cell_hex, ds);
+    crys.diffusion(q_phys.data(), q_phys_out.data(), boltz);
 
     diffusion_standard_fft_oblique(q_logical.data(), q_logical_out.data(), Nx, Ny, Nz, cell_hex, ds);
 

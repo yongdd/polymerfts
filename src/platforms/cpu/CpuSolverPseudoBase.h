@@ -42,6 +42,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 #include "Exception.h"
 #include "Molecules.h"
@@ -51,17 +52,7 @@
 #include "FFTFactory.h"
 #include "SpaceGroup.h"
 #include "CrysFFTBasisMapping.h"
-#include "CrysFFTPmmm.h"
-
-#ifdef USE_CPU_FFTW
-#include "FftwCrysFFTRecursive3m.h"
-#include "FftwCrysFFTObliqueZ.h"
-#endif
-
-#ifdef USE_CPU_MKL
-#include "MklCrysFFTRecursive3m.h"
-#include "MklCrysFFTObliqueZ.h"
-#endif
+#include "CpuCrysFFT.h"
 
 /**
  * @class CpuSolverPseudoBase
@@ -108,7 +99,7 @@ protected:
         std::vector<double> phys_in, phys_out;       ///< CrysFFT physical grid
         std::vector<T> pair_1, pair_2;               ///< Stress: full-grid propagator pair
         std::vector<double> phys_1, phys_2, phys_3;  ///< Stress: CrysFFT physical grid
-        std::vector<double> reduced, boltz, multiplier;  ///< Stress: reduced-basis sum, bond factor, multiplier
+        std::vector<double> reduced;                 ///< Stress: reduced-basis sum
     };
 
     /// Work arrays of the calling thread (created on first use)
@@ -154,24 +145,20 @@ protected:
         ObliqueZ
     };
 
-    std::unique_ptr<CrysFFTPmmm> crysfft_pmmm_;   ///< Pmmm DCT on the real FFT of the selected library
-#ifdef USE_CPU_FFTW
-    std::unique_ptr<FftwCrysFFTRecursive3m> crysfft_recursive_fftw_;
-    std::unique_ptr<FftwCrysFFTObliqueZ> crysfft_oblique_fftw_;
-#endif
-#ifdef USE_CPU_MKL
-    std::unique_ptr<MklCrysFFTRecursive3m> crysfft_recursive_mkl_;
-    std::unique_ptr<MklCrysFFTObliqueZ> crysfft_oblique_mkl_;
-#endif
+    /// The CrysFFT engine of crysfft_mode_ (Pmmm DCT, recursive 3m or ObliqueZ of the
+    /// selected library), called by all threads at once; nullptr without one
+    std::unique_ptr<CpuCrysFFT> crysfft_;
     CrysFFTMode crysfft_mode_ = CrysFFTMode::None;
     std::map<int, double> ds_values_;
 
+    // k-space tables of the current cell, one per key for all threads: built before
+    // the propagator and stress loops, which only read them, and rebuilt in place
+    // when the cell changes (update_crysfft_tables())
+    std::map<double, std::vector<double>> crysfft_boltz_;   ///< Boltzmann factors per step coefficient
+    std::map<std::pair<int, double>, std::vector<double>> crysfft_multipliers_;   ///< Stress multipliers per (axis group, bond coefficient)
+
     std::vector<int> crysfft_full_indices_;
     std::vector<int> crysfft_reduced_indices_;
-    std::vector<double> crysfft_kx2_;
-    std::vector<double> crysfft_ky2_;
-    std::vector<double> crysfft_kz2_;
-    std::array<double, 3> crysfft_k_cache_lx_ = {{-1.0, -1.0, -1.0}};
     bool crysfft_identity_map_ = false;  ///< True when reduced basis matches physical grid
 
     bool use_crysfft() const { return crysfft_mode_ != CrysFFTMode::None; }
@@ -181,10 +168,19 @@ protected:
     bool use_crysfft_identity_map() const { return crysfft_identity_map_; }
 
     int get_crysfft_physical_size() const;
-    void crysfft_set_cell_para(const std::array<double, 6>& cell_para);
-    void crysfft_set_contour_step(double coeff);
-    void crysfft_diffusion(double* q_in, double* q_out) const;
-    void update_crysfft_k_cache();
+    /// q_out = exp(coeff ∇²) q_in on the CrysFFT physical grid with the Boltzmann
+    /// table of coeff, which crysfft_block_coeffs() must list.
+    void crysfft_diffusion(const double* q_in, double* q_out, double coeff) const;
+
+    /**
+     * @brief Coefficients (get_effective_diffusion_coeff()) of the CrysFFT steps
+     *        that the method takes for a block of this monomer type and contour step.
+     *
+     * Their Boltzmann tables are built for every block when the CrysFFT path is
+     * set up and rebuilt when the cell changes, so the propagator loop only looks
+     * them up; crysfft_diffusion() rejects a coefficient whose table was not built.
+     */
+    virtual std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const = 0;
 
     /**
      * @brief Perform forward transform.
@@ -351,10 +347,15 @@ protected:
         std::string monomer_type, bool is_half_bond_length) const;
 
     // ---- space group / CrysFFT setup (set_space_group) ----------------------
-    /// Drop every CrysFFT object and index map.
+    /// Drop the CrysFFT engine, its tables and the index maps.
     void reset_crysfft();
-    /// Select and build the CrysFFT fast path for the current space group (3D periodic, real fields).
+    /// Select and build the CrysFFT fast path for the current space group (3D periodic,
+    /// real fields), with the Boltzmann tables of every block.
     void init_crysfft();
+    /// Rebuild every CrysFFT table in place for the current cell.
+    void update_crysfft_tables();
+    /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
+    std::array<double, 6> crysfft_cell() const;
     /// Store the physical-grid <-> reduced-basis map of the chosen CrysFFT (see plan_crysfft()).
     void adopt_crysfft_mapping(const CrysFFTBasisMapping& map, bool physical_basis_enabled);
 
@@ -377,19 +378,22 @@ protected:
                                std::map<std::string, const T*>& w_use) const;
 
     // ---- compute_single_segment_stress() helpers ----------------------------
+    /// True when the segment stress takes the CrysFFT fast path (Pmmm or recursive 3m,
+    /// orthogonal 3D periodic cell, no angle optimization).
+    bool crysfft_stress_fast_path() const;
+    /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).
+    double stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const;
+    /// Keys of the stress multipliers of a bond: per axis group, (axes, b²·ds/6 or 0 without the bond factor).
+    std::vector<std::pair<int, double>> crysfft_stress_keys(double bond_length_sq, bool include_bond_factor) const;
     /**
      * @brief Diagonal stress sums through the CrysFFT fast path.
      *
-     * Applies to real fields on orthogonal 3D periodic cells with a Pmmm or
-     * recursive-3m CrysFFT and no angle optimization. Returns false when the
-     * fast path does not apply; `stress` is then untouched.
+     * Applies when crysfft_stress_fast_path() holds, with the multipliers of
+     * prepare_stress(). Returns false when the fast path does not apply;
+     * `stress` is then untouched.
      */
     bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq,
                                 const double* boltz_bond, std::vector<T>& stress);
-    /// phys_out = DCT^-1[ k_axis^2 (boltz) DCT[phys_in] ] through the Pmmm CrysFFT (boltz may be nullptr).
-    void crysfft_pmmm_axis_multiplier(double* phys_in, double* phys_out, int axes, const double* boltz);
-    /// Same through the recursive-3m CrysFFT; returns false when no recursive object exists.
-    bool crysfft_recursive_axis_multiplier(double* phys_in, double* phys_out, int axes, bool with_bond, double coeff);
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
@@ -436,6 +440,15 @@ public:
      * Shared by all three pseudo-spectral solvers (none overrides it).
      */
     void update_laplacian_operator() override;
+
+    /**
+     * @brief Build the CrysFFT stress multipliers of the blocks' monomer types
+     *        that are missing, before the stress loop (CrysFFT fast path only).
+     *
+     * update_laplacian_operator() rebuilds them for a new cell; the stress loop
+     * only looks them up.
+     */
+    void prepare_stress() override;
 
 protected:
     /**

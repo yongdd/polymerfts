@@ -247,7 +247,7 @@ void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const
     // For oblique in-plane cells (gamma != 90), pick the in-plane alias
     // representative minimizing the metric form, matching the invariant
     // (first-Brillouin-zone) convention used by Pseudo for the standard
-    // full-grid path (see CrysFFTObliqueZBase::generateBoltzmann on CPU).
+    // full-grid path (see CrysFFTObliqueZBase::build_boltzmann on CPU).
     // The z (DCT) index is a true non-negative frequency and needs no
     // re-aliasing (ObliqueZ requires alpha = beta = 90, i.e. G13 = G23 = 0).
     // The minimal form is the same for (kx, ky) and (-kx, -ky), which makes

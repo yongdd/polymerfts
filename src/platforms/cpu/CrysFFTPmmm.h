@@ -3,27 +3,21 @@
  * @brief Crystallographic FFT with Pmmm symmetry on the CPU (FFTW or MKL).
  *
  * The DCT-II/III of the physical grid run through MakhoulTransform over the
- * periodic real FFT of the selected library (FftwRealFFT or MklRealFFT).
- *
- * **Functionality:**
- *
- * - Grid dimension validation and setup
- * - Boltzmann factors shared by the calling threads (CrysFFTSharedTables.h)
- * - Cell parameter management
- * - Contour step management
+ * periodic real FFT of the selected library (FftwRealFFT or MklRealFFT). The
+ * tables hold M_physical values without the round-trip normalization 1/M_logical,
+ * which the transforms apply.
  */
 
 #ifndef CRYS_FFT_PMMM_H_
 #define CRYS_FFT_PMMM_H_
 
 #include <array>
-#include <cstring>
 #include <cmath>
 #include <memory>
 #include <numbers>
 #include <vector>
 
-#include "CrysFFTSharedTables.h"
+#include "CpuCrysFFT.h"
 #include "Exception.h"
 #include "FFTFactory.h"
 #include "MakhoulTransform.h"
@@ -32,7 +26,7 @@
  * @class CrysFFTPmmm
  * @brief Pmmm crystallographic FFT: diffusion through the DCT-II/III of the physical grid.
  */
-class CrysFFTPmmm
+class CrysFFTPmmm : public CpuCrysFFT
 {
 private:
     std::array<int, 3> nx_logical_;    ///< Logical grid dimensions (Nx, Ny, Nz)
@@ -40,62 +34,23 @@ private:
     int M_logical_;                     ///< Total logical grid size
     int M_physical_;                    ///< Total physical grid size
 
-    // Cell parameters (Lx, Ly, Lz, alpha, beta, gamma)
-    std::array<double, 6> cell_para_;
-
     // Normalization factor for DCT-II/III round trip: 1/M_logical
     double norm_factor_;
-
-    /// Boltzmann factors per ds, shared by the threads that call the engine
-    SharedTableCache<double, std::unique_ptr<double[]>> boltzmann_;
 
     /// DCT-II (FFTW's REDFT10) and DCT-III (REDFT01) of the physical grid. Their
     /// round trip gains 2n per dimension, which norm_factor_ removes.
     std::unique_ptr<MakhoulTransform> dct_;
 
-    /// Generate Boltzmann factors for given ds.
-    std::unique_ptr<double[]> generateBoltzmann(double ds) const
+    /// q_out = DCT-III[ multiplier · DCT-II[q_in] ] / M_logical
+    void apply_spectral(const double* q_in, double* q_out, const std::vector<double>& multiplier) const
     {
-        auto boltz = std::make_unique<double[]>(M_physical_);
-
-        double Lx = cell_para_[0];
-        double Ly = cell_para_[1];
-        double Lz = cell_para_[2];
-
-        int Nx2 = nx_physical_[0];
-        int Ny2 = nx_physical_[1];
-        int Nz2 = nx_physical_[2];
-
-        const double PI = std::numbers::pi;
-
-        int idx = 0;
-        for (int ix = 0; ix < Nx2; ++ix)
-        {
-            double kx = ix * 2.0 * PI / Lx;
-            double kx2 = kx * kx;
-
-            for (int iy = 0; iy < Ny2; ++iy)
-            {
-                double ky = iy * 2.0 * PI / Ly;
-                double ky2 = ky * ky;
-
-                for (int iz = 0; iz < Nz2; ++iz)
-                {
-                    double kz = iz * 2.0 * PI / Lz;
-                    double kz2 = kz * kz;
-
-                    boltz[idx++] = std::exp(-(kx2 + ky2 + kz2) * ds);
-                }
-            }
-        }
-
-        return boltz;
-    }
-
-    /// Invalidate all Boltzmann factor caches.
-    void freeBoltzmann()
-    {
-        boltzmann_.invalidate();
+        check_table(multiplier, M_physical_);
+        // DCT-II into q_out, the multiplier, then DCT-III with normalization in place
+        // (MakhoulTransform reads its whole input before it writes)
+        dct_->forward(q_in, q_out, 1.0);
+        for (int i = 0; i < M_physical_; ++i)
+            q_out[i] *= multiplier[i];
+        dct_->backward(q_out, q_out, norm_factor_);
     }
 
 public:
@@ -103,15 +58,10 @@ public:
      * @brief Construct CrysFFTPmmm for given grid.
      *
      * @param nx_logical Logical grid dimensions (must be even)
-     * @param cell_para  Cell parameters [Lx, Ly, Lz, alpha, beta, gamma]
      * @param backend    Library of the real FFT under the DCT (FFTW or MKL)
      */
-    CrysFFTPmmm(
-        std::array<int, 3> nx_logical,
-        std::array<double, 6> cell_para,
-        FFTBackend backend)
-        : nx_logical_(nx_logical),
-          cell_para_(cell_para)
+    CrysFFTPmmm(std::array<int, 3> nx_logical, FFTBackend backend)
+        : nx_logical_(nx_logical)
     {
         // Validate even grid sizes
         for (int d = 0; d < 3; ++d)
@@ -145,24 +95,43 @@ public:
         dct_ = std::make_unique<MakhoulTransform>(nx, cosine, createRealFFT(nx, backend));
     }
 
-    /// Update cell parameters.
-    void set_cell_para(const std::array<double, 6>& cell_para)
+    int get_M_physical() const override { return M_physical_; }
+
+    /// exp(-k² ds) on the physical grid, k_d = 2π m_d / L_d with m_d < N_d/2.
+    void build_boltzmann(std::vector<double>& table, const std::array<double, 6>& cell, double ds) const override
     {
-        if (cell_para[0] == cell_para_[0] &&
-            cell_para[1] == cell_para_[1] &&
-            cell_para[2] == cell_para_[2])
+        table.assign(M_physical_, 0.0);
+
+        double Lx = cell[0];
+        double Ly = cell[1];
+        double Lz = cell[2];
+
+        int Nx2 = nx_physical_[0];
+        int Ny2 = nx_physical_[1];
+        int Nz2 = nx_physical_[2];
+
+        const double PI = std::numbers::pi;
+
+        int idx = 0;
+        for (int ix = 0; ix < Nx2; ++ix)
         {
-            return;
+            double kx = ix * 2.0 * PI / Lx;
+            double kx2 = kx * kx;
+
+            for (int iy = 0; iy < Ny2; ++iy)
+            {
+                double ky = iy * 2.0 * PI / Ly;
+                double ky2 = ky * ky;
+
+                for (int iz = 0; iz < Nz2; ++iz)
+                {
+                    double kz = iz * 2.0 * PI / Lz;
+                    double kz2 = kz * kz;
+
+                    table[idx++] = std::exp(-(kx2 + ky2 + kz2) * ds);
+                }
+            }
         }
-
-        cell_para_ = cell_para;
-        freeBoltzmann();
-    }
-
-    /// Set contour step size and prepare Boltzmann factors.
-    void set_contour_step(double ds)
-    {
-        boltzmann_.select(ds, [&] { return generateBoltzmann(ds); });
     }
 
     /**
@@ -170,37 +139,56 @@ public:
      *
      * Computes: q_out = DCT-III[ exp(-k²ds) * DCT-II[q_in] ]
      */
-    void diffusion(double* q_in, double* q_out)
+    void diffusion(const double* q_in, double* q_out, const std::vector<double>& table) const override
     {
-        const std::unique_ptr<double[]>* boltz = boltzmann_.current();
-        if (!boltz)
-        {
-            throw_with_line_number("CrysFFTPmmm::set_contour_step must be called before diffusion().");
-        }
-
-        // DCT-II into q_out, the Boltzmann factor, then DCT-III with normalization in place
-        // (MakhoulTransform reads its whole input before it writes)
-        dct_->forward(q_in, q_out, 1.0);
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] *= (*boltz)[i];
-        dct_->backward(q_out, q_out, norm_factor_);
+        apply_spectral(q_in, q_out, table);
     }
 
-    /// Apply custom multiplier in Fourier space (multiplier must not be q_out).
-    void apply_multiplier(const double* q_in, double* q_out, const double* multiplier)
+    /// Σ_{d in axes} k_d², times exp(-k² coeff) when coeff is not 0 (the bond
+    /// factor of discrete chains), on the physical grid.
+    void build_multiplier(std::vector<double>& table, const std::array<double, 6>& cell,
+                          int axes, double coeff) const override
     {
-        // As in diffusion(), on q_out
-        dct_->forward(q_in, q_out, 1.0);
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] *= multiplier[i];
-        dct_->backward(q_out, q_out, norm_factor_);
+        if (axes < 1 || axes > 7)
+            throw_with_line_number("CrysFFTPmmm::build_multiplier: axes must be a mask of 1 (x), 2 (y), 4 (z).");
+        table.assign(M_physical_, 0.0);
+
+        const double factor_x = 2.0 * std::numbers::pi / cell[0];
+        const double factor_y = 2.0 * std::numbers::pi / cell[1];
+        const double factor_z = 2.0 * std::numbers::pi / cell[2];
+
+        int idx = 0;
+        for (int ix = 0; ix < nx_physical_[0]; ++ix)
+        {
+            const double kx = ix * factor_x;
+            const double kx2 = kx * kx;
+            for (int iy = 0; iy < nx_physical_[1]; ++iy)
+            {
+                const double ky = iy * factor_y;
+                const double ky2 = ky * ky;
+                for (int iz = 0; iz < nx_physical_[2]; ++iz)
+                {
+                    const double kz = iz * factor_z;
+                    const double kz2 = kz * kz;
+                    const double k_axes = ((axes & 1) ? kx2 : 0.0) + ((axes & 2) ? ky2 : 0.0)
+                                        + ((axes & 4) ? kz2 : 0.0);
+                    const double k2 = kx2 + ky2 + kz2;
+                    table[idx++] = (coeff != 0.0) ? std::exp(-k2 * coeff) * k_axes : k_axes;
+                }
+            }
+        }
+    }
+
+    /// q_out = DCT-III[ multiplier · DCT-II[q_in] ], as diffusion().
+    void apply_multiplier(const double* q_in, double* q_out, const std::vector<double>& table) const override
+    {
+        apply_spectral(q_in, q_out, table);
     }
 
     // Accessors
     const std::array<int, 3>& get_nx_logical() const { return nx_logical_; }
     const std::array<int, 3>& get_nx_physical() const { return nx_physical_; }
     int get_M_logical() const { return M_logical_; }
-    int get_M_physical() const { return M_physical_; }
 };
 
 #endif  // CRYS_FFT_PMMM_H_

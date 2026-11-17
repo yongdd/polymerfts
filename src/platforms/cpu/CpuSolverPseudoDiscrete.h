@@ -123,6 +123,14 @@ protected:
     const double* get_stress_boltz_bond(
         std::string monomer_type, bool is_half_bond_length) const override;
 
+    /// CrysFFT steps of a block: its bonds, and half bonds, which always take the
+    /// global ds (index 0; see advance_propagator_half_bond_step())
+    std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
+    {
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false),
+                this->get_effective_diffusion_coeff(monomer_type, 0, true)};
+    }
+
 public:
     /**
      * @brief Construct pseudo-spectral solver for discrete chains.
