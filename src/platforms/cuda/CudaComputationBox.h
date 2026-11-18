@@ -197,28 +197,6 @@ public:
     double absolute_inner_product_device(const CuDeviceData<T> *d_g, const CuDeviceData<T> *d_h,
                                          const CuDeviceData<T> *d_divisor = nullptr);
 
-    /**
-     * @brief Compute multiple inner products in one kernel.
-     *
-     * Computes n_comp inner products for multi-species systems.
-     *
-     * @param n_comp Number of components
-     * @param d_g    First array (size n_comp * n_grid; n_comp * n_basis with a space group)
-     * @param d_h    Second array (same size)
-     * @return Sum of inner products
-     */
-    T multi_inner_product_device(int n_comp, const CuDeviceData<T> *d_g, const CuDeviceData<T> *d_h);
-
-    /**
-     * @brief Subtract mean from device array.
-     *
-     * Makes the array have zero mean: g = g - integral(g) / accessible volume
-     * (as ComputationBox::zero_mean)
-     *
-     * @param d_g Device array to modify in-place (size n_grid; n_basis with a space group)
-     */
-    void zero_mean_device(CuDeviceData<T> *d_g);
-
     /// @}
 };
 #endif

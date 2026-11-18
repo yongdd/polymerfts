@@ -3,13 +3,13 @@
  * @brief CUDA spectral transforms (cuFFT, DCT, DST) for all boundary conditions.
  *
  * This header provides CudaFFT, which implements:
- * - PERIODIC: Standard cuFFT (r2c/c2r)
+ * - PERIODIC: Standard cuFFT (D2Z/Z2D, Z2Z for complex fields)
  * - REFLECTING (Neumann BC): DCT-II forward, DCT-III backward
  * - ABSORBING (Dirichlet BC): DST-II forward, DST-III backward
  *
  * **Interfaces:**
  *
- * - `forward(T*, double*)` / `backward(double*, T*)`: Universal interface for all BCs
+ * - `forward(T*, double*)` / `backward(double*, T*)`: Non-periodic BCs (real coefficients)
  * - `forward(T*, complex<double>*)` / `backward(complex<double>*, T*)`: Periodic BC only
  *
  * **Implementation:**
@@ -88,7 +88,6 @@ private:
     std::array<int, DIM> nx_;                    ///< Grid dimensions
     std::array<BoundaryCondition, DIM> bc_;      ///< Boundary conditions per dimension
     int total_grid_;                             ///< Total grid size
-    int total_complex_grid_;                     ///< Output size
 
     bool is_all_periodic_;                       ///< True if all dimensions are periodic
 
@@ -96,8 +95,7 @@ private:
     CufftPlan plan_forward_;                     ///< Forward FFT plan
     CufftPlan plan_backward_;                    ///< Backward FFT plan
 
-    // Device work buffer: 2*total_complex_grid_ doubles (complex layout) for
-    // periodic BC, total_grid_ doubles otherwise
+    // Non-periodic BC, complex fields: one part of the field (total_grid_ doubles)
     CudaDeviceBuffer<double> d_work_buffer_;
 
     // Real transforms for non-periodic BC (forward: DCT-2/DST-2, backward: DCT-3/DST-3)
@@ -114,13 +112,6 @@ private:
 
 public:
     /**
-     * @brief Construct CUDA FFT object with all periodic BCs (backward compatible).
-     *
-     * @param nx Grid dimensions
-     */
-    CudaFFT(std::array<int, DIM> nx);
-
-    /**
      * @brief Construct CUDA FFT object with specified boundary conditions.
      *
      * @param nx Grid dimensions
@@ -132,24 +123,24 @@ public:
     ~CudaFFT();
 
     /**
-     * @brief Forward transform (real coefficient interface) with explicit stream.
+     * @brief Forward DCT/DST (real coefficient interface, non-periodic BC only) with explicit stream.
      *
-     * Works for all boundary conditions.
-     *
-     * @param d_rdata Input real data on device
-     * @param d_cdata Output transformed data on device
+     * @param d_rdata Input data on device (kept)
+     * @param d_cdata Output coefficients on device (complex fields: interleaved pairs)
      * @param stream  CUDA stream for async execution
+     *
+     * @throws Exception if the dimensions are periodic
      */
     void forward_stream(T* d_rdata, double* d_cdata, cudaStream_t stream) override;
 
     /**
-     * @brief Backward transform (real coefficient interface) with explicit stream.
+     * @brief Backward DCT/DST (real coefficient interface, non-periodic BC only) with explicit stream.
      *
-     * Works for all boundary conditions.
-     *
-     * @param d_cdata Input transformed data on device
-     * @param d_rdata Output real data on device
+     * @param d_cdata Input coefficients on device (kept)
+     * @param d_rdata Output data on device
      * @param stream  CUDA stream for async execution
+     *
+     * @throws Exception if the dimensions are periodic
      */
     void backward_stream(double* d_cdata, T* d_rdata, cudaStream_t stream) override;
 

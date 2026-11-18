@@ -391,7 +391,7 @@ and the CrysFFT fast path --
 and implements `update_laplacian_operator()` and the shared `update_dw_impl()`. Every CUDA
 solver takes the space group and the backend's index maps in its constructor. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
-constructor argument) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
+constructor argument; the plans of a stream share one work area) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
@@ -672,7 +672,7 @@ Who owns whom:
 
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
 - A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
-- A backend owns its solver, and on CUDA the streams, events and scratch buffers.
+- A backend owns its solver, and on CUDA the streams and scratch buffers.
 - A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
 Allocations are owned by objects that release them, so destructors and constructors
@@ -687,7 +687,9 @@ that throw need no cleanup code:
   the caller's file, line and function (`std::source_location`);
 - cuFFT plans: `CufftPlan` (`CudaCommon.h`; move-only, `create(cufftPlanMany, ...)` destroys a plan
   it holds, counts the new one and returns the cuFFT result, `reset()`, `empty()`, and an implicit
-  conversion that lends the handle to `cufftExec*` and `cufftSetStream`);
+  conversion that lends the handle to `cufftExec*` and `cufftSetStream`;
+  `create_without_work_area(bytes, cufftMakePlanMany, ...)` makes a plan without a work area of its
+  own, so that the plans of one stream, which never run at the same time, share one);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
   `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
 
@@ -700,10 +702,9 @@ the allocators of the propagator handles and the reduce-memory checkpoints, whic
 computation classes free in one place; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
-`release_cufft_plan()`. CUDA streams and events are destroyed explicitly where their order
+`release_cufft_plan()`. CUDA streams are destroyed explicitly where their order
 matters (the solver before the streams it runs on); they are created through
-`count_cuda_stream(...)` and `count_cuda_event(...)` and destroyed with
-`release_cuda_stream()` and `release_cuda_event()`. These helpers keep live counts
+`count_cuda_stream(...)` and destroyed with `release_cuda_stream()`. These helpers keep live counts
 (`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
@@ -717,14 +718,14 @@ counts of the live device and pinned allocations (`CudaDeviceMemory::counters()`
 `CudaPinnedMemory::counters()`); `cuda_buffer_fail_countdown()` is a test hook that makes
 the N-th following counted allocation throw. `cudaFree` and `cudaFreeHost` go through
 `ignore_release_error()`, which does not throw, clears the error a failed release leaves in
-the per-thread slot and counts it in `cuda_release_failures()` (the plan, stream and event
+the per-thread slot and counts it in `cuda_release_failures()` (the plan and stream
 release helpers count their failures there too; cuFFT has its own runtime and leaves
 nothing in the slot). `tests/TestCudaDeviceBuffer.cu` uses all of them: every kind of CUDA
 object (all solvers, the CrysFFT engines, non-periodic transforms, complex fields, the
 Anderson mixers), built with 4 streams, must return every counter (allocations, plans,
-streams, events) to its start when destroyed without a failed release, and a sweep with 2
+streams) to its start when destroyed without a failed release, and a sweep with 2
 streams fails each counted allocation of each construction in turn and requires the same
-after every failure (failures of cuFFT plan, stream and event creation are not injected).
+after every failure (failures of cuFFT plan and stream creation are not injected).
 The test also lets a small construction run out of device memory for real, by holding the
 rest of the free memory in a ballast buffer for a moment, so it runs serially; when the
 memory cannot be held it reports a ctest skip. Freeing a buffer by hand does not compile
@@ -769,8 +770,8 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  hold cuFFT plans in `CufftPlan`, and destroy streams and events with the counting `release_*`
-  helpers.
+  hold cuFFT plans in `CufftPlan`, and destroy streams with the counting `release_cuda_stream()`
+  helper.
 
 ### Python
 

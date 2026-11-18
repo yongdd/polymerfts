@@ -178,7 +178,7 @@ __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ o
 
 template <typename T>
 CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
-    ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
     : cb(cb), molecules(molecules), n_streams(n_streams), space_group_(space_group),
       d_reduced_basis_indices_(d_reduced_basis_indices), d_full_to_reduced_map_(d_full_to_reduced_map)
@@ -192,8 +192,7 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
 
         for (int i = 0; i < n_streams; ++i)
         {
-            this->streams[i][0] = streams[i][0];
-            this->streams[i][1] = streams[i][1];
+            this->streams[i] = streams[i];
         }
 
         const int M = cb->get_total_grid();
@@ -308,15 +307,13 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 }
 
 template <typename T>
-void CudaSolverRealSpaceDiscrete<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
+void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w_input)
 {
     try
     {
         // Even a one-bead chain (with no convolution) needs a completed update.
         if (!refusal_.empty())
             throw_with_line_number(refusal_);
-        if (device != "gpu" && device != "cpu")
-            throw_with_line_number("Invalid device \"" + device + "\".");
 
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
@@ -324,35 +321,19 @@ void CudaSolverRealSpaceDiscrete<T>::update_dw(std::string device, std::map<std:
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         const int n_unique_ds = mapping.get_n_unique_ds();
 
-        for (const auto& [monomer_type, w] : w_input)
+        for (const auto& [monomer_type, d_w_input_monomer] : d_w_input)
         {
             for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
                 if (!this->d_exp_dw[ds_idx].contains(monomer_type))
                     throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
 
-            // The field on the device: the input itself, or a copy in the table of the last ds,
-            // which is computed last (in place)
-            // With a space group the field comes in its reduced basis
-            const CuDeviceData<T>* d_w = reinterpret_cast<const CuDeviceData<T>*>(w);
-            CuDeviceData<T>* d_stage = this->d_exp_dw.at(n_unique_ds - 1).at(monomer_type);
-            if (device == "cpu")
+            // The full-grid field: the input itself, or with a space group (the field comes in
+            // its reduced basis) its expansion into the table of the last ds, which is computed
+            // last (in place)
+            const CuDeviceData<T>* d_w = d_w_input_monomer;
+            if (space_group_ != nullptr)
             {
-                const T* w_full = w;
-                std::vector<T> w_host;
-                if constexpr (std::is_same_v<T, double>)
-                {
-                    if (space_group_ != nullptr)
-                    {
-                        w_host.resize(M);
-                        space_group_->from_reduced_basis(w, w_host.data(), 1);
-                        w_full = w_host.data();
-                    }
-                }
-                CUDA_CHECK(cudaMemcpy(d_stage, w_full, sizeof(T) * M, cudaMemcpyHostToDevice));
-                d_w = d_stage;
-            }
-            else if (space_group_ != nullptr)
-            {
+                CuDeviceData<T>* d_stage = this->d_exp_dw.at(n_unique_ds - 1).at(monomer_type);
                 ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, d_w, d_full_to_reduced_map_, M);
                 CUDA_CHECK_LAUNCH();
                 d_w = d_stage;
@@ -384,7 +365,7 @@ void CudaSolverRealSpaceDiscrete<T>::convolve(
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
     const long M = cb->get_total_grid();
-    cudaStream_t stream = streams[STREAM][0];
+    cudaStream_t stream = streams[STREAM];
 
     // The contiguous (last) axis first; the first axis writes q_out and multiplies by the factor and mask
     const D* src = d_q_in;
@@ -451,7 +432,7 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator(
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
         const int M = cb->get_total_grid();
-        cudaStream_t stream = streams[STREAM][0];
+        cudaStream_t stream = streams[STREAM];
         ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_in[STREAM], d_q_in, d_full_to_reduced_map_, M);
         CUDA_CHECK_LAUNCH();
         convolve(STREAM, d_q_full_in[STREAM], d_q_full_out[STREAM], kernels, exp_dw, nullptr);
@@ -483,7 +464,7 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
         const int M = cb->get_total_grid();
-        cudaStream_t stream = streams[STREAM][0];
+        cudaStream_t stream = streams[STREAM];
         ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_in[STREAM], d_q_in, d_full_to_reduced_map_, M);
         CUDA_CHECK_LAUNCH();
         convolve(STREAM, d_q_full_in[STREAM], d_q_full_out[STREAM], d_bond_half.at(monomer_type), nullptr, nullptr);
@@ -513,8 +494,8 @@ void CudaSolverRealSpaceDiscrete<T>::prepare_stress()
 
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
-    const int STREAM, CuDeviceData<T>* d_q_pair, CuDeviceData<T>* d_segment_stress, std::string monomer_type,
-    bool is_half_bond_length)
+    const int STREAM, CuDeviceData<T>* d_q_1, CuDeviceData<T>* d_q_2, CuDeviceData<T>* d_segment_stress,
+    std::string monomer_type, bool is_half_bond_length)
 {
     try
     {
@@ -528,10 +509,10 @@ void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
         const DeviceKernels& kernels = is_half_bond_length ? d_bond_half.at(monomer_type) : d_bond.at(0).at(monomer_type);
         const auto& derivatives = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
-        cudaStream_t stream = streams[STREAM][0];
-        // The pair is [q_1 | q_2] in the basis of the propagators; with a space group on the full grid
-        const CuDeviceData<T>* q_1 = d_q_pair;
-        const CuDeviceData<T>* q_2 = d_q_pair + n_basis_;
+        cudaStream_t stream = streams[STREAM];
+        // The pair in the basis of the propagators; with a space group on the full grid
+        const CuDeviceData<T>* q_1 = d_q_1;
+        const CuDeviceData<T>* q_2 = d_q_2;
         if (space_group_ != nullptr)
         {
             const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();

@@ -27,7 +27,6 @@
  */
 
 #include <algorithm>
-#include <thrust/reduce.h>
 #include "CudaCommon.h"
 #include "CudaTypeDispatch.h"
 #include "CudaComputationBox.h"

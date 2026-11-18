@@ -2,11 +2,11 @@
  * @file CudaComputationBackend.h
  * @brief CUDA implementation of ComputationBackend.
  *
- * Fields are device arrays. Each stream index owns two CUDA streams: [0]
- * runs the kernels and [1] the device-to-device copies that overlap with
- * them (stress). Operations without a stream argument (reductions, copies
- * to the host, solvents) run on the legacy default stream, which waits for
- * the other streams because they are created blocking. Checkpoints live in pinned host memory. The propagator solver (RQM4, RK2, CN-ADI or the
+ * Fields are device arrays. Each stream index owns one CUDA stream, which runs
+ * the kernels and copies of the propagators computed on it. Operations without
+ * a stream argument (reductions, copies to the host, solvents) run on the legacy
+ * default stream, which waits for the other streams because they are created
+ * blocking. Checkpoints live in pinned host memory. The propagator solver (RQM4, RK2, CN-ADI or the
  * discrete-chain solver) is chosen from the chain model and the numerical
  * method and runs its FFTs on the stream of the propagator.
  *
@@ -46,19 +46,17 @@ private:
     int n_basis;
     bool force_off_diagonal_stress;
 
-    cudaStream_t streams[MAX_STREAMS][2];  ///< [kernels, copies] per stream index
+    cudaStream_t streams[MAX_STREAMS];     ///< One stream per stream index
 
     CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (full grid)
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
     CudaDeviceBuffer<int> d_reduced_basis_indices;                   ///< Space group: reduced -> full index (lent to the solver)
     CudaDeviceBuffer<int> d_full_to_reduced_map;                     ///< Space group: full -> reduced index (lent to the solver)
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_pair[MAX_STREAMS][2];      ///< Stress: [q_1 | q_2] double buffer per stream;
-                                                                     ///< junction products: staged checkpoints and accumulator
+    CudaDeviceBuffer<CuDeviceData<T>> d_junction_stage[MAX_STREAMS]; ///< Junctions: two checkpoints staged per launch
+    CudaDeviceBuffer<double> d_junction_state[MAX_STREAMS];          ///< Junctions: accumulator scratch, two doubles per point
     CudaDeviceBuffer<CuDeviceData<T>> d_segment_stress[MAX_STREAMS]; ///< Stress: six sums of one segment per stream
     CudaDeviceBuffer<CuDeviceData<T>> d_block_stress[MAX_STREAMS];   ///< Stress: weighted sum over the segments of a block
     CudaPinnedBuffer<T> h_block_stress[MAX_STREAMS];                 ///< Stress: pinned host copy of d_block_stress
-    cudaEvent_t kernel_done[MAX_STREAMS];           ///< Stress: kernel stream reached this point
-    cudaEvent_t copy_done[MAX_STREAMS];             ///< Stress: copy stream reached this point
     CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
 
     /// Discrete chains with a space group: exp(-w ds) in the reduced basis, unless the
@@ -76,8 +74,8 @@ private:
     void multiply_sources(int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
 
-    /// Destroy the solver, then the streams and events it runs on (the device
-    /// buffers are owning members); safe on a partly constructed object.
+    /// Destroy the solver, then the streams it runs on (the device buffers are
+    /// owning members); safe on a partly constructed object.
     void release();
 
 public:
@@ -104,7 +102,7 @@ public:
     void load_checkpoint(int stream, BackendArray<T>* dst, CheckpointArray<T>* src) override;
 
     void update_laplacian_operator() override;
-    void update_dw(std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, BackendArray<T>*>& w) override;
     void set_force_off_diagonal_stress(bool force) override;
     void advance_propagator(int stream, BackendArray<T>* q_in, BackendArray<T>* q_out,
                             const std::string& monomer_type, int ds_index) override;

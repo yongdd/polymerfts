@@ -121,8 +121,11 @@ void CpuComputationBackend<T>::update_laplacian_operator()
 }
 
 template <typename T>
-void CpuComputationBackend<T>::update_dw(std::map<std::string, const T*> w_input)
+void CpuComputationBackend<T>::update_dw(const std::map<std::string, BackendArray<T>*>& w)
 {
+    std::map<std::string, const T*> w_input;
+    for (const auto& [monomer_type, w_monomer] : w)
+        w_input[monomer_type] = raw(w_monomer);
     solver->update_dw(w_input);
 
     // The discrete solver keeps exp(-w ds) on the full grid unless its CrysFFT

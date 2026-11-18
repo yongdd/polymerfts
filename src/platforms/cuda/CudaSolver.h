@@ -105,10 +105,10 @@ public:
     /**
      * @brief Update Boltzmann factors from potential fields.
      *
-     * @param device  Memory location of w_input ("gpu" or "cpu")
-     * @param w_input Map of potential fields by monomer type
+     * @param d_w Device fields by monomer type, in the basis of the propagators
+     *            (the reduced basis with a space group)
      */
-    virtual void update_dw(std::string device, std::map<std::string, const T*> w_input) = 0;
+    virtual void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) = 0;
 
     /**
      * @brief Advance propagator by one contour step on GPU.
@@ -141,14 +141,15 @@ public:
      * @brief Compute stress contribution from one segment.
      *
      * @param STREAM           CUDA stream index
-     * @param d_q_pair         Forward and backward propagators, contiguous (device)
+     * @param d_q_1            Forward propagator of the segment (device)
+     * @param d_q_2            Backward propagator of the segment (device)
      * @param d_segment_stress Output stress array (device)
      * @param monomer_type     Monomer type
      * @param is_half_bond_length Whether using half bond (discrete)
      */
     virtual void compute_single_segment_stress(
         const int STREAM,
-        CuDeviceData<T> *d_q_pair, CuDeviceData<T> *d_segment_stress,
+        CuDeviceData<T> *d_q_1, CuDeviceData<T> *d_q_2, CuDeviceData<T> *d_segment_stress,
         std::string monomer_type, bool is_half_bond_length) = 0;
 
     /// Build the tables compute_single_segment_stress() needs, before the streams

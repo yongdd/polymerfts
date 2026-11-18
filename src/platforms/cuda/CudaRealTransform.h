@@ -71,7 +71,7 @@ private:
     CufftPlan plan_;             ///< cuFFT plan
     CudaDeviceBuffer<double> d_work_;             ///< Work buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
-    // Optional lookup tables for DCT2/DCT3 and DST2/3
+    // Lookup tables of the twiddle factors (DCT-2 table: DCT-2, DST-2 and DST-3)
     CudaDeviceBuffer<double> dct2_sin_;
     CudaDeviceBuffer<double> dct2_cos_;
     CudaDeviceBuffer<double> dct3_sin_;
@@ -136,7 +136,7 @@ private:
     CudaDeviceBuffer<double> d_temp_;             ///< Temporary buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
 
-    // Optional lookup tables for DCT2/DCT3 and DST2/3
+    // Lookup tables of the twiddle factors (DCT-2 table: DCT-2, DST-2 and DST-3)
     CudaDeviceBuffer<double> dct2_sin_x_;
     CudaDeviceBuffer<double> dct2_cos_x_;
     CudaDeviceBuffer<double> dct2_sin_y_;
@@ -235,7 +235,7 @@ private:
     CudaDeviceBuffer<double> d_temp_;             ///< Temporary buffer
     CudaDeviceBuffer<double> d_x1_;               ///< Auxiliary buffer
 
-    // Optional lookup tables for DCT2/DCT3 (reduce sincos overhead)
+    // Lookup tables of the twiddle factors (DCT-2 table: DCT-2, DST-2 and DST-3)
     CudaDeviceBuffer<double> dct2_sin_x_;
     CudaDeviceBuffer<double> dct2_cos_x_;
     CudaDeviceBuffer<double> dct2_sin_y_;
@@ -316,30 +316,5 @@ public:
     /// Get normalization factor for round-trip.
     double get_normalization() const;
 };
-
-//==============================================================================
-// Backward compatibility aliases (deprecated)
-//==============================================================================
-
-// Old enum names for backward compatibility
-typedef CudaTransformType CudaDCTType;
-typedef CudaTransformType CudaDSTType;
-typedef CudaTransformType CudaMixedTransformType;
-
-// Old enum value aliases
-#define CUDA_TRANSFORM_DCT_2 CUDA_DCT_2
-#define CUDA_TRANSFORM_DCT_3 CUDA_DCT_3
-#define CUDA_TRANSFORM_DST_2 CUDA_DST_2
-#define CUDA_TRANSFORM_DST_3 CUDA_DST_3
-
-// Old class name aliases
-typedef CudaRealTransform1D CudaDCT;
-typedef CudaRealTransform1D CudaDST;
-typedef CudaRealTransform2D CudaDCT2D;
-typedef CudaRealTransform2D CudaDST2D;
-typedef CudaRealTransform2D CudaMixedTransform2D;
-typedef CudaRealTransform3D CudaDCT3D;
-typedef CudaRealTransform3D CudaDST3D;
-typedef CudaRealTransform3D CudaMixedTransform3D;
 
 #endif // CUDA_REAL_TRANSFORM_H_

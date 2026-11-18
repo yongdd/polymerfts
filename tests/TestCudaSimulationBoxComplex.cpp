@@ -41,34 +41,11 @@ int main()
             {0.4397920549860139, 0.44860363056686503},
             {0.6490069678310173, -0.6164591864981155}};
 
-        cuDoubleComplex gm[] 
-            {{-0.7597619303835041, 0.10250398897632951},
-            {-0.034879315428214985, 0.6421559379075319},
-            {0.6520770931658473, 0.0947148787578771},
-            {0.1147344011203335, -0.0013486534653663895},
-            {0.6665403162481605, 0.14194066509526593},
-            {0.2521801134963888, -0.6413889885242658},
-            {0.9808898058112421, -0.6708860065130271},
-            {0.509802309538298, -0.14069459509112625}};
-        cuDoubleComplex hm[]
-            {{-0.23168234399177323, 0.17795759353248086},
-            {0.8534783611236558, -0.6583778325855023},
-            {0.7255420705159961, -0.9590076481309235},
-            {0.35090074919266856, 0.3540832912909959},
-            {-0.8946471983599762, -0.7748500391040254},
-            {-0.2910449481410968, 0.7333947043702351},
-            {0.8981178670015273, -0.7416090497144214},
-            {-0.3576265073984164, 0.6277381773607089}};
-
-        cuDoubleComplex *d_g, *d_h, *d_gm, *d_hm;
+        cuDoubleComplex *d_g, *d_h;
         cudaMalloc((void**)&d_g, sizeof(cuDoubleComplex) * cb.get_total_grid());
         cudaMalloc((void**)&d_h, sizeof(cuDoubleComplex) * cb.get_total_grid());
-        cudaMalloc((void**)&d_gm, sizeof(cuDoubleComplex) * cb.get_total_grid() * 2);
-        cudaMalloc((void**)&d_hm, sizeof(cuDoubleComplex) * cb.get_total_grid() * 2);
         cudaMemcpy(d_g, g, sizeof(cuDoubleComplex) * cb.get_total_grid(), cudaMemcpyHostToDevice);
         cudaMemcpy(d_h, h, sizeof(cuDoubleComplex) * cb.get_total_grid(), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_gm, gm, sizeof(cuDoubleComplex) * cb.get_total_grid() * 2, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_hm, hm, sizeof(cuDoubleComplex) * cb.get_total_grid() * 2, cudaMemcpyHostToDevice);
 
         volume = 0.0;
         for(int i=0; i<cb.get_total_grid(); i++)
@@ -85,12 +62,9 @@ int main()
 
         std::cout<< "sum(dV), Volume: " << volume <<" "<< cb.get_volume() << std::endl;
         std::cout<< "inner product: "<< cb.inner_product_device(d_g,d_h) << std::endl;
-        std::cout<< "multi inner product: "<< cb.multi_inner_product_device(2, d_gm,d_hm) << std::endl;
         std::cout<< "sum(w): " << sum_w << std::endl;
         
         if( !(std::abs(cb.inner_product_device(d_g,d_h)-std::complex<double>{-5.468649581714552, -4.903729566482727}) <= 1e-5))
-            return -1;
-        if( !(std::abs(cb.multi_inner_product_device(2,d_gm,d_hm)-std::complex<double>{13.343735222259584, -13.14993884723823}) <= 1e-5))
             return -1;
         if( !(std::abs(sum_w) <= 1e-7))
             return -1;

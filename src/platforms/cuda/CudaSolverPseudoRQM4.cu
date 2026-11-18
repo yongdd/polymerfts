@@ -49,13 +49,13 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
     ComputationBox<T>* cb,
     Molecules *molecules,
     int n_streams,
-    cudaStream_t streams[MAX_STREAMS][2],
+    cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group,
     const int* d_reduced_basis_indices,
     const int* d_full_to_reduced_map)
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
                               space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/2,
-                              /*q_full_in_factor=*/1, /*with_exp_dw_half=*/true,
+                              /*with_exp_dw_half=*/true,
                               /*complex_requires_periodic=*/true)
 {
     try{
@@ -82,9 +82,13 @@ void CudaSolverPseudoRQM4<T>::allocate_work(int n_field, bool full_grid)
         provide(d_q_step_2_one[i], n_field);
         if (!full_grid)
             continue;
-        // advance_propagator() on the full grid; the stress borrows the half-step workspaces
-        provide(d_q_step_1_two[i], 2*static_cast<size_t>(M));
-        provide(d_qk_in_2_one[i], M_COMPLEX);
+        // advance_propagator() on the full grid; the full-grid stress borrows the half-step
+        // spectra, also when CrysFFT runs the steps
+        if (!use_crysfft_)
+        {
+            provide(d_q_step_1_two[i], 2*static_cast<size_t>(M));
+            provide(d_qk_in_2_one[i], M_COMPLEX);
+        }
         provide(d_qk_in_1_two[i], 2*static_cast<size_t>(M_COMPLEX));
         if (!is_periodic_)
         {
@@ -96,10 +100,10 @@ void CudaSolverPseudoRQM4<T>::allocate_work(int n_field, bool full_grid)
 }
 
 template <typename T>
-void CudaSolverPseudoRQM4<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
+void CudaSolverPseudoRQM4<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
     // exp(-w ds/2) for the full step and exp(-w ds/4) for the half step
-    this->update_dw_impl(device, w_input, true, 0.5, 0.25);
+    this->update_dw_impl(d_w, true, 0.5, 0.25);
 }
 // Advance propagator using RQM4
 template <typename T>
@@ -140,7 +144,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
                     this->crysfft_diffuse(STREAM, d_q_in, d_full_step, coeff_full, _d_exp_dw, nullptr, nullptr);
                     this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, nullptr);
 
-                    ker_lin_comb_exp<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+                    ker_lin_comb_exp<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                         d_q_out,
                         d_half_step, _d_exp_dw_half, 4.0/3.0,
                         d_full_step, _d_exp_dw, -1.0/3.0,
@@ -154,7 +158,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
                 this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, _d_exp_dw_half);
 
                 // ===== Richardson extrapolation on reduced basis =====
-                ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+                ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                     d_q_out, 4.0/3.0, d_half_step, -1.0/3.0, d_full_step, n_basis_);
                 CUDA_CHECK_LAUNCH();
 
@@ -182,7 +186,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
             // step 1/2: Evaluate exp(-w*ds/2) in real space
             // step 1/4: Evaluate exp(-w*ds/4) in real space
-            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 (d_q_step_1_two[STREAM].get() + 0), fft_in, _d_exp_dw,
                 (d_q_step_1_two[STREAM].get() + M), fft_in, _d_exp_dw_half, 1.0, M);
             CUDA_CHECK_LAUNCH();
@@ -194,7 +198,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
             // step 1/2: Multiply exp(-k^2 ds/6)  in fourier space
             // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
-            ker_complex_real_multi_bond_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_complex_real_multi_bond_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 (d_qk_in_1_two[STREAM].get() + 0),         _d_boltz_bond,
                 (d_qk_in_1_two[STREAM].get() + M_COMPLEX), _d_boltz_bond_half, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
@@ -206,7 +210,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
             // step 1/2: Evaluate exp(-w*ds/2) in real space
             // step 1/4: Evaluate exp(-w*ds/2) in real space
-            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 d_q_step_1_one[STREAM], (d_q_step_1_two[STREAM].get() + 0), _d_exp_dw,
                 d_q_step_2_one[STREAM], (d_q_step_1_two[STREAM].get() + M), _d_exp_dw, 1.0/static_cast<double>(M), M);
             CUDA_CHECK_LAUNCH();
@@ -216,7 +220,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_qk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
+            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: Execute a backward FFT
@@ -240,52 +244,52 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
             // ===== Step 1: Full step =====
             // Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_step_1_one[STREAM], fft_in, _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Forward transform (DCT/DST)
-            fft_[STREAM]->forward_stream(d_q_step_1, d_rk_in_1_one[STREAM], streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(d_q_step_1, d_rk_in_1_one[STREAM], streams[STREAM]);
 
             // Multiply by Boltzmann factor (real coefficients)
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_rk_in_1_one[STREAM], d_rk_in_1_one[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_in_1_one[STREAM], d_rk_in_1_one[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // Backward transform (inverse DCT/DST) - normalization included
-            fft_[STREAM]->backward_stream(d_rk_in_1_one[STREAM], d_q_step_1, streams[STREAM][0]);
+            fft_[STREAM]->backward_stream(d_rk_in_1_one[STREAM], d_q_step_1, streams[STREAM]);
 
             // Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // ===== Step 2: Two half steps =====
             // First half step
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_step_2_one[STREAM], fft_in, _d_exp_dw_half, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], fft_in, _d_exp_dw_half, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
-            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_in_2_one[STREAM], streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_in_2_one[STREAM], streams[STREAM]);
 
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_rk_in_2_one[STREAM], d_rk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_in_2_one[STREAM], d_rk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
-            fft_[STREAM]->backward_stream(d_rk_in_2_one[STREAM], d_q_step_2, streams[STREAM][0]);
+            fft_[STREAM]->backward_stream(d_rk_in_2_one[STREAM], d_q_step_2, streams[STREAM]);
 
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Second half step
-            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_in_2_one[STREAM], streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_in_2_one[STREAM], streams[STREAM]);
 
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_rk_in_2_one[STREAM], d_rk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_in_2_one[STREAM], d_rk_in_2_one[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
-            fft_[STREAM]->backward_stream(d_rk_in_2_one[STREAM], d_q_step_2, streams[STREAM][0]);
+            fft_[STREAM]->backward_stream(d_rk_in_2_one[STREAM], d_q_step_2, streams[STREAM]);
             // exp(-w*ds/4) follows in the Richardson combination
         }
 
         // ===== RQM4: Richardson extrapolation =====
         // q = 4/3 q(ds/2 twice) - 1/3 q(ds), the half-step result taking its last
         // factor exp(-w*ds/4) (and the FFT normalization) here
-        ker_multi_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        ker_multi_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             fft_out, 4.0/3.0, d_q_step_2_one[STREAM], _d_exp_dw_half, half_step_scale,
             -1.0/3.0, d_q_step_1_one[STREAM], M);
         CUDA_CHECK_LAUNCH();
@@ -302,9 +306,8 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 template <typename T>
 typename CudaSolverPseudoBase<T>::StressScratch CudaSolverPseudoRQM4<T>::stress_scratch(int STREAM)
 {
-    // d_q_step_1_two (2*M) and d_qk_in_1_two (2*M_COMPLEX) are the half-step
-    // workspaces, free between propagator steps
-    return {d_q_step_1_two[STREAM], d_qk_in_1_two[STREAM], d_rk_in_1_one[STREAM], d_rk_in_2_one[STREAM]};
+    // d_qk_in_1_two (2*M_COMPLEX) holds the half-step spectra, free between propagator steps
+    return {d_qk_in_1_two[STREAM], d_rk_in_1_one[STREAM], d_rk_in_2_one[STREAM]};
 }
 
 // Explicit template instantiation

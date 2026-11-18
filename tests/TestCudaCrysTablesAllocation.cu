@@ -53,8 +53,8 @@
  * full-grid fields; turning the flag on, which takes the stress to the full
  * grid, and calling prepare_stress() again must add at least two full-grid
  * fields per stream (the full-grid input and output of the reduced basis,
- * besides the transforms' work; about seven in all). A solver that allocated
- * the full-grid work for the fast path as well would hold about nine per stream
+ * besides the transforms' work and the cuFFT work area; seven to eleven in all). A solver that allocated
+ * the full-grid work for the fast path as well would hold that much per stream
  * with the flag off and add nothing.
  */
 
@@ -229,17 +229,16 @@ static bool tables_shared_by_streams(const Case& c)
     return ok;
 }
 
-/// The [kernel, copy] stream pairs of a solver, destroyed with this object
+/// The streams of a solver, destroyed with this object
 struct Streams
 {
-    cudaStream_t s[MAX_STREAMS][2] = {};
+    cudaStream_t s[MAX_STREAMS] = {};
     explicit Streams(int n)
     {
         try
         {
             for (int i = 0; i < n; ++i)
-                for (int k = 0; k < 2; ++k)
-                    CUDA_CHECK(cudaStreamCreate(&s[i][k]));
+                CUDA_CHECK(cudaStreamCreate(&s[i]));
         }
         catch (...)
         {
@@ -250,13 +249,12 @@ struct Streams
     ~Streams() { release(); }
     void release()
     {
-        for (auto& pair : s)
-            for (cudaStream_t& stream : pair)
-                if (stream != nullptr)
-                {
-                    cudaStreamDestroy(stream);
-                    stream = nullptr;
-                }
+        for (cudaStream_t& stream : s)
+            if (stream != nullptr)
+            {
+                cudaStreamDestroy(stream);
+                stream = nullptr;
+            }
     }
 };
 
@@ -266,19 +264,22 @@ struct Streams
 template <typename Solver>
 static std::pair<long long, long long> solver_bytes(Computation& s, int n_streams)
 {
-    // The backend's index maps of the reduced basis
+    // The backend's index maps of the reduced basis and its device fields
     const int M = s.cb->get_total_grid();
     const int n_basis = s.sg->get_n_reduced_basis();
     CudaDeviceBuffer<int> d_reduced(n_basis), d_full(M);
     CUDA_CHECK(cudaMemcpy(d_reduced, s.sg->get_reduced_basis_indices().data(), sizeof(int) * n_basis,
                           cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_full, s.sg->get_full_to_reduced_map().data(), sizeof(int) * M, cudaMemcpyHostToDevice));
+    CudaDeviceBuffer<double> d_w_a(n_basis), d_w_b(n_basis);
+    CUDA_CHECK(cudaMemcpy(d_w_a, s.w_a.data(), sizeof(double) * n_basis, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_w_b, s.w_b.data(), sizeof(double) * n_basis, cudaMemcpyHostToDevice));
     Streams streams(n_streams);
 
     const CudaBufferCounters& counters = CudaDeviceMemory::counters();
     const long long start = counters.live_bytes.load();
     Solver solver(s.cb.get(), s.molecules.get(), n_streams, streams.s, s.sg.get(), d_reduced, d_full);
-    solver.update_dw("cpu", {{"A", s.w_a.data()}, {"B", s.w_b.data()}});
+    solver.update_dw({{"A", d_w_a.get()}, {"B", d_w_b.get()}});
     solver.prepare_stress();
     const long long flag_off = counters.live_bytes.load() - start;
     solver.set_force_off_diagonal_stress(true);

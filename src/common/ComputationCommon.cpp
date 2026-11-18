@@ -134,15 +134,17 @@ void ComputationCommon<T>::set_fields(
 
     // w keeps the fields of earlier calls; only the types of this call are current
     w_input_types.clear();
+    std::map<std::string, BackendArray<T>*> w_current;
     for (const auto& [monomer_type, w_monomer] : w_input)
     {
         if (!w.contains(monomer_type))
             w[monomer_type] = backend->allocate();
         backend->copy_from_host(0, w[monomer_type], w_monomer);
         w_input_types.insert(monomer_type);
+        w_current[monomer_type] = w[monomer_type];
     }
 
-    backend->update_dw(w_input);
+    backend->update_dw(w_current);
 }
 
 template <typename T>

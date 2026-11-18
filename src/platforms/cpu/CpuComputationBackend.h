@@ -75,7 +75,7 @@ public:
     void load_checkpoint(int stream, BackendArray<T>* dst, CheckpointArray<T>* src) override;
 
     void update_laplacian_operator() override;
-    void update_dw(std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, BackendArray<T>*>& w) override;
     void set_force_off_diagonal_stress(bool force) override;
     void advance_propagator(int stream, BackendArray<T>* q_in, BackendArray<T>* q_out,
                             const std::string& monomer_type, int ds_index) override;

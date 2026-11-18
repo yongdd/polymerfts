@@ -103,7 +103,7 @@ public:
      * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
-    CudaSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    CudaSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                                 SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees GPU resources.
@@ -120,7 +120,7 @@ public:
     bool exp_dw_stored_reduced() const { return use_crysfft_; }
 
     /// Update Boltzmann factors.
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
 
     /**
      * @brief Advance propagator by one full segment.

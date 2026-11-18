@@ -353,8 +353,9 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 
 ### 7.2 CUDA
 
-- `CudaFFT<T, DIM>`: Standard FFT using cuFFT
-- `CudaRealTransform1D/2D/3D`: DCT/DST using FCT/FST algorithms
+- `CudaFFT<T, DIM>`: cuFFT for periodic boxes (complex coefficients) and the DCT/DST of
+  wall boxes through `CudaRealTransform` (real coefficients)
+- `CudaRealTransform1D/2D/3D`: DCT/DST using FCT/FST algorithms, with tables of the twiddle factors
 - `CudaCrysFFT`: Pmmm DCT via CudaRealTransform
 - `CudaMakhoulTransform`: the DFT along periodic axes and the cosine or sine series along walls through one cuFFT of the grid, with reordering and combining kernels (Section 2.5); `CudaFourierTransform` uses it for boxes that mix periodic axes and walls
 - `CudaCrysFFTRecursive3m`: Recursive 3m on GPU with stream-aware diffusion
@@ -388,21 +389,14 @@ the current cell, which `update_laplacian_operator()` does only while the full-g
 in use. The propagator steps of the
 CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
 values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
-full-grid stress and hold these as well. The `CudaPseudo` tables hold the Boltzmann bond
+full-grid stress and hold these as well. On the full grid each stream has the forward and
+backward cuFFT plans of the batch sizes its solver runs (one field; RQM4 also two for its
+half-step pair), and these plans share one work area, since they run one after another
+on their stream. The `CudaPseudo` tables hold the Boltzmann bond
 factors only for full-grid propagator steps or the discrete-chain stress (not for the
 ObliqueZ steps of continuous chains), and the stress basis from the first
 `prepare_stress()` on. The CPU solvers likewise compute their `Pseudo` tables for a new
 cell only while a full-grid path uses them.
-
-**Backward Compatibility:**
-
-```cpp
-// Legacy class names (still supported)
-typedef CudaRealTransform1D CudaDCT;
-typedef CudaRealTransform1D CudaDST;
-typedef CudaRealTransform2D CudaDCT2D;
-typedef CudaRealTransform3D CudaDCT3D;
-```
 
 ### 7.3 API Reference
 

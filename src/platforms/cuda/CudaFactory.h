@@ -10,7 +10,6 @@
  *
  * - Uses cuFFT for GPU-accelerated FFT operations
  * - Multiple CUDA streams for parallel propagator computation
- * - Asynchronous memory transfers to hide latency
  * - Supports both continuous and discrete chain models
  * - Checkpointing mode stores propagators in pinned host memory
  *
@@ -78,7 +77,7 @@
  * - Uses the reduce-memory propagator computations
  * - Uses CudaAndersonMixingReduceMemory
  * - Stores propagator history in pinned host memory
- * - Overlaps kernel execution with async memory transfers
+ * - Enqueues the checkpoint transfers on the stream of each propagator
  */
 template <typename T>
 class CudaFactory : public AbstractFactory<T>

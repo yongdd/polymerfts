@@ -129,8 +129,8 @@ public:
     /// Recompute the diffusion (or bond) operator after the box changed.
     virtual void update_laplacian_operator() = 0;
 
-    /// Recompute the Boltzmann factors from the host fields w_input.
-    virtual void update_dw(std::map<std::string, const T*> w_input) = 0;
+    /// Recompute the Boltzmann factors from the fields w (the backend arrays set_fields filled).
+    virtual void update_dw(const std::map<std::string, BackendArray<T>*>& w) = 0;
 
     virtual void set_force_off_diagonal_stress(bool force) = 0;
 

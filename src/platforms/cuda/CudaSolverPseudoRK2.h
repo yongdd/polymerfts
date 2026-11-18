@@ -14,9 +14,8 @@
  *
  * **Stream Organization:**
  *
- * For each stream index, two CUDA streams are used:
- * - streams[STREAM][0]: Kernel execution
- * - streams[STREAM][1]: Memory transfers (async)
+ * Each stream index has one CUDA stream (streams[STREAM]), on which the
+ * kernels and transforms of its propagators run.
  *
  * **Comparison to RQM4:**
  *
@@ -65,11 +64,12 @@ class CudaCrysFFTBase;
  *
  * **Memory per Stream:**
  *
- * - d_q_work: real-space workspace (2*M: advance_propagator() uses the first
- *   half, the stress computation both halves as the contiguous propagator pair)
- * - d_qk_work: Fourier-space workspace (2*M_COMPLEX, same split)
+ * - d_q_work: real-space workspace of advance_propagator() (M)
+ * - d_qk_work: Fourier-space workspace (2*M_COMPLEX: advance_propagator() uses the
+ *   first half, the stress the spectra of both propagators)
  *
- * Both belong to the full-grid path (see allocate_work()).
+ * Both belong to the full-grid path (see allocate_work()); with CrysFFT steps and the
+ * full-grid stress only d_qk_work.
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
@@ -89,7 +89,7 @@ private:
 
     /// @name Workspace Arrays (per stream)
     /// @{
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_work[MAX_STREAMS];            ///< Real-space workspace (2*M)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_work[MAX_STREAMS];            ///< Real-space workspace (M)
     /// @}
 
     /// @name Fourier Space Buffers (periodic BC - complex coefficients)
@@ -116,7 +116,7 @@ public:
      * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
-    CudaSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    CudaSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                            SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
@@ -124,10 +124,9 @@ public:
 
     /**
      * @brief Update Boltzmann factors.
-     * @param device  "gpu" or "cpu" for w_input location
-     * @param w_input Potential fields
+     * @param d_w Potential fields (device)
      */
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
 
     /**
      * @brief Advance propagator by one step using RK2.

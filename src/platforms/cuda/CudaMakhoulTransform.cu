@@ -257,11 +257,8 @@ CudaMakhoulTransform<T>::CudaMakhoulTransform(const std::vector<int>& nx, const 
     std::vector<int> n(nx.begin(), nx.end());
     size_t work_bytes = 0;
     auto make_plan = [&](CufftPlan& plan, cufftType type) {
-        CUFFT_CHECK(plan.create(cufftCreate));
-        CUFFT_CHECK(cufftSetAutoAllocation(plan, 0));
-        size_t bytes = 0;
-        CUFFT_CHECK(cufftMakePlanMany(plan, rank, n.data(), nullptr, 1, 0, nullptr, 1, 0, type, 1, &bytes));
-        work_bytes = std::max(work_bytes, bytes);
+        CUFFT_CHECK(plan.create_without_work_area(work_bytes, cufftMakePlanMany, rank, n.data(),
+                                                  nullptr, 1, 0, nullptr, 1, 0, type, 1));
     };
     make_plan(plan_, REAL ? CUFFT_D2Z : CUFFT_Z2Z);
     if constexpr (REAL)

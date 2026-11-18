@@ -2,7 +2,7 @@
  * @file TestCudaDCT.cu
  * @brief Test CUDA DCT types 2 and 3 against FFTW reference.
  *
- * Compares CudaDCT output with FFTW REDFT10/01 for the DCT types of CudaRealTransform.
+ * Compares the 1D, 2D and 3D DCTs of CudaRealTransform with FFTW REDFT10/01.
  */
 
 #include <iostream>
@@ -48,7 +48,7 @@ bool test_dct2_1d(int N)
     cudaMalloc(&d_data, sizeof(double) * N);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * N, cudaMemcpyHostToDevice);
 
-    CudaDCT dct(N, CUDA_DCT_2);
+    CudaRealTransform1D dct(N, CUDA_DCT_2);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * N, cudaMemcpyDeviceToHost);
@@ -100,7 +100,7 @@ bool test_dct3_1d(int N)
     cudaMalloc(&d_data, sizeof(double) * N);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * N, cudaMemcpyHostToDevice);
 
-    CudaDCT dct(N, CUDA_DCT_3);
+    CudaRealTransform1D dct(N, CUDA_DCT_3);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * N, cudaMemcpyDeviceToHost);
@@ -158,7 +158,7 @@ bool test_dct2_2d(int Nx, int Ny)
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT2D dct(Nx, Ny, CUDA_DCT_2);
+    CudaRealTransform2D dct(Nx, Ny, CUDA_DCT_2);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -216,7 +216,7 @@ bool test_dct3_2d(int Nx, int Ny)
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT2D dct(Nx, Ny, CUDA_DCT_3);
+    CudaRealTransform2D dct(Nx, Ny, CUDA_DCT_3);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -277,7 +277,7 @@ bool test_dct2_3d(int Nx, int Ny, int Nz)
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT3D dct(Nx, Ny, Nz, CUDA_DCT_2);
+    CudaRealTransform3D dct(Nx, Ny, Nz, CUDA_DCT_2);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -338,7 +338,7 @@ bool test_dct3_3d(int Nx, int Ny, int Nz)
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT3D dct(Nx, Ny, Nz, CUDA_DCT_3);
+    CudaRealTransform3D dct(Nx, Ny, Nz, CUDA_DCT_3);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -415,7 +415,7 @@ bool test_dct23_inverse(int N)
 //==============================================================================
 // Test 2D Mixed DCT (vs FFTW)
 //==============================================================================
-bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
+bool test_mixed_2d(int Nx, int Ny, CudaTransformType type_x, CudaTransformType type_y)
 {
     printf("Testing 2D Mixed (%s, %s): %d x %d\n",
            getTransformName(type_x), getTransformName(type_y), Nx, Ny);
@@ -468,7 +468,7 @@ bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT2D dct(Nx, Ny, type_x, type_y);
+    CudaRealTransform2D dct(Nx, Ny, type_x, type_y);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -495,7 +495,7 @@ bool test_mixed_2d(int Nx, int Ny, CudaDCTType type_x, CudaDCTType type_y)
 //==============================================================================
 // Test 3D Mixed DCT (vs FFTW)
 //==============================================================================
-bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_y, CudaDCTType type_z)
+bool test_mixed_3d(int Nx, int Ny, int Nz, CudaTransformType type_x, CudaTransformType type_y, CudaTransformType type_z)
 {
     printf("Testing 3D Mixed (%s, %s, %s): %d x %d x %d\n",
            getTransformName(type_x), getTransformName(type_y), getTransformName(type_z), Nx, Ny, Nz);
@@ -571,7 +571,7 @@ bool test_mixed_3d(int Nx, int Ny, int Nz, CudaDCTType type_x, CudaDCTType type_
     cudaMalloc(&d_data, sizeof(double) * M);
     cudaMemcpy(d_data, h_input.data(), sizeof(double) * M, cudaMemcpyHostToDevice);
 
-    CudaDCT3D dct(Nx, Ny, Nz, type_x, type_y, type_z);
+    CudaRealTransform3D dct(Nx, Ny, Nz, type_x, type_y, type_z);
     dct.execute(d_data);
 
     cudaMemcpy(h_cuda.data(), d_data, sizeof(double) * M, cudaMemcpyDeviceToHost);
@@ -606,17 +606,17 @@ bool test_odd_length_rejected()
     bool ok = true;
     try
     {
-        CudaDCT a(15, CUDA_DCT_2); CudaDCT3D b(6, 5, 7, CUDA_DCT_3);
+        CudaRealTransform1D a(15, CUDA_DCT_2); CudaRealTransform3D b(6, 5, 7, CUDA_DCT_3);
     }
     catch (const std::exception& e) { printf("  a supported length was rejected: %s\n", e.what()); ok = false; }
     // The 1D DCT-2/3 stage N and N + 2 values in the 48 KB of shared memory of a block: 6144 and
     // 6142 points fit, one more does not and must be refused
-    try { CudaDCT f(6144, CUDA_DCT_2); CudaDCT g(6142, CUDA_DCT_3); }
+    try { CudaRealTransform1D f(6144, CUDA_DCT_2); CudaRealTransform1D g(6142, CUDA_DCT_3); }
     catch (const std::exception& e) { printf("  a 1D length within shared memory was rejected: %s\n", e.what()); ok = false; }
     for (auto [N, type] : {std::pair{6145, CUDA_DCT_2}, std::pair{6143, CUDA_DCT_3}})
     {
         bool threw = false;
-        try { CudaDCT t(N, type); }
+        try { CudaRealTransform1D t(N, type); }
         catch (const std::exception&) { threw = true; }
         if (!threw) { printf("  1D DCT of %d points beyond shared memory was NOT rejected\n", N); ok = false; }
     }

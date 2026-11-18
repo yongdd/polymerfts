@@ -16,7 +16,7 @@
  *
  * - Linear scaling: ker_linear_scaling (dst = a*src + b)
  * - Exponential: ker_exp (dst = a*exp(b*src))
- * - Multiplication: ker_multi, ker_add_multi (element-wise products)
+ * - Multiplication: ker_multi (element-wise products)
  * - Division: ker_divide (element-wise division)
  * - Linear combination: ker_lin_comb, ker_add_lin_comb
  * - Complex operations: ker_multi_complex_conjugate, ker_multi_complex_real
@@ -151,31 +151,6 @@ __global__ void ker_linear_scaling(double* dst, const double* src, double a, dou
     }
 }
 
-__global__ void ker_linear_scaling(cuDoubleComplex* dst, const cuDoubleComplex* src, double a, cuDoubleComplex b, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i].x = a * src[i].x + b.x;
-        dst[i].y = a * src[i].y + b.y;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_linear_scaling(cuDoubleComplex* dst, const cuDoubleComplex* src, cuDoubleComplex a, double b, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Use a temporary variable to avoid overwriting when dst and src share the same address
-        cuDoubleComplex temp_dst;
-        temp_dst.x = a.x * src[i].x - a.y * src[i].y + b;
-        temp_dst.y = a.x * src[i].y + a.y * src[i].x;
-        dst[i] = temp_dst;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_exp(double* dst, const double* src, double a, double exp_b, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -253,41 +228,6 @@ __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, con
     }
 }
 
-__global__ void ker_mutiple_multi(int n_comp, double* dst, const double* src1, const double* src2, double  a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {  
-        dst[i] = a * src1[i] * src2[i];
-        for(int n = 1; n < n_comp; n++)
-        {
-            // n*M may exceed int for large grids; offset in 64 bits
-            const size_t offset = i + static_cast<size_t>(n) * M;
-            dst[i] += a * src1[offset] * src2[offset];
-        }
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_mutiple_multi(int n_comp, cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        cuDoubleComplex result = {a * (src1[i].x * src2[i].x - src1[i].y * src2[i].y),
-                             a * (src1[i].x * src2[i].y + src1[i].y * src2[i].x)};
-        for (int n = 1; n < n_comp; n++)
-        {
-            // n*M may exceed int for large grids; offset in 64 bits
-            const size_t offset = i + static_cast<size_t>(n) * M;
-            result.x += a * (src1[offset].x * src2[offset].x - src1[offset].y * src2[offset].y);
-            result.y += a * (src1[offset].x * src2[offset].y + src1[offset].y * src2[offset].x);
-        }
-        dst[i] = result;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_divide(double* dst, const double* src1, const double* src2, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -340,54 +280,6 @@ __global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* s
             temp_dst.y = a * (src1[i].y * src2[i].x - src1[i].x * src2[i].y) / denom;
             dst[i] = temp_dst;
         }
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_add_multi(double* dst, const double* src1, const double* src2, double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i] += a * src1[i] * src2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_add_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Use a temporary variable to avoid overwriting when dst and src share the same address
-        cuDoubleComplex temp_dst;
-        temp_dst.x = a * (src1[i].x * src2[i].x - src1[i].y * src2[i].y);
-        temp_dst.y = a * (src1[i].x * src2[i].y + src1[i].y * src2[i].x);
-        dst[i].x += temp_dst.x;
-        dst[i].y += temp_dst.y;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_add_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Perform complex multiplication of src1[i] and src2[i]
-        cuDoubleComplex temp;
-        temp.x = src1[i].x * src2[i].x - src1[i].y * src2[i].y;
-        temp.y = src1[i].x * src2[i].y + src1[i].y * src2[i].x;
-
-        // Multiply the result by the complex number a
-        cuDoubleComplex result;
-        result.x = a.x * temp.x - a.y * temp.y;
-        result.y = a.x * temp.y + a.y * temp.x;
-
-        // Add the result to dst[i]
-        dst[i].x += result.x;
-        dst[i].y += result.y;
-        
         i += blockDim.x * gridDim.x;
     }
 }

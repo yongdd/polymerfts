@@ -14,9 +14,8 @@
  *
  * **Stream Organization:**
  *
- * For each stream index, two CUDA streams are used:
- * - streams[STREAM][0]: Kernel execution
- * - streams[STREAM][1]: Memory transfers (async)
+ * Each stream index has one CUDA stream (streams[STREAM]), on which the
+ * kernels and transforms of its propagators run.
  *
  * **cuFFT Plans:**
  *
@@ -75,10 +74,11 @@ class CudaCrysFFTBase;  // Forward declaration
  * **Memory per Stream:**
  *
  * - d_q_step_1_one, d_q_step_2_one: Full step workspace (the reduced basis on the CrysFFT path)
- * - d_q_step_1_two: Half step workspace (2*M; also lent as the propagator pair of the stress)
+ * - d_q_step_1_two: Half step workspace (2*M)
  * - d_qk_in_2_one, d_qk_in_1_two: Fourier space buffers
  *
- * All but the first two belong to the full-grid path (see allocate_work()).
+ * All but the first two belong to the full-grid path (see allocate_work()); with CrysFFT
+ * steps and the full-grid stress only d_qk_in_1_two, which the stress borrows.
  */
 template <typename T>
 class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
@@ -128,7 +128,7 @@ public:
      * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
-    CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                             SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
@@ -136,10 +136,9 @@ public:
 
     /**
      * @brief Update Boltzmann factors.
-     * @param device  "gpu" or "cpu" for w_input location
-     * @param w_input Potential fields
+     * @param d_w Potential fields (device)
      */
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
 
     /**
      * @brief Advance propagator by one step using RQM4.

@@ -63,7 +63,8 @@ GPU Device Memory (about 2√N + 10 arrays):
 ├── q_work[2]            # Propagator being advanced (ping-pong)
 ├── q_right[2]           # The other propagator of a block
 ├── phi_block[key]       # Block concentrations
-├── d_q_pair[2]          # Stress computation
+├── junction_stage       # Checkpoints of a junction, staged two at a time
+├── junction_state       # Running product of a junction (2 n_basis doubles per stream)
 └── Solver workspace     # FFT, Boltzmann factors
 
 Pinned Host Memory (Checkpoints):
