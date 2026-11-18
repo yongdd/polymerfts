@@ -12,7 +12,6 @@ at a zero mode (see WTMD.add_bias).
 """
 
 import numpy as np
-import scipy.signal
 
 from .. import _core
 from ..utils.common import atomic_savemat
@@ -28,34 +27,42 @@ class WTMD:
     (real fields, periodic box), the order parameter and its derivative are transformed
     on the platform (on the GPU with CUDA) instead of with numpy.fft, in the same rfftn
     layout.
+
+    Parameters
+    ----------
+    params : dict
+        The input "wtmd" (docs/references/Parameters.md), with the defaults read here; its
+        "ell" and "delta_t" are the l and dT of deep-langevin-fts.
+    nx, lx : list
+        Grid and cell lengths (3D).
+    nbar : float
+        Invariant polymerization index.
+    eigenvalues, real_fields_idx
+        Eigenvalues of the auxiliary fields and the indices of the real ones.
+    angles : list, optional
+        Cell angles in degrees (None: orthogonal).
+    fourier : FourierTransform, optional
+        PropagatorSolver.fourier of the simulation in a periodic box (None: numpy.fft).
+    verbose_level : int
+        From 1 on, every force with the bias prints a line of Ψ and the bias.
     """
 
-    def __init__(self, nx, lx, nbar,
-                 eigenvalues, real_fields_idx,
-                 l=4,
-                 kc=6.02,
-                 dT=5.0,
-                 sigma_psi=0.16,
-                 psi_min=0.0,
-                 psi_max=10.0,
-                 dpsi=1e-3,
-                 update_freq=1000,
-                 recording_period=100000,
-                 u=None, up=None, I0=None, I1=None, angles=None, fourier=None):
-
-        _finite_number(l, "wtmd.ell", positive=True)
-        if l < 1:
+    def __init__(self, params, nx, lx, nbar, eigenvalues, real_fields_idx, angles=None, fourier=None,
+                 verbose_level=1):
+        self.l = params.get("ell", 4)
+        _finite_number(self.l, "wtmd.ell", positive=True)
+        if self.l < 1:
             raise ValidationError("wtmd.ell must be at least 1")
-        self.l = l
-        self.kc = kc
-        self.sigma_psi = sigma_psi
-        self.dT = dT
-        self.psi_min = psi_min
-        self.psi_max = psi_max
-        self.dpsi = dpsi
-        self.bins = int(np.round((psi_max - psi_min) / dpsi))
-        self.update_freq = update_freq
-        self.recording_period = recording_period
+        self.kc = params.get("kc", 6.02)
+        self.sigma_psi = params.get("sigma_psi", 0.16)
+        self.dT = params.get("delta_t", 5.0)
+        self.psi_min = params.get("psi_min", 0.0)
+        self.psi_max = params.get("psi_max", 10.0)
+        self.dpsi = params.get("dpsi", 1e-3)
+        self.bins = int(np.round((self.psi_max - self.psi_min) / self.dpsi))
+        self.update_freq = params.get("update_freq", 1000)
+        self.recording_period = params.get("recording_period", 100000)
+        self.verbose_level = verbose_level
 
         if len(nx) != 3:
             raise ValidationError("WTMD requires a 3D grid (nx with three entries)")
@@ -88,20 +95,11 @@ class WTMD:
             raise ValidationError("WTMD needs a real auxiliary (exchange) field, i.e. a negative value among the "
                                   "printed 'Eigenvalues' of the auxiliary fields (for two monomer types, a positive chi_n)")
 
+        # The bias U, its derivative U' and the statistics I0, I1, without the factor sqrt(nbar)*V
         self.u = np.zeros(self.bins)
         self.up = np.zeros(self.bins)
         self.I0 = np.zeros(self.bins)
         self.I1 = {}
-
-        # Copy data and normalize them by sqrt(nbar)*V
-        if u is not None:
-            self.u = u.copy() / self.CV
-        if up is not None:
-            self.up = up.copy() / self.CV
-        if I0 is not None:
-            self.I0 = I0.copy()
-        if I1 is not None:
-            self.I1 = {key: np.array(value, dtype=np.float64) / self.CV for key, value in I1.items()}
 
         # The hills are Gaussians cut at 8σ, where they fall below 1e-13 of their peak. The
         # histogram of the samples extends by this margin (pad bins) on both sides of the
@@ -136,7 +134,7 @@ class WTMD:
             # search of the propagator solvers: of the simulation's transform, or on the cell (lx, angles)
             k_squared = fourier.k_squared() if fourier is not None else _core.minimal_alias_k_squared(nx, lx, angles)
             mag_k = np.sqrt(k_squared[:, :, :nx[2] // 2 + 1])
-        self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - kc) / kc))
+        self.fk = 1.0 / (1.0 + np.exp(12.0 * (mag_k - self.kc) / self.kc))
         self._fk_root = np.power(self.fk, 1.0 / self.l)
 
         # Gaussian hill and its derivative at the offsets X = (Ψ - Ψ_sample)/σ of the bins
@@ -168,7 +166,8 @@ class WTMD:
         # Calculate current value of U'(Ψ) using linear interpolation
         up_hat = np.interp(psi, self.psi_range, self.up)
         if up_hat == 0.0:
-            print("\t[WTMD] Ψ:%8.5f, bias:0 (U'=0)" % psi)
+            if self.verbose_level >= 1:
+                print("\t[WTMD] Ψ:%8.5f, bias:0 (U'=0)" % psi)
             return psi
         if psi == 0.0:
             dpsi_dwr = np.zeros(self.M)
@@ -190,7 +189,8 @@ class WTMD:
         bias = np.reshape(self.V * up_hat * dpsi_dwr, self.M)
         forces[self.langevin_idx] += bias
 
-        print("\t[WTMD] Ψ:%8.5f, np.std(dΨ_dwr):%8.5e, np.std(bias):%8.5e" % (psi, np.std(dpsi_dwr), np.std(bias)))
+        if self.verbose_level >= 1:
+            print("\t[WTMD] Ψ:%8.5f, np.std(dΨ_dwr):%8.5e, np.std(bias):%8.5e" % (psi, np.std(dpsi_dwr), np.std(bias)))
         return psi
 
     def _order_parameter(self, w_aux):
@@ -222,6 +222,8 @@ class WTMD:
             self.dH_history[key].append(dH[key])
 
     def update_statistics(self):
+        # Imported here: scipy.signal makes `import polymerfts` a fifth slower, and only the updates need it
+        from scipy.signal import fftconvolve
 
         # Histogram of the samples on the extended bins, divided by the number of all samples:
         # every sample deposits a hill of the same weight, and samples beyond the margin none
@@ -235,20 +237,21 @@ class WTMD:
             hist_dH_, _ = np.histogram(self.order_parameter_history,
                                        weights=self.dH_history[key],
                                        bins=self.psi_range_hist)
-            dI1[key] = scipy.signal.fftconvolve(hist_dH_ / n_samples, self.u_kernel, mode="valid")
+            dI1[key] = fftconvolve(hist_dH_ / n_samples, self.u_kernel, mode="valid")
 
         # Compute dU(Ψ), dU'(Ψ)
         amplitude = np.exp(-self.CV * self.u / self.dT) / self.CV
-        gaussian = scipy.signal.fftconvolve(hist, self.u_kernel, mode="valid") * self.dpsi
+        gaussian = fftconvolve(hist, self.u_kernel, mode="valid") * self.dpsi
         du = amplitude * gaussian
-        dup = amplitude * scipy.signal.fftconvolve(hist, self.up_kernel, mode="valid") * self.dpsi - self.CV * self.up / self.dT * du
+        dup = amplitude * fftconvolve(hist, self.up_kernel, mode="valid") * self.dpsi - self.CV * self.up / self.dT * du
 
-        print("np.max(np.abs(amplitude)):%8.5e" % (np.max(np.abs(amplitude))))
-        print("np.max(np.abs(gaussian)):%8.5e" % (np.max(np.abs(gaussian))))
-        print("np.max(np.abs(du)):%8.5e" % (np.max(np.abs(du))))
-        print("np.max(np.abs(dup)):%8.5e" % (np.max(np.abs(dup))))
-        for key in dI1:
-            print("np.max(np.abs(dI1[%s])):%8.5e" % (key, np.max(np.abs(dI1[key]))))
+        if self.verbose_level >= 1:
+            print("np.max(np.abs(amplitude)):%8.5e" % (np.max(np.abs(amplitude))))
+            print("np.max(np.abs(gaussian)):%8.5e" % (np.max(np.abs(gaussian))))
+            print("np.max(np.abs(du)):%8.5e" % (np.max(np.abs(du))))
+            print("np.max(np.abs(dup)):%8.5e" % (np.max(np.abs(dup))))
+            for key in dI1:
+                print("np.max(np.abs(dI1[%s])):%8.5e" % (key, np.max(np.abs(dI1[key]))))
 
         # Update u, up, I0, I1
         self.u += du

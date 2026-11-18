@@ -263,27 +263,30 @@ The partial derivative is computed during simulation:
 
 ### 6.1 Class Structure
 
-The WTMD class is initialized automatically by LFTS when the `wtmd` parameter is provided. The class requires `nbar`, `eigenvalues`, and `real_fields_idx` from the simulation context.
+The WTMD class is initialized automatically by LFTS when the `wtmd` parameter is provided. It reads the `wtmd` input with its defaults and takes `nbar`, `eigenvalues`, and `real_fields_idx` from the simulation context.
 
 ```python
 from polymerfts.fts.wtmd import WTMD
 
 wtmd = WTMD(
+    {                          # The input "wtmd"; every key has the default shown
+        "ell": 4,              # Order parameter exponent
+        "kc": 6.02,            # Wavenumber cutoff
+        "delta_t": 5.0,        # Well-tempering factor (ΔT/T)
+        "sigma_psi": 0.16,     # Gaussian width
+        "psi_min": 0.0,        # Minimum Ψ
+        "psi_max": 10.0,       # Maximum Ψ
+        "dpsi": 1e-3,          # Bin width
+        "update_freq": 1000,   # Statistics update frequency
+        "recording_period": 100000,   # Data recording frequency
+    },
     nx=[32, 32, 32],           # Grid dimensions
     lx=[4.0, 4.0, 4.0],        # Box dimensions
     nbar=10000,                # Invariant polymerization index
     eigenvalues=eigenvalues,   # From field theory
     real_fields_idx=real_idx,  # Indices of real auxiliary fields
-    l=4,                       # Order parameter exponent
-    kc=6.02,                   # Wavenumber cutoff
-    dT=5.0,                    # Well-tempering factor (ΔT/T)
-    sigma_psi=0.16,            # Gaussian width
-    psi_min=0.0,               # Minimum Ψ
-    psi_max=10.0,              # Maximum Ψ
-    dpsi=1e-3,                 # Bin width
-    update_freq=1000,          # Statistics update frequency
-    recording_period=100000,   # Data recording frequency
     angles=None,               # Lattice angles in degrees (None: orthogonal box)
+    verbose_level=1,           # 0: no line of Ψ and the bias per force
 )
 ```
 

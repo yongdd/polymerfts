@@ -224,7 +224,7 @@ def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):
     would not reproduce them bit for bit. The partition consistency is checked again on the first fields
     of the run (check_partition_once).
     """
-    if getattr(sim, "draw_architectures", True):
+    if sim.draw_architectures:
         draw_polymer_architectures(sim.polymers, sim.ds, sim.segment_lengths, directory=sim.recording["dir"])
     sim._partition_checked = False
     saved = None if restart_data is None else restart_data.get("w_aux")

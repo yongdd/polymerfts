@@ -177,7 +177,7 @@ def params(work_dir):
             "platform": cpu_platform(), "langevin": {"nbar": NBAR, "dt": 1.0, "max_step": STEPS},
             "recording": {"dir": work_dir, "checkpoint_interval": STEPS, "sample_interval": 1,
                           "statistics_save_interval": STEPS // BLOCKS},
-            "verbose_level": 1}
+            "verbose_level": 0}
 
 
 def rpa_polyampholyte(coupling):
@@ -212,7 +212,7 @@ def params_polyampholyte(work_dir):
             "platform": cpu_platform(), "langevin": {"nbar": NBAR, "dt": 1.0, "max_step": STEPS},
             "recording": {"dir": work_dir, "checkpoint_interval": STEPS, "sample_interval": 1,
                           "statistics_save_interval": STEPS // BLOCKS},
-            "verbose_level": 1}
+            "verbose_level": 0}
 
 
 def shells(s):
@@ -231,6 +231,7 @@ def run(make_params, seed):
         p = make_params(work)
         with contextlib.redirect_stdout(io.StringIO()):
             sim = CLFTS(p, random_seed=seed)
+            sim.draw_architectures = False
             sim.run(initial_fields={t: np.zeros(NX * NX) for t in p["segment_lengths"]})
         files = sorted(glob.glob(os.path.join(work, "structure_function_*.mat")))
         assert len(files) == BLOCKS, files

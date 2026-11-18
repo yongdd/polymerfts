@@ -10,6 +10,10 @@ saddle search fails at chosen calls), compressible_parameters() (a 4-point diblo
 and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
 with the saddle and compressor entries, of CL-FTS (cls=CLFTS), which would ignore them with a
 warning, or the system part for SCFT (cls=SCFT), which would ignore the Langevin options (input_of).
+
+The L-FTS and CL-FTS runs of a test that imports this module draw no chain architectures
+(polymer_<id>.png): matplotlib takes about 0.1 s per run, more than a short run itself. A test of
+the drawings sets draw_architectures = True on its simulation.
 """
 
 import contextlib
@@ -21,6 +25,8 @@ from scipy.io import loadmat
 
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
+
+LFTS.draw_architectures = CLFTS.draw_architectures = False
 
 
 @contextlib.contextmanager

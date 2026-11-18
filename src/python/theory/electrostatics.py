@@ -278,8 +278,8 @@ class Electrostatics:
         return c
 
     def _forget_ions(self):
-        """The point ions of a new ψ are computed when they are needed (_compute_ions)."""
-        self._ion_densities = self._ion_log_partitions = self._ion_partition_ratios = None
+        """The point ions of a new ψ are computed when they are needed (_compute_ions, ion_charge)."""
+        self._ion_densities = self._ion_log_partitions = self._ion_partition_ratios = self._ion_charge = None
 
     def _compute_ions(self):
         """Computes the densities c_s(r), ln Q_s and the partition ratios of the point ions for the current ψ,
@@ -298,9 +298,14 @@ class Electrostatics:
         return self._ion_densities, self._ion_log_partitions
 
     def ion_charge(self):
-        """Smeared charge density of the point ions, Σ_s z_s (Γ_s * c_s), for the current ψ."""
-        densities, _ = self.ion_densities()
-        return self._fourier.apply([(ion["smear"], ion["valence"] * c) for ion, c in zip(self.ions, densities)])
+        """Smeared charge density of the point ions, Σ_s z_s (Γ_s * c_s), for the current ψ (computed once
+        per ψ, read-only)."""
+        if self._ion_charge is None:
+            densities, _ = self.ion_densities()
+            self._ion_charge = self._fourier.apply([(ion["smear"], ion["valence"] * c)
+                                                    for ion, c in zip(self.ions, densities)])
+            self._ion_charge.flags.writeable = False
+        return self._ion_charge
 
     def ion_chemical_potentials(self):
         """βμ_s = ln(N c_s) - ln Q_s of each point ion, per ion (the convention of the chains); the given
@@ -359,13 +364,14 @@ class Electrostatics:
     @contextlib.contextmanager
     def trial(self, psi):
         """Set ψ for an intermediate evaluation and restore ψ and ψ(k) exactly afterwards."""
-        saved = self._psi, self._psi_k, self._ion_densities, self._ion_log_partitions, self._ion_partition_ratios
+        saved = (self._psi, self._psi_k, self._ion_densities, self._ion_log_partitions, self._ion_partition_ratios,
+                 self._ion_charge)
         try:
             self.psi = psi
             yield
         finally:
             (self._psi, self._psi_k, self._ion_densities, self._ion_log_partitions,
-             self._ion_partition_ratios) = saved
+             self._ion_partition_ratios, self._ion_charge) = saved
 
     def hamiltonian(self):
         """Electrostatic term (1/(2E V)) ∫ ψ (∇² - κ²) ψ dr of the current ψ, -Σ_s N c_s ln Q_s

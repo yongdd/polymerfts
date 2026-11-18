@@ -28,6 +28,8 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, PlatformSelector
 from cuda_part import cuda_part_missing
 
+LFTS.draw_architectures = CLFTS.draw_architectures = False   # no polymer_<id>.png of the runs
+
 failures = 0
 
 

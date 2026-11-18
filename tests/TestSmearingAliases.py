@@ -96,7 +96,7 @@ def right_angles(directory):
     walls = quiet(Smearing, [8, 6, 4], [1.6, 1.3, 1.1], {"type": "gaussian", "a_int": 0.1}, angles=angles,
                   bc=["reflecting"] * 6)
     assert walls.orthogonal
-    wtmd = quiet(WTMD, [4, 4, 4], [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
+    wtmd = quiet(WTMD, {}, [4, 4, 4], [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
     assert wtmd.orthogonal
     path = os.path.join(directory, "right.vtk")
     save_vtk(path, np.zeros((4, 4, 4)), [2.0] * 3, angles=angles)
@@ -131,7 +131,7 @@ def lattice_derivatives():
 
 def wtmd_aliases():
     nx, lx, angles = [4, 32, 4], [20.0, 20.0, 3.0], [90.0, 90.0, 120.0]
-    wtmd = quiet(WTMD, nx, lx, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
+    wtmd = quiet(WTMD, {}, nx, lx, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
     k_squared = reference_k_squared(nx, lx, angles)
     cutoff = 1 / (1 + np.exp(12 * (np.sqrt(k_squared) - wtmd.kc) / wtmd.kc))
     np.testing.assert_allclose(wtmd.fk, cutoff[:, :, :nx[2] // 2 + 1], rtol=1e-12, atol=1e-14)

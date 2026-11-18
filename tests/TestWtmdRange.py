@@ -65,7 +65,7 @@ def norm_and_gradient(fourier=None):
     base = np.random.default_rng(3).normal(0.0, 5.0, size)
     direction = np.random.default_rng(9).normal(size=size)
     for ell in (1, 1.5, 4, 32, 256):
-        wtmd = WTMD(nx, lx, 10000.0, np.array([-15.0, 0.0]), [0], l=ell, fourier=fourier)
+        wtmd = WTMD({"ell": ell}, nx, lx, 10000.0, np.array([-15.0, 0.0]), [0], fourier=fourier)
         wtmd.up[:] = 0.7
         baseline_psi, baseline_force = None, None
         for scale in (1.0, 1e-100, 1e100):
@@ -90,7 +90,7 @@ def norm_and_gradient(fourier=None):
         np.testing.assert_allclose(np.mean(baseline_force[0] * direction) / 0.7,
                                    finite_difference, rtol=3e-6, atol=1e-9)
 
-        exact = WTMD(nx, lx, 10000.0, np.array([-15.0, 0.0]), [0], l=ell,
+        exact = WTMD({"ell": ell}, nx, lx, 10000.0, np.array([-15.0, 0.0]), [0],
                      fourier=ExactUniformTransform(nx, fourier))
         exact.up[:] = 0.7
         for amplitude in (0.0, 2.0):

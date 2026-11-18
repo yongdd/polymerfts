@@ -84,6 +84,10 @@ class CLFTS:
     >>> sim.run(initial_fields={"A": w_A, "B": w_B})
     """
 
+    # run() draws the chain architectures into the recording directory unless this is False (on the
+    # object, or on the class for every simulation built afterwards)
+    draw_architectures = True
+
     @classmethod
     def from_file(cls, path, random_seed=None, *, integrator=None, callbacks=None, **overrides):
         """Create a simulation from a YAML or JSON parameter file.
@@ -197,9 +201,6 @@ class CLFTS:
         initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks)
         self._prepare_integrator()
         self.run_status = {"status": "initialized", "last_completed_step": 0}
-        # run() draws the chain architectures into the recording directory; a driver that runs the
-        # same chains again (gibbs_ensemble.py) sets this to False after the first run
-        self.draw_architectures = True
         # The state of the integrator and the callbacks after the setup, which a fresh run restores: a
         # stateful integrator may hold the response that _prepare_integrator gave it
         self._initial_extension_state = extension_state(self)
@@ -577,7 +578,7 @@ class CLFTS:
                 if self.thermodynamics.record_number_densities:
                     record.add("number_density_history", self.thermodynamics.number_densities(total_partitions))
                 if self.thermodynamics.record_pressure:
-                    record.add("pressure_history", self.thermodynamics.pressure_virial(w_aux, phi))
+                    record.add("pressure_history", self.thermodynamics.pressure_virial(w_aux, phi, h_deriv, charge_density))
                 self.structure_functions.add(w_aux, phi, record.sums)
 
             # Statistics files: H and dH/dχN, then S(k) and the mean concentrations

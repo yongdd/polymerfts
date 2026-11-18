@@ -104,7 +104,7 @@ def neutral_reductions(root):
     run(plain), run(neutral)
     a, b = mat(root / "plain", "fields_000006.mat"), mat(root / "neutral", "fields_000006.mat")
     assert max_difference(a, b, ("w_", "phi_")) == 0.0
-    assert np.max(np.abs(b["psi_real"])) > 0.0   # psi fluctuates, decoupled
+    assert np.max(np.abs(b["psi_imag"])) > 0.0   # psi fluctuates, decoupled (imaginary noise)
 
     # Charges, E = 0: also the same H and structure functions
     unscreened = parameters(root / "unscreened")
@@ -586,7 +586,7 @@ def screened_measurements(root):
     with silenced():
         sim = CLFTS(params, random_seed=5)
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
-    es, n_grid, types = sim.electrostatics, int(np.prod(NX)), ["E", "K"]
+    n_grid, types = int(np.prod(NX)), ["E", "K"]
     assert sim.mpt.aux_fields_dropped_idx and sim.structure_functions.psi_probe is not None
     fields = mat(root / "screened_measured", "fields_000002.mat")
     measured = mat(root / "screened_measured", "structure_function_000002.mat")
