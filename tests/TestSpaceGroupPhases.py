@@ -9,6 +9,9 @@ Tests all combinations of:
 - Platform: all available platforms (cuda, cpu-fftw)
 - Memory saving: reduce_memory=True/False
 
+On each platform the reduced-memory run must give the free energy of the full-memory
+run bit for bit.
+
 Uses pre-converged .mat files from tests/data/ for fast iteration (~1-2 iterations).
 The fixtures are converged (tolerance 1e-9, box fixed) under the current cell-centered
 symmetry convention. Changes to the discretization or convention require
@@ -321,6 +324,7 @@ def main():
     results = {config: {} for config in configs}
     times = {config: {} for config in configs}
     fe_diffs = {config: {} for config in configs}
+    free_energies = {config: {} for config in configs}
 
     # Run tests
     for platform, reduce_memory in configs:
@@ -333,6 +337,7 @@ def main():
             status, fe, msg, elapsed = test_phase(phase_name, platform, reduce_memory)
             results[(platform, reduce_memory)][phase_name] = status
             times[(platform, reduce_memory)][phase_name] = elapsed
+            free_energies[(platform, reduce_memory)][phase_name] = fe
             if fe is not None:
                 fe_diffs[(platform, reduce_memory)][phase_name] = abs(fe - PHASES[phase_name]["expected_fe"])
             else:
@@ -375,6 +380,20 @@ def main():
 
     print("-" * len(header))
     print(f"\nTotal: {total_passed} passed, {total_failed} failed, {total_skipped} skipped")
+
+    # The reduced-memory mode recomputes the propagators from checkpoints with the
+    # same arithmetic: its free energy equals the full-memory one bit for bit
+    memory_mismatches = 0
+    for platform in available_platforms:
+        for phase_name in phase_names:
+            fe_full = free_energies[(platform, False)][phase_name]
+            fe_reduced = free_energies[(platform, True)][phase_name]
+            if fe_full is not None and fe_reduced is not None and fe_reduced != fe_full:
+                print(f"  {platform} {phase_name}: reduce_memory free energy {fe_reduced:.17g} "
+                      f"differs from the full-memory {fe_full:.17g}")
+                memory_mismatches += 1
+    print(f"Reduced against full memory: {memory_mismatches} free energies differ")
+    total_failed += memory_mismatches
 
     # Free energy difference summary
     print("\n" + "=" * 70)

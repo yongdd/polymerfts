@@ -6,9 +6,11 @@ on:
   pull_request:
     branches: [ main, devel ]
 
-# Cancel superseded runs of the same branch/PR
+# One run per commit: pushes are grouped by commit, so the merge commit that main and
+# devel both receive is tested once (the later push takes the run over); a pull request
+# is grouped by its ref, so a new push to it cancels the superseded run
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -17,39 +19,6 @@ env:
   OPENBLAS_NUM_THREADS: 1
 
 jobs:
-  script-builder:
-    name: Simulation Script Builder
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        shell: bash -l {0}
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v7
-
-    - name: Cache conda packages
-      uses: actions/cache@v6
-      with:
-        path: /home/runner/conda_pkgs_dir
-        key: conda-forge-${{ runner.os }}-${{ hashFiles('environment.yml') }}
-
-    - name: Install the conda environment
-      uses: conda-incubator/setup-miniconda@v4
-      with:
-        miniforge-version: latest
-        activate-environment: polymerfts
-        auto-activate: false
-        environment-file: environment.yml
-        channels: conda-forge
-        channel-priority: strict
-        conda-remove-defaults: "true"
-        pkgs-dirs: /home/runner/conda_pkgs_dir
-
-    - name: Test script utilities
-      run: python -m pytest tests/scripts -q
-
   build-cpu:
     name: Build and Test (CPU, MKL + FFTW)
     runs-on: ubuntu-latest
@@ -76,6 +45,11 @@ jobs:
         channel-priority: strict
         conda-remove-defaults: "true"
         pkgs-dirs: /home/runner/conda_pkgs_dir
+
+    # Without the package, before it is built: the script utilities alone
+    - name: Test script utilities
+      shell: bash -l {0}
+      run: python -m pytest tests/scripts -q
 
     - name: Install MKL and FFTW
       shell: bash -l {0}
@@ -170,6 +144,66 @@ jobs:
         else:
             raise RuntimeError("Uninstall left package metadata")
         PY
+
+  # The MKL backend alone, as the Installation guide offers it: CPU tests that take the
+  # first CPU platform run on cpu-mkl here (cpu-fftw in the job above)
+  build-mkl:
+    name: Build and Test (CPU, MKL only, basic tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+
+    - name: Cache conda packages
+      uses: actions/cache@v6
+      with:
+        path: /home/runner/conda_pkgs_dir
+        key: conda-forge-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+
+    - name: Install the conda environment
+      uses: conda-incubator/setup-miniconda@v4
+      with:
+        miniforge-version: latest
+        activate-environment: polymerfts
+        auto-activate: false
+        environment-file: environment.yml
+        channels: conda-forge
+        channel-priority: strict
+        conda-remove-defaults: "true"
+        pkgs-dirs: /home/runner/conda_pkgs_dir
+
+    - name: Install MKL
+      run: |
+        conda install -y --override-channels -c conda-forge --freeze-installed mkl-devel=2026.1.0
+
+    - name: Build
+      run: |
+        set -euo pipefail
+        cmake -S . -B build-mkl -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+          -DPOLYMERFTS_USE_MKL=ON -DPOLYMERFTS_USE_FFTW=OFF -DPOLYMERFTS_USE_CUDA=OFF \
+          -DPOLYMERFTS_BUILD_TESTS=ON -DPOLYMERFTS_WERROR=ON
+        cmake --build build-mkl --parallel $(nproc)
+
+    - name: Check that cpu-mkl is the only platform
+      run: |
+        export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+        PYTHONPATH="$PWD/build-mkl/python" python -c "
+        from polymerfts import _core
+        platforms = _core.PlatformSelector.avail_platforms()
+        print(platforms)
+        assert platforms == ['cpu-mkl'], platforms
+        "
+
+    - name: Run the basic tests
+      run: |
+        ulimit -s unlimited
+        export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+        ctest --test-dir build-mkl -L basic -j$(nproc) --output-on-failure --timeout 900
 
   build-windows:
     name: Build and Test (Windows, MSVC, MKL + FFTW)
@@ -288,9 +322,10 @@ jobs:
         # New computational features must exist on both platforms (CLAUDE.md).
         # Compare the per-class file basenames of the Computation*/Solver*
         # families after stripping the platform prefix. Intentional
-        # differences go in the allowlists below.
+        # differences go in the allowlists below. The CPU platforms use the
+        # common ComputationBox<T> directly; CUDA adds device reductions.
         ALLOW_CPU_ONLY='^$'
-        ALLOW_CUDA_ONLY='^$'
+        ALLOW_CUDA_ONLY='^ComputationBox$'
 
         cpu=$(ls src/platforms/cpu/ \
           | grep -E '^Cpu(Computation|Solver)[A-Za-z0-9]*\.(h|cpp)$' \

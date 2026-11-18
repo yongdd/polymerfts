@@ -29,6 +29,10 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestCudaPart.h"
+
+// Discrete branched chain on every available platform: the partition functions must
+// not depend on the aggregation, the memory mode or the platform.
 
 int main()
 {
@@ -68,24 +72,12 @@ int main()
         // Choose platform
         std::string chain_model = "Discrete";
         std::vector<std::string> avail_platforms = PlatformSelector::avail_platforms();
-        // This test runs on cpu-fftw only: exit 77 (a ctest skip) when the build
-        // has no FFTW backend
-        bool has_cpu_fftw = false;
-        for(const std::string& name : avail_platforms)
-            has_cpu_fftw = has_cpu_fftw || (name == "cpu-fftw");
-        if(!has_cpu_fftw)
-        {
-            std::cout << "SKIP: this test needs cpu-fftw, which this build does not have." << std::endl;
-            return 77;
-        }
         std::vector<bool> aggregate_propagator_computations = {false, true};
         std::vector<bool> reduce_memorys = {false, true};
+        // Collected over all platforms, so the platforms are compared too
         std::vector<double> total_partition_list;
         for(std::string platform : avail_platforms)
         {
-            if(platform != "cpu-fftw")
-                continue;
-
             for(bool reduce_memory : reduce_memorys)
             {
             for(bool aggregate_propagator_computation : aggregate_propagator_computations)
@@ -98,7 +90,7 @@ int main()
                 std::unique_ptr<Molecules> molecules = factory->create_molecules_information(chain_model, ds, bond_lengths);
                 molecules->add_polymer(1.0, blocks, {});
                 auto propagator_computation_optimizer = std::make_unique<PropagatorComputationOptimizer>(molecules.get(), aggregate_propagator_computation);
-                std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "rqm4");
+                std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "ps");
 
                 // -------------- Print simulation parameters ------------
                 std::cout << std::setprecision(default_precision);
@@ -157,7 +149,7 @@ int main()
             if (!(stddev <= 1e-7))
                 return -1;
         }
-        return 0;
+        return cuda_part_missing() ? 1 : 0;
     }
     catch(std::exception& exc)
     {

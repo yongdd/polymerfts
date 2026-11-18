@@ -162,4 +162,4 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
   `src/common/ComputationCommon.h` carries the first exception out of every parallel
   region of `ComputationContinuous.cpp` / `ComputationDiscrete.cpp` (2026-10-20, 3007130a).
 - Packaging with conda, pip and Docker (conda-recipe/, pyproject.toml, docker/).
-- Stress computation tests with complex type (`TestStress1DComplex`, `TestStressLinear2DComplex`).
+- Stress computation tests with complex type (complex rows of `TestStressFiniteDifference`).
