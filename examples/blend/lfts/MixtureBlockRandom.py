@@ -1,8 +1,5 @@
-import os
 import time
 import numpy as np
-from scipy.io import savemat, loadmat
-from scipy.ndimage import gaussian_filter
 from polymerfts import lfts
 
 f = 0.5         # A-fraction of major BCP chain, f
@@ -27,7 +24,7 @@ params = {
 
     "polymers":[{      # Polymer species
         "volume_fraction":0.7,  # Volume fraction of polymer chain
-        "blocks":[              # AB homopolymer
+        "blocks":[              # AB diblock copolymer
             {"type":"A", "length":f, },     # A-block
             {"type":"B", "length":1.0-f, }, # B-block
         ],},
@@ -93,17 +90,17 @@ print("total time: %f, time per step: %f" %
     (time_duration, time_duration/params["langevin"]["max_step"]) )
 
 # Recording first a few iteration results for debugging and refactoring
-# (Anderson Mixing)
+# (LRAM)
 # ---------- Run  ----------
-# iteration, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)
-#       20    6.114E-16  [ 1.0217332E+00  1.0004506E+00  ]     6.255662440   [6.8265095E-05 ]
+# iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)
+#        6    3.719E-16  [ 1.0217331E+00  1.0004506E+00  ]     6.255662491   [3.7572438E-06 ]
 # Langevin step:  1
-#       16   -2.727E-17  [ 1.1291066E+00  1.0007375E+00  ]     6.280765080   [7.4798426E-05 ]
+#        4    2.634E-16  [ 1.1291045E+00  1.0007397E+00  ]     6.280765027   [6.3142449E-05 ]
 # Langevin step:  2
-#       19   -2.331E-16  [ 1.6111156E+00  1.0101993E+00  ]     6.359460732   [8.5876292E-05 ]
+#        6    1.691E-16  [ 1.6110832E+00  1.0102085E+00  ]     6.359458406   [6.4831667E-05 ]
 # Langevin step:  3
-#       20    1.547E-16  [ 2.1516573E+00  1.0240363E+00  ]     6.383838000   [7.4855913E-05 ]
+#        7    1.307E-16  [ 2.1515404E+00  1.0240414E+00  ]     6.383830869   [5.0818546E-05 ]
 # Langevin step:  4
-#       20   -4.528E-17  [ 2.7679904E+00  1.0393858E+00  ]     6.382323113   [8.7766346E-05 ]
+#        7    9.496E-17  [ 2.7677549E+00  1.0393897E+00  ]     6.382316522   [7.0096484E-05 ]
 # Langevin step:  5
-#       20    2.043E-16  [ 3.4839095E+00  1.0555288E+00  ]     6.368538672   [9.7452010E-05 ]
+#        7    6.836E-17  [ 3.4835118E+00  1.0555256E+00  ]     6.368531573   [6.2089066E-05 ]

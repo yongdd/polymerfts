@@ -22,14 +22,17 @@ Results:
 """
 
 import os
-import numpy as np
-from scipy.ndimage import gaussian_filter
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 0.25       # A-fraction of major BCP chain, f
@@ -84,38 +87,21 @@ params = {
     "tolerance": 1e-8               # Convergence tolerance
 }
 
-# Set initial fields from HCP sphere positions (Wyckoff 2c for P6_3/mmc)
-w_A = np.zeros(list(params["nx"]), dtype=np.float64)
-w_B = np.zeros(list(params["nx"]), dtype=np.float64)
-print("w_A and w_B are initialized to HCP phase.")
-
+# Set initial fields: smoothed wells of w_A at the A sphere positions (seeds.py)
 # Wyckoff 2c positions for P6_3/mmc space group
 # These positions have proper site symmetry for P6_3/mmc
 sphere_positions = [
     [1/3, 2/3, 1/4],
     [2/3, 1/3, 3/4],
 ]
-
-for x, y, z in sphere_positions:
-    mx, my, mz = np.round((np.array([x, y, z]) * params["nx"])).astype(np.int32)
-    mx = mx % params["nx"][0]
-    my = my % params["nx"][1]
-    mz = mz % params["nx"][2]
-    w_A[mx, my, mz] = -1 / (np.prod(params["lx"]) / np.prod(params["nx"]))
-
-w_A = gaussian_filter(w_A, sigma=np.min(params["nx"])/15, mode='wrap')
-
-print(f"Initial field: w_A min={w_A.min():.2f}, max={w_A.max():.2f}, std={np.std(w_A):.2f}")
+seed = seeds.wells(params["nx"], params["lx"], sphere_positions)
+print("w_A and w_B are initialized to HCP phase.")
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("HCP_Hexagonal.json")

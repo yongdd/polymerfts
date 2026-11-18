@@ -124,7 +124,7 @@ def preset_settings(name):
         # Parameter defaults from examples/block_copolymer/clfts/Lamella.py.
         values.update(mode="CL-FTS", nx="32, 32, 32", lx="4.21, 4.21, 4.21",
                       ds="1/90", chain_model="discrete", chi_n="12.0",
-                      max_step="100000", dt="1.0", amplitude="2.0",
+                      max_step="100000", dt="1.0", nbar="100000", amplitude="2.0",
                       dynamic_stabilization="0.01")
     return values
 
@@ -511,8 +511,8 @@ def build_script(values):
         f'os.environ["OMP_NUM_THREADS"] = {str(threads)!r}\n'
         'os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"\n'
         'os.environ.setdefault("OMP_STACKSIZE", "1G")\n\n'
-        'import math\n'
-        'from pathlib import Path\n\n'
+        + ('import math\n' if initial == "mat" else '')
+        + 'from pathlib import Path\n\n'
         'import numpy as np\n'
         f'from polymerfts import {module}\n\n\n'
         'params = ' + pformat(params, sort_dicts=False, width=92) + '\n\n\n'

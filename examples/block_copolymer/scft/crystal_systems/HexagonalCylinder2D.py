@@ -5,14 +5,17 @@ varies the single lattice constant a, the distance between neighboring cylinders
 """
 
 import os
-import numpy as np
-from scipy.ndimage import gaussian_filter
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import SCFT
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 f = 1/3                 # A-fraction: the A blocks form the cylinders
 chi_n = 18.0
@@ -48,17 +51,11 @@ params = {
     "tolerance":1e-8,
 }
 
-# A cylinder at the origin, with distances measured in the metric of the hexagonal cell
-nx, ny = params["nx"]
-u = np.arange(nx)[:, None] / nx
-v = np.arange(ny)[None, :] / ny
-u, v = u - np.round(u), v - np.round(v)
-r = np.sqrt(np.maximum(u**2 + v**2 + 2 * np.cos(np.radians(120.0)) * u * v, 0.0))
-w_A = -gaussian_filter(0.5 * (1.0 - np.tanh((r - 0.2) / 0.05)), sigma=1.0, mode="wrap")
-w_A *= 0.5 * chi_n / np.abs(w_A).max()
+# A cylinder at the origin, round in the metric of the hexagonal cell
+seed = seeds.oblique_cylinder(params["nx"], params["lx"], 120.0, 0.5 * chi_n)
 
 calculation = SCFT(params=params)
-result = calculation.run(initial_fields={"A": w_A, "B": -w_A}, return_result=True)
+result = calculation.run(initial_fields=seed["w"], return_result=True)
 
 print(f"\nLattice constant: {L:.4f} -> {result.lx[0]:.4f} R0 "
       f"(gamma = {calculation.prop_solver.get_angles_degrees()[-1]:.1f} degrees), "

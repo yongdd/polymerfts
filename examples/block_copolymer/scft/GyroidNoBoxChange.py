@@ -1,13 +1,11 @@
 import os
-import numpy as np
-from scipy.io import savemat
-from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+import seeds     # initial fields of common phases (seeds.py)
 
 # Major Simulation params
 f = 0.36        # A-fraction of major BCP chain, f
@@ -21,7 +19,7 @@ params = {
                                 # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":False,    # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":False,    # Keep the cell fixed during SCFT iteration.
     "chain_model":"discrete",   # "discrete" or "continuous" chain model
     "ds":1/100,                 # Contour step interval, which is equal to 1/N_Ref.
 
@@ -55,33 +53,15 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-# Set initial fields
-w_A = np.zeros(list(params["nx"]), dtype=np.float64)
-w_B = np.zeros(list(params["nx"]), dtype=np.float64)
+# Set initial fields: the level-set approximation of the double gyroid (seeds.py)
+seed = seeds.gyroid(params["nx"], params["lx"])
 print("w_A and w_B are initialized to gyroid phase.")
-# [Ref: https://pubs.acs.org/doi/pdf/10.1021/ma951138i]
-for i in range(0,params["nx"][0]):
-    xx = (i+1)*2*np.pi/params["nx"][0]
-    for j in range(0,params["nx"][1]):
-        yy = (j+1)*2*np.pi/params["nx"][1]
-        zz = np.arange(1,params["nx"][2]+1)*2*np.pi/params["nx"][2]
-        
-        c1 = np.sqrt(8.0/3.0)*(np.cos(xx)*np.sin(yy)*np.sin(2.0*zz) +
-            np.cos(yy)*np.sin(zz)*np.sin(2.0*xx)+np.cos(zz)*np.sin(xx)*np.sin(2.0*yy))
-        c2 = np.sqrt(4.0/3.0)*(np.cos(2.0*xx)*np.cos(2.0*yy)+
-            np.cos(2.0*yy)*np.cos(2.0*zz)+np.cos(2.0*zz)*np.cos(2.0*xx))
-        w_A[i,j,:] = -0.3164*c1 +0.1074*c2
-        w_B[i,j,:] =  0.3164*c1 -0.1074*c2
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")

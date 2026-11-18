@@ -1,7 +1,6 @@
 import os
 import time
 import numpy as np
-from scipy.io import savemat, loadmat
 from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
@@ -86,8 +85,8 @@ for i in range(0,n_unitcell):
             sphere_positions.append([i/n_unitcell,j/n_unitcell,k/n_unitcell])
             sphere_positions.append([(i+1/2)/n_unitcell,(j+1/2)/n_unitcell,(k+1/2)/n_unitcell])
 for x,y,z in sphere_positions:
-    molecules, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
-    w_A[molecules,my,mz] = -50/(np.prod(params["lx"])/np.prod(params["nx"]))
+    mx, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
+    w_A[mx,my,mz] = -50/(np.prod(params["lx"])/np.prod(params["nx"]))
 w_A = gaussian_filter(w_A, sigma=np.min(params["nx"])/5, mode='wrap')
 
 # Initialize simulation
@@ -105,21 +104,6 @@ print("total time: %f, time per step: %f" %
     (time_duration, time_duration/params["langevin"]["max_step"]) )
 
 # Recording first a few iteration results for debugging and refactoring
-# (Anderson Mixing)
-# ---------- Run  ----------
-# iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)
-#       53   -1.643E-16  [ 1.1878907E+01  ]     5.662175232   [9.4787668E-05 ]
-# Langevin step:  1
-#       47   -1.789E-15  [ 1.5278634E+03  ]     4.185883622   [9.5230592E-05 ]
-# Langevin step:  2
-#       48    9.779E-16  [ 4.9855374E+01  ]     4.051992910   [9.0729112E-05 ]
-# Langevin step:  3
-#       50   -1.905E-15  [ 2.3041191E+02  ]     4.013633667   [9.1691101E-05 ]
-# Langevin step:  4
-#       51    4.538E-16  [ 1.2099087E+02  ]     4.007848973   [9.6501273E-05 ]
-# Langevin step:  5
-#       51   -1.995E-15  [ 1.6642863E+02  ]     4.000168691   [9.1616075E-05 ]
-
 # (LRAM)
 # ---------- Run  ----------
 # iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)

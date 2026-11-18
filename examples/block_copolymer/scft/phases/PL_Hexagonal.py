@@ -18,20 +18,22 @@ Reference:
 - Loo et al., Macromolecules 2005, 38, 4947
 
 Results:
-- Free energy: F = -0.2100188
-- Box size: lx = [1.963, 1.963, 2.952] (a = b, hexagonal, c/a ~ 1.504)
+- Free energy: F = -0.2103856
+- Box size: lx = [1.9607, 1.9607, 2.9518] (a = b, hexagonal, c/a ~ 1.505)
 """
 
 import os
-import numpy as np
-import scipy.io
-from scipy.ndimage import zoom
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 0.4       # A-fraction of major BCP chain, f
@@ -85,49 +87,27 @@ params = {
     "tolerance": 1e-8               # Convergence tolerance
 }
 
-# Load initial fields from PL.mat (converged PSCF solution)
-# The .mat file uses axis ordering [c, a, b], we need [a, b, c]
-mat_data = scipy.io.loadmat(os.path.join(os.path.dirname(__file__), "PL.mat"))
-mat_nx = mat_data["nx"].flatten()       # [96, 64, 64] in [c, a, b] order
-mat_w_A = mat_data["w_A"].reshape(mat_nx)  # shape: (96, 64, 64)
-mat_w_B = mat_data["w_B"].reshape(mat_nx)
-
-# Transpose from [c, a, b] to [a, b, c] and interpolate to target grid
-mat_w_A = np.transpose(mat_w_A, (1, 2, 0))  # (64, 64, 96)
-mat_w_B = np.transpose(mat_w_B, (1, 2, 0))
-
-# Rescale fields from source chi_n to target chi_n
-# Source: chi_n=50 (w_A mean≈30, w_B mean≈20), Target: chi_n=15
+# Initial fields: a converged PSCF solution at chi N = 50 (PL.mat), whose axes [c, a, b]
+# become [a, b, c], interpolated to the grid and rescaled to chi N of params
+seed = seeds.from_file(os.path.join(os.path.dirname(__file__), "PL.mat"), params["nx"], axes=(1, 2, 0))
 chi_n_source = 50
 chi_n_target = params["chi_n"]["A,B"]
-scale = chi_n_target / chi_n_source
-
-w_A_src = mat_w_A * scale
-w_B_src = mat_w_B * scale
-
-# Interpolate to target grid
-zoom_factors = [params["nx"][i] / w_A_src.shape[i] for i in range(3)]
-w_A = zoom(w_A_src, zoom_factors, mode='wrap', order=3)
-w_B = zoom(w_B_src, zoom_factors, mode='wrap', order=3)
+w = {monomer: field * chi_n_target / chi_n_source for monomer, field in seed["w"].items()}
 
 print(f"Initial field loaded from PL.mat (rescaled chi_n: {chi_n_source} -> {chi_n_target})")
-print(f"  w_A: min={w_A.min():.2f}, max={w_A.max():.2f}, mean={w_A.mean():.2f}")
-print(f"  w_B: min={w_B.min():.2f}, max={w_B.max():.2f}, mean={w_B.mean():.2f}")
+for monomer, field in w.items():
+    print(f"  w_{monomer}: min={field.min():.2f}, max={field.max():.2f}, mean={field.mean():.2f}")
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=w)
 
 # Save final results
 calculation.save_results("PL_Hexagonal.json")
 
 # Recording iteration results for debugging and refactoring
-# Equilibrium: F = -0.2100188, lx = [1.9625, 1.9625, 2.9515], gamma = 120 deg
+# Equilibrium: F = -0.2103856, lx = [1.9607, 1.9607, 2.9518], gamma = 120 deg
 # Space group: P6_3/mmc (No. 194, Hall 488) - staggered perforations (ABAB)
 # (with f=0.4, chi_n=15)

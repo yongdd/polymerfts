@@ -1,13 +1,15 @@
 import os
-import numpy as np
-from scipy.io import savemat
-from scipy.ndimage import gaussian_filter
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 24/90       # A-fraction of major BCP chain, f
@@ -19,8 +21,8 @@ params = {
                                 # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)          # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
+    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
     "chain_model":"continuous",      # "discrete" or "continuous" chain model
     "ds":1/90,                       # Contour step interval, which is equal to 1/N_Ref.
 
@@ -54,33 +56,16 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-# Set initial fields
-w_A = np.zeros(list(params["nx"]), dtype=np.float64)
-w_B = np.zeros(list(params["nx"]), dtype=np.float64)
-print("w_A and w_B are initialized to BCC phase.")
-n_unitcell = 1 # number of unit cell for each direction. the number of total unit cells is n_unitcell^3
-sphere_positions = []
-for i in range(0,n_unitcell):
-    for j in range(0,n_unitcell):
-        for k in range(0,n_unitcell):
-            sphere_positions.append([i/n_unitcell,j/n_unitcell,k/n_unitcell])
-            sphere_positions.append([(i+0/2)/n_unitcell,(j+1/2)/n_unitcell,(k+1/2)/n_unitcell])
-            sphere_positions.append([(i+1/2)/n_unitcell,(j+0/2)/n_unitcell,(k+1/2)/n_unitcell])
-            sphere_positions.append([(i+1/2)/n_unitcell,(j+1/2)/n_unitcell,(k+0/2)/n_unitcell])
-for x,y,z in sphere_positions:
-    molecules, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
-    w_A[molecules,my,mz] = -1/(np.prod(params["lx"])/np.prod(params["nx"]))
-w_A = gaussian_filter(w_A, sigma=np.min(params["nx"])/15, mode='wrap')
+# Set initial fields: smoothed wells of w_A at the A sphere positions (seeds.py)
+sphere_positions = [[0, 0, 0], [0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]]
+seed = seeds.wells(params["nx"], params["lx"], sphere_positions)
+print("w_A and w_B are initialized to FCC phase.")
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("FCC.json")

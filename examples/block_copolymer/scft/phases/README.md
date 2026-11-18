@@ -31,7 +31,15 @@ Initial configurations of network phases are obtained from the Kevin Dorfman's p
 
 ## Initial Field Generation
 
-Phases with non-cubic crystal systems (HCP, Sigma) generate initial fields from **Wyckoff positions** instead of loading from .mat files. PL loads from a converged PSCF solution (PL.mat).
+The scripts build their initial fields with [`../seeds.py`](../seeds.py), shared with
+`../phase_diagram/` and `../crystal_systems/`:
+
+- **Sphere and cylinder phases** (A15, BCC, FCC, SC, Sigma, HCP, Cylinder2D): smoothed wells of
+  w_A at the sphere positions (`seeds.wells`); HCP and Sigma give their **Wyckoff positions**.
+- **Network phases and Fddd** (DD, DG, DP, SD, SG, SP, Fddd): a converged solution in a .mat file,
+  interpolated to the grid of the script (`seeds.from_file`). PL loads a converged PSCF solution
+  (PL.mat). The interpolation (`seeds.resample`) treats the fields as periodic on cell-centred grids.
+- **Lamella1D**: one cosine period (`seeds.lamellae`).
 
 Example (HCP with P6_3/mmc):
 ```python
@@ -40,6 +48,7 @@ sphere_positions = [
     [1/3, 2/3, 1/4],
     [2/3, 1/3, 3/4],
 ]
+seed = seeds.wells(params["nx"], params["lx"], sphere_positions)
 ```
 
 ---
@@ -57,19 +66,32 @@ sphere_positions = [
 
 ## Mesh Reduction
 
-Space group symmetry reduces the computational mesh significantly:
+The space group reduces the work in two ways (see [Space Group Theory](../../../../docs/theory/SpaceGroup.md#physical-bases-for-crysfft)):
 
-| Space Group | Reduction Factor |
-|-------------|------------------|
-| Fm-3m (FCC) | ~192x |
-| Fd-3m (SD) | ~192x |
-| Ia-3d (DG) | ~96x |
-| Im-3m (BCC) | ~48x |
-| Pm-3m (SC) | ~48x |
-| P6_3/mmc (HCP) | ~22x |
-| P6_3/mmc (PL) | ~22x |
-| P4_2/mnm (Sigma) | ~15x |
+- **Fields**: SCFT iterates the fields on the irreducible mesh, the grid points that no symmetry
+  operation maps onto each other, roughly the number of operations of the group fewer than the grid.
+- **Propagators**: the propagators run on a physical basis, a sub-grid on which the transforms work
+  directly: one eighth of the grid (m3 basis) for the cubic, tetragonal and orthorhombic examples,
+  half the grid (z-mirror basis) for P6_3/mmc, and the irreducible mesh where no physical basis
+  applies (SG). The cost of an iteration follows this sub-grid, not the irreducible mesh.
+
+| Phase | Space Group | Grid | Irreducible mesh (grid / mesh) | Propagator basis |
+|-------|-------------|------|--------------------------------|------------------|
+| A15 | Pm-3n | 64³ | 5472 (48x) | m3, 1/8 grid |
+| BCC | Im-3m | 32³ | 408 (80x) | m3, 1/8 grid |
+| FCC | Fm-3m | 32³ | 240 (137x) | m3, 1/8 grid |
+| SC | Pm-3m | 32³ | 816 (40x) | m3, 1/8 grid |
+| SD | Fd-3m | 48³ | 728 (152x) | m3, 1/8 grid |
+| SG | I4_132 | 48³ | 2312 (48x) | irreducible mesh |
+| SP | Pm-3m | 32³ | 816 (40x) | m3, 1/8 grid |
+| DD | Pn-3m | 48³ | 2600 (43x) | m3, 1/8 grid |
+| DG | Ia-3d | 32³ | 344 (95x) | m3, 1/8 grid |
+| DP | Im-3m | 48³ | 1300 (85x) | m3, 1/8 grid |
+| HCP | P6_3/mmc | 48×48×48 | 4908 (23x) | z-mirror, 1/2 grid |
+| PL | P6_3/mmc | 48×48×72 | 7362 (23x) | z-mirror, 1/2 grid |
+| Sigma | P4_2/mnm | 64×64×32 | 8448 (16x) | m3, 1/8 grid |
+| Fddd | Fddd | 84×48×24 | 3024 (32x) | m3, 1/8 grid |
 
 ---
 
-Last updated: 2026-10-21
+Last updated: 2026-11-18

@@ -101,7 +101,7 @@ jupyter notebook plot_wtmd_statistics.ipynb
 cd /path/to/simulation
 cp /path/to/polymerfts/scripts/analysis/plot_wtmd_chib_AB.ipynb .
 jupyter notebook plot_wtmd_chib_AB.ipynb
-# Edit chin (simulation χN), dchiN (shift), and data_dir in the notebook
+# Edit chin, type_pair, data_dir, dchiN and the chain settings of z_inf in the notebook
 ```
 
 **χN Reweighting Analysis:**
@@ -112,20 +112,22 @@ The `plot_wtmd_chib_AB.ipynb` notebook computes free energy at different χN val
 F(\Psi; \chi N + \delta\chi N) = F(\Psi; \chi N) + \frac{\partial F}{\partial \chi N} \cdot \frac{\delta\chi N}{z_\infty}
 ```
 
-where $`z_\infty`$ is the renormalization factor from the discrete chain model.
+where $`z_\infty`$ is the renormalization factor of $`\chi = z_\infty \chi_b`$, which depends on the grid, the box, $`\bar{N}`$, the chain model, $`N`$, $`\zeta N`$ and the smearing ([Section 3](#3-χn-renormalization)). The notebook computes it with `renormalization.py` from `nx`, `lx` and `nbar` of the statistics file and the chain settings of the simulation.
 
 **Parameters in reweighting notebook:**
-- `chin`: Simulation χN value
+- `chin`: the effective χN of the simulation, $`z_\infty \chi_b N`$
+- `type_pair`: the two monomer names of that χN, e.g. `("A", "B")`
 - `dchiN`: χN shift for reweighting (set to 0 for no shift)
-- `z_inf`: Renormalization factor (default: 0.7691138 for discrete chain)
-- `langevin_step`: Step number for statistics file
+- `langevin_step` and `data_dir`: the statistics file
+- `polymerfts_dir`, `chain_model`, `n_segments` ($`N = 1/\Delta s`$), `zeta_n` and `smearing`: the source tree with `renormalization.py` and the settings of the simulation that $`z_\infty`$ needs; or `z_inf`, a value of your own
 
 **Input files:** `wtmd_statistics_XXXXXX.mat` containing:
 - `psi_range`: Order parameter values
 - `u`: Bias potential U(Ψ)
 - `up`: Bias potential derivative U'(Ψ)
 - `I0`: Histogram of visited states
-- `dH_psi_A_B`: Free energy derivative ∂F/∂χN
+- `dH_psi_A_B`: Free energy derivative ∂F/∂χN of the pair (`dH_psi_` and the sorted names of `type_pair`)
+- `nx`, `lx`, `nbar`: grid, box and $`\bar{N}`$ of the simulation
 - `dT`: Temperature factor
 - `dpsi`: Order parameter bin width
 

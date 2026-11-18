@@ -1,6 +1,5 @@
 import os
 import numpy as np
-from scipy.io import savemat, loadmat
 from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
@@ -21,9 +20,8 @@ params = {
                             # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
     "stress_interval":1,        # Compute stress every iteration (for reproducibility)
-    # Relax cell lengths and allowed angles during SCFT iteration.
     "chain_model":"continuous", # "discrete" or "continuous" chain model
     "ds":1/100,                 # Contour step interval, which is equal to 1/N_Ref. 
 
@@ -73,16 +71,12 @@ for i in range(0,n_unitcell):
             sphere_positions.append([i/n_unitcell,j/n_unitcell,k/n_unitcell])
             sphere_positions.append([(i+1/2)/n_unitcell,(j+1/2)/n_unitcell,(k+1/2)/n_unitcell])
 for x,y,z in sphere_positions:
-    molecules, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
-    w_A[molecules,my,mz] = -50/(np.prod(params["lx"])/np.prod(params["nx"]))
+    mx, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
+    w_A[mx,my,mz] = -50/(np.prod(params["lx"])/np.prod(params["nx"]))
 w_A = gaussian_filter(w_A, sigma=np.min(params["nx"])/5, mode='wrap')
-
-# Set a timer
 
 # Run
 calculation.run(initial_fields={"A": w_A, "B": w_B, "C": w_C})
-
-# Estimate execution time
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")

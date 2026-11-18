@@ -1,8 +1,5 @@
 import os
-import time
-import numpy as np
-from scipy.io import savemat, loadmat
-from scipy.ndimage import gaussian_filter
+from scipy.io import loadmat
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -11,7 +8,6 @@ os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 from polymerfts import lfts
 
 f = 0.4        # A-fraction of major BCP chain, f
-eps = 1.0       # a_A/a_B, conformational asymmetry
 
 params = {
     "nx":[64, 64, 64],          # Simulation grid numbers
@@ -81,9 +77,6 @@ w_B = input_data["w_B"]
 # Initialize simulation
 simulation = lfts.LFTS(params=params, random_seed=random_seed)
 
-# Set a timer
-time_start = time.time()
-
 # # Continue simulation with recorded field configurations and random state.
 # simulation.continue_run(file_name="fields_010000.mat")
 
@@ -91,21 +84,6 @@ time_start = time.time()
 simulation.run(initial_fields={"A": w_A, "B": w_B})
 
 # Recording first a few iteration results for debugging and refactoring
-# (Anderson Mixing)
-# ---------- Run  ----------
-# iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)
-#        1    2.295E-18  [ 1.6835907E+01  ]     7.272741449   [9.3906464E-05 ]
-# Langevin step:  1
-#       38    5.704E-16  [ 1.3958888E+01  ]     5.401031083   [8.9368844E-05 ]
-# Langevin step:  2
-#       36   -1.176E-16  [ 2.2166101E+01  ]     7.118772535   [9.4230077E-05 ]
-# Langevin step:  3
-#       39    2.325E-16  [ 2.2177780E+01  ]     7.217326145   [6.6307238E-05 ]
-# Langevin step:  4
-#       38   -8.821E-16  [ 2.1590641E+01  ]     7.240011784   [8.6466100E-05 ]
-# Langevin step:  5
-#       38    7.677E-18  [ 2.1011830E+01  ]     7.239727806   [8.7919974E-05 ]
-
 # (LRAM)
 # ---------- Run  ----------
 # iterations, mass error, total partitions, Hamiltonian, incompressibility error (or saddle point error)

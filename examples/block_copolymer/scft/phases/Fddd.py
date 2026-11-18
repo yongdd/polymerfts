@@ -1,13 +1,15 @@
 import os
-import numpy as np
-import scipy.io
-from scipy.ndimage import gaussian_filter
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 0.43        # A-fraction of major BCP chain, f
@@ -19,8 +21,8 @@ params = {
                                 # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)          # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
+    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
     "chain_model":"continuous",      # "discrete" or "continuous" chain model
     "ds":1/100,                      # Contour step interval, which is equal to 1/N_Ref.
 
@@ -57,25 +59,15 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-# Set initial fields
+# Set initial fields: a converged Fddd solution (FdddInput.mat), interpolated to the grid
+seed = seeds.from_file("FdddInput.mat", params["nx"])
 print("w_A and w_B are initialized to Fddd phase.")
-input_data = scipy.io.loadmat("FdddInput.mat", squeeze_me=True)
-w_A = input_data["w_A"]
-w_B = input_data["w_B"]
-
-# Interpolate input data on params["nx"], if necessary
-w_A = scipy.ndimage.zoom(np.reshape(w_A, input_data["nx"]), params["nx"]/input_data["nx"])
-w_B = scipy.ndimage.zoom(np.reshape(w_B, input_data["nx"]), params["nx"]/input_data["nx"])
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("Fddd.json")

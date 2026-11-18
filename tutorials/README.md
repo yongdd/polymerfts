@@ -73,7 +73,6 @@ solver = PropagatorSolver(
     bc=["periodic"]*4,
     chain_model="continuous",
     numerical_method="rqm4",
-    platform="cpu-fftw",
     reduce_memory=False
 )
 
@@ -131,7 +130,7 @@ The potential field affects chain statistics through:
 
 - Python 3.11+
 - NumPy, Matplotlib
-- `polymerfts` installed (`make install` from build directory)
+- `polymerfts` installed from a wheel (see [Installation](../docs/getting-started/Installation.md))
 - Jupyter notebook or JupyterLab
 
 ## Environment Setup

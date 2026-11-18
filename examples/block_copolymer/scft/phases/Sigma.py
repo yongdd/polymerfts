@@ -1,13 +1,16 @@
 import os
+import sys
 import numpy as np
-from scipy.io import savemat
-from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 0.25        # A-fraction of major BCP chain, f
@@ -22,8 +25,8 @@ params = {
                                 # Standard tetragonal setting: a = b ≠ c (4-fold axis along z)
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)          # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
+    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
     "chain_model":"continuous",      # "discrete" or "continuous" chain model
     "ds":1/100,                      # Contour step interval, which is equal to 1/N_Ref.
 
@@ -57,10 +60,7 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-# Set initial fields
-w_A = np.zeros(list(params["nx"]), dtype=np.float64)
-w_B = np.zeros(list(params["nx"]), dtype=np.float64)
-print("w_A and w_B are initialized to Sigma phase.")
+# Set initial fields: smoothed wells of w_A at the A sphere positions (seeds.py)
 # [Ref: https://doi.org/10.3390/app2030654]
 # Sphere positions rotated from [c,a,a] to [a,a,c] via (x,y,z)->(y,z,x)
 sphere_positions = [
@@ -73,21 +73,14 @@ sphere_positions = [
     [0.18, 0.18, 0.25], [0.82, 0.82, 0.25], [0.68, 0.32, 0.25], [0.32, 0.68, 0.25],  # E
     [0.18, 0.18, 0.75], [0.82, 0.82, 0.75], [0.68, 0.32, 0.75], [0.32, 0.68, 0.75]   # E
 ]
-
-for x,y,z in sphere_positions:
-    molecules, my, mz = np.round((np.array([x, y, z])*params["nx"])).astype(np.int32)
-    w_A[molecules,my,mz] = -1/(np.prod(params["lx"])/np.prod(params["nx"]))
-w_A = gaussian_filter(w_A, sigma=np.min(params["nx"])/15, mode='wrap')
+seed = seeds.wells(params["nx"], params["lx"], sphere_positions)
+print("w_A and w_B are initialized to Sigma phase.")
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("Sigma.json")

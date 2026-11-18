@@ -2,7 +2,7 @@
 
 run() needs a function that puts (x, y) into the simulation parameters and initial
 fields (a seed) of every candidate phase; it makes no other assumption about the
-system. AB_Diblock.py and ABA_Triblock.py in this folder are examples, and seeds.py
+system. AB_Diblock.py and ABA_Triblock.py in this folder are examples, and ../seeds.py
 builds the initial fields of common AB phases.
 
 Every SCFT solve starts from the nearest converged solution of the same phase
@@ -32,7 +32,7 @@ two-phase regions, which need coexistence conditions instead (see
 docs/theory/PhaseEquilibrium.md).
 
 A seed needs only the symmetry and rough shape of its phase, and the same seed can
-serve several systems (seeds.py serves the AB diblock and the ABA triblock), but its
+serve several systems (../seeds.py serves the AB diblock and the ABA triblock), but its
 point must lie where the phase exists in the system; a phase whose seed melts there
 is left out. Close to a critical point all ordered phases
 have F ~ 0 and converge slowly, so the phase that orders first there is not
@@ -52,13 +52,16 @@ from collections import deque
 
 import numpy as np
 import scipy.io
-import scipy.ndimage
 from scipy.optimize import brentq
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from polymerfts import scft, ValidationError
+
+# Initial fields of common phases and their periodic resampling (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 DIS = "DIS"             # name of the homogeneous state
 
@@ -172,7 +175,7 @@ def run(base_params, set_point, phases, x_grid, y_grid, x_tol, y_tol,
     base_params    parameters shared by all phases
     set_point      function(params, x, y) that puts (x, y) into params
     phases         {name: {"seed": initial fields {"w": {monomer: array}, "lx": lx}
-                                   (see seeds.py), or a file in seed_dir saved by
+                                   (see ../seeds.py), or a file in seed_dir saved by
                                    SCFT.save_results (.json or .mat),
                            "point": (x, y) where the seed is converged,
                            "params": parameters of this phase (nx, space_group, ...),
@@ -333,9 +336,7 @@ def run(base_params, set_point, phases, x_grid, y_grid, x_tol, y_tol,
         for key in data:
             if key.startswith("w_"):
                 field = np.reshape(np.array(data[key], dtype=np.float64), nx_seed)
-                if list(nx) != nx_seed:
-                    field = scipy.ndimage.zoom(field, np.array(nx)/np.array(nx_seed), mode="grid-wrap")
-                w[key[2:]] = field
+                w[key[2:]] = seeds.resample(field, nx)
         return {"x": x, "y": y, "w": w, "lx": [float(v) for v in np.atleast_1d(data["lx"])]}
 
     time_start = time.perf_counter()

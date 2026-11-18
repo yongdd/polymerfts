@@ -1,7 +1,5 @@
 import os
 import numpy as np
-from scipy.io import savemat, loadmat
-from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -75,12 +73,8 @@ for i in range(0,params["nx"][0]):
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
 calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")
