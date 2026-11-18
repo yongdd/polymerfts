@@ -210,43 +210,42 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         }
         else
         {
-            // Full step
+            // The full step and the first half step start from the same input
             for (int i = 0; i < M_full; ++i)
+            {
                 q_out1[i] = _exp_dw[i] * fft_in[i];
-
-            this->transform_forward(q_out1.data(), k_q_in1.data());
-            this->multiply_fourier_coeffs(k_q_in1.data(), _boltz_bond, M_COMPLEX);
-            this->transform_backward(k_q_in1.data(), q_out1.data());
-
-            for (int i = 0; i < M_full; ++i)
-                q_out1[i] *= _exp_dw[i];
-
-            // First half step
-            for (int i = 0; i < M_full; ++i)
                 q_out2[i] = _exp_dw_half[i] * fft_in[i];
+            }
 
+            // Full step (its last factor exp(-w·ds/2) comes with the extrapolation)
+            this->transform_forward(q_out1.data(), k_q_in1.data());
+            this->transform_backward(k_q_in1.data(), _boltz_bond, q_out1.data(), nullptr);
+
+            // Two half steps, exp(-w·ds/2) between them (the last exp(-w·ds/4) comes with the extrapolation)
             this->transform_forward(q_out2.data(), k_q_in2.data());
-            this->multiply_fourier_coeffs(k_q_in2.data(), _boltz_bond_half, M_COMPLEX);
-            this->transform_backward(k_q_in2.data(), q_out2.data());
-
-            for (int i = 0; i < M_full; ++i)
-                q_out2[i] *= _exp_dw[i];
-
-            // Second half step
+            this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), _exp_dw);
             this->transform_forward(q_out2.data(), k_q_in2.data());
-            this->multiply_fourier_coeffs(k_q_in2.data(), _boltz_bond_half, M_COMPLEX);
-            this->transform_backward(k_q_in2.data(), q_out2.data());
-
-            for (int i = 0; i < M_full; ++i)
-                q_out2[i] *= _exp_dw_half[i];
+            this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), nullptr);
         }
 
         // ===== RQM4: Richardson extrapolation =====
         // Into q_out, unless a full-grid result is reduced to the basis of a space group afterwards
         const bool reduce_full_grid = this->space_group_ != nullptr && !crysfft_path;
         T* q_richardson = reduce_full_grid ? q_out2.data() : q_out;
-        for (int i = 0; i < M_out; ++i)
-            q_richardson[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
+        if (crysfft_path)
+        {
+            for (int i = 0; i < M_out; ++i)
+                q_richardson[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
+        }
+        else
+        {
+            for (int i = 0; i < M_out; ++i)
+            {
+                const T q_full = q_out1[i] * _exp_dw[i];
+                const T q_half = q_out2[i] * _exp_dw_half[i];
+                q_richardson[i] = (4.0 * q_half - q_full) / 3.0;
+            }
+        }
 
         // Reduce full grid → reduced basis
         if (reduce_full_grid)

@@ -230,6 +230,11 @@ protected:
     virtual void apply_impl(const std::vector<FourierTerm<T>>& terms, int n_out, T* out) = 0;
     virtual void forward_impl(const T* fields, int n_fields, double* coefficients) = 0;
     virtual void backward_impl(const double* coefficients, int n_fields, T* fields) = 0;
+
+    /// backward() of a real field with periodic axes, whose coefficients make_hermitian() treats
+    /// first. The default treats a copy and calls backward_impl(); a platform may treat the copy
+    /// that its transform makes anyway.
+    virtual void backward_hermitian_impl(const double* coefficients, int n_fields, T* fields);
 };
 
 #endif

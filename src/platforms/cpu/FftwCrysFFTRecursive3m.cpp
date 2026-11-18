@@ -21,6 +21,12 @@ struct AlignedDeleter {
     void operator()(fftw_complex* ptr) const { if (ptr) fftw_free(ptr); }
 };
 
+/// The new-array execute functions take arrays of the alignment of the planning arrays
+bool has_plan_alignment(const double* p)
+{
+    return fftw_alignment_of(const_cast<double*>(p)) == 0;
+}
+
 }  // namespace
 
 //------------------------------------------------------------------------------
@@ -102,7 +108,9 @@ void FftwCrysFFTRecursive3m::apply_with_table(
     const double* table, const double* q_in, double* q_out) const
 {
     // fftw_malloc'd like the planning arrays: the new-array execute functions
-    // need the alignment the plans were made with
+    // need the alignment the plans were made with. The transforms run on the
+    // caller's fields when they have it (the r2c transform keeps its input) and
+    // otherwise on the copy in iomat.
     struct ThreadBuffers {
         std::unique_ptr<double, AlignedDeleter> iomat;
         std::unique_ptr<fftw_complex, AlignedDeleter> step1;
@@ -124,10 +132,15 @@ void FftwCrysFFTRecursive3m::apply_with_table(
         buffers.size = M_physical_;
     }
 
-    std::memcpy(buffers.iomat.get(), q_in, sizeof(double) * M_physical_);
+    const double* r2c_in = q_in;
+    if (!has_plan_alignment(q_in))
+    {
+        std::memcpy(buffers.iomat.get(), q_in, sizeof(double) * M_physical_);
+        r2c_in = buffers.iomat.get();
+    }
 
     // Forward r2c FFT
-    fftw_execute_dft_r2c(plan_forward_, buffers.iomat.get(), buffers.step1.get());
+    fftw_execute_dft_r2c(plan_forward_, const_cast<double*>(r2c_in), buffers.step1.get());
 
     const int Nx2 = nx_physical_[0];
     const int Ny2 = nx_physical_[1];
@@ -177,7 +190,13 @@ void FftwCrysFFTRecursive3m::apply_with_table(
     }
 
     // Backward c2r FFT
-    fftw_execute_dft_c2r(plan_backward_, buffers.step2.get(), buffers.iomat.get());
-
-    std::memcpy(q_out, buffers.iomat.get(), sizeof(double) * M_physical_);
+    if (has_plan_alignment(q_out))
+    {
+        fftw_execute_dft_c2r(plan_backward_, buffers.step2.get(), q_out);
+    }
+    else
+    {
+        fftw_execute_dft_c2r(plan_backward_, buffers.step2.get(), buffers.iomat.get());
+        std::memcpy(q_out, buffers.iomat.get(), sizeof(double) * M_physical_);
+    }
 }

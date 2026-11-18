@@ -194,14 +194,9 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
             for (int i = 0; i < M_full; ++i)
                 fft_out[i] = _exp_dw[i] * fft_in[i];
 
-            // Step 2-4: Forward FFT -> multiply by Boltzmann factor -> Backward FFT
+            // Step 2-5: Forward FFT -> multiply by Boltzmann factor -> Backward FFT -> exp(-w·ds/2) * result
             this->transform_forward(fft_out, k_q_in.data());
-            this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond, M_COMPLEX);
-            this->transform_backward(k_q_in.data(), fft_out);
-
-            // Step 5: exp(-w·ds/2) * result
-            for (int i = 0; i < M_full; ++i)
-                fft_out[i] *= _exp_dw[i];
+            this->transform_backward(k_q_in.data(), _boltz_bond, fft_out, _exp_dw);
 
             // Reduce full grid → reduced basis
             if (this->space_group_ != nullptr)

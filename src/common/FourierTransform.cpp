@@ -227,17 +227,21 @@ void FourierTransform<T>::backward(const double* coefficients, int n_fields, T* 
 {
     if (n_fields < 1)
         throw_with_line_number("backward() needs at least one field.");
+    // The inverse r2c transforms read the planes of make_hermitian() differently
     if (periodic_ && std::is_same_v<T, double>)
-    {
-        // The inverse r2c transforms read the planes of make_hermitian() differently
-        std::vector<std::complex<double>> hermitian(
-            reinterpret_cast<const std::complex<double>*>(coefficients),
-            reinterpret_cast<const std::complex<double>*>(coefficients) + static_cast<long long>(n_fields) * n_coefficients_);
-        make_hermitian(hermitian.data(), n_fields);
-        backward_impl(reinterpret_cast<const double*>(hermitian.data()), n_fields, fields);
-        return;
-    }
-    backward_impl(coefficients, n_fields, fields);
+        backward_hermitian_impl(coefficients, n_fields, fields);
+    else
+        backward_impl(coefficients, n_fields, fields);
+}
+
+template <typename T>
+void FourierTransform<T>::backward_hermitian_impl(const double* coefficients, int n_fields, T* fields)
+{
+    std::vector<std::complex<double>> hermitian(
+        reinterpret_cast<const std::complex<double>*>(coefficients),
+        reinterpret_cast<const std::complex<double>*>(coefficients) + static_cast<long long>(n_fields) * n_coefficients_);
+    make_hermitian(hermitian.data(), n_fields);
+    backward_impl(reinterpret_cast<const double*>(hermitian.data()), n_fields, fields);
 }
 
 template class FourierTransform<double>;

@@ -12,6 +12,8 @@
  *
  * - `forward(T*, double*)` / `backward(double*, T*)`: Universal interface for all BCs
  * - `forward(T*, complex<double>*)` / `backward(complex<double>*, T*)`: Periodic BC only
+ * - `backward_with_factors(double*, k_factor, T*, r_factor)`: the backward transform with a factor
+ *   on the coefficients and one on the grid, as a propagator step takes it
  *
  * **Design Rationale:**
  *
@@ -84,7 +86,8 @@ public:
     /**
      * @brief Perform forward transform (real coefficient interface).
      *
-     * Works for all boundary conditions:
+     * The CPU implementations take all boundary conditions; CudaFFT, which the
+     * CUDA solvers build for walls only, refuses periodic boxes.
      * - PERIODIC: real-to-complex FFT (output is interleaved real/imag)
      * - REFLECTING: DCT-II
      * - ABSORBING: DST-II
@@ -97,7 +100,7 @@ public:
     /**
      * @brief Perform backward transform (real coefficient interface).
      *
-     * Works for all boundary conditions:
+     * Boundary conditions as for forward():
      * - PERIODIC: complex-to-real IFFT with 1/N normalization
      * - REFLECTING: DCT-III with normalization
      * - ABSORBING: DST-III with normalization
@@ -128,6 +131,58 @@ public:
      * @throws Exception if any dimension is non-periodic
      */
     virtual void backward(std::complex<double>* cdata, T* rdata) = 0;
+
+    /**
+     * @brief Backward transform of the coefficients times k_factor, times r_factor:
+     *        rdata = r_factor · backward(k_factor · cdata).
+     *
+     * k_factor holds one value per coefficient of backward(double*, T*) (a complex
+     * coefficient, or a real one of the cosine and sine series), r_factor one per
+     * grid point; either may be nullptr. The products are those of separate loops
+     * around backward(), so the result is the same bit for bit. cdata may be
+     * overwritten. The default multiplies cdata in place, runs backward() and then
+     * multiplies by r_factor, with the sizes of set_sizes(). It has a name of its
+     * own: an overload of backward() would be hidden in every transform that
+     * overrides backward().
+     */
+    virtual void backward_with_factors(double* cdata, const double* k_factor, T* rdata, const T* r_factor)
+    {
+        if (n_grid_ == 0)
+            throw_with_line_number("This transform has no sizes for backward_with_factors().");
+        if (k_factor != nullptr)
+        {
+            if (complex_coefficients_)
+            {
+                std::complex<double>* c = reinterpret_cast<std::complex<double>*>(cdata);
+                for (int i = 0; i < n_coefficients_; ++i)
+                    c[i] *= k_factor[i];
+            }
+            else
+            {
+                for (int i = 0; i < n_coefficients_; ++i)
+                    cdata[i] *= k_factor[i];
+            }
+        }
+        backward(cdata, rdata);
+        if (r_factor != nullptr)
+            for (int i = 0; i < n_grid_; ++i)
+                rdata[i] *= r_factor[i];
+    }
+
+protected:
+    /// Sizes of the default backward_with_factors(): grid points, coefficients
+    /// and whether a coefficient is a complex number (two doubles)
+    void set_sizes(int n_grid, int n_coefficients, bool complex_coefficients)
+    {
+        n_grid_ = n_grid;
+        n_coefficients_ = n_coefficients;
+        complex_coefficients_ = complex_coefficients;
+    }
+
+private:
+    int n_grid_ = 0;
+    int n_coefficients_ = 0;
+    bool complex_coefficients_ = false;
 };
 
 #endif

@@ -33,7 +33,10 @@
 #define CPU_SOLVER_REAL_SPACE_DISCRETE_H_
 
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "ComputationBox.h"
@@ -53,9 +56,33 @@ private:
     /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
     RealSpaceBond::Bonds bonds;
 
+    /**
+     * @brief Work arrays of one calling thread.
+     *
+     * The propagators run in OpenMP threads, so every thread needs its own
+     * arrays. They are owned by the solver and released with it (thread_local
+     * arrays would stay allocated until the threads end).
+     */
+    struct WorkArrays
+    {
+        std::vector<T> full_1, full_2;   ///< full-grid propagators (space group): the input and output, or the stress pair
+        std::vector<T> dq;               ///< stress: the derivative of the bond applied to q_2
+        std::vector<T> pass_a, pass_b;   ///< convolve(): results of the axis passes
+        std::vector<T> line;             ///< convolve(): a line with its halo
+    };
+    mutable std::mutex work_mutex_;
+    mutable std::unordered_map<std::thread::id, WorkArrays> work_arrays_;   ///< Per-thread work arrays
+
+    /// Work arrays of the calling thread (created on first use)
+    WorkArrays& work_arrays() const
+    {
+        std::lock_guard<std::mutex> lock(work_mutex_);
+        return work_arrays_[std::this_thread::get_id()];
+    }
+
     /// q_out = g * q_in, one axis after another, on the full grid; a derivative replaces the kernel
     /// of axis derivative_axis
-    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
+    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels, WorkArrays& work,
                   int derivative_axis = -1, const RealSpaceBond::Derivative* derivative = nullptr) const;
     /// q on the full grid: q itself, or with a space group its expansion into buffer
     const T* expanded(const T* q, std::vector<T>& buffer) const;

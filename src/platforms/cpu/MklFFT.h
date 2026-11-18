@@ -67,7 +67,6 @@ class MklFFT : public FFT<T>
 private:
     std::array<int, DIM> nx_;                      ///< Grid dimensions
     int total_grid_;                               ///< Total real grid size
-    int total_complex_grid_;                       ///< Total complex grid size
 
     // MKL DFTI descriptors
     DFTI_DESCRIPTOR_HANDLE hand_forward_ = nullptr;   ///< Forward (r2c or c2c) transform
@@ -86,18 +85,6 @@ public:
 
     /// Destructor. Frees the MKL DFTI descriptors.
     ~MklFFT();
-
-    /**
-     * @brief Get total complex grid size: Nx * Ny * (Nz/2+1) for a real field,
-     *        Nx * Ny * Nz for a complex field.
-     */
-    int get_total_complex_grid() const { return total_complex_grid_; }
-
-    /**
-     * @brief Get total real grid size.
-     * @return Total grid size
-     */
-    int get_total_grid() const { return total_grid_; }
 
     /**
      * @brief Perform forward FFT (complex output interface).

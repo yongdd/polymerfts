@@ -200,13 +200,9 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
         else
         {
             // Forward transform -> multiply by bond function ĝ(k) -> Backward transform
+            // -> exp(-w*ds) in real space
             this->transform_forward(fft_in, k_q_in.data());
-            this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond, M_COMPLEX);
-            this->transform_backward(k_q_in.data(), fft_out);
-
-            // Evaluate exp(-w*ds) in real space
-            for (int i = 0; i < M_full; ++i)
-                fft_out[i] *= _exp_dw[i];
+            this->transform_backward(k_q_in.data(), _boltz_bond, fft_out, _exp_dw);
 
             // Reduce full grid → reduced basis
             if (this->space_group_ != nullptr)
@@ -298,8 +294,7 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         {
             // Forward transform -> multiply by half-bond function ĝ^(1/2)(k) -> Backward transform
             this->transform_forward(fft_in, k_q_in.data());
-            this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond_half, M_COMPLEX);
-            this->transform_backward(k_q_in.data(), fft_out);
+            this->transform_backward(k_q_in.data(), _boltz_bond_half, fft_out, nullptr);
 
             // Reduce full grid → reduced basis
             if (this->space_group_ != nullptr)

@@ -127,9 +127,9 @@ MklFFT<T, DIM>::MklFFT(std::array<int, DIM> nx)
 
     // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
     if constexpr (std::is_same<T, double>::value)
-        total_complex_grid_ = total_grid_ / nx_[DIM - 1] * (nx_[DIM - 1] / 2 + 1);
+        this->set_sizes(total_grid_, total_grid_ / nx_[DIM - 1] * (nx_[DIM - 1] / 2 + 1), true);
     else
-        total_complex_grid_ = total_grid_;
+        this->set_sizes(total_grid_, total_grid_, true);
 
     try
     {

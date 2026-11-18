@@ -101,21 +101,40 @@ void CpuFourierTransform<T>::forward_impl(const T* fields, int n_fields, double*
 template <typename T>
 void CpuFourierTransform<T>::backward_impl(const double* coefficients, int n_fields, T* fields)
 {
+    // The inverse transforms keep the coefficients: MakhoulTransform (mixed boxes and walls) and
+    // FFTW's complex-to-real transform, which overwrites its input, read them into thread-local
+    // scratch, and MKL and FFTW's complex-to-complex transform run out of place on them
+    backward_fields(const_cast<double*>(coefficients), n_fields, fields, false);
+}
+
+template <typename T>
+void CpuFourierTransform<T>::backward_hermitian_impl(const double* coefficients, int n_fields, T* fields)
+{
+    // A copy of the coefficients, made Hermitian, which the transforms may then overwrite
+    const long long n = n_fields * this->coefficient_stride();
+    double* copy = coefficients_out_.get(n);
+    std::copy_n(coefficients, n, copy);
+    this->make_hermitian(reinterpret_cast<std::complex<double>*>(copy), n_fields);
+    backward_fields(copy, n_fields, fields, true);
+}
+
+template <typename T>
+void CpuFourierTransform<T>::backward_fields(double* coefficients, int n_fields, T* fields, bool give_up)
+{
     const long long n_grid = this->n_grid_;
     const long long stride = this->coefficient_stride();
     ParallelErrors errors;
-    // The inverse transforms keep the coefficients: MakhoulTransform (mixed boxes and walls) and
-    // FFTW's complex-to-real transform, which overwrites its input, read them into thread-local
-    // scratch, and MKL and FFTW's complex-to-complex transform run out of place on them. A real
-    // field of a mixed box is the real part of the inverse
+    // A real field of a mixed box is the real part of the inverse
     #pragma omp parallel for
     for (int f = 0; f < n_fields; ++f)
         errors.run([&] {
             if (this->mixed_)
                 mixed_fft_->backward(reinterpret_cast<const std::complex<double>*>(coefficients + f * stride),
                                      fields + f * n_grid, 1.0 / static_cast<double>(n_grid));
+            else if (give_up)
+                fft_->backward_with_factors(coefficients + f * stride, nullptr, fields + f * n_grid, nullptr);
             else
-                fft_->backward(const_cast<double*>(coefficients + f * stride), fields + f * n_grid);
+                fft_->backward(coefficients + f * stride, fields + f * n_grid);
         });
     errors.rethrow();
 }
@@ -128,27 +147,27 @@ void CpuFourierTransform<T>::apply_impl(const std::vector<FourierTerm<T>>& terms
     int max_in = 0;
     for (const FourierTerm<T>& term : terms)
         max_in = std::max(max_in, term.n_fields);
-    coefficients_in_.resize(max_in * stride);
-    coefficients_out_.resize(n_out * stride);
+    double* coefficients_in = coefficients_in_.get(max_in * stride);
+    double* coefficients_out = coefficients_out_.get(n_out * stride);
 
     for (size_t t = 0; t < terms.size(); ++t)
     {
         const FourierTerm<T>& term = terms[t];
         const auto* m = static_cast<const CpuFourierMultiplier<T>*>(term.multiplier);
-        forward_impl(term.fields, term.n_fields, coefficients_in_.data());
+        forward_impl(term.fields, term.n_fields, coefficients_in);
         if (this->complex_coefficients_)
         {
-            multiply(reinterpret_cast<std::complex<double>*>(coefficients_out_.data()), m->complex_values.data(),
-                     reinterpret_cast<const std::complex<double>*>(coefficients_in_.data()),
+            multiply(reinterpret_cast<std::complex<double>*>(coefficients_out), m->complex_values.data(),
+                     reinterpret_cast<const std::complex<double>*>(coefficients_in),
                      n_out, m->get_n_in(), m->is_diagonal(), n, t > 0);
         }
         else
         {
-            multiply(coefficients_out_.data(), m->real_values.data(), coefficients_in_.data(),
+            multiply(coefficients_out, m->real_values.data(), coefficients_in,
                      n_out, m->get_n_in(), m->is_diagonal(), n, t > 0);
         }
     }
-    backward_impl(coefficients_out_.data(), n_out, out);
+    backward_fields(coefficients_out, n_out, out, true);
 }
 
 template class CpuFourierTransform<double>;

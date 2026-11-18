@@ -20,6 +20,10 @@
  * 2. Y-direction sweep: compute q**
  * 3. Z-direction sweep: compute q^(n+1)
  *
+ * Each sweep solves all lines of a plane together (see CpuSolverCNADI): the
+ * right-hand side of the plane first, then the Thomas sweeps over the factors
+ * of TridiagonalLines with the lines innermost.
+ *
  * **Boundary Conditions:**
  *
  * Supports periodic, reflecting (Neumann), and absorbing (Dirichlet)
@@ -28,22 +32,181 @@
  * **Limitation:**
  *
  * Only supports continuous chain model (not discrete).
- * Stress computation not yet implemented.
+ * Stress computation not implemented.
  *
  * @see FiniteDifference for matrix coefficient computation
  */
 
-#include <iostream>
+#include <algorithm>
+#include <array>
 #include <cmath>
-#include <numbers>
+#include <type_traits>
+#include <utility>
 
 #include "CpuSolverCNADI.h"
 
+//------------------------------------------------------------------------------
+// TridiagonalLines
+//------------------------------------------------------------------------------
+TridiagonalLines::TridiagonalLines(std::vector<double> l, std::vector<double> d, std::vector<double> h, bool periodic)
+    : l_(std::move(l)), d_(std::move(d)), h_(std::move(h)), periodic_(periodic)
+{
+    const int n = size();
+    if (n < 2 || l_.size() != d_.size() || h_.size() != d_.size())
+        throw_with_line_number("A tridiagonal matrix needs at least two rows and three diagonals of one length.");
+
+    // The steps of the Thomas algorithm that do not involve the right-hand side, in its order
+    den_.resize(n);
+    c_star_.resize(n - 1);
+    if (!periodic_)
+    {
+        den_[0] = d_[0];
+        for (int i = 1; i < n; ++i)
+        {
+            c_star_[i - 1] = h_[i - 1] / den_[i - 1];
+            den_[i] = d_[i] - l_[i] * c_star_[i - 1];
+        }
+        return;
+    }
+
+    // Cyclic: the Sherman-Morrison correction with u = (gamma, 0, ..., h[n-1]); a negative
+    // diagonal-sized gamma avoids cancellation when diffusion is small
+    const double gamma = -d_[0];
+    q_.resize(n);
+    den_[0] = d_[0] - gamma;
+    q_[0] = gamma / den_[0];
+    for (int i = 1; i < n - 1; ++i)
+    {
+        c_star_[i - 1] = h_[i - 1] / den_[i - 1];
+        den_[i] = d_[i] - l_[i] * c_star_[i - 1];
+        q_[i] = (-l_[i] * q_[i - 1]) / den_[i];
+    }
+    c_star_[n - 2] = h_[n - 2] / den_[n - 2];
+    den_[n - 1] = d_[n - 1] - h_[n - 1] * l_[0] / gamma - l_[n - 1] * c_star_[n - 2];
+    q_[n - 1] = (h_[n - 1] - l_[n - 1] * q_[n - 2]) / den_[n - 1];
+    for (int i = n - 2; i >= 0; i--)
+        q_[i] = q_[i] - c_star_[i] * q_[i + 1];
+    l0_gamma_ = l_[0] / gamma;
+    q_den_ = 1.0 + q_[0] + l0_gamma_ * q_[n - 1];
+}
+
+void TridiagonalLines::solve(const double* rhs, double* x, long stride, long count, double* correction) const
+{
+    const int n = size();
+
+    // The sweeps over `lines` lines, the lines innermost; one line (1D) is compiled
+    // without the inner loops
+    auto sweeps = [&](auto lines) {
+        // Forward sweep
+        for (long c = 0; c < lines; ++c)
+            x[c] = rhs[c] / den_[0];
+        for (int i = 1; i < n; ++i)
+        {
+            const double l = l_[i];
+            const double den = den_[i];
+            const double* r = rhs + i * count;
+            const double* x_prev = x + (i - 1) * stride;
+            double* x_i = x + i * stride;
+            for (long c = 0; c < lines; ++c)
+                x_i[c] = (r[c] - l * x_prev[c]) / den;
+        }
+
+        // Backward substitution
+        for (int i = n - 2; i >= 0; i--)
+        {
+            const double c_star = c_star_[i];
+            const double* x_next = x + (i + 1) * stride;
+            double* x_i = x + i * stride;
+            for (long c = 0; c < lines; ++c)
+                x_i[c] = x_i[c] - c_star * x_next[c];
+        }
+
+        if (!periodic_)
+            return;
+
+        // Sherman-Morrison correction of the cyclic matrix
+        const double* x_last = x + (n - 1) * stride;
+        for (long c = 0; c < lines; ++c)
+            correction[c] = (x[c] + l0_gamma_ * x_last[c]) / q_den_;
+        for (int i = 0; i < n; ++i)
+        {
+            const double q = q_[i];
+            double* x_i = x + i * stride;
+            for (long c = 0; c < lines; ++c)
+                x_i[c] = x_i[c] - q * correction[c];
+        }
+    };
+    if (count == 1)
+        sweeps(std::integral_constant<long, 1>{});
+    else
+        sweeps(count);
+}
+
+namespace
+{
+/// f(k, k_lower, k_upper) for k = 0..n-1 (n >= 2): the neighbours of the tables at both
+/// ends of the axis and k-1, k+1 in between, where every table has them
+template <typename F>
+inline void along_axis(int n, const int* lower, const int* upper, F f)
+{
+    f(0, lower[0], upper[0]);
+    for (int k = 1; k < n - 1; ++k)
+        f(k, k - 1, k + 1);
+    f(n - 1, lower[n - 1], upper[n - 1]);
+}
+
+/**
+ * The sweep along the contiguous axis (n points): n_planes planes of `count` grid rows.
+ * rhs_row(row, r) writes the right-hand side of grid row `row` (points row·n to row·n + n - 1)
+ * to r[k·count], k = 0..n-1; each plane is solved transposed and in place, the rows innermost,
+ * and q_out = exp_dw · solution.
+ */
+template <typename RhsRow>
+void sweep_contiguous(const TridiagonalLines& m, long n_planes, int count, RhsRow rhs_row,
+                      const double* exp_dw, double* q_out, double* plane, double* correction)
+{
+    const int n = m.size();
+    for (long p = 0; p < n_planes; ++p)
+    {
+        for (int c = 0; c < count; ++c)
+            rhs_row(p * count + c, plane + c);
+        m.solve(plane, plane, count, count, correction);
+        for (int c = 0; c < count; ++c)
+        {
+            const long row = (p * count + c) * n;
+            for (int k = 0; k < n; ++k)
+                q_out[row + k] = plane[static_cast<long>(k) * count + c] * exp_dw[row + k];
+        }
+    }
+}
+
+/// The last sweep of a 2D or 3D grid, along the contiguous axis: the right-hand side
+/// s + (d - 1) a + l a_- + h a_+ of the previous sweep's result s and a = exp_dw · q_in
+void last_sweep(const TridiagonalLines& m, const int* lower, const int* upper, const double* s, const double* a,
+                const double* exp_dw, double* q_out, long n_planes, int count, double* plane, double* correction)
+{
+    const int n = m.size();
+    const double* l = m.lower();
+    const double* d = m.diagonal();
+    const double* h = m.upper();
+    sweep_contiguous(m, n_planes, count, [&](long row, double* r) {
+        const double* s_row = s + row * n;
+        const double* a_row = a + row * n;
+        along_axis(n, lower, upper, [&](int k, int km, int kp) {
+            r[static_cast<long>(k) * count] = s_row[k] + (d[k]-1.0)*a_row[k] + l[k]*a_row[km] + h[k]*a_row[kp];
+        });
+    }, exp_dw, q_out, plane, correction);
+}
+}  // namespace
+
+//------------------------------------------------------------------------------
+// CpuSolverCNADI
+//------------------------------------------------------------------------------
 /**
  * @brief Construct CN-ADI solver for continuous chains.
  *
- * Allocates tridiagonal matrix coefficients for each dimension
- * and monomer type.
+ * Builds the neighbour tables of the axes and the tridiagonal matrices for each
+ * ds value and monomer type.
  *
  * @param cb            Computation box for grid and boundary info
  * @param molecules     Molecular system (must use continuous model)
@@ -63,52 +226,39 @@ CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules)
             throw_with_line_number("Real-space method only supports orthogonal unit cells. "
                                    "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
 
+        dim_ = cb->get_dim();
+        nx_ = cb->get_nx();
+
         // The tridiagonal solvers need at least two points on every axis
-        for (int d = 0; d < cb->get_dim(); d++)
-            if (cb->get_nx(d) < 2)
+        for (int d = 0; d < dim_; d++)
+            if (nx_[d] < 2)
                 throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
-                                       + std::to_string(d) + "] = " + std::to_string(cb->get_nx(d)) + ".");
+                                       + std::to_string(d) + "] = " + std::to_string(nx_[d]) + ".");
 
-        // for(size_t i=0; i<cb->get_boundary_conditions().size(); i++)
-        // {
-        //     if (cb->get_boundary_condition(i) == BoundaryCondition::PERIODIC)
-        //         throw_with_line_number("Currently, we do not support periodic boundary conditions in real-space method");
-        // }
-
-        const int M = cb->get_total_grid();
-
-        // Ensure ContourLengthMapping is finalized
-        molecules->finalize_contour_length_mapping();
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // One tridiagonal coefficient per grid position along each axis (an axis
-        // the grid does not have gets one unused entry, as in the CUDA solver)
-        const int DIM = cb->get_dim();
-        const std::vector<int> nx = cb->get_nx();
-        const size_t n_x = nx[0];
-        const size_t n_y = DIM >= 2 ? nx[1] : 1;
-        const size_t n_z = DIM >= 3 ? nx[2] : 1;
-
-        // Create exp_dw vectors and tridiagonal matrix coefficient arrays for each ds_index
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
+        // Neighbours along each axis: a periodic side wraps around; at a wall the
+        // point itself, whose coefficient FiniteDifference sets to zero
+        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+        lower_.resize(dim_);
+        upper_.resize(dim_);
+        for (int d = 0; d < dim_; ++d)
         {
-            for(const auto& item: molecules->get_bond_lengths())
+            const int n = nx_[d];
+            lower_[d].resize(n);
+            upper_[d].resize(n);
+            for (int i = 0; i < n; ++i)
             {
-                std::string monomer_type = item.first;
-                exp_dw     [ds_idx][monomer_type].resize(M);
-
-                // Full step coefficients (xl, xd, xh, yl, ..., zh)
-                for(auto* coeff: {&xl, &xd, &xh})
-                    (*coeff)[ds_idx][monomer_type].resize(n_x);
-                for(auto* coeff: {&yl, &yd, &yh})
-                    (*coeff)[ds_idx][monomer_type].resize(n_y);
-                for(auto* coeff: {&zl, &zd, &zh})
-                    (*coeff)[ds_idx][monomer_type].resize(n_z);
+                lower_[d][i] = (bc[2*d] == BoundaryCondition::PERIODIC) ? (n + i - 1) % n : std::max(0, i - 1);
+                upper_[d][i] = (bc[2*d+1] == BoundaryCondition::PERIODIC) ? (i + 1) % n : std::min(n - 1, i + 1);
             }
         }
+
+        // Boltzmann factors for each unique ds value of the ContourLengthMapping
+        const int M = cb->get_total_grid();
+        molecules->finalize_contour_length_mapping();
+        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+            for (const auto& item : molecules->get_bond_lengths())
+                exp_dw[ds_idx][item.first].resize(M);
 
         update_laplacian_operator();
     }
@@ -117,53 +267,45 @@ CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules)
         throw_without_line_number(exc.what());
     }
 }
-CpuSolverCNADI::~CpuSolverCNADI() = default;   // the coefficient tables are std::vector members
-int CpuSolverCNADI::max_of_two(int x, int y)
-{
-   return (x > y) ? x : y;
-}
-int CpuSolverCNADI::min_of_two(int x, int y)
-{
-   return (x < y) ? x : y;
-}
+
 void CpuSolverCNADI::update_laplacian_operator()
 {
-    try
+    if (!cb->is_orthogonal())
+        throw_with_line_number("CN-ADI requires an orthogonal computation box.");
+
+    const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+    const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
     {
-        if (!cb->is_orthogonal())
-            throw_with_line_number("CN-ADI requires an orthogonal computation box.");
+        double local_ds = mapping.get_ds_from_index(ds_idx);
 
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // Compute coefficients for each unique ds value
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
+        for(const auto& item: this->molecules->get_bond_lengths())
         {
-            double local_ds = mapping.get_ds_from_index(ds_idx);
+            const std::string& monomer_type = item.first;
+            double bond_length_sq = item.second*item.second;
 
-            for(const auto& item: this->molecules->get_bond_lengths())
-            {
-                std::string monomer_type = item.first;
-                double bond_length_sq = item.second*item.second;
+            // Lower, main and upper diagonal of each axis (an axis the grid does not
+            // have gets one unused entry)
+            std::array<std::vector<double>, 9> diagonals;
+            for (int a = 0; a < 3; ++a)
+                for (int k = 0; k < 3; ++k)
+                    diagonals[3*a + k].resize(a < dim_ ? nx_[a] : 1);
+            FiniteDifference::get_laplacian_matrix(
+                bc, nx_, this->cb->get_dx(),
+                diagonals[0].data(), diagonals[1].data(), diagonals[2].data(),
+                diagonals[3].data(), diagonals[4].data(), diagonals[5].data(),
+                diagonals[6].data(), diagonals[7].data(), diagonals[8].data(),
+                bond_length_sq, local_ds);
 
-                // Full step coefficients (local_ds)
-                FiniteDifference::get_laplacian_matrix(
-                    this->cb->get_boundary_conditions(),
-                    this->cb->get_nx(), this->cb->get_dx(),
-                    xl.at(ds_idx).at(monomer_type).data(), xd.at(ds_idx).at(monomer_type).data(), xh.at(ds_idx).at(monomer_type).data(),
-                    yl.at(ds_idx).at(monomer_type).data(), yd.at(ds_idx).at(monomer_type).data(), yh.at(ds_idx).at(monomer_type).data(),
-                    zl.at(ds_idx).at(monomer_type).data(), zd.at(ds_idx).at(monomer_type).data(), zh.at(ds_idx).at(monomer_type).data(),
-                    bond_length_sq, local_ds);
-
-            }
+            std::vector<TridiagonalLines> axes;
+            for (int a = 0; a < dim_; ++a)
+                axes.emplace_back(std::move(diagonals[3*a]), std::move(diagonals[3*a + 1]),
+                                  std::move(diagonals[3*a + 2]), bc[2*a] == BoundaryCondition::PERIODIC);
+            matrices_[ds_idx].insert_or_assign(monomer_type, std::move(axes));
         }
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
 }
+
 void CpuSolverCNADI::update_dw(std::map<std::string, const double*> w_input)
 {
     if (!cb->is_orthogonal())
@@ -210,493 +352,205 @@ void CpuSolverCNADI::update_dw(std::map<std::string, const double*> w_input)
         }
     }
 }
+
+CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
+{
+    WorkArrays* work;
+    {
+        std::lock_guard<std::mutex> lock(work_mutex_);
+        work = &work_arrays_[std::this_thread::get_id()];
+    }
+    const size_t M = cb->get_total_grid();
+    if (work->q_exp.size() != M)
+    {
+        // Planes: 1D the line; 2D the grid (y sweep, transposed); 3D (x, z) of the x sweep and (z, y) of the z sweep.
+        // Lines per plane: 1D one; 2D n_y (x sweep) and n_x (y sweep); 3D n_z (x, y sweeps) and n_y (z sweep)
+        size_t plane = nx_[0];
+        size_t lines = 1;
+        if (dim_ == 2)
+        {
+            plane = M;
+            lines = std::max(nx_[0], nx_[1]);
+        }
+        else if (dim_ == 3)
+        {
+            plane = static_cast<size_t>(std::max(nx_[0], nx_[1])) * nx_[2];
+            lines = std::max(nx_[1], nx_[2]);
+        }
+        work->q_exp.resize(M);
+        work->q_star.resize(dim_ >= 2 ? M : 0);
+        work->q_dstar.resize(dim_ == 3 ? M : 0);
+        work->plane.resize(plane);
+        work->correction.resize(lines);
+    }
+    return *work;
+}
+
 void CpuSolverCNADI::advance_propagator(
     double *q_in, double *q_out, std::string monomer_type, const double *q_mask, int ds_index)
 {
     try
     {
         const int M = this->cb->get_total_grid();
-        const bool use_reduced_basis = (this->space_group_ != nullptr);
+        WorkArrays& work = work_arrays();
+        const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
+        const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
 
-        double* q_in_full = q_in;
-        double* q_out_full = q_out;
-        const double* q_mask_full = q_mask;
-
-        thread_local std::vector<double> q_full_in_local;
-        thread_local std::vector<double> q_full_out_local;
-        thread_local std::vector<double> q_mask_full_local;
-
-        if (use_reduced_basis)
+        // On the full grid: with a space group from and back to its reduced basis
+        const double* q_full_in = q_in;
+        double* q_full_out = q_out;
+        if (this->space_group_ != nullptr)
         {
-            q_full_in_local.resize(M);
-            q_full_out_local.resize(M);
-            this->space_group_->from_reduced_basis(q_in, q_full_in_local.data(), 1);
-            q_in_full = q_full_in_local.data();
-            q_out_full = q_full_out_local.data();
-
-            if (q_mask != nullptr)
-            {
-                q_mask_full_local.resize(M);
-                this->space_group_->from_reduced_basis(q_mask, q_mask_full_local.data(), 1);
-                q_mask_full = q_mask_full_local.data();
-            }
+            work.q_full.resize(M);
+            this->space_group_->from_reduced_basis(q_in, work.q_full.data(), 1);
+            q_full_in = work.q_full.data();
+            q_full_out = work.q_full.data();
         }
 
-        // CN-ADI2: single full step only (2nd order accuracy)
-        const double *_exp_dw = exp_dw.at(ds_index).at(monomer_type).data();           // exp(-w*local_ds/2)
-        advance_propagator_step(
-            q_in_full, q_out_full,
-            _exp_dw,
-            xl.at(ds_index).at(monomer_type).data(), xd.at(ds_index).at(monomer_type).data(), xh.at(ds_index).at(monomer_type).data(),
-            yl.at(ds_index).at(monomer_type).data(), yd.at(ds_index).at(monomer_type).data(), yh.at(ds_index).at(monomer_type).data(),
-            zl.at(ds_index).at(monomer_type).data(), zd.at(ds_index).at(monomer_type).data(), zh.at(ds_index).at(monomer_type).data(),
-            nullptr);
-
-        // Multiply mask
-        if(q_mask_full != nullptr)
-        {
-            for(int i=0; i<M; i++)
-                q_out_full[i] *= q_mask_full[i];
-        }
-
-        if (use_reduced_basis)
-            this->space_group_->to_reduced_basis(q_out_full, q_out, 1);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-void CpuSolverCNADI::advance_propagator_step(
-    double *q_in, double *q_out,
-    const double *exp_dw_ptr,
-    double *_xl, double *_xd, double *_xh,
-    double *_yl, double *_yd, double *_yh,
-    double *_zl, double *_zd, double *_zh,
-    const double *q_mask)
-{
-    const int M = this->cb->get_total_grid();
-    const int DIM = this->cb->get_dim();
-    thread_local std::vector<double> q_temp_buffer;   // reused: no allocation per step, no VLA on the stack
-    q_temp_buffer.resize(M);
-    double* q_temp = q_temp_buffer.data();
-
-    // Apply starting Boltzmann factor: exp(-w*h/2)
-    for(int i=0; i<M; i++)
-        q_temp[i] = exp_dw_ptr[i] * q_in[i];
-
-    // ADI diffusion step
-    if(DIM == 3)
-        advance_propagator_3d_step(this->cb->get_boundary_conditions(), q_temp, q_out,
-            _xl, _xd, _xh, _yl, _yd, _yh, _zl, _zd, _zh);
-    else if(DIM == 2)
-        advance_propagator_2d_step(this->cb->get_boundary_conditions(), q_temp, q_out,
-            _xl, _xd, _xh, _yl, _yd, _yh);
-    else if(DIM == 1)
-        advance_propagator_1d_step(this->cb->get_boundary_conditions(), q_temp, q_out,
-            _xl, _xd, _xh);
-
-    // Apply ending Boltzmann factor: exp(-w*h/2)
-    for(int i=0; i<M; i++)
-        q_out[i] *= exp_dw_ptr[i];
-
-    // Apply mask if provided
-    if(q_mask != nullptr)
-    {
-        for(int i=0; i<M; i++)
-            q_out[i] *= q_mask[i];
-    }
-}
-// ============================================================================
-// ADI steps: the 3D, 2D and 1D diffusion solves with the coefficients of one
-// (ds, monomer type) pair; advance_propagator() looks them up
-// ============================================================================
-void CpuSolverCNADI::advance_propagator_3d_step(
-    std::vector<BoundaryCondition> bc,
-    double *q_in, double *q_out,
-    double *_xl, double *_xd, double *_xh,
-    double *_yl, double *_yd, double *_yh,
-    double *_zl, double *_zd, double *_zh)
-{
-    try
-    {
-        const int M = this->cb->get_total_grid();
-        const std::vector<int> nx = this->cb->get_nx();
-        thread_local std::vector<double> q_star_buffer;   // reused: no allocation per step, no VLA on the stack
-        q_star_buffer.resize(M);
-        double* q_star = q_star_buffer.data();
-        thread_local std::vector<double> q_dstar_buffer;   // reused: no allocation per step, no VLA on the stack
-        q_dstar_buffer.resize(M);
-        double* q_dstar = q_dstar_buffer.data();
-        thread_local std::vector<double> temp1_buffer;   // reused: no allocation per step, no VLA on the stack
-        temp1_buffer.resize(nx[0]);
-        double* temp1 = temp1_buffer.data();
-        thread_local std::vector<double> temp2_buffer;   // reused: no allocation per step, no VLA on the stack
-        temp2_buffer.resize(nx[1]);
-        double* temp2 = temp2_buffer.data();
-        thread_local std::vector<double> temp3_buffer;   // reused: no allocation per step, no VLA on the stack
-        temp3_buffer.resize(nx[2]);
-        double* temp3 = temp3_buffer.data();
-
-        int im, ip, jm, jp, km, kp;
-
-        // Calculate q_star
-        for(int j=0;j<nx[1];j++)
-        {
-            if (bc[2] == BoundaryCondition::PERIODIC)
-                jm = (nx[1]+j-1) % nx[1];
-            else
-                jm = max_of_two(0,j-1);
-            if (bc[3] == BoundaryCondition::PERIODIC)
-                jp = (j+1) % nx[1];
-            else
-                jp = min_of_two(nx[1]-1,j+1);
-
-            for(int k=0;k<nx[2];k++)
-            {
-                if (bc[4] == BoundaryCondition::PERIODIC)
-                    km = (nx[2]+k-1) % nx[2];
-                else
-                    km = max_of_two(0,k-1);
-                if (bc[5] == BoundaryCondition::PERIODIC)
-                    kp = (k+1) % nx[2];
-                else
-                    kp = min_of_two(nx[2]-1,k+1);
-
-                // B part of Ax=B matrix equation
-                for(int i=0;i<nx[0];i++)
-                {
-                    if (bc[0] == BoundaryCondition::PERIODIC)
-                        im = (nx[0]+i-1) % nx[0];
-                    else
-                        im = max_of_two(0,i-1);
-                    if (bc[1] == BoundaryCondition::PERIODIC)
-                        ip = (i+1) % nx[0];
-                    else
-                        ip = min_of_two(nx[0]-1,i+1);
-
-                    int i_j_k  = i*nx[1]*nx[2] + j*nx[2] + k;
-                    int im_j_k = im*nx[1]*nx[2] + j*nx[2] + k;
-                    int ip_j_k = ip*nx[1]*nx[2] + j*nx[2] + k;
-                    int i_jm_k = i*nx[1]*nx[2] + jm*nx[2] + k;
-                    int i_jp_k = i*nx[1]*nx[2] + jp*nx[2] + k;
-                    int i_j_km = i*nx[1]*nx[2] + j*nx[2] + km;
-                    int i_j_kp = i*nx[1]*nx[2] + j*nx[2] + kp;
-
-                    temp1[i] = 2.0*((3.0-0.5*_xd[i]-_yd[j]-_zd[k])*q_in[i_j_k]
-                            - _zl[k]*q_in[i_j_km] - _zh[k]*q_in[i_j_kp]
-                            - _yl[j]*q_in[i_jm_k] - _yh[j]*q_in[i_jp_k])
-                            - _xl[i]*q_in[im_j_k] - _xh[i]*q_in[ip_j_k];
-                }
-                int j_k = j*nx[2] + k;
-                if (bc[0] == BoundaryCondition::PERIODIC)
-                    tridiagonal_periodic(_xl, _xd, _xh, &q_star[j_k], nx[1]*nx[2], temp1, nx[0]);
-                else
-                    tridiagonal         (_xl, _xd, _xh, &q_star[j_k], nx[1]*nx[2], temp1, nx[0]);
-            }
-        }
-        // Calculate q_dstar
-        for(int i=0;i<nx[0];i++)
-        {
-            for(int k=0;k<nx[2];k++)
-            {
-                for(int j=0;j<nx[1];j++)
-                {
-                    if (bc[2] == BoundaryCondition::PERIODIC)
-                        jm = (nx[1]+j-1) % nx[1];
-                    else
-                        jm = max_of_two(0,j-1);
-                    if (bc[3] == BoundaryCondition::PERIODIC)
-                        jp = (j+1) % nx[1];
-                    else
-                        jp = min_of_two(nx[1]-1,j+1);
-
-                    int i_j_k  = i*nx[1]*nx[2] + j*nx[2] + k;
-                    int i_jm_k = i*nx[1]*nx[2] + jm*nx[2] + k;
-                    int i_jp_k = i*nx[1]*nx[2] + jp*nx[2] + k;
-
-                    temp2[j] = q_star[i_j_k] + (_yd[j]-1.0)*q_in[i_j_k]
-                        + _yl[j]*q_in[i_jm_k] + _yh[j]*q_in[i_jp_k];
-                }
-                int i_k = i*nx[1]*nx[2] + k;
-                if (bc[2] == BoundaryCondition::PERIODIC)
-                    tridiagonal_periodic(_yl, _yd, _yh, &q_dstar[i_k], nx[2], temp2, nx[1]);
-                else
-                    tridiagonal         (_yl, _yd, _yh, &q_dstar[i_k], nx[2], temp2, nx[1]);
-            }
-        }
-
-        // Calculate q^(n+1)
-        for(int i=0;i<nx[0];i++)
-        {
-            for(int j=0;j<nx[1];j++)
-            {
-                for(int k=0;k<nx[2];k++)
-                {
-                    if (bc[4] == BoundaryCondition::PERIODIC)
-                        km = (nx[2]+k-1) % nx[2];
-                    else
-                        km = max_of_two(0,k-1);
-                    if (bc[5] == BoundaryCondition::PERIODIC)
-                        kp = (k+1) % nx[2];
-                    else
-                        kp = min_of_two(nx[2]-1,k+1);
-
-                    int i_j_k  = i*nx[1]*nx[2] + j*nx[2] + k;
-                    int i_j_km = i*nx[1]*nx[2] + j*nx[2] + km;
-                    int i_j_kp = i*nx[1]*nx[2] + j*nx[2] + kp;
-
-                    temp3[k] = q_dstar[i_j_k] + (_zd[k]-1.0)*q_in[i_j_k]
-                        + _zl[k]*q_in[i_j_km] + _zh[k]*q_in[i_j_kp];
-                }
-                int i_j = i*nx[1]*nx[2] + j*nx[2];
-                if (bc[4] == BoundaryCondition::PERIODIC)
-                    tridiagonal_periodic(_zl, _zd, _zh, &q_out[i_j], 1, temp3, nx[2]);
-                else
-                    tridiagonal         (_zl, _zd, _zh, &q_out[i_j], 1, temp3, nx[2]);
-            }
-        }
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-void CpuSolverCNADI::advance_propagator_2d_step(
-    std::vector<BoundaryCondition> bc,
-    double *q_in, double *q_out,
-    double *_xl, double *_xd, double *_xh,
-    double *_yl, double *_yd, double *_yh)
-{
-    try
-    {
-        const int M = this->cb->get_total_grid();
-        const std::vector<int> nx = this->cb->get_nx();
-        thread_local std::vector<double> q_star_buffer;   // reused: no allocation per step, no VLA on the stack
-        q_star_buffer.resize(M);
-        double* q_star = q_star_buffer.data();
-        thread_local std::vector<double> temp1_buffer;   // reused: no allocation per step, no VLA on the stack
-        temp1_buffer.resize(nx[0]);
-        double* temp1 = temp1_buffer.data();
-        thread_local std::vector<double> temp2_buffer;   // reused: no allocation per step, no VLA on the stack
-        temp2_buffer.resize(nx[1]);
-        double* temp2 = temp2_buffer.data();
-
-        int im, ip, jm, jp;
-
-        // Calculate q_star
-        for(int j=0;j<nx[1];j++)
-        {
-            if (bc[2] == BoundaryCondition::PERIODIC)
-                jm = (nx[1]+j-1) % nx[1];
-            else
-                jm = max_of_two(0,j-1);
-            if (bc[3] == BoundaryCondition::PERIODIC)
-                jp = (j+1) % nx[1];
-            else
-                jp = min_of_two(nx[1]-1,j+1);
-
-            // B part of Ax=B matrix equation
-            for(int i=0;i<nx[0];i++)
-            {
-                if (bc[0] == BoundaryCondition::PERIODIC)
-                    im = (nx[0]+i-1) % nx[0];
-                else
-                    im = max_of_two(0,i-1);
-                if (bc[1] == BoundaryCondition::PERIODIC)
-                    ip = (i+1) % nx[0];
-                else
-                    ip = min_of_two(nx[0]-1,i+1);
-
-                int i_j = i*nx[1] + j;
-                int i_jm = i*nx[1] + jm;
-                int i_jp = i*nx[1] + jp;
-                int im_j = im*nx[1] + j;
-                int ip_j = ip*nx[1] + j;
-
-                temp1[i] = 2.0*((2.0-0.5*_xd[i]-_yd[j])*q_in[i_j]
-                          - _yl[j]*q_in[i_jm] - _yh[j]*q_in[i_jp])
-                          - _xl[i]*q_in[im_j] - _xh[i]*q_in[ip_j];
-            }
-            if (bc[0] == BoundaryCondition::PERIODIC)
-                tridiagonal_periodic(_xl, _xd, _xh, &q_star[j], nx[1], temp1, nx[0]);
-            else
-                tridiagonal         (_xl, _xd, _xh, &q_star[j], nx[1], temp1, nx[0]);
-        }
-
-        // Calculate q^(n+1)
-        for(int i=0;i<nx[0];i++)
-        {
-            for(int j=0;j<nx[1];j++)
-            {
-                if (bc[2] == BoundaryCondition::PERIODIC)
-                    jm = (nx[1]+j-1) % nx[1];
-                else
-                    jm = max_of_two(0,j-1);
-                if (bc[3] == BoundaryCondition::PERIODIC)
-                    jp = (j+1) % nx[1];
-                else
-                    jp = min_of_two(nx[1]-1,j+1);
-
-                int i_j = i*nx[1] + j;
-                int i_jm = i*nx[1] + jm;
-                int i_jp = i*nx[1] + jp;
-
-                temp2[j] = q_star[i_j] + (_yd[j]-1.0)*q_in[i_j]
-                    + _yl[j]*q_in[i_jm] + _yh[j]*q_in[i_jp];
-            }
-            if (bc[2] == BoundaryCondition::PERIODIC)
-                tridiagonal_periodic(_yl, _yd, _yh, &q_out[i*nx[1]], 1, temp2, nx[1]);
-            else
-                tridiagonal         (_yl, _yd, _yh, &q_out[i*nx[1]], 1, temp2, nx[1]);
-        }
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-void CpuSolverCNADI::advance_propagator_1d_step(
-    std::vector<BoundaryCondition> bc,
-    double *q_in, double *q_out,
-    double *_xl, double *_xd, double *_xh)
-{
-    try
-    {
-        const std::vector<int> nx = this->cb->get_nx();
-        thread_local std::vector<double> q_star_buffer;   // reused: no allocation per step, no VLA on the stack
-        q_star_buffer.resize(nx[0]);
-        double* q_star = q_star_buffer.data();
-
-        int im, ip;
-
-        for(int i=0;i<nx[0];i++)
-        {
-            if (bc[0] == BoundaryCondition::PERIODIC)
-                im = (nx[0]+i-1) % nx[0];
-            else
-                im = max_of_two(0,i-1);
-            if (bc[1] == BoundaryCondition::PERIODIC)
-                ip = (i+1) % nx[0];
-            else
-                ip = min_of_two(nx[0]-1,i+1);
-
-            // B part of Ax=B matrix equation
-            q_star[i] = (2.0-_xd[i])*q_in[i] - _xl[i]*q_in[im] - _xh[i]*q_in[ip];
-        }
-        if (bc[0] == BoundaryCondition::PERIODIC)
-            tridiagonal_periodic(_xl, _xd, _xh, q_out, 1, q_star, nx[0]);
+        // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
+        for (int i = 0; i < M; i++)
+            work.q_exp[i] = _exp_dw[i] * q_full_in[i];
+        if (dim_ == 3)
+            step_3d(matrices, _exp_dw, q_full_out, work);
+        else if (dim_ == 2)
+            step_2d(matrices, _exp_dw, q_full_out, work);
         else
-            tridiagonal         (_xl, _xd, _xh, q_out, 1, q_star, nx[0]);
+            step_1d(matrices, _exp_dw, q_full_out, work);
+
+        int n_out = M;
+        if (this->space_group_ != nullptr)
+        {
+            this->space_group_->to_reduced_basis(q_full_out, q_out, 1);
+            n_out = this->space_group_->get_n_reduced_basis();
+        }
+
+        // The box stores the mask in the basis of the propagators (reduced with a space
+        // group); it is symmetric, so masking after the reduction equals masking the full grid
+        if (q_mask != nullptr)
+            for (int i = 0; i < n_out; i++)
+                q_out[i] *= q_mask[i];
     }
     catch(std::exception& exc)
     {
         throw_without_line_number(exc.what());
     }
+}
+
+// ============================================================================
+// ADI steps of the 1D, 2D and 3D grids with the matrices of one (ds, monomer
+// type) pair: a = exp_dw q_in (work.q_exp) in, q_out = exp_dw · ADI(a) out
+// ============================================================================
+void CpuSolverCNADI::step_1d(
+    const std::vector<TridiagonalLines>& m, const double* exp_dw, double* q_out, WorkArrays& work) const
+{
+    const int n0 = nx_[0];
+    const double *xl = m[0].lower(), *xd = m[0].diagonal(), *xh = m[0].upper();
+    const double* a = work.q_exp.data();
+
+    // One line: (1 + A_x/2) q = (1 - A_x/2) a
+    sweep_contiguous(m[0], 1, 1, [&](long, double* r) {
+        along_axis(n0, lower_[0].data(), upper_[0].data(), [&](int i, int im, int ip) {
+            r[i] = (2.0-xd[i])*a[i] - xl[i]*a[im] - xh[i]*a[ip];
+        });
+    }, exp_dw, q_out, work.plane.data(), work.correction.data());
+}
+
+void CpuSolverCNADI::step_2d(
+    const std::vector<TridiagonalLines>& m, const double* exp_dw, double* q_out, WorkArrays& work) const
+{
+    const int n0 = nx_[0];
+    const int n1 = nx_[1];
+    const double *xl = m[0].lower(), *xd = m[0].diagonal(), *xh = m[0].upper();
+    const double *yl = m[1].lower(), *yd = m[1].diagonal(), *yh = m[1].upper();
+    const int *im = lower_[0].data(), *ip = upper_[0].data();
+    const double* a = work.q_exp.data();
+    double* q_star = work.q_star.data();
+
+    // x sweep: the grid is one plane; its right-hand side in q_star, row by row along y,
+    // then its n_y lines along x solved together in place
+    for (int i = 0; i < n0; i++)
+    {
+        const double* a_i = a + static_cast<long>(i) * n1;
+        const double* a_im = a + static_cast<long>(im[i]) * n1;
+        const double* a_ip = a + static_cast<long>(ip[i]) * n1;
+        const double c = 2.0 - 0.5*xd[i];
+        double* r = q_star + static_cast<long>(i) * n1;
+        along_axis(n1, lower_[1].data(), upper_[1].data(), [&](int j, int jm, int jp) {
+            r[j] = 2.0*((c-yd[j])*a_i[j] - yl[j]*a_i[jm] - yh[j]*a_i[jp]) - xl[i]*a_im[j] - xh[i]*a_ip[j];
+        });
+    }
+    m[0].solve(q_star, q_star, n1, n1, work.correction.data());
+
+    // y sweep along the contiguous axis, the grid as one plane of n_x lines
+    last_sweep(m[1], lower_[1].data(), upper_[1].data(), q_star, a, exp_dw, q_out, 1, n0,
+               work.plane.data(), work.correction.data());
+}
+
+void CpuSolverCNADI::step_3d(
+    const std::vector<TridiagonalLines>& m, const double* exp_dw, double* q_out, WorkArrays& work) const
+{
+    const int n0 = nx_[0];
+    const int n1 = nx_[1];
+    const int n2 = nx_[2];
+    const long P = static_cast<long>(n1) * n2;
+    const double *xl = m[0].lower(), *xd = m[0].diagonal(), *xh = m[0].upper();
+    const double *yl = m[1].lower(), *yd = m[1].diagonal(), *yh = m[1].upper();
+    const double *zl = m[2].lower(), *zd = m[2].diagonal(), *zh = m[2].upper();
+    const int *im = lower_[0].data(), *ip = upper_[0].data();
+    const int *jm = lower_[1].data(), *jp = upper_[1].data();
+    const double* a = work.q_exp.data();
+    double* q_star = work.q_star.data();
+    double* q_dstar = work.q_dstar.data();
+    double* plane = work.plane.data();
+
+    // x sweep: for each j the plane (x, z), row by row along z, then its n_z lines along x
+    for (int j = 0; j < n1; j++)
+    {
+        for (int i = 0; i < n0; i++)
+        {
+            const double* a_ij = a + i * P + static_cast<long>(j) * n2;
+            const double* a_imj = a + im[i] * P + static_cast<long>(j) * n2;
+            const double* a_ipj = a + ip[i] * P + static_cast<long>(j) * n2;
+            const double* a_ijm = a + i * P + static_cast<long>(jm[j]) * n2;
+            const double* a_ijp = a + i * P + static_cast<long>(jp[j]) * n2;
+            const double c = 3.0 - 0.5*xd[i] - yd[j];
+            double* r = plane + static_cast<long>(i) * n2;
+            along_axis(n2, lower_[2].data(), upper_[2].data(), [&](int k, int km, int kp) {
+                r[k] = 2.0*((c-zd[k])*a_ij[k]
+                        - zl[k]*a_ij[km] - zh[k]*a_ij[kp]
+                        - yl[j]*a_ijm[k] - yh[j]*a_ijp[k])
+                        - xl[i]*a_imj[k] - xh[i]*a_ipj[k];
+            });
+        }
+        m[0].solve(plane, q_star + static_cast<long>(j) * n2, P, n2, work.correction.data());
+    }
+
+    // y sweep: for each i the plane (y, z), contiguous in q_dstar: its right-hand side there,
+    // row by row along z, then its n_z lines along y in place
+    for (int i = 0; i < n0; i++)
+    {
+        for (int j = 0; j < n1; j++)
+        {
+            const long row = i * P + static_cast<long>(j) * n2;
+            const double* s = q_star + row;
+            const double* a_ij = a + row;
+            const double* a_ijm = a + i * P + static_cast<long>(jm[j]) * n2;
+            const double* a_ijp = a + i * P + static_cast<long>(jp[j]) * n2;
+            const double d_1 = yd[j]-1.0;
+            double* r = q_dstar + row;
+            for (int k = 0; k < n2; k++)
+                r[k] = s[k] + d_1*a_ij[k] + yl[j]*a_ijm[k] + yh[j]*a_ijp[k];
+        }
+        m[1].solve(q_dstar + i * P, q_dstar + i * P, n2, n2, work.correction.data());
+    }
+
+    // z sweep along the contiguous axis: for each i the plane (y, z) of n_y lines
+    last_sweep(m[2], lower_[2].data(), upper_[2].data(), q_dstar, a, exp_dw, q_out, n0, n1,
+               plane, work.correction.data());
 }
 
 std::vector<double> CpuSolverCNADI::compute_single_segment_stress(
-    [[maybe_unused]] double *q_1, [[maybe_unused]] double *q_2,
-    [[maybe_unused]] std::string monomer_type, [[maybe_unused]] bool is_half_bond_length)
+    double*, double*, std::string, bool)
 {
-    try
-    {
-        const int DIM  = this->cb->get_dim();
-        std::vector<double> stress(DIM); 
-
-        throw_with_line_number("Currently, the CN-ADI method does not support stress computation.");
-        
-        return stress;
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-// This method solves CX=Y, where C is a tridiagonal matrix
-void CpuSolverCNADI::tridiagonal(
-    const double *xl, const double *xd, const double *xh,
-    double *x, const int INTERVAL, const double *d, const int M)
-{
-    // xl: a
-    // xd: b
-    // xh: c
-
-    thread_local std::vector<double> c_star_buffer;   // reused: no allocation per step, no VLA on the stack
-
-    c_star_buffer.resize(M-1);
-
-    double* c_star = c_star_buffer.data();
-    double temp;
-
-    // Forward sweep
-    temp = xd[0];
-    c_star[0] = xh[0]/xd[0];
-    x[0] = d[0]/xd[0];
-
-    for(int i=1; i<M; i++)
-    {
-        c_star[i-1] = xh[i-1]/temp;
-        temp = xd[i]-xl[i]*c_star[i-1];
-        x[i*INTERVAL] = (d[i]-xl[i]*x[(i-1)*INTERVAL])/temp;
-    }
-
-    // Backward substitution
-    for(int i=M-2;i>=0; i--)
-        x[i*INTERVAL] = x[i*INTERVAL] - c_star[i]*x[(i+1)*INTERVAL];
-}
-
-// This method solves CX=Y, where C is a near-tridiagonal matrix with periodic boundary condition
-void CpuSolverCNADI::tridiagonal_periodic(
-    const double *xl, const double *xd, const double *xh,
-    double *x, const int INTERVAL, const double *d, const int M)
-{
-    // xl: a
-    // xd: b
-    // xh: c
-    // A negative diagonal-sized gamma avoids cancellation when diffusion is small.
-    const double gamma = -xd[0];
-
-    thread_local std::vector<double> c_star_buffer;   // reused: no allocation per step, no VLA on the stack
-
-    c_star_buffer.resize(M-1);
-
-    double* c_star = c_star_buffer.data();
-    thread_local std::vector<double> q_buffer;   // reused: no allocation per step, no VLA on the stack
-    q_buffer.resize(M);
-    double* q = q_buffer.data();
-    double temp, value;
-
-    // Forward sweep
-    temp = xd[0] - gamma;
-    c_star[0] = xh[0]/temp;
-    x[0] = d[0]/temp;
-    q[0] = gamma/temp;
-
-    for(int i=1; i<M-1; i++)
-    {
-        c_star[i-1] = xh[i-1]/temp;
-        temp = xd[i]-xl[i]*c_star[i-1];
-        x[i*INTERVAL] = (d[i]-xl[i]*x[(i-1)*INTERVAL])/temp;
-        q[i]        =     (-xl[i]*q[i-1])         /temp;
-    }
-    c_star[M-2] = xh[M-2]/temp;
-    temp = xd[M-1]-xh[M-1]*xl[0]/gamma - xl[M-1]*c_star[M-2];
-    x[(M-1)*INTERVAL] = ( d[M-1]-xl[M-1]*x[(M-2)*INTERVAL])/temp;
-    q[M-1]          = (xh[M-1]-xl[M-1]*q[M-2])         /temp;
-
-    // Backward substitution
-    for(int i=M-2;i>=0; i--)
-    {
-        x[i*INTERVAL] = x[i*INTERVAL] - c_star[i]*x[(i+1)*INTERVAL];
-        q[i]        = q[i]        - c_star[i]*q[i+1];
-    }
-
-    value = (x[0]+xl[0]/gamma*x[(M-1)*INTERVAL])/(1.0+q[0]+xl[0]/gamma*q[M-1]);
-    for(int i=0; i<M; i++)
-        x[i*INTERVAL] = x[i*INTERVAL] - q[i]*value;
+    throw_with_line_number("Currently, the CN-ADI method does not support stress computation.");
 }

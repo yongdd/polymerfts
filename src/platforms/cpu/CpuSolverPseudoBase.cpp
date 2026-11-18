@@ -545,21 +545,18 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         const auto& orbit_counts = space_group_->get_orbit_counts();
 
         WorkArrays& work = work_arrays();
-        std::vector<double>& phys_q1 = work.phys_1;
-        std::vector<double>& phys_q2 = work.phys_2;
-        std::vector<double>& phys_tmp = work.phys_3;
+        std::vector<double>& phys_q2 = work.phys_1;
+        std::vector<double>& phys_tmp = work.phys_2;
         std::vector<double>& reduced_tmp = work.reduced;
-        if (static_cast<int>(phys_q1.size()) != M_phys)
+        if (static_cast<int>(phys_q2.size()) != M_phys)
         {
-            phys_q1.resize(M_phys);
             phys_q2.resize(M_phys);
             phys_tmp.resize(M_phys);
         }
         if (static_cast<int>(reduced_tmp.size()) != M_reduced)
             reduced_tmp.resize(M_reduced);
 
-        // Reduced -> physical grid
-        fill_crysfft_from_reduced(q_1, phys_q1.data());
+        // Reduced -> physical grid (q_1 is summed in the reduced basis)
         fill_crysfft_from_reduced(q_2, phys_q2.data());
 
         // sums[d] = Σ_r n_orbit(r) q1(r) [F⁻¹ k_d² ĝ F q2](r) over the reduced basis, one
@@ -587,7 +584,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
 
         // The CrysFFT multipliers are Cartesian k_d² = (2πm_d/L_d)², while the
         // standard path accumulates deformation-vector components v_d² = k_d²/L_d²
-        // (see Pseudo::update_weighted_fourier_basis_periodic). Divide by L_d²
+        // (see update_weighted_fourier_basis_periodic_impl in Pseudo.cpp). Divide by L_d²
         // so both paths return the same V_dd.
         const std::vector<double> lx = cb->get_lx();
         for (int d = 0; d < 3; ++d)
@@ -689,7 +686,7 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
     // basis functions are real). The per-mode Parseval weights (2 for
     // interior modes, 1 for the DCT m=0 / DST k=n special modes, composed
     // across dimensions) are folded into the fourier_basis tables by
-    // Pseudo::update_weighted_fourier_basis_mixed, mirroring the periodic
+    // Pseudo::update_nonperiodic, mirroring the periodic
     // path, so no flat factor is applied here.
     const std::complex<double>* qk_1_complex = reinterpret_cast<const std::complex<double>*>(qk_1);
     const std::complex<double>* qk_2_complex = reinterpret_cast<const std::complex<double>*>(qk_2);
@@ -726,7 +723,7 @@ const double* CpuSolverPseudoBase<T>::get_stress_boltz_bond(
  *
  * Uses v⊗v dyad product components stored in fourier_basis arrays, where
  * v = 2π g⁻¹ m is the deformation vector (units 1/L², NOT the Cartesian
- * wavevector — see Pseudo::update_weighted_fourier_basis_periodic):
+ * wavevector — see update_weighted_fourier_basis_periodic_impl in Pseudo.cpp):
  * - fourier_basis_x = v₁², fourier_basis_y = v₂², fourier_basis_z = v₃²
  * - fourier_basis_xy = v₁v₂, fourier_basis_xz = v₁v₃, fourier_basis_yz = v₂v₃
  *
@@ -757,8 +754,11 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
             return stress;
 
         const int coeff_size = complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
-        std::vector<double> qk_1(coeff_size);
-        std::vector<double> qk_2(coeff_size);
+        WorkArrays& work = work_arrays();
+        std::vector<double>& qk_1 = work.k_1;
+        std::vector<double>& qk_2 = work.k_2;
+        qk_1.resize(coeff_size);
+        qk_2.resize(coeff_size);
 
         // ============================================================================
         // PERFORMANCE-CRITICAL: Orthogonal box optimization
@@ -784,8 +784,8 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // so no shared scratch space may be used here.
         T* q_1_full = q_1;
         T* q_2_full = q_2;
-        std::vector<T>& q_full_1_local = work_arrays().pair_1;
-        std::vector<T>& q_full_2_local = work_arrays().pair_2;
+        std::vector<T>& q_full_1_local = work.pair_1;
+        std::vector<T>& q_full_2_local = work.pair_2;
         if (space_group_ != nullptr)
         {
             const int M_full = cb->get_total_grid();

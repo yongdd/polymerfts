@@ -4,11 +4,10 @@
  */
 
 #include "MklCrysFFTRecursive3m.h"
+#include "AlignedScratch.h"
 #include "MklDftiLayout.h"
 #include "MklStatusCheck.h"
 #include <algorithm>
-#include <cstring>
-#include <vector>
 
 namespace {
 
@@ -90,26 +89,14 @@ void MklCrysFFTRecursive3m::init_fft_plans()
 void MklCrysFFTRecursive3m::apply_with_table(
     const double* table, const double* q_in, double* q_out) const
 {
-    struct ThreadBuffers {
-        std::vector<double> iomat;
-        std::vector<std::complex<double>> step1;
-        std::vector<std::complex<double>> step2;
-        int size = 0;
-    };
-
-    thread_local ThreadBuffers buffers;
-    if (buffers.size != M_physical_)
-    {
-        buffers.iomat.resize(M_physical_);
-        buffers.step1.resize(M_physical_);
-        buffers.step2.resize(M_physical_);
-        buffers.size = M_physical_;
-    }
-
-    std::memcpy(buffers.iomat.data(), q_in, sizeof(double) * M_physical_);
+    // The two spectra of this thread, from 64-byte boundaries (AlignedScratch); MKL runs
+    // out of place on the caller's fields and keeps q_in
+    thread_local AlignedScratch spectrum_1, spectrum_2;
+    std::complex<double>* step1 = reinterpret_cast<std::complex<double>*>(spectrum_1.get(2 * static_cast<size_t>(M_physical_)));
+    std::complex<double>* step2 = reinterpret_cast<std::complex<double>*>(spectrum_2.get(2 * static_cast<size_t>(M_physical_)));
 
     // Forward r2c FFT
-    mkl_dfti_check(DftiComputeForward(plan_forward_, buffers.iomat.data(), buffers.step1.data()), "DftiComputeForward (3m)");
+    mkl_dfti_check(DftiComputeForward(plan_forward_, const_cast<double*>(q_in), step1), "DftiComputeForward (3m)");
 
     const int Nx2 = nx_physical_[0];
     const int Ny2 = nx_physical_[1];
@@ -134,11 +121,11 @@ void MklCrysFFTRecursive3m::apply_with_table(
         for (int iy = 0; iy < Ny2; ++iy)
         {
             const size_t base_shift = static_cast<size_t>(ix * Ny2 + iy) * Nz2;
-            const std::complex<double>* src000 = buffers.step1.data() + base_shift;
-            const std::complex<double>* src110 = buffers.step1.data() + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const std::complex<double>* src010 = buffers.step1.data() + (static_cast<size_t>(ix) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const std::complex<double>* src100 = buffers.step1.data() + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + iy) * Nz2;
-            std::complex<double>* dst = buffers.step2.data() + base_shift;
+            const std::complex<double>* src000 = step1 + base_shift;
+            const std::complex<double>* src110 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
+            const std::complex<double>* src010 = step1 + (static_cast<size_t>(ix) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
+            const std::complex<double>* src100 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + iy) * Nz2;
+            std::complex<double>* dst = step2 + base_shift;
 
             for (size_t iz = 0; iz < Nz_qua; ++iz)
             {
@@ -170,7 +157,5 @@ void MklCrysFFTRecursive3m::apply_with_table(
     }
 
     // Backward c2r FFT
-    mkl_dfti_check(DftiComputeBackward(plan_backward_, buffers.step2.data(), buffers.iomat.data()), "DftiComputeBackward (3m)");
-
-    std::memcpy(q_out, buffers.iomat.data(), sizeof(double) * M_physical_);
+    mkl_dfti_check(DftiComputeBackward(plan_backward_, step2, q_out), "DftiComputeBackward (3m)");
 }

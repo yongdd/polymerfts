@@ -13,6 +13,7 @@
 #include <cmath>
 #include <numbers>
 #include <algorithm>
+#include <vector>
 #include "CpuSolverCNADI.h"
 #include "TestNanSafe.h"
 
@@ -54,8 +55,12 @@ int main()
         std::array<double,M> diff_sq;
         double error;
 
+        // One line, solved with the factors of TridiagonalLines
+        const std::vector<double> lower(a, a + M), diagonal(b, b + M), upper(c, c + M);
+        double correction[1] = {0.0};
+
         // Tridiagonal
-        CpuSolverCNADI::tridiagonal(a, b, c, x, 1, y, M);
+        TridiagonalLines(lower, diagonal, upper, false).solve(y, x, 1, 1, correction);
         std::cout << "Tridiagonal" << std::endl;
         std::cout << "i: x_answer[i], x[i]" << std::endl;
         for(int i=0; i<M; i++)
@@ -70,7 +75,7 @@ int main()
             return -1;
 
         // Tridiagonal with periodic boundary
-        CpuSolverCNADI::tridiagonal_periodic(a, b, c, x, 1, y, M);
+        TridiagonalLines(lower, diagonal, upper, true).solve(y, x, 1, 1, correction);
         std::cout << "Tridiagonal with periodic boundary" << std::endl;
         std::cout << "i: x_periodic_answer[i], x[i]" << std::endl;
         for(int i=0; i<M; i++)
@@ -83,6 +88,41 @@ int main()
         std::cout<< "Inverse error: "<< error << std::endl;
         if (!std::isfinite(error) || error > 1e-7)
             return -1;
+
+        // Several lines at once, as the CN-ADI sweeps solve them: line c has the right-hand
+        // side (c + 1) y + c, at rhs[i*L + c], and its solution at x[i*STRIDE + c] or, in
+        // place, at rhs[i*L + c]. Every line must equal its own one-line solve bit for bit.
+        const int L = 3;
+        const int STRIDE = 5;
+        for (bool periodic : {false, true})
+        {
+            const TridiagonalLines matrix(lower, diagonal, upper, periodic);
+            std::vector<double> rhs(M * L), lines(M * STRIDE, 0.0), in_place(M * L);
+            for (int i = 0; i < M; i++)
+                for (int l = 0; l < L; l++)
+                    rhs[i * L + l] = (l + 1) * y[i] + l;
+            in_place = rhs;
+            std::vector<double> line_correction(L);
+            matrix.solve(rhs.data(), lines.data(), STRIDE, L, line_correction.data());
+            matrix.solve(in_place.data(), in_place.data(), L, L, line_correction.data());
+            for (int l = 0; l < L; l++)
+            {
+                double y_l[M], x_l[M];
+                for (int i = 0; i < M; i++)
+                    y_l[i] = rhs[i * L + l];
+                matrix.solve(y_l, x_l, 1, 1, correction);
+                for (int i = 0; i < M; i++)
+                {
+                    if (lines[i * STRIDE + l] != x_l[i] || in_place[i * L + l] != x_l[i])
+                    {
+                        std::cout << "Line " << l << " of " << L << (periodic ? " (periodic)" : "")
+                                  << " differs from its one-line solve at i = " << i << std::endl;
+                        return -1;
+                    }
+                }
+            }
+        }
+        std::cout << "Lines solved together equal one-line solves" << std::endl;
 
         return 0;
     }

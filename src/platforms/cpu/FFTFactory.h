@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <type_traits>
 #include <vector>
 #include "FFT.h"
 #include "ComputationBox.h"
@@ -97,6 +98,8 @@ public:
             forward_scale_ *= 0.5;
         }
         backward_scale_ = 1.0 / static_cast<double>(total_grid);
+        // One coefficient per grid point: real, or a (re, im) pair of a complex field
+        this->set_sizes(total_grid, total_grid, std::is_same_v<T, std::complex<double>>);
     }
 
     void forward(T* rdata, double* cdata) override { makhoul_.forward(rdata, cdata, forward_scale_); }

@@ -247,7 +247,8 @@ void FftwFFT<T, DIM>::periodic_forward(const T* field, std::complex<double>* mod
 }
 
 template <typename T, int DIM>
-void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* field) const
+void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const double* k_factor, T* field,
+                                        const T* r_factor, bool keep_modes) const
 {
     constexpr bool real_field = std::is_same<T, double>::value;
     constexpr std::size_t doubles_per_point = sizeof(T) / sizeof(double);
@@ -255,20 +256,26 @@ void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* fi
     const std::size_t modes_bytes = sizeof(std::complex<double>) * total_complex_grid_;
     const double scale = 1.0 / static_cast<double>(total_grid_);
 
-    // The complex-to-real transform overwrites its input, which therefore always
-    // goes through the scratch; the complex-to-complex transform keeps its input
-    const bool modes_direct = !real_field && has_plan_alignment(modes) && !overlap(modes, modes_bytes, field, field_bytes);
+    // The complex-to-real transform overwrites its input, which therefore goes through
+    // the scratch unless the caller gives it up; the complex-to-complex transform keeps
+    // its input. A k_factor is multiplied into the scratch.
+    const bool may_run_on_modes = (!real_field || !keep_modes) && k_factor == nullptr;
+    const bool modes_direct = may_run_on_modes && has_plan_alignment(modes) && !overlap(modes, modes_bytes, field, field_bytes);
     const bool field_direct = has_plan_alignment(field);
     double* field_scratch = nullptr;
     double* modes_scratch = nullptr;
     if (!modes_direct || !field_direct)
         std::tie(field_scratch, modes_scratch) = thread_scratch(doubles_per_point * total_grid_, 2 * static_cast<std::size_t>(total_complex_grid_));
 
-    std::complex<double>* in = const_cast<std::complex<double>*>(modes);
+    std::complex<double>* in = modes;
     if (!modes_direct)
     {
         in = reinterpret_cast<std::complex<double>*>(modes_scratch);
-        std::copy_n(modes, total_complex_grid_, in);
+        if (k_factor != nullptr)
+            for (int i = 0; i < total_complex_grid_; ++i)
+                in[i] = modes[i] * k_factor[i];
+        else
+            std::copy_n(modes, total_complex_grid_, in);
     }
     T* out = field_direct ? field : reinterpret_cast<T*>(field_scratch);
 
@@ -277,9 +284,13 @@ void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* fi
     else
         fftw_execute_dft(plan_backward_, reinterpret_cast<fftw_complex*>(in), reinterpret_cast<fftw_complex*>(out));
 
-    // The 1/N of the FFT<T> interface (in place when FFTW wrote into the field)
-    for (int i = 0; i < total_grid_; ++i)
-        field[i] = out[i] * scale;
+    // The 1/N of the FFT<T> interface and r_factor (in place when FFTW wrote into the field)
+    if (r_factor != nullptr)
+        for (int i = 0; i < total_grid_; ++i)
+            field[i] = out[i] * scale * r_factor[i];
+    else
+        for (int i = 0; i < total_grid_; ++i)
+            field[i] = out[i] * scale;
 }
 
 //------------------------------------------------------------------------------
@@ -294,7 +305,7 @@ void FftwFFT<T, DIM>::forward(T *rdata, std::complex<double> *cdata)
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::backward(std::complex<double> *cdata, T *rdata)
 {
-    periodic_backward(cdata, rdata);
+    periodic_backward(cdata, nullptr, rdata, nullptr, true);
 }
 
 template <typename T, int DIM>
@@ -306,7 +317,13 @@ void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
 {
-    periodic_backward(reinterpret_cast<const std::complex<double>*>(cdata), rdata);
+    periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), nullptr, rdata, nullptr, true);
+}
+
+template <typename T, int DIM>
+void FftwFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
+{
+    periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), k_factor, rdata, r_factor, false);
 }
 
 // Explicit template instantiations

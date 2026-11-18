@@ -49,7 +49,8 @@ void FftwCrysFFTObliqueZ::initFFTPlans()
     const unsigned plan_flags = FFTW_MEASURE;
 
     // Planning arrays only, freed on return: the transforms run on the
-    // thread-local buffers of get_thread_buffers() (new-array execute)
+    // thread-local buffers of get_thread_buffers() and on the caller's fields
+    // of the same alignment (new-array execute)
     std::unique_ptr<double, RealDeleter> io_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
     std::unique_ptr<double, RealDeleter> temp_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
     std::unique_ptr<fftw_complex, ComplexDeleter> complex_buffer(
@@ -143,9 +144,16 @@ void FftwCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* 
 {
     ThreadBuffers& buffers = get_thread_buffers();
 
-    std::memcpy(buffers.real_in.get(), q_in, sizeof(double) * M_physical_);
+    // The z transforms run on the caller's fields when they have the alignment of the
+    // planning arrays (the r2r transforms keep their input), otherwise on the copy in real_in
+    const double* dct_in = q_in;
+    if (fftw_alignment_of(const_cast<double*>(q_in)) != 0)
+    {
+        std::memcpy(buffers.real_in.get(), q_in, sizeof(double) * M_physical_);
+        dct_in = buffers.real_in.get();
+    }
 
-    dct2_execute(buffers.real_in.get(), buffers.real_tmp.get());
+    dct2_execute(dct_in, buffers.real_tmp.get());
     fftw_execute_dft_r2c(plan_fft_forward_xy_, buffers.real_tmp.get(), buffers.complex.get());
 
     for (int i = 0; i < M_complex_; ++i)
@@ -155,10 +163,11 @@ void FftwCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* 
     }
 
     fftw_execute_dft_c2r(plan_fft_backward_xy_, buffers.complex.get(), buffers.real_tmp.get());
-    dct3_execute(buffers.real_tmp.get(), buffers.real_in.get());
+    double* dct_out = (fftw_alignment_of(q_out) == 0) ? q_out : buffers.real_in.get();
+    dct3_execute(buffers.real_tmp.get(), dct_out);
 
     for (int i = 0; i < M_physical_; ++i)
-        q_out[i] = buffers.real_in.get()[i] * norm_factor_;
+        q_out[i] = dct_out[i] * norm_factor_;
 }
 
 //------------------------------------------------------------------------------
