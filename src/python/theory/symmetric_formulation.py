@@ -8,6 +8,20 @@ matrices to obtain auxiliary field representations.
 import numpy as np
 from ..utils.validation import ValidationError
 
+
+def _map_fields(matrix, fields):
+    """matrix @ fields for the small M x M matrix of the field mapping, as row sums
+    out[i] = Σ_j matrix[i, j] fields[j]. np.matmul of an (M, n_grid) array calls BLAS, and the
+    threads of NumPy's OpenBLAS keep spinning after the call and slow down those of the solver."""
+    rows = []
+    for i in range(matrix.shape[0]):
+        row = matrix[i, 0] * fields[0]
+        for j in range(1, matrix.shape[1]):
+            row = row + matrix[i, j] * fields[j]
+        rows.append(row)
+    return np.array(rows)
+
+
 class SymmetricPolymerTheory:
     """Symmetric polymer field theory for multi-monomer systems.
 
@@ -198,9 +212,9 @@ class SymmetricPolymerTheory:
         if isinstance(w, dict):
             # Preserve complex fields and promote mixed dtypes as for ndarray input.
             w_temp = np.stack([w[name] for name in self.monomer_types])
-            return np.matmul(self.matrix_a_inv, w_temp)
+            return _map_fields(self.matrix_a_inv, w_temp)
         else:
-            return np.matmul(self.matrix_a_inv, w)
+            return _map_fields(self.matrix_a_inv, np.asarray(w))
 
     def to_monomer_fields(self, w_aux):
         """Transform auxiliary fields to monomer potential fields.
@@ -219,7 +233,7 @@ class SymmetricPolymerTheory:
             Monomer potential fields, shape (M, total_grid) in sorted
             monomer_types order.
         """
-        return np.matmul(self.matrix_a, w_aux)
+        return _map_fields(self.matrix_a, np.asarray(w_aux))
 
     def to_monomer_fields_dict(self, w_aux):
         """Transform auxiliary fields to monomer fields as dictionary.
@@ -236,7 +250,7 @@ class SymmetricPolymerTheory:
         w : dict
             Monomer potential fields, {monomer_type: field_array}.
         """
-        w_temp = np.matmul(self.matrix_a, w_aux)
+        w_temp = _map_fields(self.matrix_a, np.asarray(w_aux))
         w = {}
         for count, type in enumerate(self.monomer_types):
             w[type] = w_temp[count]

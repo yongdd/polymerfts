@@ -72,9 +72,9 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
-def _point_ion(ion, potential, n_segments):
+def _point_ion(ion, potential, n_segments, partition_ratio=True):
     """Density c(r), ln Q and the partition ratio |Q|/<|e^(-u)|> of one point ion in the dimensionless
-    potential u (the ratio None for a grand-canonical ion).
+    potential u (the ratio None for a grand-canonical ion, and without partition_ratio: SCFT, real u).
 
     The weights e^(-(u - u_min)), with the smallest real part u_min of u removed, have moduli of at most
     1, and one of them is 1, so Q = e^(-u_min) <e^(-(u - u_min))> is kept as ln Q, which -N c ln Q and βμ
@@ -89,7 +89,8 @@ def _point_ion(ion, potential, n_segments):
         log_q = np.log(mean) - u_min
     if ion["concentration"] is None:
         return np.exp(ion["chemical_potential"] - u_min) * weight / n_segments, log_q, None
-    ratio = min(1.0, float(np.abs(mean) / np.mean(np.abs(weight))))   # 1 for a real u, up to rounding
+    # 1 for a real u, up to rounding
+    ratio = min(1.0, float(np.abs(mean) / np.mean(np.abs(weight)))) if partition_ratio else None
     if ion["concentration"] == 0.0:
         return np.zeros_like(potential), log_q, ratio   # an absent species contributes nothing, also at Q = 0
     # Do not clip the mean: Q = 0 is a pole of an occupied canonical species
@@ -548,6 +549,9 @@ class MeanFieldElectrostatics:
         `ions`, `counterion` and `fixed_charge`.
     monomer_types : list of str
         Monomer types; types without a charge are neutral.
+    smearing : Smearing
+        Smearing of the simulation; supplies k² of the box (in the coefficient shape of the
+        transform) and the coefficients of the stress.
     n_segments : float or None
         Segments N of the reference chain, needed by point ions.
     fourier : FourierTransform
@@ -558,7 +562,7 @@ class MeanFieldElectrostatics:
         A grand-canonical ion carries a charge (validation.open_charges).
     """
 
-    def __init__(self, params, monomer_types, n_segments, fourier, *, ion_concentrations, open_charges):
+    def __init__(self, params, monomer_types, smearing, n_segments, *, fourier, ion_concentrations, open_charges):
         self.charges = {name: float(params["charges"].get(name, 0.0)) for name in monomer_types}
         self.coupling = float(params["coupling"])
         self.screening_length = None if params.get("screening_length") is None else float(params["screening_length"])
@@ -569,82 +573,101 @@ class MeanFieldElectrostatics:
         self.fixed_charge = (None if params.get("fixed_charge") is None
                              else np.asarray(params["fixed_charge"], dtype=np.float64).reshape(-1))
         self._fourier = fourier
+        self._smearing = smearing
         self.response = None
         self.set_box()
 
+    @property
+    def psi(self):
+        """ψ on the grid (flattened). Setting it transforms it once; the point ions of a new ψ are
+        computed when they are needed (ion_densities)."""
+        return self._psi
+
+    @psi.setter
+    def psi(self, value):
+        self._psi = np.array(value, dtype=np.float64).reshape(-1)
+        self._psi_k = self._fourier.forward(self._psi)
+        self._forget_ions()
+
     def set_box(self):
-        """Take k² of the current box (after the cell changes)."""
-        self.k_sq = self._fourier.k_squared()
+        """Take k² of the box of the smearing (after the cell changes and Smearing.set_box)."""
+        self.k_sq = self._smearing.k_sq
         self.screened_k_sq = self.k_sq + self.kappa_sq
         for ion in self.ions:
             ion["gamma"] = np.exp(-ion["smearing_length"] ** 2 * self.k_sq / 2)
+        self._forget_ions()
+
+    def _forget_ions(self):
+        """The point ions of a new ψ or box are computed when they are needed (ion_densities)."""
+        self._ion_densities = self._ion_log_partitions = None
 
     def set_response(self, response):
         """The response D(k) = -∂c(k)/∂ψ(k) of the homogeneous state (coefficient shape) for the residual."""
         self.response = np.maximum(np.real(response), 0.0)
 
-    def add_potential(self, w_input, psi):
+    def add_potential(self, w_input):
         """Add z_i ψ to the monomer fields {type: w_i} of the charged types."""
         for name, z in self.charges.items():
             if z != 0.0:
-                w_input[name] = w_input[name] + z * psi
+                w_input[name] = w_input[name] + z * self.psi
 
-    def ion_densities(self, psi):
-        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for ψ."""
-        densities, log_partitions = [], []
-        if self.ions:
-            psi_k = self._fourier.forward(psi)
-        for ion in self.ions:
-            potential = ion["valence"] * self._fourier.backward(ion["gamma"] * psi_k) / self.n_segments
-            density, log_q, _ = _point_ion(ion, potential, self.n_segments)
-            densities.append(density)
-            log_partitions.append(float(log_q))
-        return densities, log_partitions
+    def ion_densities(self):
+        """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for ψ,
+        computed once per ψ (one list each, one entry per ion)."""
+        if self._ion_densities is None:
+            densities, log_partitions = [], []
+            for ion in self.ions:
+                potential = ion["valence"] * self._fourier.backward(ion["gamma"] * self._psi_k) / self.n_segments
+                density, log_q, _ = _point_ion(ion, potential, self.n_segments, partition_ratio=False)
+                densities.append(density)
+                log_partitions.append(float(log_q))
+            self._ion_densities, self._ion_log_partitions = densities, log_partitions
+        return self._ion_densities, self._ion_log_partitions
 
-    def charge_density(self, phi_smeared, psi):
+    def charge_density(self, phi_smeared):
         """Smeared charge density Σ_i z_i (Γ_i * φ_i) + Σ_s z_s (Γ_s * c_s) for ψ, and the fixed charge."""
-        c = np.zeros_like(psi) if self.fixed_charge is None else self.fixed_charge.copy()
+        c = np.zeros_like(self.psi) if self.fixed_charge is None else self.fixed_charge.copy()
         for name, z in self.charges.items():
             if z != 0.0:
                 c = c + z * phi_smeared[name]
         if self.ions:
-            densities, _ = self.ion_densities(psi)
+            densities, _ = self.ion_densities()
             charge_k = sum(ion["valence"] * ion["gamma"] * self._fourier.forward(density)
                            for ion, density in zip(self.ions, densities))
             c = c + self._fourier.backward(charge_k)
         return c
 
-    def residual(self, c, psi):
-        """Poisson residual of ψ divided by its linear response (the Newton step of ψ)."""
+    def residual(self, c):
+        """Poisson residual of ψ divided by its linear response (the Newton step of ψ) for the charge density c."""
         rate = self.screened_k_sq / self.coupling + (0.0 if self.response is None else self.response)
-        force_k = self._fourier.forward(c) - self.screened_k_sq * self._fourier.forward(psi) / self.coupling
+        force_k = self._fourier.forward(c) - self.screened_k_sq * self._psi_k / self.coupling
         with np.errstate(divide="ignore", invalid="ignore"):
             step_k = np.where(rate > 0, force_k / rate, 0.0)
         if self.zero_uniform_mode:
             step_k[(0,) * step_k.ndim] = 0.0
         return self._fourier.backward(step_k)
 
-    def poisson_error(self, phi_smeared, psi):
+    def poisson_error(self, phi_smeared):
         """Root mean square of c - (k² + κ²)ψ/E relative to the mean density of charges,
         Σ_i |z_i| <φ_i> + Σ_s |z_s| <c_s> (the net charge can vanish)."""
-        c = self.charge_density(phi_smeared, psi)
-        force = c - self._fourier.backward(self.screened_k_sq * self._fourier.forward(psi)) / self.coupling
+        c = self.charge_density(phi_smeared)
+        force = c - self._fourier.backward(self.screened_k_sq * self._psi_k) / self.coupling
         if self.zero_uniform_mode:
             force = force - np.mean(force)
-        densities, _ = self.ion_densities(psi)
+        densities, _ = self.ion_densities()
         scale = sum(abs(z) * np.mean(phi_smeared[name]) for name, z in self.charges.items()) \
             + sum(abs(ion["valence"]) * np.mean(density) for ion, density in zip(self.ions, densities)) \
             + (0.0 if self.fixed_charge is None else float(np.mean(np.abs(self.fixed_charge))))
         return float(np.sqrt(np.mean(force ** 2)) / max(scale, 1e-300))
 
-    def free_energy(self, psi):
+    def free_energy(self):
         """-(1/(2E)) <ψ (k² + κ²) ψ>, the coupling <ψ c_f> of the fixed charge and the point ions
         (per reference chain)."""
-        value = -0.5 * float(np.mean(psi * self._fourier.backward(self.screened_k_sq * self._fourier.forward(psi)))) \
-            / self.coupling
+        psi = self.psi
+        value = -0.5 * float(np.mean(psi * self._fourier.backward(self.screened_k_sq * self._psi_k))) / self.coupling
         if self.fixed_charge is not None:
             value += float(np.mean(psi * self.fixed_charge))
-        densities, log_partitions = self.ion_densities(psi)
+        densities, log_partitions = self.ion_densities()
         for ion, density, log_q in zip(self.ions, densities, log_partitions):
             if ion["concentration"] is None:
                 value -= self.n_segments * np.mean(density)
@@ -653,17 +676,17 @@ class MeanFieldElectrostatics:
                 value += number * (np.log(number) - 1.0) - number * log_q
         return value
 
-    def ion_chemical_potentials(self, psi):
+    def ion_chemical_potentials(self):
         """βμ_s = ln(N c_s) - ln Q_s of each point ion; the given value for grand-canonical ions."""
-        _, log_partitions = self.ion_densities(psi)
+        _, log_partitions = self.ion_densities()
         return [ion["chemical_potential"] if ion["concentration"] is None
                 else -np.inf if ion["concentration"] == 0.0
                 else float(np.log(self.n_segments * ion["concentration"]) - log_q)
                 for ion, log_q in zip(self.ions, log_partitions)]
 
-    def ion_number_densities(self, psi):
+    def ion_number_densities(self):
         """Ions per reference chain, N c_s (e^(βμ_s) Q_s for grand-canonical ions)."""
-        densities, _ = self.ion_densities(psi)
+        densities, _ = self.ion_densities()
         return [self.n_segments * np.mean(density) if ion["concentration"] is None
                 else self.n_segments * ion["concentration"] for ion, density in zip(self.ions, densities)]
 
@@ -687,27 +710,26 @@ class MeanFieldElectrostatics:
                 energy += number * (np.log(number) - 1.0)
         return psi0, energy
 
-    def stress(self, psi, coefficients, k_sq, dk_sq):
+    def stress(self, dk_sq):
         """Lattice derivatives of F at fixed w and ψ from ψ and the point ions.
 
         -(1/(2E)) <ψ (k² + κ²) ψ> gives -(1/(2E)) Σ_k (∂k²/∂θ) |ψ(k)|²/n², and each ion
-        <c_s z_s ((∂Γ_s/∂θ) * ψ)> with ∂Γ_s/∂θ = -(a_s²/2) Γ_s ∂k²/∂θ. coefficients gives the
-        transform of a real field at the wavenumbers of k_sq and dk_sq ({stress slot: ∂k²/∂θ}),
-        normalized like numpy.fft.fftn (Smearing.coefficients: Fourier modes, and cosine modes
-        along walls). The smearing of the monomer types is that of Smearing.stress with the
-        fields w_i + z_i ψ.
+        <c_s z_s ((∂Γ_s/∂θ) * ψ)> with ∂Γ_s/∂θ = -(a_s²/2) Γ_s ∂k²/∂θ. dk_sq is
+        Smearing.lattice_derivatives_k_sq() ({stress slot: ∂k²/∂θ}), and Smearing.coefficients
+        gives the coefficients at its wavenumbers (Fourier modes, and cosine modes along walls).
+        The smearing of the monomer types is that of Smearing.stress with the fields w_i + z_i ψ.
         """
+        coefficients = self._smearing.coefficients
         result = np.zeros(6)
-        n = psi.size
-        psi_k = np.ravel(coefficients(psi))
+        n = self.psi.size
+        psi_k = np.ravel(coefficients(self.psi))
         weight = -0.5 * np.abs(psi_k) ** 2 / n ** 2 / self.coupling
         if self.ions:
-            densities, _ = self.ion_densities(psi)
+            densities, _ = self.ion_densities()
             for ion, density in zip(self.ions, densities):
                 density_k = np.ravel(coefficients(density))
-                gamma = np.exp(-ion["smearing_length"] ** 2 * np.ravel(k_sq) / 2)
                 weight = weight + ion["valence"] * np.real(np.conj(density_k) * psi_k) \
-                    * (-0.5 * ion["smearing_length"] ** 2 * gamma) / n ** 2
+                    * (-0.5 * ion["smearing_length"] ** 2 * np.ravel(ion["gamma"])) / n ** 2
         for slot, derivative in dk_sq.items():
             result[slot] = np.sum(weight * np.ravel(derivative))
         return result

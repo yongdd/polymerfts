@@ -62,7 +62,7 @@ def load_config(path: Union[str, Path]) -> Dict[str, Any]:
     suffix = path.suffix.lower()
 
     try:
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:   # UTF-8, with or without a byte-order mark
             if suffix in ('.yaml', '.yml'):
                 params = yaml.safe_load(f)
             elif suffix == '.json':

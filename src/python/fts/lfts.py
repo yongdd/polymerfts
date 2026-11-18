@@ -29,10 +29,6 @@ from ..theory.smearing import smearing_of
 from .structure_functions import LftsStructureFunctions
 from .wtmd import WTMD
 
-# OpenMP environment variables
-os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
-os.environ.setdefault("OMP_STACKSIZE", "1G")
-
 
 class LFTS:
     """Langevin field-theoretic simulation (L-FTS) of polymer melts and solutions.

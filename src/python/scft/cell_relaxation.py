@@ -35,9 +35,6 @@ class CellRelaxation:
         # whether it belongs to the fields of the current iteration
         self.stress_array = None
         self.stress_is_current = False
-        # The angles in degrees the box was given (None: right angles). The native box keeps radians;
-        # the smearing computes |k|^2 from the same degrees as the box, so its k^2 is the solver's bit for bit
-        self.box_angles = angles
         self.n_variables = self._choose_lattice_parameters(params, angles)
 
     def _choose_lattice_parameters(self, params, angles):
@@ -222,13 +219,11 @@ class CellRelaxation:
             for i, idx in enumerate(self.angles_full_indices):
                 full_angles[idx] = new_angles[i]
             self.prop_solver.set_lattice_parameters(list(np.array(new_lx)[self.lx_full_indices]), full_angles)
-            self.box_angles = full_angles
         else:
             self.prop_solver.set_lx(list(np.array(new_lx)[self.lx_full_indices]))
 
-        # The smearing kernel Γ(k) and the Coulomb kernel are functions of the physical wavenumber; the
-        # smearing takes the degrees the box was given, not get_angles_degrees() (a round trip through radians)
-        self.smearing.set_box(self.prop_solver.get_lx(), self.box_angles)
+        # The smearing kernel Γ(k) and the Coulomb kernel are functions of the physical wavenumber
+        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
         if self.electrostatics is not None:
             self.electrostatics.set_box()
         return fields
@@ -247,11 +242,11 @@ class CellRelaxation:
         stress = np.array(self.prop_solver.get_stress())
         if self.smearing.enabled:
             es = self.electrostatics
-            felt = w if es is None else [w[i] + es.charges[m] * self.sim.psi for i, m in enumerate(self.monomer_types)]
-            smearing_stress = self.smearing.stress(felt, [phi[m] for m in self.monomer_types])
+            felt = w if es is None else [w[i] + es.charges[m] * es.psi for i, m in enumerate(self.monomer_types)]
+            dk_sq = self.smearing.lattice_derivatives_k_sq()
+            smearing_stress = self.smearing.stress(felt, [phi[m] for m in self.monomer_types], dk_sq)
             if es is not None:
-                smearing_stress += es.stress(self.sim.psi, self.smearing.coefficients, self.smearing.k_sq,
-                                             self.smearing.lattice_derivatives_k_sq())
+                smearing_stress += es.stress(dk_sq)
             # The angles of an orthogonal box do not vary unless the crystal system lets them
             if self.smearing.orthogonal and not self.angle_stress_indices:
                 smearing_stress[dim:] = 0.0

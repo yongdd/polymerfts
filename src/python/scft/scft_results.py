@@ -180,16 +180,11 @@ def save_results(sim, path):
     ValueError
         If file extension is not .mat, .json, or .yaml.
     """
-    # Make a dictionary for chi_n
-    chi_n_mat = {}
-    for key in sim.chi_n:
-        chi_n_mat[key] = sim.chi_n[key]
-
     # Make a dictionary for data
     m_dic = {"initial_params": sim.params,
         "dim":sim.prop_solver.dim, "nx":sim.prop_solver.nx, "lx":sim.prop_solver.get_lx(),
         "angles":list(sim.prop_solver.get_angles_degrees()),
-        "monomer_types":sim.monomer_types, "chi_n":chi_n_mat, "chain_model":sim.chain_model, "ds":sim.ds,
+        "monomer_types":sim.monomer_types, "chi_n":dict(sim.chi_n), "chain_model":sim.chain_model, "ds":sim.ds,
         "eigenvalues": sim.mpt.eigenvalues, "matrix_a": sim.mpt.matrix_a, "matrix_a_inverse": sim.mpt.matrix_a_inv}
     metadata = simulation_metadata(sim)
     metadata.update(execution_status="converged" if sim.error_level < sim.tolerance else "not_converged",
@@ -220,7 +215,7 @@ def save_results(sim, path):
 
     # Electrostatic potential and the chemical potentials of the point ions
     if sim.electrostatics is not None:
-        m_dic["psi"] = sim._to_full_grid(sim.psi)
+        m_dic["psi"] = sim._to_full_grid(sim.electrostatics.psi)
         if sim.ion_chemical_potentials is not None:
             m_dic["ion_chemical_potentials"] = sim.ion_chemical_potentials
 
@@ -255,11 +250,11 @@ def ion_chemical_potentials(sim, phi):
     if es is None:
         return None
     print("Poisson residual |c - (k² + κ²)ψ/E| relative to the charge density: %.3e"
-          % es.poisson_error(sim.smearing.apply_to_dict(phi), sim.psi))
+          % es.poisson_error(sim.smearing.apply_to_dict(phi)))
     if not es.ions:
         return None
-    mu = es.ion_chemical_potentials(sim.psi)
-    print("Point ions: chemical potentials βμ", mu, "ions per reference chain", es.ion_number_densities(sim.psi))
+    mu = es.ion_chemical_potentials()
+    print("Point ions: chemical potentials βμ", mu, "ions per reference chain", es.ion_number_densities())
     return mu
 
 
@@ -305,7 +300,7 @@ def scft_result(sim):
         grand_potential=sim.grand_potential,
         polymer_lengths=list(sim.polymer_lengths),
         polymer_volume_fractions=list(sim.polymer_volume_fractions),
-        psi=None if es is None else sim._to_full_grid(sim.psi),
+        psi=None if es is None else sim._to_full_grid(es.psi),
         ion_chemical_potentials=sim.ion_chemical_potentials
     )
 

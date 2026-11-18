@@ -3,7 +3,8 @@
 
 Writes small YAML and JSON files and checks that numpy expressions are
 evaluated, that nothing outside the allowed expressions is executed, that bad
-files raise ConfigError, and that the three simulation classes build from a
+files raise ConfigError, that a UTF-8 file with Greek letters loads under an ASCII
+locale, and that the three simulation classes build from a
 file with keyword overrides applied: one file serves the three, each warning once,
 at the line that calls from_file, about the options of the other methods it
 ignores; a key given as None is absent, also as an override, and a key no method
@@ -14,6 +15,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import warnings
@@ -97,6 +99,17 @@ def main():
                 failed.append("missing file accepted")
             except FileNotFoundError:
                 pass
+
+            # YAML and JSON files are UTF-8: a comment with Greek letters loads also where the locale
+            # encoding is another one (ASCII here; cp949 or cp1252 on Windows raised UnicodeDecodeError)
+            with open("utf8.yaml", "w", encoding="utf-8") as f:
+                f.write("# ρ₀ is the reference density\nnx: [8]   # χN\n")
+            env = dict(os.environ, PYTHONUTF8="0", PYTHONCOERCECLOCALE="0", LC_ALL="C")
+            loaded = subprocess.run([sys.executable, "-c", "from polymerfts import load_config; "
+                                     "print(load_config('utf8.yaml')['nx'])"],
+                                    env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if loaded.returncode != 0 or loaded.stdout.strip().splitlines()[-1:] != ["[8]"]:
+                failed.append(f"a UTF-8 file under an ASCII locale: {loaded.stdout} {loaded.stderr[-300:]}")
 
             # The simulation classes build from one file, with overrides applied, each with one warning
             # about the options of the other methods that it ignores, at the line that calls from_file; a

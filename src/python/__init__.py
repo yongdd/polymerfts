@@ -1,3 +1,10 @@
+# OpenMP defaults, unless the user set the variables: one thread and a 1 GB thread stack. libgomp
+# and NumPy's OpenBLAS read them when they load, so they are set before _core (which loads libgomp)
+# or NumPy is imported. A script that imports NumPy first keeps NumPy's own thread count.
+import os as _os
+_os.environ.setdefault("OMP_NUM_THREADS", "1")
+_os.environ.setdefault("OMP_STACKSIZE", "1G")
+
 # Package version. The pip/conda metadata is authoritative when the package
 # was installed through pip (pyproject.toml); the fallback constant covers
 # the plain 'make install' path, which ships no dist metadata. Keep the
@@ -12,7 +19,6 @@ except Exception:
 # module: the spglib library that _core links lives in the spglib package.
 import sys as _sys
 if _sys.platform == "win32":
-    import os as _os
     import importlib.util as _importlib_util
     _spglib_spec = _importlib_util.find_spec("spglib")
     if _spglib_spec is not None and _spglib_spec.origin:

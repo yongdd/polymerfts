@@ -221,6 +221,21 @@ README.md of that checkout describes.
 
 </details>
 
+<details>
+<summary>Threads</summary>
+
+### Threads
+
+`import polymerfts` sets `OMP_NUM_THREADS=1` and `OMP_STACKSIZE=1G` unless they are
+already set, before its native module or NumPy loads; values set in the shell, or in the
+script before the import, take precedence. `OMP_NUM_THREADS` is the number of propagators
+computed at the same time ([Quick Start](QuickStart.md#multi-threading-settings)).
+NumPy's OpenBLAS also takes its thread count from `OMP_NUM_THREADS`, and its idle threads
+can slow down the threads of polymerfts: set `OPENBLAS_NUM_THREADS=1` before importing
+NumPy when callbacks or analysis in the same process use BLAS (`np.matmul`, `np.linalg`).
+
+</details>
+
 ## Testing
 
 | Check | Command |

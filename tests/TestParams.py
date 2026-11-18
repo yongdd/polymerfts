@@ -280,8 +280,7 @@ def main():
         print("FAILED: SCFT explicit options")
         ok = False
 
-    # ---- chi N completion and sorted monomer types (through LFTS: a missing pair makes
-    #      the 3x3 chi matrix singular, which incompressible SCFT rejects)
+    # ---- chi N completion and sorted monomer types (through LFTS)
     params = lfts_params()
     params["segment_lengths"] = {"C": 1.0, "A": 1.0, "B": 1.0}
     params["chi_n"] = {"B,A": 15.0, "A,C": 5.0}

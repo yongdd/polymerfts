@@ -293,7 +293,7 @@ which segment pairs enter the concentration and stress integrals and with
 which weights, and the normalization. Their loops read top to bottom in the
 order the work happens. The constructors resolve each job of the schedule once
 (its propagator storage or checkpoints, contour step and junction sources), so
-`compute_propagators()` looks up no keys, which grow with the size of a polymer.
+`compute_propagators()` looks up no propagator keys, which grow with the size of a polymer.
 Every operation on grid data goes through
 `ComputationBackend` (`src/common/ComputationBackend.h`): advance a
 propagator, build a junction, accumulate segment products, divide a discrete
@@ -467,8 +467,10 @@ coefficients have the layout of `FFT<T>`, and `get_k_squared()` gives |k|² in i
 current box with the alias convention of `Pseudo`; `_core.minimal_alias_k_squared(nx, lx, angles)`
 and `_core.minimal_alias_moments(nx, lx, angles)` give the same |k|² and tied-alias moments on
 every mode of a periodic grid of any cell (`alias_k_squared` and `alias_moments` of
-`MinimalFormAlias.h`, which `FourierTransform` uses too), for the smearing (whose cell follows
-SCFT box relaxation) and WTMD. For real fields the multipliers and the
+`MinimalFormAlias.h`, which `FourierTransform` uses too), for a smearing without a transform
+of real fields and WTMD. With real fields in a periodic box the smearing of a simulation takes
+|k|², the alias moments and the coefficients of its stress from `PropagatorSolver.fourier`, on
+the half spectrum (its cell follows SCFT box relaxation). For real fields the multipliers and the
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from

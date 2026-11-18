@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SCFT options: angle relaxation, axis_ordering, the field-residual projector and tied lengths.
+SCFT options: angle relaxation, axis_ordering, stress_interval, the field-residual projector and tied lengths.
 
 1. Angle relaxation (Oblique2D): hexagonal cylinders started from gamma = 100 deg
    relax to gamma = 120 deg with a = b. The angles enter the optimizer in radians,
@@ -11,7 +11,16 @@ SCFT options: angle relaxation, axis_ordering, the field-residual projector and 
 2. axis_ordering: a run whose nx, lx, bc and initial fields are given in the
    order ["b", "a"] reproduces the run in the standard order (results are in the
    standard order). Until 2026-10 the initial fields and the boundary conditions
-   were not reordered (walls on the wrong axis: dF 9e-2 here).
+   were not reordered (walls on the wrong axis: dF 9e-2 here). A triclinic 3D cell
+   given in three other axis orders reproduces the standard run: its angles move
+   with the axes.
+   stress_interval: a stress reused between the iterations that compute it guides
+   the updates, but only the stress of the final fields certifies convergence;
+   stress_interval 4 and "adaptive" reach the cell of stress_interval 1 (to 5e-7)
+   in a 1D lamella, and a reused stress whose error falls below the tolerance is
+   replaced by the stress of the fields of that iteration. Without that check the
+   run with stress_interval 4 stopped (cpu-mkl) at 12 times the tolerance with a
+   cell 1.4e-6 off.
 3. Free energy: the full CE value from the monomer fields does not change when
    the field means are moved to the saddle point (the fields of L-FTS), 1e-10.
    Subtracting the ideal mixing term gives the field-theoretic Hamiltonian with
@@ -149,6 +158,75 @@ def test_axis_ordering():
     check(abs(standard.free_energy - reordered.free_energy) < 1e-10 and d_phi < 1e-8,
           f"axis_ordering ['b', 'a'] with walls on a reproduces the standard run "
           f"(dF {abs(standard.free_energy - reordered.free_energy):.1e}, dphi {d_phi:.1e})")
+
+
+def test_axis_ordering_3d():
+    """A triclinic cell given in three other axis orders: the angles move with the axes."""
+    nx, lx, angles = [8, 10, 12], [2.0, 2.3, 2.6], [80.0, 95.0, 105.0]
+    g = np.meshgrid(*[np.arange(n) / n for n in nx], indexing="ij")
+    w_a = 3.0 * np.cos(2 * np.pi * g[0]) + 2.0 * np.cos(2 * np.pi * (g[1] + g[2])) + np.sin(2 * np.pi * g[2])
+
+    def params(nx, lx, angles, order=None):
+        p = base(nx, lx, {"A,B": 14.0}, [("A", 0.4), ("B", 0.6)], False)
+        p.update(angles=angles, ds=1 / 20, tolerance=1e-10)
+        if order is not None:
+            p["axis_ordering"] = order
+        return p
+
+    standard = run(params(nx, lx, angles), {"A": w_a.ravel(), "B": -w_a.ravel()})
+    pair = {(1, 2): 0, (0, 2): 1, (0, 1): 2}   # [alpha, beta, gamma]: the angles between axes (b, c), (a, c), (a, b)
+    for order in (["c", "b", "a"], ["b", "c", "a"], ["c", "a", "b"]):
+        axes = ["abc".index(label) for label in order]   # the user's axis k is the standard axis axes[k]
+        user_angles = [angles[pair[tuple(sorted((axes[i], axes[j])))]] for i, j in ((1, 2), (0, 2), (0, 1))]
+        field = np.transpose(w_a, axes).ravel()
+        reordered = run(params([nx[a] for a in axes], [lx[a] for a in axes], user_angles, order), {"A": field, "B": -field})
+        d_f = abs(standard.free_energy - reordered.free_energy)
+        d_phi = np.max(np.abs(np.array(standard.phi["A"]) - np.array(reordered.phi["A"])))
+        d_angles = np.max(np.abs(np.array(reordered.prop_solver.get_angles_degrees()) - angles))
+        check(d_f < 1e-10 and d_phi < 1e-8 and d_angles < 1e-10,
+              f"axis_ordering {order}, triclinic cell with angles {user_angles} in that order: reproduces the "
+              f"standard run (dF {d_f:.1e}, dphi {d_phi:.1e}, angles {d_angles:.1e} from {angles})")
+
+
+def test_stress_interval():
+    """A stress reused between the stress computations of stress_interval guides the updates, but convergence is
+    certified with the stress of the final fields: stress_interval 4 and "adaptive" reach the cell of
+    stress_interval 1, and a reused stress whose error falls below the tolerance is replaced by the stress of
+    the fields of the iteration."""
+    nx, tolerance = 64, 1e-7
+    wave = 5.0 * np.cos(2 * np.pi * np.arange(nx) / nx)
+    results = {}
+    for interval in (1, 4, "adaptive"):
+        params = base([nx], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
+        params.update(tolerance=tolerance, stress_interval=interval)
+        with contextlib.redirect_stdout(io.StringIO()):
+            calc = scft.SCFT(params=params)
+            result = calc.run(initial_fields={"A": wave, "B": -wave}, return_result=True)
+            calc.compute_concentrations(calc.w)
+            final_error = calc.cell.error(calc.cell.stress(calc.w, calc.phi))   # the stress of the final fields
+        results[interval] = (calc, result, final_error)
+    reference = results[1][1].lx[0]
+    for interval in (4, "adaptive"):
+        _, result, final_error = results[interval]
+        d_lx = abs(result.lx[0] - reference) / reference
+        check(result.converged and final_error < tolerance and d_lx < 5e-7,
+              f"stress_interval {interval}: converged in {result.iterations} iterations with the stress error "
+              f"{final_error:.1e} of the final fields, L {result.lx[0]:.8f} (stress_interval 1: {reference:.8f}, "
+              f"{results[1][1].iterations} iterations; rel. {d_lx:.1e})")
+
+    # Iteration 6 of stress_interval 4 reuses the stress of iteration 4. In a box 2 % longer the fields are
+    # stressed; a reused stress of zero with no field error would certify convergence
+    calc = results[4][0]
+    with contextlib.redirect_stdout(io.StringIO()):
+        calc.prop_solver.set_lx([1.02 * reference])
+        phi, _ = calc.compute_concentrations(calc.w)
+    current = calc.cell.error(calc.cell.stress(calc.w, phi))
+    calc.cell.stress_array = np.zeros(6)
+    with contextlib.redirect_stdout(io.StringIO()):
+        error = calc.cell.error_at(6, calc.w, phi, 0.0)
+    check(current > 1e3 * tolerance and error == current and calc.cell.stress_is_current,
+          f"a reused stress below the tolerance is replaced by the stress of the fields (error {error:.2e}, "
+          f"with the stress of the fields {current:.2e})")
 
 
 def test_free_energy():
@@ -324,6 +402,8 @@ def test_tied_lengths():
 def main():
     test_angle_relaxation()
     test_axis_ordering()
+    test_axis_ordering_3d()
+    test_stress_interval()
     test_free_energy()
     test_field_residual()
     test_singular_chi()

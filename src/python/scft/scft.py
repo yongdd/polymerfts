@@ -1,4 +1,3 @@
-import os
 import time
 import numpy as np
 from pathlib import Path
@@ -22,10 +21,6 @@ from ..theory.chains import read_chains, mean_concentrations, draw_polymer_archi
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from ..theory.electrostatics import MeanFieldElectrostatics
-
-# OpenMP environment variables
-os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
-os.environ.setdefault("OMP_STACKSIZE", "1G")
 
 
 class SCFT:
@@ -164,10 +159,9 @@ class SCFT:
         # Smearing of the interactions, on full-grid fields (validate_scft_params refuses it with a space group)
         self.smearing = smearing_of(params, self.prop_solver)
 
-        # Electrostatics: the charged types feel z_i ψ, and ψ solves the Poisson equation with the
-        # charges of the chains and the point ions (electrostatics.py, MeanFieldElectrostatics)
+        # Electrostatics: the charged types feel z_i ψ, and ψ (self.electrostatics.psi) solves the Poisson
+        # equation with the charges of the chains and the point ions (electrostatics.py, MeanFieldElectrostatics)
         self.electrostatics = None
-        self.psi = None
         if params.get("electrostatics") is not None:
             self._setup_electrostatics(params)
 
@@ -258,12 +252,12 @@ class SCFT:
         # A fixed charge is given in the axis order of nx, like the initial fields
         if self._axis_perm is not None and params["electrostatics"].get("fixed_charge") is not None:
             params["electrostatics"]["fixed_charge"] = self._to_standard_axes(params["electrostatics"]["fixed_charge"])
-        self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, reference_segments(params),
-                                                      self.prop_solver.fourier,
+        self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, self.smearing,
+                                                      reference_segments(params), fourier=self.prop_solver.fourier,
                                                       ion_concentrations=point_ion_concentrations(params),
                                                       open_charges=open_charges(params))
         es = self.electrostatics
-        self.psi = np.zeros(self.prop_solver.n_grid)
+        es.psi = np.zeros(self.prop_solver.n_grid)
         print("Electrostatics: charges", es.charges, "coupling E = %g" % es.coupling
               + ("" if es.screening_length is None else ", screening length %g" % es.screening_length))
         for ion in es.ions:
@@ -332,10 +326,10 @@ class SCFT:
         # Field optimizer operates on irreducible grid when space group is set.
         w_reduced = w if self.sg is None else self.sg.irreducible_to_reduced(w)
 
-        # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ (self.psi)
+        # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ
         w_input = chain_fields(self, w_reduced)
         if self.electrostatics is not None:
-            self.electrostatics.add_potential(w_input, self.psi)
+            self.electrostatics.add_potential(w_input)
 
         phi, elapsed_time = solve_chains(self, w_input, q_init)
         check_partition_once(self, lambda: self._full_grid_fields(w))
@@ -365,10 +359,6 @@ class SCFT:
             field = self.sg.irreducible_to_reduced(field)
         return self.sg.from_reduced_basis(field)
 
-    # =========================================================================
-    # run() helpers (used more than once, or long enough to stand on their own)
-    # =========================================================================
-
     def save_results(self, path):
         """Saves the results to a MATLAB, JSON or YAML file, by the extension of path (scft_results.py)."""
         save_results(self, path)
@@ -376,6 +366,10 @@ class SCFT:
     def mean_concentrations(self):
         """Volume-averaged concentration of each monomer type from the chain compositions."""
         return mean_concentrations(self)
+
+    # =========================================================================
+    # run() helpers (used more than once, or long enough to stand on their own)
+    # =========================================================================
 
     def _pin_field_means(self, w):
         """Normalize the field means in place (mean() works in the reduced basis
@@ -456,10 +450,11 @@ class SCFT:
         epsilon = 1e-3
         charges = []
         for sign in (1.0, -1.0):
-            self.psi = np.full(n_grid, psi0)
-            self.psi[0] += sign * epsilon
+            psi = np.full(n_grid, psi0)
+            psi[0] += sign * epsilon
+            es.psi = psi
             phi, _ = self.compute_concentrations(w, q_init=q_init)
-            charges.append(es.charge_density(self.smearing.apply_to_dict(phi), self.psi))
+            charges.append(es.charge_density(self.smearing.apply_to_dict(phi)))
         kick = np.zeros(n_grid)
         kick[0] = 2.0 * epsilon
         fourier = self.prop_solver.fourier
@@ -563,9 +558,7 @@ class SCFT:
 
         # ---- 1. Initial fields and ψ ----
         es = self.electrostatics
-        energy_electrostatic_homogeneous = 0.0
-        if es is not None:
-            energy_electrostatic_homogeneous = self._start_psi(initial_psi, q_init)
+        energy_electrostatic_homogeneous = 0.0 if es is None else self._start_psi(initial_psi, q_init)
 
         # Check the partition consistency on the first field of this run
         self._partition_checked = False
@@ -596,7 +589,7 @@ class SCFT:
 
             # Residuals of the fields and of the Poisson equation for ψ, and their size
             w_diff = self._field_residual(w, phi_array)
-            psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared, self.psi), self.psi)
+            psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared))
             if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
                 raise NumericalError(f"Non-finite SCFT residual at iteration {iter}", self._full_grid_fields(w))
             old_error_level = error_level
@@ -726,19 +719,20 @@ class SCFT:
         state (MeanFieldElectrostatics), which also gives the initial ψ. Returns the electrostatic
         free energy of the homogeneous state."""
         es = self.electrostatics
-        energy_electrostatic_homogeneous = 0.0
-        if es is not None:
-            es.set_box()
-            psi0, energy_electrostatic_homogeneous = es.homogeneous(self._polymer_charge())
-            es.set_response(self._charge_response(psi0, q_init))
-            if initial_psi is None:
-                self.psi = np.full(self.prop_solver.n_grid, psi0)
-            else:
-                if self._axis_perm is not None:
-                    initial_psi = self._to_standard_axes(initial_psi)
-                self.psi = np.array(np.reshape(initial_psi, self.prop_solver.n_grid), dtype=np.float64)
-                if es.zero_uniform_mode:
-                    self.psi -= np.mean(self.psi)
+        # The kernels of the current box, which may have changed since the last run
+        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
+        es.set_box()
+        psi0, energy_electrostatic_homogeneous = es.homogeneous(self._polymer_charge())
+        es.set_response(self._charge_response(psi0, q_init))
+        if initial_psi is None:
+            es.psi = np.full(self.prop_solver.n_grid, psi0)
+        else:
+            if self._axis_perm is not None:
+                initial_psi = self._to_standard_axes(initial_psi)
+            psi = np.array(np.reshape(initial_psi, self.prop_solver.n_grid), dtype=np.float64)
+            if es.zero_uniform_mode:
+                psi -= np.mean(psi)
+            es.psi = psi
         return energy_electrostatic_homogeneous
 
     def _homogeneous_state(self, energy_electrostatic_homogeneous):
@@ -773,7 +767,7 @@ class SCFT:
         if self.zeta_n is not None:
             energy_total += 0.5*self.zeta_n*self.prop_solver.mean((np.sum(phi_array, axis=0) - 1.0)**2, basis="irreducible")
         if es is not None:
-            energy_total += es.free_energy(self.psi)
+            energy_total += es.free_energy()
         return energy_total
 
     def _field_residual(self, w, phi_array):
@@ -812,7 +806,7 @@ class SCFT:
         if es is not None:
             # The uniform ψ₀ (Donnan potential) shifts with the chemical potentials of the
             # ions, so the scale of ψ is that of its variation
-            psi_variation = self.psi - self.prop_solver.mean(self.psi, basis="irreducible")
+            psi_variation = es.psi - self.prop_solver.mean(es.psi, basis="irreducible")
             error_level += self.prop_solver.inner_product(psi_diff, psi_diff, basis="irreducible")
             error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
         return np.sqrt(error_level/error_normal)
@@ -841,16 +835,17 @@ class SCFT:
         # Note: w and w_diff are in irreducible basis when space group is set
         fields, fields_diff = w.flatten(), w_diff.flatten()
         if es is not None:
-            fields, fields_diff = np.concatenate((fields, self.psi)), np.concatenate((fields_diff, psi_diff))
+            fields, fields_diff = np.concatenate((fields, es.psi)), np.concatenate((fields_diff, psi_diff))
         if self.relax_cell:
             fields = self.cell.update(fields, fields_diff, old_error_level, error_level)
         else:
             fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
         w = np.reshape(fields[:w.size], (M, -1))
         if es is not None:
-            self.psi = np.array(fields[w.size:])
+            psi = np.array(fields[w.size:])
             if es.zero_uniform_mode:
-                self.psi -= np.mean(self.psi)
+                psi -= np.mean(psi)
+            es.psi = psi
 
         # Normalize field means
         self._pin_field_means(w)

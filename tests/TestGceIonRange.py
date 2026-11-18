@@ -90,11 +90,12 @@ def uniform_operators(root, platform):
 
         mean = quiet(SCFT, scft_parameters(root, platform, mu))
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            densities, log_partitions = mean.electrostatics.ion_densities(psi)
+            mean.electrostatics.psi = psi
+            densities, log_partitions = mean.electrostatics.ion_densities()
             np.testing.assert_allclose(densities[0], 1.0, rtol=0, atol=2e-13)
             check_log_partition(log_partitions[0], mu)
-            np.testing.assert_allclose(mean.electrostatics.ion_number_densities(psi), [1.0], rtol=0, atol=2e-13)
-            np.testing.assert_allclose(mean.electrostatics.free_energy(psi), -mu - 1.0, rtol=0, atol=3e-12)
+            np.testing.assert_allclose(mean.electrostatics.ion_number_densities(), [1.0], rtol=0, atol=2e-13)
+            np.testing.assert_allclose(mean.electrostatics.free_energy(), -mu - 1.0, rtol=0, atol=3e-12)
         # The homogeneous root finder may visit overflowing brackets on its way
         # to the finite Donnan saddle; all returned physical quantities must be finite.
         with np.errstate(over="ignore"):
@@ -135,9 +136,10 @@ def nonuniform_operators(root, platform):
                     {name: np.full(4, fraction) for name, fraction in FRACTIONS.items()}), 1, 200.0))
             else:
                 sim = quiet(SCFT, scft_parameters(root, platform, mu))
-                es, psi = sim.electrostatics, mu + delta
-                densities, _ = es.ion_densities(psi)
-                number, energy = es.ion_number_densities(psi)[0], es.free_energy(psi)
+                es = sim.electrostatics
+                es.psi = mu + delta
+                densities, _ = es.ion_densities()
+                number, energy = es.ion_number_densities()[0], es.free_energy()
             np.testing.assert_allclose(densities[0], expected_density, rtol=0, atol=5e-13)
             np.testing.assert_allclose(number, expected_number, rtol=0, atol=5e-13)
             np.testing.assert_allclose(energy + mu, expected_energy_without_offset, rtol=0, atol=5e-10)

@@ -49,10 +49,6 @@ from ..utils.checkpoint import (
     restore_extensions,
 )
 
-# OpenMP environment variables
-os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
-os.environ.setdefault("OMP_STACKSIZE", "1G")
-
 
 class CLFTS:
     """Complex Langevin field-theoretic simulation.

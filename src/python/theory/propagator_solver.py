@@ -246,9 +246,9 @@ class PropagatorSolver:
         periodic with non-periodic directions is not supported by the spectral
         transform, so it fails loudly instead of silently switching solvers.
         """
-        self._has_non_periodic_bc = any(b in ["reflecting", "absorbing"] for b in self.bc_lower)
+        has_walls = any(b in ["reflecting", "absorbing"] for b in self.bc_lower)
         has_periodic = any(b == "periodic" for b in self.bc_lower)
-        if not self.numerical_methods()[self.numerical_method]["supports_mixed_boundaries"] and has_periodic and self._has_non_periodic_bc:
+        if not self.numerical_methods()[self.numerical_method]["supports_mixed_boundaries"] and has_periodic and has_walls:
             real_space = "rs" if self.chain_model == "discrete" else "cn-adi2"
             raise ValueError(
                 "Mixing periodic and non-periodic boundary conditions is not "

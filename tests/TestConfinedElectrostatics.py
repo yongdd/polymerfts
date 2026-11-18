@@ -330,7 +330,7 @@ def closed_scft(root):
     sim = quiet(lambda: SCFT(params))
     result = quiet(lambda: sim.run(initial_fields={"A": np.zeros(nx[0]), "B": np.zeros(nx[0])}, q_init={"G": q_init},
                                    return_result=True))
-    error = sim.electrostatics.poisson_error(sim.smearing.apply_to_dict(result.phi), sim.psi)
+    error = sim.electrostatics.poisson_error(sim.smearing.apply_to_dict(result.phi))
     assert result.converged and error < 1e-8, f"grafted chains: Poisson error {error:.2e}"
 
 
