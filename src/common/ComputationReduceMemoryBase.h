@@ -69,6 +69,11 @@ protected:
     void add_checkpoint(const std::string& key, int n);
     CheckpointArray<T>* checkpoint_at(const std::string& key, int n);
 
+    /// stored[(key, n)] for n = n_first..n_last, nullptr where there is none.
+    static std::vector<CheckpointArray<T>*> stored_segments(
+        const std::map<std::tuple<std::string, int>, CheckpointArray<T>*>& stored,
+        const std::string& key, int n_first, int n_last);
+
     /// Add the regular checkpoints; call after the model-specific ones.
     void add_regular_checkpoints();
 
@@ -80,9 +85,9 @@ protected:
      *
      * Calls visit(n, q(left_offset - n), q†(n)) for n = n_first..n_last, where
      * q is propagator key_left and q† is key_right. q† is advanced from its
-     * checkpoint at n_first; q is recomputed from checkpoints in chunks of
-     * checkpoint_interval segments. A segment of q below first_segment is
-     * passed as nullptr.
+     * checkpoint at n_first; q is recomputed in chunks of at most
+     * checkpoint_interval segments that start at its regular checkpoints. A
+     * segment of q below first_segment is passed as nullptr.
      */
     void for_each_segment_pair(const std::string& key_left, const std::string& key_right,
                                int left_offset, int n_first, int n_last,

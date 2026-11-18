@@ -147,6 +147,13 @@ private:
      */
     int find_index(const std::vector<double>& vec, double value) const;
 
+    /**
+     * @brief Position of a block's contour length in unique_lengths.
+     * @param getter Name of the public getter, for the error messages
+     * @throws Exception if the mapping is not finalized or the length is not in it
+     */
+    int length_position(double contour_length, const char* getter) const;
+
 public:
     /**
      * @brief Construct a ContourLengthMapping.
@@ -221,16 +228,6 @@ public:
      * @throws Exception if contour_length not in mapping and not zero
      */
     int get_n_segment(double contour_length) const;
-
-    /**
-     * @brief Get local Δs value for a contour length.
-     *
-     * @param contour_length Block's contour length
-     * @return Local Δs = contour_length / n_segment
-     *
-     * @throws Exception if contour_length not in mapping
-     */
-    double get_local_ds(double contour_length) const;
 
     /**
      * @brief Get contour length from its index.

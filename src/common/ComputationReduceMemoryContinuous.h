@@ -32,6 +32,23 @@ template <typename T>
 class ComputationReduceMemoryContinuous : public ComputationReduceMemoryBase<T>
 {
 private:
+    /// A job of the scheduler with what it reads, resolved once: the schedule and the
+    /// checkpoints are fixed after construction, and keys grow with the size of a polymer
+    struct Job
+    {
+        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
+        const ComputationEdge* edge;  ///< Its monomer type and dependencies
+        int n_segment_from;           ///< The job computes q(n_segment_from+1) .. q(n_segment_to)
+        int n_segment_to;
+        int ds_index;                 ///< Contour step of the propagator
+        std::vector<std::pair<CheckpointArray<T>*, double>> sources;  ///< (q_i, n_i) of a junction or aggregation
+        std::vector<CheckpointArray<T>*> checkpoints;  ///< Checkpoint of q(n_segment_from + i), or nullptr
+
+        /// The checkpoint of q(n), n = n_segment_from..n_segment_to, or nullptr
+        CheckpointArray<T>* checkpoint(int n) const { return checkpoints[n - n_segment_from]; }
+    };
+    std::vector<std::vector<Job>> schedule;  ///< The scheduler's jobs, computed one at a time
+
     /// One segment per polymer for its partition function: (polymer, key, n, key†, n_aggregated)
     std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 

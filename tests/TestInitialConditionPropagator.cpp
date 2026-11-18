@@ -82,7 +82,7 @@ int main()
 
                     // Display branches
                     propagator_computation_optimizer->display_blocks();
-                    propagator_computation_optimizer->display_sub_propagators();
+                    propagator_computation_optimizer->display_propagators();
 
                     std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "rqm4");
 

@@ -22,36 +22,46 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
     : ComputationReduceMemoryBase<T>(cb, molecules, propagator_computation_optimizer, method, space_group,
                                      /*first_segment=*/0, create_backend)
 {
-    try
-    {
-        // The start of every propagator and the segments other propagators start from
-        for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
-        {
-            this->add_checkpoint(key, 0);
-            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-                this->add_checkpoint(sub_key, sub_n_segment);
-        }
-        this->add_regular_checkpoints();
+    // The base classes free what they hold if this constructor throws
 
-        // One segment of each polymer gives its partition function
-        int current_p = 0;
-        for (const auto& [key, phi] : this->phi_block)
-        {
-            const int p = std::get<0>(key);
-            if (p != current_p)
-                continue;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const double n_aggregated = block.n_copies/block.n_repeated;
-            this->add_checkpoint(std::get<1>(key), block.n_segment_left);
-            this->add_checkpoint(std::get<2>(key), 0);
-            single_partition_segment.push_back(std::make_tuple(
-                p, std::get<1>(key), block.n_segment_left, std::get<2>(key), n_aggregated));
-            current_p++;
-        }
-    }
-    catch (std::exception& exc)
+    // The start of every propagator and the segments other propagators start from
+    for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
     {
-        throw_without_line_number(exc.what());
+        this->add_checkpoint(key, 0);
+        for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
+            this->add_checkpoint(sub_key, sub_n_segment);
+    }
+    this->add_regular_checkpoints();
+
+    // One segment of each polymer gives its partition function
+    int current_p = 0;
+    for (const auto& [key, phi] : this->phi_block)
+    {
+        const int p = std::get<0>(key);
+        if (p != current_p)
+            continue;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
+        const double n_aggregated = block.n_copies/block.n_repeated;
+        this->add_checkpoint(std::get<1>(key), block.n_segment_left);
+        this->add_checkpoint(std::get<2>(key), 0);
+        single_partition_segment.push_back(std::make_tuple(
+            p, std::get<1>(key), block.n_segment_left, std::get<2>(key), n_aggregated));
+        current_p++;
+    }
+
+    // The jobs of the scheduler, with the checkpoints they start from, store and join
+    for (const auto& parallel_job : this->sc->get_schedule())
+    {
+        std::vector<Job>& jobs = schedule.emplace_back();
+        for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
+        {
+            const ComputationEdge& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
+            std::vector<std::pair<CheckpointArray<T>*, double>> sources;
+            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
+                sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
+            jobs.push_back({&key, &edge, n_segment_from, n_segment_to, PropagatorCode::get_ds_index_from_key(key),
+                            std::move(sources), this->stored_segments(this->checkpoint, key, n_segment_from, n_segment_to)});
+        }
     }
 }
 
@@ -66,75 +76,60 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
     std::map<std::string, const T*> w_input,
     std::map<std::string, const T*> q_init)
 {
-    try
+    this->set_fields(w_input, q_init);
+
+    // The propagators one at a time, in the scheduler's order
+    for (const std::vector<Job>& parallel_jobs : schedule)
     {
-        this->set_fields(w_input, q_init);
-
-        // The propagators one at a time, in the scheduler's order
-        for (const auto& parallel_job : this->sc->get_schedule())
+        for (const Job& job : parallel_jobs)
         {
-            for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
+            const std::string& key = *job.key;
+
+            // q(r, n_segment_from)
+            if (job.n_segment_from == 0)
             {
-                const auto& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
-
-                // q(r, n_segment_from)
-                if (n_segment_from == 0)
+                if (job.edge->deps.size() == 0)
                 {
-                    if (edge.deps.size() == 0)
-                    {
-                        if (key[0] == '{')  // grafting point
-                            this->backend->copy_from_host(0, this->q_work[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
-                        else                // free chain end
-                            this->backend->set_unity(0, this->q_work[0]);
-                    }
-                    else
-                    {
-                        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
-                        for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-                            sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
-                        if (key[0] == '[')       // aggregated propagators
-                            this->backend->junction_sum(0, this->q_work[0], sources);
-                        else if (key[0] == '(')  // junction of branches
-                            this->backend->junction_product(0, this->q_work[0], sources);
-                    }
-                    this->backend->apply_mask(0, this->q_work[0]);
-                    this->backend->store_checkpoint(0, this->checkpoint_at(key, 0), this->q_work[0]);
+                    if (key[0] == '{')  // grafting point
+                        this->backend->copy_from_host(0, this->q_work[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
+                    else                // free chain end
+                        this->backend->set_unity(0, this->q_work[0]);
                 }
-                else
-                    this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key, n_segment_from));
+                else if (key[0] == '[')  // aggregated propagators
+                    this->backend->junction_sum(0, this->q_work[0], job.sources);
+                else if (key[0] == '(')  // junction of branches
+                    this->backend->junction_product(0, this->q_work[0], job.sources);
+                this->backend->apply_mask(0, this->q_work[0]);
+                this->backend->store_checkpoint(0, job.checkpoint(0), this->q_work[0]);
+            }
+            else
+                this->backend->load_checkpoint(0, this->q_work[0], job.checkpoint(job.n_segment_from));
 
-                // q(r, n+1) from q(r, n), keeping the checkpointed segments
-                const int ds_index = PropagatorCode::get_ds_index_from_key(key);
-                int cur = 0;
-                for (int n = n_segment_from; n < n_segment_to; n++)
-                {
-                    this->backend->advance_propagator(0, this->q_work[cur], this->q_work[1-cur], edge.monomer_type, ds_index);
-                    cur = 1-cur;
-                    auto it = this->checkpoint.find(std::make_tuple(key, n+1));
-                    if (it != this->checkpoint.end())
-                        this->backend->store_checkpoint(0, it->second, this->q_work[cur]);
-                }
+            // q(r, n+1) from q(r, n), keeping the checkpointed segments
+            int cur = 0;
+            for (int n = job.n_segment_from; n < job.n_segment_to; n++)
+            {
+                this->backend->advance_propagator(0, this->q_work[cur], this->q_work[1-cur], job.edge->monomer_type, job.ds_index);
+                cur = 1-cur;
+                if (CheckpointArray<T>* stored = job.checkpoint(n+1))
+                    this->backend->store_checkpoint(0, stored, this->q_work[cur]);
             }
         }
-        this->backend->synchronize();
-
-        // Partition function of each polymer: Q = ∫ q(r,s) q†(r,N-s) dr / V
-        for (const auto& [p, key_left, n_left, key_right, n_aggregated] : single_partition_segment)
-        {
-            this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
-            this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 0));
-            this->backend->synchronize();
-            this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
-                                                 /(n_aggregated*this->cb->get_volume());
-        }
-        this->check_real_power_partitions();
-
-        this->propagators_computed_ = true;
     }
-    catch (std::exception& exc)
+    this->backend->synchronize();
+
+    // Partition function of each polymer: Q = ∫ q(r,s) q†(r,N-s) dr / V
+    for (const auto& [p, key_left, n_left, key_right, n_aggregated] : single_partition_segment)
     {
-        throw_without_line_number(exc.what());
+        this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
+        this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 0));
+        this->backend->synchronize();
+        this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
+                                             /(n_aggregated*this->cb->get_volume());
     }
+    this->check_real_power_partitions();
+
+    this->propagators_computed_ = true;
 }
 
 template <typename T>
@@ -143,20 +138,13 @@ void ComputationReduceMemoryContinuous<T>::advance_propagator_single_segment(T* 
     this->check_box_space_group();
     // The step uses the fields and the cell of the last compute_propagators()
     this->require_propagators();
-    try
-    {
-        const Block& block = this->molecules->get_polymer(p).get_block(v, u);
-        const int ds_index = this->molecules->get_contour_length_mapping().get_ds_index(block.contour_length);
+    const Block& block = this->molecules->get_polymer(p).get_block(v, u);
+    const int ds_index = this->molecules->get_contour_length_mapping().get_ds_index(block.contour_length);
 
-        this->backend->copy_from_host(0, this->q_work[0], q_init);
-        this->backend->advance_propagator(0, this->q_work[0], this->q_work[1], block.monomer_type, ds_index);
-        this->backend->synchronize();
-        this->backend->copy_to_host(q_out, this->q_work[1]);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    this->backend->copy_from_host(0, this->q_work[0], q_init);
+    this->backend->advance_propagator(0, this->q_work[0], this->q_work[1], block.monomer_type, ds_index);
+    this->backend->synchronize();
+    this->backend->copy_to_host(q_out, this->q_work[1]);
 }
 
 template <typename T>
@@ -253,26 +241,19 @@ void ComputationReduceMemoryContinuous<T>::get_chain_propagator(T* q_out, int po
     this->check_box_space_group();
     this->require_propagators();
     // For debugging and testing: the propagator of one block and direction
-    try
-    {
-        Polymer& pc = this->molecules->get_polymer(polymer);
-        const std::string dep = pc.get_propagator_key(v, u);
+    Polymer& pc = this->molecules->get_polymer(polymer);
+    const std::string dep = pc.get_propagator_key(v, u);
 
-        if (!this->propagator_computation_optimizer->get_computation_propagators().contains(dep))
-            throw_with_line_number("Could not find the propagator code '" + dep + "'. Disable 'aggregation' option to obtain propagator_computation_optimizer.");
+    if (!this->propagator_computation_optimizer->get_computation_propagators().contains(dep))
+        throw_with_line_number("Could not find the propagator code '" + dep + "'. Disable 'aggregation' option to obtain propagator_computation_optimizer.");
 
-        const int N_RIGHT = this->propagator_computation_optimizer->get_computation_propagator(dep).max_n_segment;
-        if (n < 0 || n > N_RIGHT)
-            throw_with_line_number("n (" + std::to_string(n) + ") must be in range [0, " + std::to_string(N_RIGHT) + "]");
+    const int N_RIGHT = this->propagator_computation_optimizer->get_computation_propagator(dep).max_n_segment;
+    if (n < 0 || n > N_RIGHT)
+        throw_with_line_number("n (" + std::to_string(n) + ") must be in range [0, " + std::to_string(N_RIGHT) + "]");
 
-        this->recompute_segments(dep, n, 1);
-        this->backend->synchronize();
-        this->backend->copy_to_host(q_out, this->q_recal[0]);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    this->recompute_segments(dep, n, 1);
+    this->backend->synchronize();
+    this->backend->copy_to_host(q_out, this->q_recal[0]);
 }
 
 template <typename T>

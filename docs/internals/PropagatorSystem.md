@@ -295,7 +295,6 @@ std::vector<std::vector<std::tuple<std::string, int, int>>> schedule;
 | Variable | Type | Description |
 |----------|------|-------------|
 | `job_assignment` | `map<string, tuple<int,int,int>>` | Maps key → (stream, start, end) |
-| `dependency_resolved_time` | `map<string, int>` | When each propagator can start |
 | `sorted_jobs` | `vector<tuple<string, int>>` | Jobs sorted by start time |
 | `time_points` | `vector<int>` | Discrete times where schedule changes |
 

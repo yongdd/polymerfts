@@ -84,34 +84,4 @@
     template class ClassName<std::complex<double>, 2>; \
     template class ClassName<std::complex<double>, 3>;
 
-/**
- * @brief Instantiate a class template for real types only.
- *
- * Use when complex instantiation is not needed or not yet implemented.
- *
- * @param ClassName The template class to instantiate
- */
-#define INSTANTIATE_CLASS_REAL_ONLY(ClassName) \
-    template class ClassName<double>;
-
-/**
- * @brief Instantiate FFT classes for real types only.
- *
- * Use when complex instantiation is not needed or not yet implemented.
- *
- * @param ClassName The FFT template class to instantiate
- */
-#define INSTANTIATE_FFT_CLASS_REAL_ONLY(ClassName) \
-    template class ClassName<double, 1>; \
-    template class ClassName<double, 2>; \
-    template class ClassName<double, 3>;
-
-/* Future: Add float support when needed
-#define INSTANTIATE_CLASS_ALL(ClassName) \
-    template class ClassName<float>; \
-    template class ClassName<double>; \
-    template class ClassName<std::complex<float>>; \
-    template class ClassName<std::complex<double>>;
-*/
-
 #endif // TEMPLATE_INSTANTIATIONS_H

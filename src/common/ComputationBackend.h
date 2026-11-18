@@ -201,10 +201,11 @@ public:
                                       const std::vector<SegmentPair<T>>& pairs) = 0;
 
     /**
-     * @brief Normalize a block concentration: phi = norm * phi / divisor.
-     * @param divisor Field to divide by before the normalization, or nullptr.
+     * @brief Discrete chains: phi = phi / exp(-w ds), the bead factor that both
+     *        propagators of a segment product carry; zero where the mask is zero.
+     * @param boltzmann_factor exp(-w ds) of the block's monomer type (boltzmann_factor())
      */
-    virtual void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) = 0;
+    virtual void divide_by_boltzmann_factor(int stream, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor) = 0;
 
     /**
      * @brief Build what block_stress() needs before the blocks run in parallel

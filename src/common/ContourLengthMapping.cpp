@@ -229,6 +229,22 @@ void ContourLengthMapping::finalize()
     is_finalized = true;
 }
 
+int ContourLengthMapping::length_position(double contour_length, const char* getter) const
+{
+    if (!is_finalized)
+    {
+        throw_with_line_number("Must call finalize() before " + std::string(getter) + "().");
+    }
+
+    int idx = find_index(unique_lengths, contour_length);
+    if (idx < 0)
+    {
+        throw_with_line_number("Contour length " + std::to_string(contour_length) +
+                               " not found in mapping.");
+    }
+    return idx;
+}
+
 /**
  * @brief Get integer index for a contour length.
  *
@@ -236,48 +252,23 @@ void ContourLengthMapping::finalize()
  */
 int ContourLengthMapping::get_length_index(double contour_length) const
 {
-    if (!is_finalized)
-    {
-        throw_with_line_number("Must call finalize() before get_length_index().");
-    }
-
     // Special case: contour_length=0 maps to length_index=0
     // This is used for continuous chain aggregation slicing
-    if (contour_length == 0.0)
+    if (is_finalized && contour_length == 0.0)
     {
         return 0;
     }
-
-    int idx = find_index(unique_lengths, contour_length);
-    if (idx < 0)
-    {
-        throw_with_line_number("Contour length " + std::to_string(contour_length) +
-                               " not found in mapping.");
-    }
-
-    return idx + 1;  // 1-based index
+    return length_position(contour_length, "get_length_index") + 1;  // 1-based index
 }
 
 /**
  * @brief Get integer index for local Δs corresponding to a contour length.
  *
- * @return 1-based index
+ * @return 0-based index
  */
 int ContourLengthMapping::get_ds_index(double contour_length) const
 {
-    if (!is_finalized)
-    {
-        throw_with_line_number("Must call finalize() before get_ds_index().");
-    }
-
-    int len_idx = find_index(unique_lengths, contour_length);
-    if (len_idx < 0)
-    {
-        throw_with_line_number("Contour length " + std::to_string(contour_length) +
-                               " not found in mapping.");
-    }
-
-    return length_to_ds_index[len_idx];  // 0-based index
+    return length_to_ds_index[length_position(contour_length, "get_ds_index")];
 }
 
 /**
@@ -285,45 +276,12 @@ int ContourLengthMapping::get_ds_index(double contour_length) const
  */
 int ContourLengthMapping::get_n_segment(double contour_length) const
 {
-    if (!is_finalized)
-    {
-        throw_with_line_number("Must call finalize() before get_n_segment().");
-    }
-
     // Special case: contour_length=0 has n_segment=0 (aggregation slicing)
-    if (contour_length == 0.0)
+    if (is_finalized && contour_length == 0.0)
     {
         return 0;
     }
-
-    int idx = find_index(unique_lengths, contour_length);
-    if (idx < 0)
-    {
-        throw_with_line_number("Contour length " + std::to_string(contour_length) +
-                               " not found in mapping.");
-    }
-
-    return length_to_n_segment[idx];
-}
-
-/**
- * @brief Get local Δs value for a contour length.
- */
-double ContourLengthMapping::get_local_ds(double contour_length) const
-{
-    if (!is_finalized)
-    {
-        throw_with_line_number("Must call finalize() before get_local_ds().");
-    }
-
-    int idx = find_index(unique_lengths, contour_length);
-    if (idx < 0)
-    {
-        throw_with_line_number("Contour length " + std::to_string(contour_length) +
-                               " not found in mapping.");
-    }
-
-    return unique_lengths[idx] / static_cast<double>(length_to_n_segment[idx]);
+    return length_to_n_segment[length_position(contour_length, "get_n_segment")];
 }
 
 /**

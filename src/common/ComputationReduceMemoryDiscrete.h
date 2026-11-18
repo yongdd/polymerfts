@@ -32,6 +32,27 @@ private:
     /// q(r, n+1/2) of propagator key, for n = 0 and the junction ends
     std::map<std::tuple<std::string, int>, CheckpointArray<T>*> half_checkpoint;
 
+    /// A job of the scheduler with what it reads, resolved once: the schedule and the
+    /// checkpoints are fixed after construction, and keys grow with the size of a polymer
+    struct Job
+    {
+        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
+        const ComputationEdge* edge;  ///< Its monomer type and dependencies
+        int n_segment_from;           ///< The job computes the segments n_segment_from+1 .. n_segment_to
+        int n_segment_to;
+        /// (q_i, n_i) of an aggregation (half-bond states at a junction, else segments) or of a
+        /// junction (half-bond states)
+        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
+        std::vector<CheckpointArray<T>*> checkpoints;       ///< Checkpoint of q(n_segment_from + i), or nullptr
+        std::vector<CheckpointArray<T>*> half_checkpoints;  ///< Half-bond state after it, or nullptr
+
+        /// The checkpoint of q(n), n = n_segment_from..n_segment_to, or nullptr
+        CheckpointArray<T>* checkpoint(int n) const { return checkpoints[n - n_segment_from]; }
+        /// The half-bond state q(n+1/2), or nullptr
+        CheckpointArray<T>* half_checkpoint(int n) const { return half_checkpoints[n - n_segment_from]; }
+    };
+    std::vector<std::vector<Job>> schedule;  ///< The scheduler's jobs, computed one at a time
+
     /// One segment per polymer for its partition function: (polymer, key, n, key†, monomer type, n_aggregated)
     std::vector<std::tuple<int, std::string, int, std::string, std::string, double>> single_partition_segment;
 

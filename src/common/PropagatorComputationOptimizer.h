@@ -83,9 +83,12 @@ private:
     // Add new key. if it already exists and 'new_n_segment' is larger than 'max_n_segment', update it.
     void update_computation_propagator_map(
         std::map<std::string, ComputationEdge, ComparePropagatorKey>& computation_propagators,
-        std::string new_key, int new_n_segment, bool is_junction_end);
+        const std::string& new_key, int new_n_segment, bool is_junction_end);
 
     bool is_junction(Polymer& pc, int node);
+
+    // MDE (or integral equation) steps of the polymers without and with the optimization
+    std::pair<int, int> count_steps() const;
 
     // Convert length_index to n_segment in deps using contour_length_mapping
     std::vector<std::tuple<std::string, int, double>> convert_deps_to_n_segment(
@@ -103,14 +106,13 @@ public:
     bool is_built_from(const Molecules* molecules) const;
     int get_n_computation_propagator_codes() const;
     std::map<std::string, ComputationEdge, ComparePropagatorKey>& get_computation_propagators(); 
-    ComputationEdge& get_computation_propagator(std::string key);
+    ComputationEdge& get_computation_propagator(const std::string& key);
     std::map<std::tuple<int, std::string, std::string>, ComputationBlock>& get_computation_blocks(); 
-    ComputationBlock& get_computation_block(std::tuple<int, std::string, std::string> key);
+    ComputationBlock& get_computation_block(const std::tuple<int, std::string, std::string>& key);
 
     // Display
     void display_statistics() const;
     void display_propagators() const;
     void display_blocks() const;
-    void display_sub_propagators() const;
 };
 #endif

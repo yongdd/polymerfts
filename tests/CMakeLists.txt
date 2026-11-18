@@ -43,6 +43,7 @@ SET(BASIC_TESTS
     TestComputationSafety
     TestComputationState
     TestInputChecks
+    TestErrorMessages
     TestPropagatorParserSafety
     TestMoleculesValidation
     TestPartitionGuard
@@ -56,6 +57,7 @@ SET(BASIC_TESTS
     TestConsoleEncoding
     TestDisplayArchitecture
     TestCircularBuffer
+    TestException
     TestScheduler
     TestPropagatorCode
     TestPropagatorCodeStack

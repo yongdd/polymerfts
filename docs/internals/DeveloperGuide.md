@@ -73,7 +73,7 @@ SCFT.run (src/python/scft/scft.py)
 │   │   synchronize
 │   └─ Q = inner_product(q, q†) / V
 ├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs); then solvents (the getters
-│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: normalize_concentration)
+│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: divide_by_boltzmann_factor)
 ├─ compute_stress, per block: block_stress (segment pairs) → solver segment stress; sum the blocks; lattice derivatives
 └─ AndersonMixing.calculate_new_fields(w, w_out - w)
 ```
@@ -293,10 +293,14 @@ a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 each propagator (free end, grafting point, junction product, aggregated sum),
 which segment pairs enter the concentration and stress integrals and with
 which weights, and the normalization. Their loops read top to bottom in the
-order the work happens. Every operation on grid data goes through
+order the work happens. The constructors resolve each job of the schedule once
+(its propagator storage or checkpoints, contour step and junction sources), so
+`compute_propagators()` looks up no keys, which grow with the size of a polymer.
+Every operation on grid data goes through
 `ComputationBackend` (`src/common/ComputationBackend.h`): advance a
-propagator, build a junction, accumulate segment products, normalize a block,
-sum the stress of a list of segment pairs, inner products, checkpoints.
+propagator, build a junction, accumulate segment products, divide a discrete
+block by its bead factor, sum the stress of a list of segment pairs, inner
+products, checkpoints.
 
 **Rules for the backend interface.**
 
@@ -755,6 +759,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 - Use C++20 features where appropriate
 - Follow existing naming conventions
 - Document public APIs
+- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`). A catch block
+  that frees resources rethrows with `throw_without_line_number(exc.what())`: an `Exception`
+  passes through unchanged, so its message names one location, and another exception
+  (`std::out_of_range`, ...) becomes an `Exception` there, which Python sees as `RuntimeError`.
+  The bindings convert the exceptions of the calls they wrap in the same way.
 - CUDA error checks follow the CUDA C++ Best Practices Guide (2.3): wrap every call that returns
   an error code (`CUDA_CHECK(...)` for runtime and CUB calls, `CUFFT_CHECK(...)` for
   cuFFT) and follow every kernel launch with `CUDA_CHECK_LAUNCH();`. The check

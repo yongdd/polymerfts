@@ -130,7 +130,7 @@ public:
      * @param code Full propagator code string (format: DKN)
      * @return Key string in DK format (without ds_index)
      */
-    static std::string get_key_from_code(std::string code);
+    static std::string get_key_from_code(const std::string& code);
 
     /**
      * @brief Extract key from code with ds_index computation.
@@ -138,7 +138,7 @@ public:
      * @param mapping ContourLengthMapping for ds_index lookup
      * @return Key string in DK+M format (with ds_index)
      */
-    static std::string get_key_from_code(std::string code, const ContourLengthMapping& mapping);
+    static std::string get_key_from_code(const std::string& code, const ContourLengthMapping& mapping);
 
     /**
      * @brief Parse dependencies from a propagator key.
@@ -154,7 +154,7 @@ public:
      * // deps contains entries for B20 and C10 dependencies
      * @endcode
      */
-    static std::vector<std::tuple<std::string, int, double>> get_deps_from_key(std::string key);
+    static std::vector<std::tuple<std::string, int, double>> get_deps_from_key(const std::string& key);
 
     /**
      * @brief Text of a branch count in a key, "n" of "A10:n".
@@ -169,39 +169,32 @@ public:
     static std::string format_count(double count);
 
     /**
-     * @brief Remove monomer type prefix from key.
-     * @param key Propagator key
-     * @return Key with monomer type removed
-     */
-    static std::string remove_monomer_type_from_key(std::string key);
-
-    /**
      * @brief Extract monomer type from key.
      * @param key Propagator key in DK+M format (e.g., "(A3B3)C+1")
      * @return Monomer type string (e.g., "A", "B", "C")
      */
-    static std::string get_monomer_type_from_key(std::string key);
+    static std::string get_monomer_type_from_key(const std::string& key);
 
     /**
      * @brief Extract ds_index from key.
      * @param key Propagator key in DK+M format (e.g., "(A3B3)C+1")
      * @return ds_index value (e.g., 1), or -1 if not present
      */
-    static int get_ds_index_from_key(std::string key);
+    static int get_ds_index_from_key(const std::string& key);
 
     /**
      * @brief Extract initial condition label from key.
      * @param key Propagator key
      * @return Initial condition label, or empty string if none
      */
-    static std::string get_q_input_idx_from_key(std::string key);
+    static std::string get_q_input_idx_from_key(const std::string& key);
 
     /**
      * @brief Get height (tree depth) from key.
      * @param key Propagator key
      * @return Height: 0 for leaf nodes, max(child heights)+1 otherwise
      */
-    static int get_height_from_key(std::string key);
+    static int get_height_from_key(const std::string& key);
 
 };
 #endif

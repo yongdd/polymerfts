@@ -61,7 +61,7 @@
  *
  * **Indexing:**
  *
- * - get_array(0) or operator[](0) returns the oldest stored array
+ * - get_array(0) returns the oldest stored array
  * - get_array(n_items-1) returns the newest stored array
  * - Indices are mapped internally to handle wrap-around
  *
@@ -138,14 +138,6 @@ public:
      * @note Returns pointer to internal storage; do not free or reallocate.
      */
     T* get_array(int n);
-
-    /**
-     * @brief Array subscript operator (same as get_array).
-     *
-     * @param n Logical index (0 = oldest, n_items-1 = newest)
-     * @return Pointer to the stored array
-     */
-    T* operator[] (int n);
 
     /**
      * @brief Get single element from stored array.

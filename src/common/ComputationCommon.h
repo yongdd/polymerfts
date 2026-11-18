@@ -166,8 +166,6 @@ public:
 
     void update_laplacian_operator() override;
     void set_force_off_diagonal_stress(bool force) override;
-    void compute_statistics(std::map<std::string, const T*> w_input,
-                            std::map<std::string, const T*> q_init = {}) override;
 
     T get_total_partition(int polymer) override;
     T get_solvent_partition(int s) override;

@@ -34,8 +34,7 @@ inline constexpr std::array<NumericalMethodInfo, 5> numerical_methods = {{
     {NumericalMethodId::RS, "rs", "discrete", "realspace", 0, true, true, true, true}
 }};
 
-inline const NumericalMethodInfo& resolve_numerical_method(
-    std::string_view chain_model, std::string_view name, std::string_view solver_type = "")
+inline const NumericalMethodInfo& resolve_numerical_method(std::string_view chain_model, std::string_view name)
 {
     if (chain_model != "continuous" && chain_model != "discrete")
         throw_with_line_number("Unknown chain model: " + std::string(chain_model));
@@ -45,9 +44,9 @@ inline const NumericalMethodInfo& resolve_numerical_method(
     for (const auto& info : numerical_methods)
         continuous_name = continuous_name || (name == info.name && std::string_view(info.chain_model) == "continuous");
     if (chain_model == "discrete" && (name.empty() || continuous_name))
-        name = solver_type == "realspace" ? "rs" : "ps";
+        name = "ps";
     else if (name.empty())
-        name = solver_type == "realspace" ? "cn-adi2" : "rqm4";
+        name = "rqm4";
 
     std::string valid;
     for (const auto& info : numerical_methods)

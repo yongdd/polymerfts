@@ -193,6 +193,16 @@ std::string generate_edge_code(
     return memory.at(requested_edge);
 }
 
+// Length of the DK part of a code DKN, without the trailing digits of its length N.
+// A monomer type has no digits but may end with an underscore.
+size_t key_part_length(const std::string& code)
+{
+    size_t length = code.size();
+    while (length > 0 && std::isdigit(static_cast<unsigned char>(code[length - 1])))
+        length--;
+    return length;
+}
+
 // Codes of both directions of every block, as (from node, to node, code)
 std::vector<std::tuple<int, int, std::string>> generate_all_codes(
     Polymer& pc, std::map<int, std::string>& chain_end_to_q_init, const ContourLengthMapping* mapping)
@@ -258,20 +268,9 @@ std::vector<std::tuple<int, int, std::string>> PropagatorCode::generate_codes_wi
  * @param code Full propagator code (format: DKN)
  * @return Key in DK format (without ds_index)
  */
-std::string PropagatorCode::get_key_from_code(std::string code)
+std::string PropagatorCode::get_key_from_code(const std::string& code)
 {
-    // Strip trailing digits (length_index) to get DK. A monomer type has no
-    // digits but may end with an underscore.
-    int pos = 0;
-    for (int i = code.size() - 1; i >= 0; i--)
-    {
-        if (!isdigit(code[i]))
-        {
-            pos = i + 1;
-            break;
-        }
-    }
-    return code.substr(0, pos);
+    return code.substr(0, key_part_length(code));
 }
 
 /**
@@ -289,21 +288,10 @@ std::string PropagatorCode::get_key_from_code(std::string code)
  * @param mapping ContourLengthMapping for ds_index lookup
  * @return Key in DK+M format
  */
-std::string PropagatorCode::get_key_from_code(std::string code, const ContourLengthMapping& mapping)
+std::string PropagatorCode::get_key_from_code(const std::string& code, const ContourLengthMapping& mapping)
 {
-    // Find the position after the last non-digit character (end of DK). A
-    // monomer type has no digits but may end with an underscore.
-    int pos = 0;
-    for (int i = code.size() - 1; i >= 0; i--)
-    {
-        if (!isdigit(code[i]))
-        {
-            pos = i + 1;
-            break;
-        }
-    }
-
     // Extract DK part and length_index
+    const size_t pos = key_part_length(code);
     std::string dk_part = code.substr(0, pos);
     int length_index = std::stoi(code.substr(pos));
 
@@ -335,7 +323,7 @@ std::string PropagatorCode::get_key_from_code(std::string code, const ContourLen
  * @param key Propagator key to parse
  * @return Vector of (sub_key, n_segment, n_repeated) tuples
  */
-std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_key(std::string key)
+std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_key(const std::string& key)
 {
     // sub_key, sub_n_segment, sub_n_repeated
     std::vector<std::tuple<std::string, int, double>> sub_deps;
@@ -480,45 +468,6 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
 }
 
 /**
- * @brief Remove outer monomer type from key, returning inner content.
- *
- * For keys like "(A10B5)C", returns "A10B5" (content inside parentheses).
- * For simple keys like "A", returns empty string.
- *
- * @param key Propagator key
- * @return Inner content without outer monomer type, or empty if no nesting
- */
-std::string PropagatorCode::remove_monomer_type_from_key(std::string key)
-{
-    if (key[0] != '[' && key[0] != '(' && key[0] != '{')
-    {
-        return "";
-    }
-    else
-    {
-        int brace_depth = 0;
-        int species_idx = 0;
-        for(size_t i=0; i<key.size();i++)
-        {
-            if (key[i] == '[' || key[i] == '(' || key[i] == '{')
-            {
-                brace_depth++;
-            }
-            else if (key[i] == ']' || key[i] == ')' || key[i] == '}')
-            {
-                brace_depth--;
-                if (brace_depth == 0)
-                {
-                    species_idx=i;
-                    break;
-                }
-            }
-        }
-        return key.substr(1, species_idx-1);
-    }
-}
-
-/**
  * @brief Extract monomer type from the end of a propagator key.
  *
  * Returns the monomer type string at the outermost level of the key.
@@ -528,25 +477,24 @@ std::string PropagatorCode::remove_monomer_type_from_key(std::string key)
  * @param key Propagator key in DKM format
  * @return Monomer type string
  */
-std::string PropagatorCode::get_monomer_type_from_key(std::string key)
+std::string PropagatorCode::get_monomer_type_from_key(const std::string& key)
 {
-    // First, strip the +M suffix if present (new format: DK+M)
-    size_t plus_pos = key.rfind('+');
-    if (plus_pos != std::string::npos)
-        key = key.substr(0, plus_pos);
+    // The key without its +M suffix, if present (format: DK+M)
+    const size_t plus_pos = key.rfind('+');
+    const size_t pos_end = (plus_pos != std::string::npos) ? plus_pos : key.size();
 
     // Find position after last closing bracket
-    int pos_start = 0;
-    for(int i=key.size()-1; i>=0;i--)
+    size_t pos_start = 0;
+    for (size_t i = pos_end; i > 0; i--)
     {
-        if(key[i] == ')' || key[i] == ']' || key[i] == '}')
+        if (key[i-1] == ')' || key[i-1] == ']' || key[i-1] == '}')
         {
-            pos_start=i+1;
+            pos_start = i;
             break;
         }
     }
     // Return the monomer type (everything after last closing bracket, or entire key)
-    return key.substr(pos_start, key.size()-pos_start);
+    return key.substr(pos_start, pos_end - pos_start);
 }
 
 /**
@@ -560,7 +508,7 @@ std::string PropagatorCode::get_monomer_type_from_key(std::string key)
  * @param key Propagator key in DK+M format
  * @return ds_index value (1-based), or -1 if not present
  */
-int PropagatorCode::get_ds_index_from_key(std::string key)
+int PropagatorCode::get_ds_index_from_key(const std::string& key)
 {
     // Find the plus sign that separates DK from M
     size_t plus_pos = key.rfind('+');
@@ -568,8 +516,7 @@ int PropagatorCode::get_ds_index_from_key(std::string key)
         return -1;
 
     // Extract and parse the ds_index after '+'
-    std::string ds_index_str = key.substr(plus_pos + 1);
-    return std::stoi(ds_index_str);
+    return std::stoi(key.substr(plus_pos + 1));
 }
 
 /**
@@ -582,7 +529,7 @@ int PropagatorCode::get_ds_index_from_key(std::string key)
  * @return Initial condition identifier
  * @throws Exception if key doesn't start with "{"
  */
-std::string PropagatorCode::get_q_input_idx_from_key(std::string key)
+std::string PropagatorCode::get_q_input_idx_from_key(const std::string& key)
 {
     if (key[0] != '{')
         throw_with_line_number("There is no related initial condition in key (" + key + ").");
@@ -614,7 +561,7 @@ std::string PropagatorCode::get_q_input_idx_from_key(std::string key)
  * @param key Propagator key
  * @return Nesting depth (0 for chain ends)
  */
-int PropagatorCode::get_height_from_key(std::string key)
+int PropagatorCode::get_height_from_key(const std::string& key)
 {
     int height_count = 0;
     for(size_t i=0; i<key.size();i++)

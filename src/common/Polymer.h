@@ -340,12 +340,6 @@ public:
     std::string get_propagator_key(const int v, const int u) const;
 
     /**
-     * @brief Get the chain_end_to_q_init mapping.
-     * @return Reference to the chain end to q_init mapping
-     */
-    std::map<int, std::string>& get_chain_end_to_q_init();
-
-    /**
      * @brief Regenerate propagator keys using contour length mapping.
      *
      * Replaces the propagator keys with new ones that use length indices

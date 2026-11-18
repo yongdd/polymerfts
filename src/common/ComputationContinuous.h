@@ -40,15 +40,25 @@ class ComputationContinuous : public ComputationCommon<T>
 private:
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;  ///< propagator[key][n], n = 0..max_n_segment
 
+    /// A job of the scheduler with what it reads, resolved once: the schedule and the
+    /// storage are fixed after construction, and keys grow with the size of a polymer
+    struct Job
+    {
+        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
+        const ComputationEdge* edge;  ///< Its monomer type and dependencies
+        BackendArray<T>** q;          ///< propagator[key]
+        int n_segment_from;           ///< The job computes q(n_segment_from+1) .. q(n_segment_to)
+        int n_segment_to;
+        int ds_index;                 ///< Contour step of the propagator
+        std::vector<std::pair<BackendArray<T>*, double>> sources;  ///< (q_i, n_i) of a junction or aggregation
+    };
+    std::vector<std::vector<Job>> schedule;  ///< The scheduler's groups of concurrent jobs
+
     /// One segment per polymer for its partition function: (polymer, q, q†, n_aggregated)
     std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, double>> single_partition_segment;
 
     /// Free the propagator storage (also on a failed construction).
     void free_propagators();
-
-    /// Sources (q_i, n_i) of a junction or an aggregated propagator.
-    std::vector<std::pair<BackendArray<T>*, double>> junction_sources(
-        const std::vector<std::tuple<std::string, int, double>>& deps);
 
 public:
     /**

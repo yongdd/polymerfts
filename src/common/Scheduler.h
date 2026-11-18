@@ -75,9 +75,6 @@ private:
      */
     std::map<std::string, std::tuple<int, int, int>, ComparePropagatorKey> job_assignment;
 
-    /// Time when each propagator's dependencies are resolved.
-    std::map<std::string, int> dependency_resolved_time;
-
     /// Propagators sorted by start time: (key, start_time).
     std::vector<std::tuple<std::string, int>> sorted_jobs;
 
@@ -119,7 +116,7 @@ public:
      * @note On CPU, typically use n_streams=1 (OpenMP parallelizes within each propagator).
      *       On GPU, use n_streams=4 for good performance.
      */
-    Scheduler(std::map<std::string, ComputationEdge, ComparePropagatorKey> propagators, int n_streams);
+    Scheduler(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators, int n_streams);
 
     /// Destructor.
     ~Scheduler() {};
@@ -137,6 +134,6 @@ public:
      *
      * @param propagators Propagator information for display
      */
-    void display(std::map<std::string, ComputationEdge, ComparePropagatorKey> propagators);
+    void display(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators) const;
 };
 #endif

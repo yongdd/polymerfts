@@ -86,8 +86,8 @@ int main()
         }
 
         // Verify local_ds values
-        double local_ds_03 = mapping.get_local_ds(0.3);
-        double local_ds_0505 = mapping.get_local_ds(0.505);
+        double local_ds_03 = mapping.get_ds_from_index(mapping.get_ds_index(0.3));
+        double local_ds_0505 = mapping.get_ds_from_index(mapping.get_ds_index(0.505));
 
         std::cout << "Local ds for 0.3: " << local_ds_03 << std::endl;
         std::cout << "Local ds for 0.505: " << local_ds_0505 << std::endl;

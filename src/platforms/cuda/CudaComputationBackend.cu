@@ -562,21 +562,15 @@ void CudaComputationBackend<T>::add_segment_products(
 }
 
 template <typename T>
-void CudaComputationBackend<T>::normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor)
+void CudaComputationBackend<T>::divide_by_boltzmann_factor(int stream, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_phi = raw(phi);
     cudaStream_t s = streams[stream][0];
-    if (divisor != nullptr)
-    {
-        if (!d_q_mask.empty())
-            ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, d_q_mask, n_basis);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
-    }
-    CUDA_CHECK_LAUNCH();
-    ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, to_device_scalar(norm), d_phi, 0.0, d_phi, n_basis);
+    if (!d_q_mask.empty())
+        ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(boltzmann_factor), 1.0, d_q_mask, n_basis);
+    else
+        ker_divide<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(boltzmann_factor), 1.0, n_basis);
     CUDA_CHECK_LAUNCH();
 }
 

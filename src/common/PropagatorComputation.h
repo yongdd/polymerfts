@@ -96,8 +96,6 @@ constexpr double PARTITION_TOLERANCE = 1e-7;
  * 2. compute_concentrations(): Integrate propagator products to get φ(r)
  * 3. get_total_concentration(): Retrieve computed concentration fields
  *
- * Or use compute_statistics() which combines steps 1-2.
- *
  * **Memory Management:**
  *
  * The class allocates internal storage for propagators and concentrations.
@@ -276,18 +274,6 @@ public:
      * @note Uses Simpson's rule for accurate contour integration.
      */
     virtual void compute_concentrations() = 0;
-
-    /**
-     * @brief Compute propagators and concentrations in one call.
-     *
-     * Equivalent to compute_propagators(w, q_init) + compute_concentrations().
-     *
-     * @param w_block Map from monomer type to potential field
-     * @param q_init  Optional: initial conditions for grafted chains
-     */
-    virtual void compute_statistics(
-        std::map<std::string, const T*> w_block,
-        std::map<std::string, const T*> q_init = {}) = 0;
 
     /**
      * @brief Compute stress tensor from propagators.
