@@ -8,7 +8,7 @@
  *
  * **Created Objects:**
  *
- * - CpuComputationBox: Grid with FFTW FFT support
+ * - ComputationBox: Grid and integration on CPU
  * - CpuAndersonMixing: CPU-optimized field mixing
  * - CpuComputationBackend with FFTW transforms, around which
  *   AbstractFactory::create_propagator_computation() builds the computation
@@ -29,7 +29,7 @@
 
 #include <fftw3.h>
 
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #include "CpuComputationBackend.h"
 #include "CpuAndersonMixing.h"
 #include "CpuFourierTransform.h"
@@ -51,7 +51,7 @@ template <typename T>
 std::unique_ptr<ComputationBox<T>> FftwFactory<T>::create_computation_box(
     std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc, const double *mask)
 {
-    return std::make_unique<CpuComputationBox<T>>(nx, lx, bc, mask);
+    return std::make_unique<ComputationBox<T>>(nx, lx, bc, mask);
 }
 
 template <typename T>
@@ -59,7 +59,7 @@ std::unique_ptr<ComputationBox<T>> FftwFactory<T>::create_computation_box(
     std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
     std::vector<double> angles, const double *mask)
 {
-    return std::make_unique<CpuComputationBox<T>>(nx, lx, bc, angles, mask);
+    return std::make_unique<ComputationBox<T>>(nx, lx, bc, angles, mask);
 }
 
 template <typename T>

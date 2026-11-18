@@ -27,7 +27,7 @@
  * An input array is read in place when it is C-contiguous and of the expected
  * dtype; other arrays (strided views, float32, ...) are first copied into a
  * converted temporary (see array_in). Functions that modify an array in place
- * (ComputationBox.zero_mean, SpaceGroup.symmetrize_reduced_basis) reject arrays
+ * (ComputationBox.zero_mean) reject arrays
  * that would need such a copy. Real inputs refuse complex arrays with a ValueError
  * (real_array). Results are returned as new NumPy arrays.
  * Array sizes are checked against the grid.
@@ -181,7 +181,6 @@ using real_in = real_array<double, py::array::c_style | py::array::forcecast, fa
 // function can refuse those that would need a copy. Real ones refuse complex arrays.
 template <typename T>
 using array_inout = std::conditional_t<std::is_same_v<T, double>, real_array<T, 0, true>, py::array_t<T, 0>>;
-using real_inout = real_array<double, 0, false>;
 
 /**
  * @brief Helper for method overload resolution in pybind11.
@@ -195,14 +194,13 @@ using overload_cast_ = py::detail::overload_cast_impl<Args...>;
  * @brief Bind ComputationBox<T> class to Python.
  *
  * Creates Python class "ComputationBox{Real|Complex}" with methods:
- * - get_dim(): Grid dimensionality (1, 2, or 3)
  * - get_nx(): Grid points per dimension
  * - get_lx(): Box lengths
  * - get_dx(): Grid spacing
  * - get_dv(): Volume element of a grid point with the mask; get_dv_base(): without it
  * - get_total_grid(): Total grid points
  * - get_volume(): Total box volume
- * - get_angles(), get_angles_degrees(), get_lattice_vectors(), is_orthogonal(), get_recip_metric(): Cell geometry
+ * - get_angles_degrees(), get_lattice_vectors(), is_orthogonal(), get_recip_metric(): Cell geometry
  * - set_lx(): Update box dimensions
  * - set_lattice_parameters(): Update box dimensions and angles
  * - set_space_group(), get_space_group(), get_n_basis(), get_orbit_counts(): Reduced basis
@@ -219,8 +217,6 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
     std::string class_name = "ComputationBox" + type_name;
     
     py::class_<ComputationBox<T>>(m, class_name.c_str())
-        // .def(py::init<std::vector<int>, std::vector<double>>())
-        .def("get_dim", &ComputationBox<T>::get_dim)
         .def("get_nx", py::overload_cast<>(&ComputationBox<T>::get_nx, py::const_))
         .def("get_nx", py::overload_cast<int>(&ComputationBox<T>::get_nx, py::const_))
         .def("get_lx", py::overload_cast<>(&ComputationBox<T>::get_lx, py::const_))
@@ -237,7 +233,6 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
         .def("get_total_grid", &ComputationBox<T>::get_total_grid)
         .def("get_volume", &ComputationBox<T>::get_volume)
         .def("get_accessible_volume", &ComputationBox<T>::get_accessible_volume)
-        .def("get_angles", &ComputationBox<T>::get_angles)
         .def("get_angles_degrees", &ComputationBox<T>::get_angles_degrees)
         .def("get_lattice_vectors", [](const ComputationBox<T>& obj)
         {
@@ -351,7 +346,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
  * - get_stress_gce(): Grand canonical stress
  * - compute_partition_errors(): Relative partition function error of each polymer
  * - check_total_partition(tolerance): Whether every error is within the tolerance
- * - set_force_off_diagonal_stress(), get_force_off_diagonal_stress(): Cross-term stress for orthogonal boxes
+ * - set_force_off_diagonal_stress(): Cross-term stress for orthogonal boxes
  *
  * When space group is set:
  * - compute_propagators() accepts reduced basis w (size: n_reduced)
@@ -537,7 +532,6 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
         .def("set_force_off_diagonal_stress", &PropagatorComputation<T>::set_force_off_diagonal_stress,
             "Force cross-term (V12/V13/V23) stress accumulation even for orthogonal boxes. "
             "Needed when angle optimization starts at exactly 90 degree angles.")
-        .def("get_force_off_diagonal_stress", &PropagatorComputation<T>::get_force_off_diagonal_stress)
         .def("get_stress", &PropagatorComputation<T>::get_stress)
         .def("get_stress_gce", &PropagatorComputation<T>::get_stress_gce)
         .def("compute_partition_errors", &PropagatorComputation<T>::compute_partition_errors,
@@ -583,8 +577,6 @@ void bind_anderson_mixing(py::module &m, const std::string &type_name) {
                 py::buffer_info buf_w_current = w_current.request();
                 py::buffer_info buf_w_deriv = w_deriv.request();
 
-                if (buf_w_new.size != n_var)
-                    throw_with_line_number("Size of input w_new (" + std::to_string(buf_w_new.size) + ") and 'n_var' (" + std::to_string(n_var) + ") must match.");
                 if (buf_w_current.size != n_var)
                     throw_with_line_number("Size of input w_current (" + std::to_string(buf_w_current.size) + ") and 'n_var' (" + std::to_string(n_var) + ") must match.");
                 if (buf_w_deriv.size != n_var)
@@ -1112,10 +1104,8 @@ PYBIND11_MODULE(_core, m)
 
     py::class_<ComputationBlock>(m, "ComputationBlock")
         .def_readonly("monomer_type", &ComputationBlock::monomer_type)
-        .def_readonly("n_segment_left", &ComputationBlock::n_segment_left)
         .def_readonly("n_segment_right", &ComputationBlock::n_segment_right)
-        .def_readonly("n_repeated", &ComputationBlock::n_repeated)
-        .def_readonly("v_u", &ComputationBlock::v_u);
+        .def_readonly("n_repeated", &ComputationBlock::n_repeated);
 
     py::class_<Polymer>(m, "Polymer")
         .def("get_alpha", &Polymer::get_alpha)
@@ -1123,21 +1113,13 @@ PYBIND11_MODULE(_core, m)
         .def("get_n_blocks", &Polymer::get_n_blocks)
         .def("get_blocks", &Polymer::get_blocks)
         .def("get_block", &Polymer::get_block)
-        //.def("get_block_species", &Polymer::get_block_species)
         .def("get_n_segment_total", &Polymer::get_n_segment_total)
-        .def("get_n_segment", &Polymer::get_n_segment)
-        .def("get_block_index_from_edge", &Polymer::get_block_index_from_edge)
-        .def("get_adjacent_nodes", &Polymer::get_adjacent_nodes)
-        .def("get_block_indexes", &Polymer::get_block_indexes)
-        //.def("set_propagator_key", &Polymer::set_propagator_key)
         .def("get_propagator_key", &Polymer::get_propagator_key)
         .def("display_architecture", &Polymer::display_architecture);
 
     py::class_<Molecules>(m, "Molecules")
         .def(py::init<std::string, double, std::map<std::string, double>>())
         .def("get_model_name", &Molecules::get_model_name)
-        .def("get_global_ds", &Molecules::get_global_ds)
-        .def("get_bond_lengths", &Molecules::get_bond_lengths)
         .def("get_n_polymer_types", &Molecules::get_n_polymer_types)
         .def("add_polymer", [](Molecules& obj, double volume_fraction, std::vector<std::vector<py::object>> block_list)
         {
@@ -1157,12 +1139,8 @@ PYBIND11_MODULE(_core, m)
         .def("get_computation_propagators", &PropagatorComputationOptimizer::get_computation_propagators)
         .def("get_computation_propagator", &PropagatorComputationOptimizer::get_computation_propagator)
         .def("get_computation_blocks", &PropagatorComputationOptimizer::get_computation_blocks)
-        .def("get_computation_block", &PropagatorComputationOptimizer::get_computation_block)
         .def("display_statistics", &PropagatorComputationOptimizer::display_statistics)
-        .def("display_propagators", &PropagatorComputationOptimizer::display_propagators)
-        .def("display_blocks", &PropagatorComputationOptimizer::display_blocks)
-        .def_static("get_deps_from_key", &PropagatorCode::get_deps_from_key)
-        .def_static("get_monomer_type_from_key", &PropagatorCode::get_monomer_type_from_key);
+        .def_static("get_deps_from_key", &PropagatorCode::get_deps_from_key);
 
     // Bind SpaceGroup
     py::class_<SpaceGroup>(m, "SpaceGroup",
@@ -1254,19 +1232,6 @@ Example:
             obj.to_reduced_basis(static_cast<double*>(buf.ptr), static_cast<double*>(out.request().ptr), n_fields);
             return out;
         }, "Full-grid field(s) -> reduced basis. A 1-D input gives a 1-D output, an (n_fields, total_grid) input an (n_fields, n_reduced) output.")
-        .def("symmetrize_reduced_basis", [](SpaceGroup& obj, real_inout reduced_field)
-        {
-            // Modified in place (like ComputationBox.zero_mean): a converted copy would
-            // leave the caller's array unchanged, so it must already be C-contiguous float64,
-            // and writable.
-            if (!(reduced_field.flags() & py::array::c_style) || !reduced_field.writeable())
-                throw_with_line_number("symmetrize_reduced_basis modifies the array in place; pass a writable C-contiguous float64 array.");
-            py::buffer_info buf = reduced_field.request();
-            const int n_fields = sg_field_count(buf, obj.get_n_reduced_basis(), "n_reduced_basis");
-            obj.symmetrize_reduced_basis(static_cast<double*>(buf.ptr), n_fields);
-            return reduced_field;
-        }, py::arg("reduced_field").noconvert(),
-           "Symmetrize reduced-basis field(s) in place over the full space-group orbits; returns the same array.")
         .def("reduced_to_irreducible", [](SpaceGroup& obj, real_in reduced_field)
         {
             py::buffer_info buf = reduced_field.request();

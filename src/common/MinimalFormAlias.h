@@ -21,6 +21,9 @@
  * forms, so an arbitrarily short orthogonal axis cannot inflate a plane's
  * search or hide differences between its aliases in floating-point addition.
  * AliasSearch finds the components once per grid; the loops over a grid reuse it.
+ * It also finds λ₁², the least form of a nonzero period vector of each component:
+ * a mode with 4 f(m) < λ₁² is its own unique alias of least form (every other alias
+ * u = m + N t has |u| ≥ λ₁ - |m| > |m|), so most modes need no search.
  * Within a component the box spans about abc/V times the ratio of the
  * component's grid spacings in periods along each axis; ComputationBox refuses
  * nearly flat oblique cells (V < 0.1 abc).
@@ -32,6 +35,7 @@
 #ifndef MINIMAL_FORM_ALIAS_H_
 #define MINIMAL_FORM_ALIAS_H_
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
@@ -183,12 +187,15 @@ inline void search_box(
     }
 }
 
-/// Replace m by its alias of least form on a grid of one coupled component
+/// Replace m by its alias of least form on a grid of one coupled component; a mode whose
+/// form is below `unique_below` (see unique_alias_bound) is its own least alias
 template <typename Form>
 inline void component_min_alias(
-    std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, Form&& form)
+    std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, Form&& form, double unique_below)
 {
     const double f_center = form(m[0], m[1], m[2]);
+    if (f_center < unique_below)
+        return;
     std::array<int, 3> lo, hi;
     min_form_alias_detail::search_box(m, n, g, f_center, lo, hi);
 
@@ -212,6 +219,41 @@ inline void component_min_alias(
             }
     m = best_rep;
 }
+
+/**
+ * @brief A quarter of λ₁², the least form of a nonzero period vector N t of the
+ *        searched axes, reduced by 1e-9; zero without a searched axis.
+ *
+ * A mode m with f(m) below it is the unique alias of least form: every other alias
+ * u = m + N t has |u| ≥ λ₁ - |m| > |m| (1 + 1e-9), so f(u) exceeds f(m) by far more
+ * than the tie tolerances (1e-10) and the rounding of the forms.
+ */
+inline double unique_alias_bound(const std::array<int, 3>& n, const IndexMetric& g)
+{
+    const double G[3] = {g.g11, g.g22, g.g33};
+    // The least form of a period along one axis bounds λ₁² from above
+    double bound = 0.0;
+    for (int d = 0; d < 3; ++d)
+        if (n[d] > 1 && G[d] > 0.0)
+        {
+            const double f_axis = G[d] * n[d] * n[d];
+            bound = (bound == 0.0) ? f_axis : std::min(bound, f_axis);
+        }
+    if (bound == 0.0)
+        return 0.0;
+    // Every period vector N t of a form not above the bound lies in the box of the aliases of mode 0
+    const IndexForm form{g};
+    std::array<int, 3> lo, hi;
+    search_box({0, 0, 0}, n, g, bound, lo, hi);
+    double least = bound;
+    for (int a = lo[0]; a <= hi[0]; ++a)
+        for (int b = lo[1]; b <= hi[1]; ++b)
+            for (int c = lo[2]; c <= hi[2]; ++c)
+                if (a != 0 || b != 0 || c != 0)
+                    least = std::min(least, form(static_cast<double>(a) * n[0], static_cast<double>(b) * n[1],
+                                                 static_cast<double>(c) * n[2]));
+    return 0.25 * least * (1.0 - 1e-9);
+}
 }  // namespace min_form_alias_detail
 
 /// One coupled component of a grid's alias search: its axes (bit d of mask for
@@ -221,6 +263,7 @@ struct AliasComponent
     int mask = 0;
     std::array<int, 3> n{};
     IndexMetric g{};
+    double unique_below = 0.0;   ///< modes of a smaller form are their own unique least alias (unique_alias_bound)
 
     /// The indices of m on this component's axes, zero elsewhere
     std::array<int, 3> part(const std::array<int, 3>& m) const
@@ -251,8 +294,12 @@ struct AliasSearch
                              {mask & 1 ? g.g11 : 0.0, mask & 2 ? g.g22 : 0.0, mask & 4 ? g.g33 : 0.0,
                               (mask & 3) == 3 ? g.g12 : 0.0, (mask & 5) == 5 ? g.g13 : 0.0,
                               (mask & 6) == 6 ? g.g23 : 0.0}};
+            components[i].unique_below = min_form_alias_detail::unique_alias_bound(components[i].n, components[i].g);
         }
     }
+
+    /// unique_below of the whole grid when it has one component (zero without one)
+    double grid_unique_below() const { return n_components == 1 ? components[0].unique_below : 0.0; }
 };
 
 /**
@@ -268,14 +315,14 @@ inline void min_form_alias_rep(std::array<int, 3>& m, const AliasSearch& search,
 {
     if (search.n_components <= 1)
     {
-        min_form_alias_detail::component_min_alias(m, search.n, search.g, form);
+        min_form_alias_detail::component_min_alias(m, search.n, search.g, form, search.grid_unique_below());
         return;
     }
     for (int i = 0; i < search.n_components; ++i)
     {
         const AliasComponent& component = search.components[i];
         std::array<int, 3> sub_m = component.part(m);
-        min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form);
+        min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form, component.unique_below);
         for (int d = 0; d < 3; ++d)
             if (component.mask & (1 << d))
                 m[d] = sub_m[d];
@@ -308,10 +355,13 @@ inline int for_each_min_form_alias(
         for (int i = 0; i < search.n_components; ++i)
         {
             const AliasComponent& component = search.components[i];
-            std::array<int, 3> sub_m = component.part(m), sub_lo, sub_hi;
-            min_form_alias_detail::search_box(
-                sub_m, component.n, component.g, form(sub_m[0], sub_m[1], sub_m[2]), sub_lo, sub_hi);
-            min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form);
+            std::array<int, 3> sub_m = component.part(m), sub_lo{0, 0, 0}, sub_hi{0, 0, 0};
+            const double sub_center = form(sub_m[0], sub_m[1], sub_m[2]);
+            if (!(sub_center < component.unique_below))   // otherwise sub_m is its component's only tie
+            {
+                min_form_alias_detail::search_box(sub_m, component.n, component.g, sub_center, sub_lo, sub_hi);
+                min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form, 0.0);
+            }
             const double best = form(sub_m[0], sub_m[1], sub_m[2]);
             limits[i] = best + rel_tol * best;
             for (int d = 0; d < 3; ++d)
@@ -342,6 +392,11 @@ inline int for_each_min_form_alias(
         return count;
     }
     const double f_center = form(m[0], m[1], m[2]);
+    if (f_center < search.grid_unique_below())
+    {
+        visit(m[0], m[1], m[2]);
+        return 1;
+    }
     std::array<int, 3> lo, hi;
     min_form_alias_detail::search_box(m, n, search.g, f_center, lo, hi);
 

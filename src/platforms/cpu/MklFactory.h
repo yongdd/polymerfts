@@ -62,7 +62,7 @@
  *
  * **Created Object Types:**
  *
- * - CpuComputationBox: Grid and integration on CPU
+ * - ComputationBox: Grid and integration on CPU
  * - Propagator computations with the CPU backend (MKL transforms)
  * - CpuAndersonMixing: Iteration accelerator
  *
@@ -85,7 +85,7 @@ public :
      * @param lx   Box lengths
      * @param bc   Boundary conditions
      * @param mask Optional mask for impenetrable regions
-     * @return CpuComputationBox instance
+     * @return ComputationBox instance
      */
     std::unique_ptr<ComputationBox<T>> create_computation_box(
         std::vector<int> nx,
@@ -100,7 +100,7 @@ public :
      * @param bc     Boundary conditions
      * @param angles Lattice angles [alpha, beta, gamma] in degrees
      * @param mask   Optional mask for impenetrable regions
-     * @return CpuComputationBox instance
+     * @return ComputationBox instance
      */
     std::unique_ptr<ComputationBox<T>> create_computation_box(
         std::vector<int> nx,

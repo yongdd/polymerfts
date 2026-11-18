@@ -2,10 +2,10 @@
  * @file ComputationBox.cpp
  * @brief Implementation of ComputationBox simulation domain.
  *
- * Provides the abstract base implementation for managing the computational
+ * Provides the implementation for managing the computational
  * grid, including grid dimensions, volume elements, boundary conditions,
- * and integral operations. Platform-specific FFT operations are implemented
- * in derived classes (CpuComputationBox, CudaComputationBox).
+ * and integral operations, on host memory (the CPU platforms use it directly;
+ * CudaComputationBox adds device versions).
  *
  * **Grid Structure:**
  *
@@ -336,7 +336,6 @@ void ComputationBox<T>::update_cell()
                                                  angles_[0], angles_[1], angles_[2]});
     volume = geometry.volume;
     lattice_vec_ = geometry.lattice_vec;
-    recip_vec_ = geometry.recip_vec;
     recip_metric_ = geometry.recip_metric;
 
     // Volume element of a grid point, the weight of every integral, then with the mask
@@ -468,11 +467,6 @@ template <typename T>
 const std::array<double, 9>& ComputationBox<T>::get_lattice_vec() const
 {
     return lattice_vec_;
-}
-template <typename T>
-const std::array<double, 9>& ComputationBox<T>::get_recip_vec() const
-{
-    return recip_vec_;
 }
 template <typename T>
 const std::array<double, 6>& ComputationBox<T>::get_recip_metric() const

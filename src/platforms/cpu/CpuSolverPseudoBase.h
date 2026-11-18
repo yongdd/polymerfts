@@ -129,7 +129,9 @@ protected:
 
     FFTBackend fft_backend_;  ///< Selected FFT backend (FFTW or MKL)
 
-    std::unique_ptr<Pseudo<T>> pseudo;   ///< Pseudo-spectral operator helper
+    /// Fourier-space tables of the full grid (Boltzmann bond factors, stress basis), computed for
+    /// the cell when a full-grid path uses them (update_pseudo())
+    std::unique_ptr<Pseudo<T>> pseudo;
 
     bool is_periodic_;           ///< True if all BCs are periodic
     int dim_;                    ///< Number of dimensions (1, 2, or 3)
@@ -319,7 +321,9 @@ protected:
      * Sets up:
      * - Boundary condition checking (is_periodic_)
      * - FFT object creation (fft_) using specified backend
-     * - Pseudo-spectral operator (pseudo)
+     * - The contour steps (ds_values_) and the Fourier-space tables (pseudo), which
+     *   update_laplacian_operator() computes for the cell (the owner calls it after
+     *   set_space_group(), as CpuComputationBackend does)
      *
      * @param cb Computation box
      * @param molecules Molecules container
@@ -393,9 +397,10 @@ protected:
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
-    /// Accumulate Σ_k kernel(k) v_i v_j from DCT/DST coefficients (non-periodic BC; complex pairs for complex fields).
+    /// Accumulate Σ_k kernel(k) v_i² from DCT/DST coefficients (non-periodic BC, orthogonal cells; complex
+    /// pairs for complex fields).
     void accumulate_stress_nonperiodic(const double* qk_1, const double* qk_2, double bond_length_sq,
-                                       const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
+                                       const double* boltz_bond, std::vector<T>& stress) const;
 
 public:
     /// Default constructor.
@@ -413,9 +418,6 @@ public:
      * @param sg Space group pointer (nullptr to disable reduced basis)
      */
     void set_space_group(SpaceGroup* sg) override;
-
-    /// Register contour step size for a ds index.
-    void register_ds_value(int ds_index, double ds) { ds_values_[ds_index] = ds; }
 
     /// Get the contour step size for a ds index.
     double get_ds_value(int ds_index) const;
@@ -480,6 +482,14 @@ protected:
         T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length) override;
 
 private:
+    bool pseudo_current_ = false;   ///< pseudo's tables are those of the current cell (see update_pseudo())
+
+    /// Compute the Pseudo tables of the current cell.
+    void update_pseudo();
+    /// Whether a full-grid path (propagator steps or stress) uses the Pseudo tables: not when the
+    /// CrysFFT steps propagate and the stress takes the CrysFFT fast path.
+    bool full_grid_path() const;
+
     mutable std::mutex work_mutex_;
     mutable std::unordered_map<std::thread::id, WorkArrays> work_arrays_;   ///< Per-thread work arrays (see WorkArrays)
 };

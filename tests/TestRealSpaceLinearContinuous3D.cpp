@@ -25,10 +25,10 @@
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
 #ifdef USE_CPU_FFTW
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 #ifdef USE_CPU_MKL
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
@@ -318,8 +318,8 @@ int main()
         #ifdef USE_CPU_FFTW
         solver_name_list.push_back("real space, cpu-fftw");
         solver_name_list.push_back("real space, cpu-fftw, reduce_memory");
-        cb_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list.push_back(make_propagator_computation<T>("cpu-fftw", false, cb_list.end()[-2], molecules, propagator_computation_optimizer, "cn-adi2"));
         solver_list.push_back(make_propagator_computation<T>("cpu-fftw", true, cb_list.end()[-1], molecules, propagator_computation_optimizer, "cn-adi2"));
         #endif
@@ -327,8 +327,8 @@ int main()
         #ifdef USE_CPU_MKL
         solver_name_list.push_back("real space, cpu-mkl");
         solver_name_list.push_back("real space, cpu-mkl, reduce_memory");
-        cb_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list.push_back(make_propagator_computation<T>("cpu-mkl", false, cb_list.end()[-2], molecules, propagator_computation_optimizer, "cn-adi2"));
         solver_list.push_back(make_propagator_computation<T>("cpu-mkl", true, cb_list.end()[-1], molecules, propagator_computation_optimizer, "cn-adi2"));
         #endif

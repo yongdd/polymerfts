@@ -25,6 +25,14 @@ extern "C" {
 #include <spglib.h>
 }
 
+namespace {
+/// Whether a rotation (lattice coordinates) is diagonal
+bool is_diagonal(const std::array<std::array<int, 3>, 3>& R)
+{
+    return R[0][1] == 0 && R[0][2] == 0 && R[1][0] == 0 && R[1][2] == 0 && R[2][0] == 0 && R[2][1] == 0;
+}
+}  // namespace
+
 SpaceGroup::SpaceGroup(std::vector<int> nx, int hall_number)
 {
     initialize(std::move(nx), hall_number);
@@ -587,7 +595,8 @@ void SpaceGroup::to_reduced_basis(const double* full_field, double* reduced_fiel
 
 void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irreducible_field, int n_fields) const
 {
-    if (n_irreducible_full_ <= 0 || reduced_to_irreducible_map_.empty() || orbit_counts_full_.empty())
+    // Without a physical basis the reduced basis is the irreducible one
+    if (physical_basis_ == PhysicalBasis::None)
     {
         const int n_reduced = n_irreducible_;
         for (int f = 0; f < n_fields; ++f)
@@ -633,7 +642,8 @@ void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irr
 
 void SpaceGroup::irreducible_to_reduced(const double* irreducible_field, double* reduced_field, int n_fields) const
 {
-    if (n_irreducible_full_ <= 0 || reduced_to_irreducible_map_.empty())
+    // Without a physical basis the reduced basis is the irreducible one
+    if (physical_basis_ == PhysicalBasis::None)
     {
         const int n_reduced = n_irreducible_;
         for (int f = 0; f < n_fields; ++f)
@@ -740,44 +750,6 @@ void SpaceGroup::symmetrize(const double* field_in, double* field_out, int n_fie
     symmetrize(field_out, n_fields);
 }
 
-void SpaceGroup::symmetrize_reduced_basis(double* reduced_field, int n_fields) const
-{
-    if (physical_basis_ == PhysicalBasis::None)
-        return;
-    if (reduced_to_irreducible_map_.empty() || orbit_counts_full_.empty())
-        return;
-
-    const int n_reduced = n_irreducible_;
-    const int n_irreducible = n_irreducible_full_;
-
-    std::vector<double> orbit_sums(n_irreducible, 0.0);
-    std::vector<int> orbit_weights(n_irreducible, 0);
-
-    for (int f = 0; f < n_fields; ++f)
-    {
-        double* data = reduced_field + static_cast<size_t>(f) * n_reduced;
-
-        std::fill(orbit_sums.begin(), orbit_sums.end(), 0.0);
-        std::fill(orbit_weights.begin(), orbit_weights.end(), 0);
-
-        for (int i = 0; i < n_reduced; ++i)
-        {
-            const int ridx = reduced_to_irreducible_map_[i];
-            const int weight = orbit_counts_[i];
-            orbit_sums[ridx] += static_cast<double>(weight) * data[i];
-            orbit_weights[ridx] += weight;
-        }
-
-        for (int i = 0; i < n_reduced; ++i)
-        {
-            const int ridx = reduced_to_irreducible_map_[i];
-            const int weight = orbit_weights[ridx];
-            if (weight > 0)
-                data[i] = orbit_sums[ridx] / static_cast<double>(weight);
-        }
-    }
-}
-
 bool SpaceGroup::has_mirror_planes_xyz(double tol) const
 {
     auto is_zero_mod1 = [tol](double v) {
@@ -795,17 +767,14 @@ bool SpaceGroup::has_mirror_planes_xyz(double tol) const
         const auto& t = translations_[i];
 
         bool t_zero = is_zero_mod1(t[0]) && is_zero_mod1(t[1]) && is_zero_mod1(t[2]);
-        if (!t_zero)
+        if (!t_zero || !is_diagonal(R))
             continue;
 
-        if (R[0][0] == -1 && R[1][1] == 1 && R[2][2] == 1 &&
-            R[0][1] == 0 && R[0][2] == 0 && R[1][0] == 0 && R[1][2] == 0 && R[2][0] == 0 && R[2][1] == 0)
+        if (R[0][0] == -1 && R[1][1] == 1 && R[2][2] == 1)
             has_x = true;
-        if (R[0][0] == 1 && R[1][1] == -1 && R[2][2] == 1 &&
-            R[0][1] == 0 && R[0][2] == 0 && R[1][0] == 0 && R[1][2] == 0 && R[2][0] == 0 && R[2][1] == 0)
+        if (R[0][0] == 1 && R[1][1] == -1 && R[2][2] == 1)
             has_y = true;
-        if (R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1 &&
-            R[0][1] == 0 && R[0][2] == 0 && R[1][0] == 0 && R[1][2] == 0 && R[2][0] == 0 && R[2][1] == 0)
+        if (R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1)
             has_z = true;
     }
 
@@ -814,12 +783,6 @@ bool SpaceGroup::has_mirror_planes_xyz(double tol) const
 
 bool SpaceGroup::get_m3_translations(std::array<double, 9>& g, double tol) const
 {
-    auto wrap01 = [](double v) {
-        v -= std::floor(v);
-        if (v < 0.0)
-            v += 1.0;
-        return v;
-    };
     auto wrap_half = [](double v) {
         // Map to [-0.5, 0.5) for norm comparison
         v -= std::floor(v + 0.5);
@@ -844,12 +807,7 @@ bool SpaceGroup::get_m3_translations(std::array<double, 9>& g, double tol) const
         const auto& R = rotations_[i];
         const auto& t = translations_[i];
 
-        const bool off_diag_zero =
-            R[0][1] == 0 && R[0][2] == 0 &&
-            R[1][0] == 0 && R[1][2] == 0 &&
-            R[2][0] == 0 && R[2][1] == 0;
-
-        if (!off_diag_zero)
+        if (!is_diagonal(R))
             continue;
 
         const std::array<double, 3> t_val = {t[0], t[1], t[2]};
@@ -895,23 +853,11 @@ bool SpaceGroup::get_m3_translations(std::array<double, 9>& g, double tol) const
 
 void SpaceGroup::get_pure_translations(std::vector<std::array<double, 3>>& translations) const
 {
-    auto wrap01 = [](double v) {
-        v -= std::floor(v);
-        if (v < 0.0)
-            v += 1.0;
-        return v;
-    };
-
     translations.clear();
     for (size_t i = 0; i < rotations_.size(); ++i)
     {
         const auto& R = rotations_[i];
-        const bool is_identity =
-            R[0][0] == 1 && R[1][1] == 1 && R[2][2] == 1 &&
-            R[0][1] == 0 && R[0][2] == 0 &&
-            R[1][0] == 0 && R[1][2] == 0 &&
-            R[2][0] == 0 && R[2][1] == 0;
-        if (!is_identity)
+        if (!(is_diagonal(R) && R[0][0] == 1 && R[1][1] == 1 && R[2][2] == 1))
             continue;
         translations.push_back({wrap01(translations_[i][0]),
                                 wrap01(translations_[i][1]),
@@ -924,12 +870,6 @@ bool SpaceGroup::get_z_mirror_translation(double& t_z, double tol) const
     auto is_zero_mod1 = [tol](double v) {
         double r = std::fabs(v - std::round(v));
         return r < tol;
-    };
-    auto wrap01 = [](double v) {
-        v -= std::floor(v);
-        if (v < 0.0)
-            v += 1.0;
-        return v;
     };
     auto wrap_half = [](double v) {
         v -= std::floor(v + 0.5);
@@ -945,14 +885,7 @@ bool SpaceGroup::get_z_mirror_translation(double& t_z, double tol) const
         const auto& R = rotations_[i];
         const auto& t = translations_[i];
 
-        const bool off_diag_zero =
-            R[0][1] == 0 && R[0][2] == 0 &&
-            R[1][0] == 0 && R[1][2] == 0 &&
-            R[2][0] == 0 && R[2][1] == 0;
-
-        if (!off_diag_zero)
-            continue;
-        if (!(R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1))
+        if (!(is_diagonal(R) && R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1))
             continue;
 
         if (!is_zero_mod1(t[0]) || !is_zero_mod1(t[1]))
@@ -1033,21 +966,16 @@ void SpaceGroup::enable_pmmm_physical_basis()
         }
     }
 
-    if (!full_to_reduced_map_full_.empty())
-    {
-        reduced_to_irreducible_map_.resize(n_irreducible_);
-        for (int i = 0; i < n_irreducible_; ++i)
-        {
-            const int full_idx = reduced_basis_indices_[i];
-            reduced_to_irreducible_map_[i] = full_to_reduced_map_full_[full_idx];
-        }
-    }
-    else
-    {
-        reduced_to_irreducible_map_.clear();
-    }
-
+    map_reduced_to_irreducible();
     physical_basis_ = PhysicalBasis::Pmmm;
+}
+
+void SpaceGroup::map_reduced_to_irreducible()
+{
+    // The orbit of the full group of each physical-basis point (initialize() kept the full maps)
+    reduced_to_irreducible_map_.resize(n_irreducible_);
+    for (int i = 0; i < n_irreducible_; ++i)
+        reduced_to_irreducible_map_[i] = full_to_reduced_map_full_[reduced_basis_indices_[i]];
 }
 
 bool SpaceGroup::m3_crysfft_feasible() const
@@ -1118,11 +1046,7 @@ void SpaceGroup::enable_m3_physical_basis()
     {
         const auto& R = rotations_[i];
         const auto& t = translations_[i];
-        const bool off_diag_zero =
-            R[0][1] == 0 && R[0][2] == 0 &&
-            R[1][0] == 0 && R[1][2] == 0 &&
-            R[2][0] == 0 && R[2][1] == 0;
-        if (!off_diag_zero)
+        if (!is_diagonal(R))
             continue;
         if (std::abs(R[0][0]) != 1 || std::abs(R[1][1]) != 1 || std::abs(R[2][2]) != 1)
             continue;
@@ -1132,12 +1056,6 @@ void SpaceGroup::enable_m3_physical_basis()
     if (ops.empty())
         throw_with_line_number("Failed to find diagonal symmetry operations for M3 physical basis.");
 
-    auto wrap01 = [](double v) {
-        v -= std::floor(v);
-        if (v < 0.0)
-            v += 1.0;
-        return v;
-    };
     auto to_index = [&](double v, int N) {
         double w = wrap01(v);
         double scaled = w * static_cast<double>(N);
@@ -1201,20 +1119,7 @@ void SpaceGroup::enable_m3_physical_basis()
     full_to_reduced_map_ = std::move(full_to_reduced_map);
     orbit_counts_ = std::move(orbit_counts);
 
-    if (!full_to_reduced_map_full_.empty())
-    {
-        reduced_to_irreducible_map_.resize(n_irreducible_);
-        for (int i = 0; i < n_irreducible_; ++i)
-        {
-            const int full_idx = reduced_basis_indices_[i];
-            reduced_to_irreducible_map_[i] = full_to_reduced_map_full_[full_idx];
-        }
-    }
-    else
-    {
-        reduced_to_irreducible_map_.clear();
-    }
-
+    map_reduced_to_irreducible();
     physical_basis_ = PhysicalBasis::M3;
 }
 
@@ -1304,20 +1209,7 @@ void SpaceGroup::enable_z_mirror_physical_basis()
         }
     }
 
-    if (!full_to_reduced_map_full_.empty())
-    {
-        reduced_to_irreducible_map_.resize(n_irreducible_);
-        for (int i = 0; i < n_irreducible_; ++i)
-        {
-            const int full_idx = reduced_basis_indices_[i];
-            reduced_to_irreducible_map_[i] = full_to_reduced_map_full_[full_idx];
-        }
-    }
-    else
-    {
-        reduced_to_irreducible_map_.clear();
-    }
-
+    map_reduced_to_irreducible();
     z_mirror_shift_ = shift;
     z_mirror_translation_ = t_z;
     physical_basis_ = PhysicalBasis::ZMirror;

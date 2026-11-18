@@ -99,17 +99,16 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
                                + std::to_string(dim_) + ".");
     }
 
-    // Create Pseudo object
+    // The Fourier-space tables of every distinct contour step, one boundary condition per
+    // dimension; update_laplacian_operator() computes them for the cell
+    molecules->finalize_contour_length_mapping();
+    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        ds_values_[ds_idx] = mapping.get_ds_from_index(ds_idx);
     std::vector<BoundaryCondition> bc_per_dim;
     for (int d = 0; d < dim_; ++d)
         bc_per_dim.push_back(bc_vec[2 * d]);
-
-    pseudo = std::make_unique<Pseudo<T>>(
-        molecules->get_bond_lengths(),
-        bc_per_dim,
-        cb->get_nx(), cb->get_dx(),
-        cb->get_recip_metric(),
-        cb->get_recip_vec());
+    pseudo = std::make_unique<Pseudo<T>>(molecules->get_bond_lengths(), bc_per_dim, cb->get_nx(), ds_values_);
 }
 
 //------------------------------------------------------------------------------
@@ -408,29 +407,36 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 {
     try
     {
-        // Extract one BC per dimension
-        auto bc_vec = this->cb->get_boundary_conditions();
-        std::vector<BoundaryCondition> bc_per_dim;
-        for (int d = 0; d < dim_; ++d)
-            bc_per_dim.push_back(bc_vec[2 * d]);
-
-        pseudo->update(
-            bc_per_dim,
-            this->molecules->get_bond_lengths(),
-            this->cb->get_dx(),
-            this->cb->get_recip_metric(),
-            this->cb->get_recip_vec());
-
+        // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when the
+        // full-grid path uses them; otherwise prepare_stress() computes them for the
+        // cell in use if the off-diagonal flag turns the stress to the full grid
+        pseudo_current_ = false;
         if constexpr (std::is_same_v<T, double>)
         {
             if (use_crysfft())
                 update_crysfft_tables();
         }
+        if (full_grid_path())
+            update_pseudo();
     }
     catch (std::exception& exc)
     {
         throw_without_line_number(exc.what());
     }
+}
+
+template <typename T>
+void CpuSolverPseudoBase<T>::update_pseudo()
+{
+    pseudo->update(cb->get_dx(), cb->get_recip_metric());
+    pseudo_current_ = true;
+}
+
+template <typename T>
+bool CpuSolverPseudoBase<T>::full_grid_path() const
+{
+    // The stress fast path implies the CrysFFT propagator steps
+    return !crysfft_stress_fast_path();
 }
 
 //------------------------------------------------------------------------------
@@ -478,6 +484,11 @@ std::vector<std::pair<int, double>> CpuSolverPseudoBase<T>::crysfft_stress_keys(
 template <typename T>
 void CpuSolverPseudoBase<T>::prepare_stress()
 {
+    // The Pseudo tables of the cell when the off-diagonal flag has turned the stress
+    // to the full grid since the last cell change (see full_grid_path())
+    if (full_grid_path() && !pseudo_current_)
+        update_pseudo();
+
     // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
     if constexpr (std::is_same_v<T, double>)
     {
@@ -665,16 +676,13 @@ void CpuSolverPseudoBase<T>::accumulate_stress_periodic(
 template <typename T>
 void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
     const double* qk_1, const double* qk_2, double bond_length_sq,
-    const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const
+    const double* boltz_bond, std::vector<T>& stress) const
 {
     const int DIM = dim_;
     const int M_COMPLEX = pseudo->get_total_complex_grid();
     const double* kk_xx = pseudo->get_fourier_basis_x();
     const double* kk_yy = pseudo->get_fourier_basis_y();
     const double* kk_zz = pseudo->get_fourier_basis_z();
-    const double* kk_xy = pseudo->get_fourier_basis_xy();
-    const double* kk_xz = pseudo->get_fourier_basis_xz();
-    const double* kk_yz = pseudo->get_fourier_basis_yz();
 
     // Real coefficients from DCT/DST; for complex fields those of the real and
     // imaginary parts as complex pairs, whose product needs no conjugate (the
@@ -694,49 +702,15 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
             return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[i];
     };
 
-    if (DIM == 3)
+    // V₁₁, V₂₂, V₃₃ of the box axes; the cross terms are zero, since walls need an orthogonal cell
+    for (int i = 0; i < M_COMPLEX; ++i)
     {
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_xx[i];  // V₁₁
-            stress[1] += coeff * kk_yy[i];  // V₂₂
-            stress[2] += coeff * kk_zz[i];  // V₃₃
-        }
-        // Cross terms are zero for non-periodic BC (orthogonal grids only)
-        if (!is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                stress[3] += coeff * kk_xy[i];  // V₁₂ (→ dH/dγ)
-                stress[4] += coeff * kk_xz[i];  // V₁₃ (→ dH/dβ)
-                stress[5] += coeff * kk_yz[i];  // V₂₃ (→ dH/dα)
-            }
-        }
-    }
-    else if (DIM == 2)
-    {
-        // The 2D grid is mapped to the y-z axes internally (tnx = {1, nx[0], nx[1]}),
-        // so the stress data live in fourier_basis_y and fourier_basis_z
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_yy[i];  // V₁₁
-            stress[1] += coeff * kk_zz[i];  // V₂₂
-        }
-        // V₁₂ only for non-orthogonal boxes (the mixed-BC tables are zero anyway)
-        if (!is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-                stress[2] += kernel(i) * kk_yz[i];
-        }
-    }
-    else if (DIM == 1)
-    {
-        // The 1D grid is mapped to the z axis internally (tnx = {1, 1, nx[0]})
-        for (int i = 0; i < M_COMPLEX; ++i)
-            stress[0] += kernel(i) * kk_zz[i];
+        const T coeff = kernel(i);
+        stress[0] += coeff * kk_xx[i];
+        if (DIM >= 2)
+            stress[1] += coeff * kk_yy[i];
+        if (DIM == 3)
+            stress[2] += coeff * kk_zz[i];
     }
 }
 
@@ -844,7 +818,7 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         if (is_periodic_)
             accumulate_stress_periodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
         else
-            accumulate_stress_nonperiodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
+            accumulate_stress_nonperiodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, stress);
 
         return stress;
     }

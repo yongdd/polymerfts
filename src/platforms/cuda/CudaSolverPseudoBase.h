@@ -269,6 +269,7 @@ protected:
 
 private:
     bool pseudo_current_ = false;            ///< pseudo's tables are those of the current cell (see update_pseudo())
+    bool stress_basis_ = false;              ///< pseudo computes the stress basis (from the first prepare_stress())
 
     /// Create the missing cuFFT plans (periodic BC) or DCT/DST objects (non-periodic BC).
     void init_fft();

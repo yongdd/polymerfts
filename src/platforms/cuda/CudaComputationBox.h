@@ -19,7 +19,7 @@
  * - Minimizes host-device synchronization
  *
  * @see ComputationBox for the interface definition
- * @see CpuComputationBox for CPU implementation
+ * @see ComputationBox, used directly by the CPU platforms
  */
 
 #ifndef CUDA_SIMULATION_BOX_H_

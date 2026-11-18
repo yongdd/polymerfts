@@ -65,6 +65,9 @@ class SpaceGroup;
  * // Create solver (via derived class)
  * CpuSolver<double>* solver = new CpuSolverPseudoRQM4<double>(cb, molecules);
  *
+ * // Tables of the cell (after set_space_group(), and when the cell changes)
+ * solver->update_laplacian_operator();
+ *
  * // Update when fields change
  * solver->update_dw(w_fields);
  *

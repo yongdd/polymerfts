@@ -290,7 +290,6 @@ TARGET_LINK_LIBRARIES(common ${SPGLIB_LIBRARIES} ${LAPACKE_LIBRARY})
 # definitions, so these objects are the same for both backends (the transform
 # backend is chosen at run time via FFTBackend); compile them once.
 SET(POLYMERFTS_CPU_COMMON_SOURCES
-    src/platforms/cpu/CpuComputationBox.cpp
     src/platforms/cpu/CpuSolverPseudoBase.cpp
     src/platforms/cpu/CpuSolverPseudoRQM4.cpp
     src/platforms/cpu/CpuSolverPseudoRK2.cpp

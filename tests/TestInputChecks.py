@@ -221,8 +221,9 @@ def test_complex_into_real(platform):
     # Space-group fields and masks, real for every field type: no field_type in the message
     always_real = (lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j),
                    lambda: sg_solver.from_reduced_basis(reduced + 1j),
-                   lambda: sg.symmetrize(np.ones(512) + 1j), lambda: sg.symmetrize_reduced_basis(reduced + 1j),
+                   lambda: sg.symmetrize(np.ones(512) + 1j),
                    lambda: sg.reduced_to_irreducible(reduced + 1j),
+                   lambda: sg.irreducible_to_reduced(sg.reduced_to_irreducible(reduced) + 1j),
                    lambda: fac.create_computation_box([8, 8], [2.0, 2.0], mask=np.ones(64) + 0j))
     for calls, names_field_type in ((fields, True), (always_real, False)):
         for call in calls:

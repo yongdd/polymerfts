@@ -44,18 +44,16 @@
 #include "CudaCommon.h"
 #include "Exception.h"
 #include "ComputationBox.h"
-#include "Molecules.h"
 
 /**
  * @class CudaPseudo
  * @brief GPU implementation of pseudo-spectral utilities.
  *
  * Stores pseudo-spectral operators in GPU device memory for efficient
- * access during propagator computation. The constructor and
- * finalize_ds_values() compute the host arrays, upload() copies them to the
- * device (allocating the device arrays at its first call), and update()
- * recomputes and uploads them for a new box; the getters return the device
- * arrays once uploaded.
+ * access during propagator computation. update() computes the host tables
+ * of a cell and copies them to the device, allocating the device arrays at
+ * its first call (and releasing those of a table it no longer computes); the
+ * getters return the device arrays.
  *
  * @tparam T Numeric type (double or std::complex<double>)
  *
@@ -81,20 +79,18 @@ template <typename T>
 class CudaPseudo : public Pseudo<T>
 {
 private:
-    /// @name Stress Calculation Arrays (k⊗k Diagonal)
-    /// Stores Cartesian k⊗k dyad diagonal components in device memory.
+    /// @name Stress Calculation Arrays (v⊗v Diagonal)
     /// @{
-    CudaDeviceBuffer<double> d_fourier_basis_x;  ///< k_x² in device memory
-    CudaDeviceBuffer<double> d_fourier_basis_y;  ///< k_y² in device memory
-    CudaDeviceBuffer<double> d_fourier_basis_z;  ///< k_z² in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_x;  ///< v₁² in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_y;  ///< v₂² in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_z;  ///< v₃² in device memory
     /// @}
 
-    /// @name Stress Calculation Arrays (k⊗k Off-diagonal)
-    /// Stores Cartesian k⊗k dyad off-diagonal components in device memory.
+    /// @name Stress Calculation Arrays (v⊗v Off-diagonal, periodic BC)
     /// @{
-    CudaDeviceBuffer<double> d_fourier_basis_xy;  ///< k_x × k_y in device memory
-    CudaDeviceBuffer<double> d_fourier_basis_xz;  ///< k_x × k_z in device memory
-    CudaDeviceBuffer<double> d_fourier_basis_yz;  ///< k_y × k_z in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_xy;  ///< v₁ v₂ in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_xz;  ///< v₁ v₃ in device memory
+    CudaDeviceBuffer<double> d_fourier_basis_yz;  ///< v₂ v₃ in device memory
     /// @}
 
     CudaDeviceBuffer<int> d_negative_k_idx;  ///< Index map for negative frequencies (device)
@@ -105,36 +101,21 @@ private:
     std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_boltz_bond_half;  ///< Half bond diffusion (device) [ds_index][monomer_type]
     /// @}
 
-    /// Upload Boltzmann factors to GPU.
-    void upload_boltz_bond();
-
-    /// Upload Fourier basis to GPU.
-    void upload_fourier_basis();
-
 public:
     /**
-     * @brief Construct GPU pseudo-spectral utility.
+     * @brief Construct GPU pseudo-spectral utility (see Pseudo::Pseudo).
      *
-     * Computes the host arrays; the device arrays follow at the first update().
+     * The tables follow at the first update().
      *
      * @param bond_lengths Relative statistical segment lengths by monomer type (not squared)
-     * @param bc           Boundary conditions
+     * @param bc           One boundary condition per dimension
      * @param nx           Grid dimensions
-     * @param dx           Grid spacing [dx, dy, dz]
-     * @param recip_metric Reciprocal metric tensor [g^{-1}_11, g^{-1}_12, g^{-1}_13, g^{-1}_22, g^{-1}_23, g^{-1}_33]
-     *                     Default is identity for orthogonal systems.
-     * @param recip_vec    Reciprocal lattice vectors [a*|b*|c*] in column-major order
-     *                     for k⊗k computation. Default is Cartesian basis.
-     *
-     * @note After construction, call add_ds_value() for each unique ds value,
-     *       then finalize_ds_values() to compute the Boltzmann factors, and upload()
-     *       (or update()) before the device arrays are used.
+     * @param ds_values    Contour step of each ds_index with Boltzmann tables (none when empty)
      */
     CudaPseudo(
         std::map<std::string, double> bond_lengths,
-        std::vector<BoundaryCondition> bc, std::vector<int> nx, std::vector<double> dx,
-        std::array<double, 6> recip_metric = {1.0, 0.0, 0.0, 1.0, 0.0, 1.0},
-        std::array<double, 9> recip_vec = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
+        std::vector<BoundaryCondition> bc, std::vector<int> nx,
+        std::map<int, double> ds_values);
 
     /// Destructor. Frees GPU memory.
     ~CudaPseudo();
@@ -145,7 +126,7 @@ public:
      * @param ds_index Index for ds value (0-based)
      * @return Device pointer to exp(-b²|k|²ds/6)
      */
-    double* get_boltz_bond(std::string monomer_type, int ds_index) override { return d_boltz_bond.at(ds_index).at(monomer_type).get(); };
+    double* get_boltz_bond(const std::string& monomer_type, int ds_index) override { return d_boltz_bond.at(ds_index).at(monomer_type).get(); };
 
     /**
      * @brief Get half bond factor (device pointer).
@@ -153,7 +134,7 @@ public:
      * @param ds_index Index for ds value (0-based)
      * @return Device pointer to exp(-b²|k|²ds/12)
      */
-    double* get_boltz_bond_half(std::string monomer_type, int ds_index) override { return d_boltz_bond_half.at(ds_index).at(monomer_type).get();};
+    double* get_boltz_bond_half(const std::string& monomer_type, int ds_index) override { return d_boltz_bond_half.at(ds_index).at(monomer_type).get();};
 
     /// Get x-direction Fourier basis (device pointer).
     const double* get_fourier_basis_x() override { return d_fourier_basis_x;};
@@ -176,28 +157,14 @@ public:
     /// Get yz cross-term Fourier basis (device pointer).
     const double* get_fourier_basis_yz() override { return d_fourier_basis_yz;};
 
-    /// Copy the host arrays (Boltzmann factors, Fourier basis) to the device,
-    /// allocating the device arrays at the first call.
-    void upload();
-
     /**
-     * @brief Update operators for new box dimensions and upload them.
+     * @brief Compute the tables of a cell (Pseudo::update) and copy them to the device.
      *
-     * Recomputes the Boltzmann factors of all registered ds values and the
-     * Fourier basis, and copies them to the device, allocating the device
-     * arrays at the first call.
-     *
-     * @param bc           Boundary conditions
-     * @param bond_lengths Segment lengths
-     * @param dx           New grid spacing
-     * @param recip_metric Reciprocal metric tensor
-     * @param recip_vec    Reciprocal lattice vectors for k⊗k computation
+     * @param dx                Grid spacings
+     * @param recip_metric      Reciprocal metric tensor
+     * @param with_stress_basis Whether to compute the stress basis
      */
-    void update(
-        std::vector<BoundaryCondition> bc,
-        std::map<std::string, double> bond_lengths,
-        std::vector<double> dx,
-        std::array<double, 6> recip_metric = {1.0, 0.0, 0.0, 1.0, 0.0, 1.0},
-        std::array<double, 9> recip_vec = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}) override;
+    void update(const std::vector<double>& dx, const std::array<double, 6>& recip_metric,
+                bool with_stress_basis = true) override;
 };
 #endif

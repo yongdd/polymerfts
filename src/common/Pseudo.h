@@ -1,6 +1,6 @@
 /**
  * @file Pseudo.h
- * @brief Unified pseudo-spectral utilities for all boundary conditions.
+ * @brief The Fourier-space tables of the pseudo-spectral solvers for one cell.
  *
  * This header provides the Pseudo class for pseudo-spectral method
  * supporting periodic, reflecting, and absorbing boundary conditions,
@@ -63,19 +63,19 @@
 
 #include "Exception.h"
 #include "ComputationBox.h"
-#include "Molecules.h"
 
 /**
  * @class Pseudo
- * @brief Pre-computed arrays for pseudo-spectral method.
+ * @brief The Fourier-space tables of one cell for the pseudo-spectral method.
  *
- * This class handles all boundary conditions:
- * periodic (FFT), reflecting (DCT), and absorbing (DST).
- * Also supports non-orthogonal crystal systems for periodic BC.
+ * Periodic boundary conditions (FFT, with the reciprocal metric of an oblique
+ * cell) on every axis, or reflecting (DCT) and absorbing (DST) ones on every
+ * axis. The grid, boundary conditions, bond lengths and contour steps are fixed
+ * at construction; update() computes the tables of a cell.
  *
  * @tparam T Numeric type (double or std::complex<double>)
  *
- * **Array Storage:**
+ * **Array Storage** (row-major in box axis order, like the fields):
  *
  * - Periodic BC with r2c FFT: size = Nx × Ny × (Nz/2+1)
  * - Periodic BC with c2c FFT: size = Nx × Ny × Nz
@@ -85,166 +85,68 @@ template <typename T>
 class Pseudo
 {
 protected:
-    std::vector<BoundaryCondition> bc;       ///< Boundary conditions per dimension
     std::map<std::string, double> bond_lengths;  ///< Segment lengths for each type
+    std::vector<BoundaryCondition> bc;       ///< Boundary conditions per dimension
     std::vector<int> nx;                     ///< Grid dimensions [Nx, Ny, Nz]
-    std::vector<double> dx;                  ///< Grid spacings [dx, dy, dz]
-    double ds;                               ///< Contour step size
+    std::map<int, double> ds_values;         ///< Contour step of each ds_index with Boltzmann tables
+    int total_complex_grid;                  ///< Number of spectral coefficients of a field
 
     /**
-     * @brief Reciprocal metric tensor for wavenumber calculation.
+     * @brief Boltzmann bond factors of a full and a half step: [ds_index][type][idx].
      *
-     * g^{-1}_ij = e*_i · e*_j where e* are reciprocal basis vectors.
-     * Layout: [g^{-1}_11, g^{-1}_12, g^{-1}_13, g^{-1}_22, g^{-1}_23, g^{-1}_33]
-     *
-     * For orthogonal systems: g^{-1}_ii = 1/L_i², cross terms = 0.
-     * Used to compute |k|² = g^{-1}_ij k_i k_j for non-orthogonal lattices.
-     * Only applicable for periodic boundary conditions.
-     */
-    std::array<double, 6> recip_metric_;
-
-    /**
-     * @brief Reciprocal lattice vectors for k⊗k computation.
-     *
-     * Stores [a*|b*|c*] in column-major order where:
-     * - a* = (b × c) / V  → recip_vec_[0..2]
-     * - b* = (c × a) / V  → recip_vec_[3..5]
-     * - c* = (a × b) / V  → recip_vec_[6..8]
-     *
-     * These are the "crystallographer's" reciprocal vectors (without 2π factor).
-     * The wavevector is: k = 2π × (m₁·a* + m₂·b* + m₃·c*)
-     */
-    std::array<double, 9> recip_vec_;
-
-    std::vector<int> negative_k_idx;  ///< Mapping from k to -k indices (for complex fields)
-
-    /**
-     * @brief Boltzmann bond factors for full step (per ds_index).
-     *
-     * boltz_bond[ds_index][type][idx] = exp(-|k|² * b² * ds / 6)
-     * where k depends on boundary condition type.
-     *
-     * For continuous chains: diffusion propagator.
-     * For discrete chains: bond function (Fourier transform of Gaussian).
-     *
-     * ds_index is 0-based (from ContourLengthMapping).
+     * boltz_bond = exp(-|k|² b² ds / 6), boltz_bond_half = exp(-|k|² b² ds / 12), where
+     * k depends on the boundary conditions: the diffusion propagator of continuous
+     * chains, the bond function (and half-bond function at chain ends) of discrete ones.
      */
     std::map<int, std::map<std::string, std::vector<double>>> boltz_bond;
-
-    /**
-     * @brief Boltzmann bond factors for half step (per ds_index).
-     *
-     * boltz_bond_half[ds_index][type][idx] = exp(-|k|² * b² * ds / 12)
-     *
-     * For continuous chains: half-step diffusion propagator.
-     * For discrete chains: half-bond function (used at chain ends).
-     *
-     * ds_index is 0-based (from ContourLengthMapping).
-     */
     std::map<int, std::map<std::string, std::vector<double>>> boltz_bond_half;
 
     /**
-     * @brief Unique ds values for each ds_index.
+     * @brief The stress basis: v⊗v of the deformation vector v = 2π g⁻¹ m of each mode,
+     *        with the weight of the mode in the sum over the spectrum.
      *
-     * ds_values[ds_index] = local_ds value for that index.
-     * ds_index is 0-based.
-     */
-    std::map<int, double> ds_values;
-
-    /**
-     * @brief Deformation vector v⊗v diagonal components for stress calculation.
-     *
-     * The deformation vector is defined as v = 2π g⁻¹ m where g⁻¹ is the
-     * inverse metric tensor and m is the Miller index vector.
-     *
-     * For periodic BC:
-     * - fourier_basis_x[m] = v₁² where v₁ = 2π(G₁₁m₁ + G₁₂m₂ + G₁₃m₃)
-     * - fourier_basis_y[m] = v₂² where v₂ = 2π(G₁₂m₁ + G₂₂m₂ + G₂₃m₃)
-     * - fourier_basis_z[m] = v₃² where v₃ = 2π(G₁₃m₁ + G₂₃m₂ + G₃₃m₃)
-     *
-     * For non-periodic BC: uses k² = (π*n/L)² directly (orthogonal only).
-     * Note: vᵢ has units of 1/L², not 1/L like Cartesian wavevector.
+     * fourier_basis_x[m] = v₁², _y = v₂², _z = v₃² along the box axes (1D and 2D boxes
+     * use the first one or two); the cross terms _xy = v₁v₂, _xz = v₁v₃, _yz = v₂v₃
+     * drive the angles of oblique cells and exist for periodic BC only (walls need an
+     * orthogonal cell). Non-periodic BC use k² = (π n / L)² of their wavenumbers.
+     * vᵢ has units of 1/L², not 1/L like the Cartesian wavevector.
      */
     std::vector<double> fourier_basis_x;
     std::vector<double> fourier_basis_y;
     std::vector<double> fourier_basis_z;
-
-    /**
-     * @brief Deformation vector v⊗v off-diagonal components for stress calculation.
-     *
-     * For non-orthogonal systems with periodic BC:
-     * - fourier_basis_xy[m] = v₁ × v₂ (drives γ angle optimization)
-     * - fourier_basis_xz[m] = v₁ × v₃ (drives β angle optimization)
-     * - fourier_basis_yz[m] = v₂ × v₃ (drives α angle optimization)
-     *
-     * These are zero for non-periodic BC (orthogonal grids only).
-     * Used for angle stress components in triclinic systems.
-     */
     std::vector<double> fourier_basis_xy;
     std::vector<double> fourier_basis_xz;
     std::vector<double> fourier_basis_yz;
 
-    int total_grid;          ///< Total real grid size
-    int total_complex_grid;  ///< Total "complex" grid size
-
-    /// Update total_complex_grid based on boundary conditions.
-    void update_total_complex_grid();
-
-    /// Recompute Boltzmann factors.
-    void update_boltz_bond();
-
-    /// Recompute Fourier basis arrays for stress.
-    void update_weighted_fourier_basis();
-
-    /// Update negative frequency index mapping.
-    void update_negative_frequency_mapping();
+    std::vector<int> negative_k_idx;  ///< Index of -k for each k (complex fields, periodic BC; with the stress basis)
 
     /// Check if all BCs are periodic.
     bool is_all_periodic() const;
 
-    /// Update Boltzmann factors for periodic BC (with recip_metric).
-    void update_boltz_bond_periodic();
+    /// The tables of periodic BC (the alias of least form of each mode on oblique cells).
+    void update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis);
 
-    /// Update Boltzmann factors for mixed BC.
-    void update_boltz_bond_mixed();
+    /// The tables of reflecting and absorbing BC (orthogonal cells).
+    void update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis);
 
-    /// Update Boltzmann factors for a specific ds_index (periodic BC).
-    void update_boltz_bond_periodic_for_ds_index(int ds_idx);
-
-    /// Update Boltzmann factors for a specific ds_index (mixed BC).
-    void update_boltz_bond_mixed_for_ds_index(int ds_idx);
-
-    /// Update Fourier basis for periodic BC (with cross-terms).
-    void update_weighted_fourier_basis_periodic();
-
-    /// Update Fourier basis for mixed BC (no cross-terms).
-    void update_weighted_fourier_basis_mixed();
-
-private:
+    /// Fill negative_k_idx (complex fields with periodic BC).
+    void update_negative_frequency_mapping();
 
 public:
     /**
-     * @brief Construct Pseudo with given parameters.
+     * @brief The tables of a grid, filled by update().
      *
      * @param bond_lengths Segment lengths: {type: b}
-     * @param bc          Boundary conditions (can be mixed)
-     * @param nx          Grid dimensions
-     * @param dx          Grid spacings
-     * @param recip_metric Reciprocal metric tensor (only for periodic BC)
-     *                     [g^{-1}_11, g^{-1}_12, g^{-1}_13, g^{-1}_22, g^{-1}_23, g^{-1}_33]
-     *                     Default is identity for orthogonal systems.
-     * @param recip_vec   Reciprocal lattice vectors [a*|b*|c*] in column-major order
-     *                     for k⊗k computation. Default is Cartesian basis.
-     *
-     * @note After construction, call add_ds_value() for each unique ds value,
-     *       then finalize_ds_values() to compute Boltzmann factors.
+     * @param bc           One boundary condition per dimension: all periodic, or none
+     * @param nx           Grid dimensions
+     * @param ds_values    Contour step of each ds_index whose Boltzmann bond factors are
+     *                     kept; none when empty (a solver that only needs the stress basis)
      */
     Pseudo(
         std::map<std::string, double> bond_lengths,
         std::vector<BoundaryCondition> bc,
-        std::vector<int> nx, std::vector<double> dx,
-        std::array<double, 6> recip_metric = {1.0, 0.0, 0.0, 1.0, 0.0, 1.0},
-        std::array<double, 9> recip_vec = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
+        std::vector<int> nx,
+        std::map<int, double> ds_values);
 
     /// Virtual destructor.
     virtual ~Pseudo();
@@ -253,7 +155,7 @@ public:
      * @brief Get total complex grid size.
      * @return Total grid size for Fourier coefficients
      */
-    int get_total_complex_grid();
+    int get_total_complex_grid() const;
 
     /**
      * @brief Values of the spectrum of a field on a grid of n_grid points with
@@ -270,41 +172,19 @@ public:
      * @brief Get Boltzmann factor for full step for given ds_index.
      *
      * @param monomer_type Monomer type (e.g., "A", "B")
-     * @param ds_index     1-based index for ds value (default: 1 for global ds)
+     * @param ds_index     0-based index of the contour step (ContourLengthMapping)
      * @return Pointer to Boltzmann factor array
      */
-    virtual double* get_boltz_bond(std::string monomer_type, int ds_index);
+    virtual double* get_boltz_bond(const std::string& monomer_type, int ds_index);
 
     /**
      * @brief Get Boltzmann factor for half step for given ds_index.
      *
      * @param monomer_type Monomer type (e.g., "A", "B")
-     * @param ds_index     1-based index for ds value
+     * @param ds_index     0-based index of the contour step (ContourLengthMapping)
      * @return Pointer to Boltzmann factor array
      */
-    virtual double* get_boltz_bond_half(std::string monomer_type, int ds_index);
-
-    /**
-     * @brief Add a ds value to be pre-computed.
-     *
-     * Call this for each unique local_ds value before calling
-     * finalize_ds_values() to pre-compute Boltzmann factors.
-     *
-     * @param ds_index 1-based index for this ds value
-     * @param ds_value The ds value
-     */
-    void add_ds_value(int ds_index, double ds_value);
-
-    /**
-     * @brief Finalize and compute Boltzmann factors for all added ds values.
-     *
-     * Must be called after all add_ds_value() calls and before
-     * using get_boltz_bond() with ds_index parameter.
-     *
-     * This method is virtual to allow GPU implementations to allocate
-     * device memory for the new ds_index values.
-     */
-    virtual void finalize_ds_values();
+    virtual double* get_boltz_bond_half(const std::string& monomer_type, int ds_index);
 
     /// Get x-direction Fourier basis for stress.
     virtual const double* get_fourier_basis_x();
@@ -315,39 +195,31 @@ public:
     /// Get z-direction Fourier basis for stress.
     virtual const double* get_fourier_basis_z();
 
-    /// Get xy cross-term Fourier basis for stress.
+    /// Get xy cross-term Fourier basis for stress (nullptr for non-periodic BC).
     virtual const double* get_fourier_basis_xy();
 
-    /// Get xz cross-term Fourier basis for stress.
+    /// Get xz cross-term Fourier basis for stress (nullptr for non-periodic BC).
     virtual const double* get_fourier_basis_xz();
 
-    /// Get yz cross-term Fourier basis for stress.
+    /// Get yz cross-term Fourier basis for stress (nullptr for non-periodic BC).
     virtual const double* get_fourier_basis_yz();
 
     /// Get negative frequency index mapping.
     virtual const int* get_negative_frequency_mapping();
 
-    /// Get boundary conditions.
-    const std::vector<BoundaryCondition>& get_boundary_conditions() const { return bc; }
-
     /**
-     * @brief Update all arrays after parameter changes.
+     * @brief Compute the tables of a cell.
      *
-     * Updates Fourier basis arrays and recomputes Boltzmann factors for
-     * all previously registered ds values.
+     * The Boltzmann bond factors of every contour step and monomer type, and, with
+     * with_stress_basis, the stress basis (its tables are released otherwise).
      *
-     * @param bc           New boundary conditions
-     * @param bond_lengths New segment lengths
-     * @param dx           New grid spacings
-     * @param recip_metric New reciprocal metric tensor (for periodic BC)
-     * @param recip_vec    New reciprocal lattice vectors for k⊗k computation
+     * @param dx                Grid spacings (the lengths of non-periodic axes are nx·dx)
+     * @param recip_metric      Reciprocal metric tensor (periodic BC)
+     *                          [g^{-1}_11, g^{-1}_12, g^{-1}_13, g^{-1}_22, g^{-1}_23, g^{-1}_33]
+     * @param with_stress_basis Whether to compute the stress basis
      */
-    virtual void update(
-        std::vector<BoundaryCondition> bc,
-        std::map<std::string, double> bond_lengths,
-        std::vector<double> dx,
-        std::array<double, 6> recip_metric = {1.0, 0.0, 0.0, 1.0, 0.0, 1.0},
-        std::array<double, 9> recip_vec = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0});
+    virtual void update(const std::vector<double>& dx, const std::array<double, 6>& recip_metric,
+                        bool with_stress_basis = true);
 };
 
 #endif

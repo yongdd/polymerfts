@@ -48,33 +48,18 @@ CpuSolverPseudoRK2<T>::CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *mole
 
         const int M = cb->get_total_grid();
 
-        // Ensure ContourLengthMapping is finalized before using it
-        molecules->finalize_contour_length_mapping();
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // Create exp_dw vectors for each ds_index and monomer type
+        // Create exp_dw vectors for each ds_index and monomer type (init_shared()
+        // finalized the ContourLengthMapping)
         // Note: RK2 only needs exp_dw, not exp_dw_half (no Richardson extrapolation)
-        // Also register local_ds values with Pseudo for boltz_bond computation
+        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
         for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
         {
-            double local_ds = mapping.get_ds_from_index(ds_idx);
-            this->pseudo->add_ds_value(ds_idx, local_ds);
-            this->register_ds_value(ds_idx, local_ds);
-
             for (const auto& item : molecules->get_bond_lengths())
             {
                 std::string monomer_type = item.first;
                 this->exp_dw[ds_idx][monomer_type].resize(M);
             }
         }
-
-        // Finalize ds values to allocate boltz_bond arrays
-        // (update_laplacian_operator will compute the actual values)
-        this->pseudo->finalize_ds_values();
-        this->update_laplacian_operator();
     }
     catch (std::exception& exc)
     {

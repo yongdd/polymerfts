@@ -11,7 +11,14 @@
 
 #include <vector>
 #include <array>
+#include <cmath>
 #include <string>
+
+/// The fractional part v - floor(v) of a lattice coordinate (a translation modulo the lattice)
+inline double wrap01(double v)
+{
+    return v - std::floor(v);
+}
 
 /**
  * @brief Physical (CrysFFT) basis layered on top of the irreducible basis.
@@ -60,7 +67,7 @@ private:
     std::vector<int> reduced_basis_indices_full_;
     std::vector<int> full_to_reduced_map_full_;
     std::vector<int> orbit_counts_full_;
-    std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index
+    std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index (empty without a physical basis)
 
     // Physical basis flags
     PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
@@ -89,6 +96,9 @@ private:
     /// Per axis: the grid size must be a multiple of the lcm of the denominators of
     /// the translation components of all symmetry operations along that axis.
     std::array<int, 3> get_required_grid_divisors() const;
+
+    /// Fill reduced_to_irreducible_map_ for the physical basis just built.
+    void map_reduced_to_irreducible();
 
 public:
     /**
@@ -161,18 +171,6 @@ public:
      */
     void symmetrize(const double* field_in, double* field_out, int n_fields) const;
 
-    /**
-     * @brief Symmetrize reduced-basis fields using full space-group orbits.
-     *
-     * When a physical basis is enabled, reduced basis points may include multiple
-     * representatives from the same irreducible orbit. This routine averages
-     * those representatives to enforce full space-group symmetry.
-     *
-     * @param reduced_field Input/output field on reduced basis
-     * @param n_fields Number of field components
-     */
-    void symmetrize_reduced_basis(double* reduced_field, int n_fields) const;
-
     // Getters
     int get_hall_number() const { return hall_number_; }
     int get_spacegroup_number() const { return spacegroup_number_; }
@@ -218,7 +216,7 @@ public:
     const std::vector<int>& get_nx() const { return nx_; }
     int get_total_grid() const { return total_grid_; }
     int get_n_reduced_basis() const { return n_irreducible_; }
-    int get_n_reduced_basis_full() const { return n_irreducible_full_ > 0 ? n_irreducible_full_ : n_irreducible_; }
+    int get_n_reduced_basis_full() const { return n_irreducible_full_; }
     int get_n_symmetry_ops() const { return n_symmetry_ops_; }
     const std::vector<int>& get_reduced_basis_indices() const { return reduced_basis_indices_; }
     const std::vector<int>& get_full_to_reduced_map() const { return full_to_reduced_map_; }

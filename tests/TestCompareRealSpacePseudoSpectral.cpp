@@ -54,11 +54,11 @@
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
 #ifdef USE_CPU_FFTW
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 
 #ifdef USE_CPU_MKL
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 
 #ifdef USE_CUDA
@@ -200,7 +200,7 @@ bool run_comparison_test(
     {
         // Mixed BCs: only test real-space
         std::cout << "  [CPU-FFTW RS only] " << std::flush;
-        CpuComputationBox<T>* cb_rs = new CpuComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_rs = new ComputationBox<T>(nx, lx, bc);
         PropagatorComputation<T>* solver_rs = make_propagator_computation<T>("cpu-fftw", false, cb_rs, &molecules, &prop_opt, "cn-adi2");
 
         // Run real-space solver
@@ -233,8 +233,8 @@ bool run_comparison_test(
     {
         // Matching BCs: compare pseudo-spectral vs real-space
         std::cout << "  [CPU-FFTW PS vs RS] " << std::flush;
-        CpuComputationBox<T>* cb_ps = new CpuComputationBox<T>(nx, lx, bc);
-        CpuComputationBox<T>* cb_rs = new CpuComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_ps = new ComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_rs = new ComputationBox<T>(nx, lx, bc);
 
         PropagatorComputation<T>* solver_ps = make_propagator_computation<T>("cpu-fftw", false, cb_ps, &molecules, &prop_opt, "rqm4");
         PropagatorComputation<T>* solver_rs = make_propagator_computation<T>("cpu-fftw", false, cb_rs, &molecules, &prop_opt, "cn-adi2");
@@ -290,7 +290,7 @@ bool run_comparison_test(
     {
         // Mixed BCs: only test real-space
         std::cout << "  [CPU-MKL RS only] " << std::flush;
-        CpuComputationBox<T>* cb_rs_mkl = new CpuComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_rs_mkl = new ComputationBox<T>(nx, lx, bc);
         PropagatorComputation<T>* solver_rs_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_rs_mkl, &molecules, &prop_opt, "cn-adi2");
 
         // Run real-space solver
@@ -325,8 +325,8 @@ bool run_comparison_test(
     {
         // Matching BCs: compare pseudo-spectral vs real-space
         std::cout << "  [CPU-MKL PS vs RS] " << std::flush;
-        CpuComputationBox<T>* cb_ps_mkl = new CpuComputationBox<T>(nx, lx, bc);
-        CpuComputationBox<T>* cb_rs_mkl = new CpuComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_ps_mkl = new ComputationBox<T>(nx, lx, bc);
+        ComputationBox<T>* cb_rs_mkl = new ComputationBox<T>(nx, lx, bc);
 
         PropagatorComputation<T>* solver_ps_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_ps_mkl, &molecules, &prop_opt, "rqm4");
         PropagatorComputation<T>* solver_rs_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_rs_mkl, &molecules, &prop_opt, "cn-adi2");

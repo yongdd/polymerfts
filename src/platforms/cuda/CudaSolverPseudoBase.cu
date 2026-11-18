@@ -589,31 +589,27 @@ void CudaSolverPseudoBase<T>::update_laplacian_operator()
 template <typename T>
 void CudaSolverPseudoBase<T>::update_pseudo()
 {
-    // Fourier basis arrays and Boltzmann bond factors of the current box, for every
-    // distinct contour step. Face BCs squeezed to one per dimension (both faces match).
-    const auto bc_faces = cb->get_boundary_conditions();
-    std::vector<BoundaryCondition> bc_dim;
-    for (int d = 0; d < dim_; ++d)
-        bc_dim.push_back(bc_faces[2 * d]);
-    if (pseudo)
+    if (!pseudo)
     {
-        pseudo->update(bc_dim, molecules->get_bond_lengths(), cb->get_dx(),
-                       cb->get_recip_metric(), cb->get_recip_vec());
+        // The first full-grid use. The Boltzmann bond factors of every distinct contour
+        // step when the full-grid propagator steps or the discrete stress use them (the
+        // CrysFFT steps of continuous chains do not); face BCs squeezed to one per
+        // dimension (both faces match).
+        const auto bc_faces = cb->get_boundary_conditions();
+        std::vector<BoundaryCondition> bc_dim;
+        for (int d = 0; d < dim_; ++d)
+            bc_dim.push_back(bc_faces[2 * d]);
+        std::map<int, double> ds_values;
+        if (!use_crysfft_ || stress_has_bond_factor())
+        {
+            const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+            for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+                ds_values[ds_idx] = mapping.get_ds_from_index(ds_idx);
+        }
+        pseudo = std::make_unique<CudaPseudo<T>>(molecules->get_bond_lengths(), bc_dim, cb->get_nx(), ds_values);
     }
-    else
-    {
-        // The first full-grid use: the constructor and finalize_ds_values() compute the
-        // tables of the current cell (as update() would), and upload() copies them
-        auto created = std::make_unique<CudaPseudo<T>>(
-            molecules->get_bond_lengths(), bc_dim, cb->get_nx(), cb->get_dx(),
-            cb->get_recip_metric(), cb->get_recip_vec());
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            created->add_ds_value(ds_idx, mapping.get_ds_from_index(ds_idx));
-        created->finalize_ds_values();
-        pseudo = std::move(created);
-        pseudo->upload();
-    }
+    // The stress basis once a stress is computed (prepare_stress())
+    pseudo->update(cb->get_dx(), cb->get_recip_metric(), stress_basis_);
     pseudo_current_ = true;
 }
 
@@ -844,7 +840,13 @@ void CudaSolverPseudoBase<T>::prepare_stress()
     try
     {
         // The full-grid work when the force-off-diagonal flag has turned the stress to the
-        // full grid since the last call (see full_grid_path()), and its Pseudo tables of the cell
+        // full grid since the last call (see full_grid_path()), and its Pseudo tables of the
+        // cell, with the stress basis from the first stress on
+        if (!stress_basis_)
+        {
+            stress_basis_ = true;
+            pseudo_current_ = false;
+        }
         provide_work();
 
         // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
@@ -1070,7 +1072,8 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         // is active) disables the skip so that angle derivatives are available
         // even when the box is at exactly 90° angles. The skip remains the default.
         // ============================================================================
-        const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
+        // Walls need an orthogonal cell: the non-periodic tables have no cross terms.
+        const bool is_orthogonal = (this->cb->is_orthogonal() && !this->force_off_diagonal_stress_) || !is_periodic_;
 
         // Dyad components V_c = Σ_k integrand(k)·basis_c(k)·basis_factor, written to
         // d_segment_stress[0..n_comp-1]
@@ -1093,21 +1096,15 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         }
         if ( DIM == 2 )
         {
-            // For non-periodic BC, 2D grid is mapped to y-z axes internally (tnx = {1, nx[0], nx[1]})
-            // so stress data is stored in fourier_basis_y and fourier_basis_z
-            add_component(is_periodic_ ? _d_fourier_basis_x : _d_fourier_basis_y);   // V₁₁
-            add_component(is_periodic_ ? _d_fourier_basis_y : _d_fourier_basis_z);   // V₂₂
+            add_component(_d_fourier_basis_x);   // V₁₁
+            add_component(_d_fourier_basis_y);   // V₂₂
 
             // V₁₂: only compute for non-orthogonal boxes
             if (!is_orthogonal)
-                add_component(is_periodic_ ? _d_fourier_basis_xy : _d_fourier_basis_yz);
+                add_component(_d_fourier_basis_xy);
         }
         if ( DIM == 1 )
-        {
-            // For non-periodic BC, 1D grid is mapped to z-axis internally (tnx = {1, 1, nx[0]})
-            // so stress data is stored in fourier_basis_z
-            add_component(is_periodic_ ? _d_fourier_basis_x : _d_fourier_basis_z);
-        }
+            add_component(_d_fourier_basis_x);
 
         // One pass over k for all components, then the block partials in block order
         launch_stress_dyads(d_segment_stress, d_stress_partial_[STREAM].get(), d_q_multi[STREAM].get(), bases, n_comp,

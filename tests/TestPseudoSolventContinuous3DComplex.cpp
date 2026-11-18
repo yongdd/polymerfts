@@ -27,10 +27,10 @@
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
 #ifdef USE_CPU_FFTW
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 #ifdef USE_CPU_MKL
-#include "CpuComputationBox.h"
+#include "ComputationBox.h"
 #endif
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
@@ -171,14 +171,14 @@ int main()
         #endif
 
         #ifdef USE_CPU_FFTW
-        cb_1_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_1_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_1_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_1_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_1_list.push_back(make_propagator_computation<T>("cpu-fftw", false, cb_1_list.end()[-2], molecules_1, propagator_computation_optimizer_1, "rqm4"));
         solver_1_list.push_back(make_propagator_computation<T>("cpu-fftw", true, cb_1_list.end()[-1], molecules_1, propagator_computation_optimizer_1, "rqm4"));
         #endif
         #ifdef USE_CPU_MKL
-        cb_1_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_1_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_1_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_1_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_1_list.push_back(make_propagator_computation<T>("cpu-mkl", false, cb_1_list.end()[-2], molecules_1, propagator_computation_optimizer_1, "rqm4"));
         solver_1_list.push_back(make_propagator_computation<T>("cpu-mkl", true, cb_1_list.end()[-1], molecules_1, propagator_computation_optimizer_1, "rqm4"));
         #endif
@@ -193,14 +193,14 @@ int main()
         #endif
 
         #ifdef USE_CPU_FFTW
-        cb_2_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_2_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_2_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_2_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_2_list.push_back(make_propagator_computation<T>("cpu-fftw", false, cb_2_list.end()[-2], molecules_2, propagator_computation_optimizer_2, "rqm4"));
         solver_2_list.push_back(make_propagator_computation<T>("cpu-fftw", true, cb_2_list.end()[-1], molecules_2, propagator_computation_optimizer_2, "rqm4"));
         #endif
         #ifdef USE_CPU_MKL
-        cb_2_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_2_list.push_back(new CpuComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_2_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_2_list.push_back(new ComputationBox<T>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_2_list.push_back(make_propagator_computation<T>("cpu-mkl", false, cb_2_list.end()[-2], molecules_2, propagator_computation_optimizer_2, "rqm4"));
         solver_2_list.push_back(make_propagator_computation<T>("cpu-mkl", true, cb_2_list.end()[-1], molecules_2, propagator_computation_optimizer_2, "rqm4"));
         #endif

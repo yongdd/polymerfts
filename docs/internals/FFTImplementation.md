@@ -386,7 +386,11 @@ the current cell, which `update_laplacian_operator()` does only while the full-g
 in use. The propagator steps of the
 CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
 values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
-full-grid stress and hold these as well.
+full-grid stress and hold these as well. The `CudaPseudo` tables hold the Boltzmann bond
+factors only for full-grid propagator steps or the discrete-chain stress (not for the
+ObliqueZ steps of continuous chains), and the stress basis from the first
+`prepare_stress()` on. The CPU solvers likewise compute their `Pseudo` tables for a new
+cell only while a full-grid path uses them.
 
 **Backward Compatibility:**
 

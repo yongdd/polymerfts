@@ -79,12 +79,6 @@ inline bool crysfft_recursive_3m_feasible(
         // translations keeps the fold, its twiddles, and psi consistent.
         std::vector<std::array<double, 3>> centerings;
         sg->get_pure_translations(centerings);
-        auto wrap01 = [](double v) {
-            v -= std::floor(v);
-            if (v < 0.0)
-                v += 1.0;
-            return v;
-        };
         for (size_t cz = 0; cz < centerings.size() && !fold_ok; ++cz)
         for (size_t cy = 0; cy < centerings.size() && !fold_ok; ++cy)
         for (size_t cx = 0; cx < centerings.size() && !fold_ok; ++cx)

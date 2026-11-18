@@ -32,7 +32,7 @@ Python (src/python)
 C++     ▼
   PlatformSelector ──► AbstractFactory<T> = MklFactory | FftwFactory | CudaFactory
         │ creates
-        ├── ComputationBox<T>          CpuComputationBox | CudaComputationBox
+        ├── ComputationBox<T>          itself (CPU) | CudaComputationBox
         ├── Molecules, PropagatorComputationOptimizer
         ├── PropagatorComputation<T>   ComputationContinuous | ComputationDiscrete
         │      │                       | ComputationReduceMemoryContinuous | ...Discrete
@@ -105,11 +105,11 @@ AbstractFactory<T>                    [Abstract Base]
 └── create_backend()                  [pure virtual, protected]
         │
         ├── FftwFactory<T>             [CPU - FFTW transforms]
-        │   └── Creates: CpuComputationBox, CpuAndersonMixing,
+        │   └── Creates: ComputationBox, CpuAndersonMixing,
         │                CpuComputationBackend (FFTW)
         │
         ├── MklFactory<T>              [CPU - MKL transforms]
-        │   └── Creates: CpuComputationBox, CpuAndersonMixing,
+        │   └── Creates: ComputationBox, CpuAndersonMixing,
         │                CpuComputationBackend (MKL)
         │
         └── CudaFactory<T>            [GPU]
@@ -133,7 +133,7 @@ The classes each platform provides (the computation classes above them are share
 |------|-----|------|
 | Backend | `CpuComputationBackend` | `CudaComputationBackend` |
 | Factory | `MklFactory`, `FftwFactory` | `CudaFactory` |
-| Computation box | `CpuComputationBox` | `CudaComputationBox` |
+| Computation box | `ComputationBox` | `CudaComputationBox` |
 | Solver interface | `CpuSolver<T>` | `CudaSolver<T>` |
 | Pseudo-spectral base | `CpuSolverPseudoBase<T>` | `CudaSolverPseudoBase<T>` |
 | Continuous, RQM4 | `CpuSolverPseudoRQM4` | `CudaSolverPseudoRQM4` |
@@ -195,7 +195,7 @@ alive with `py::keep_alive`.
 Manages spatial discretization, boundary conditions, and grid operations.
 
 ```
-ComputationBox<T>                     [Base Class]
+ComputationBox<T>                     [CPU memory; the CPU platforms use it directly]
 ├── Members:
 │   ├── nx[3]           - grid points per dimension
 │   ├── lx[3]           - box lengths
@@ -211,8 +211,6 @@ ComputationBox<T>                     [Base Class]
 │   ├── set_lx(lx)               - update box lengths [virtual]
 │   ├── set_lattice_parameters() - update with angles [virtual]
 │   └── set_space_group(sg)      - reduced basis on/off [virtual]
-        │
-        ├── CpuComputationBox<T>      [CPU Memory]
         │
         └── CudaComputationBox<T>     [GPU Memory]
 ```
