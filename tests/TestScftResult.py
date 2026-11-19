@@ -25,13 +25,8 @@ import yaml
 import numpy as np
 
 from scipy.io import loadmat
-from polymerfts import SCFT, SCFTResult, SpaceGroup, PlatformSelector, NumericalError
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+from polymerfts import SCFT, SCFTResult, SpaceGroup, NumericalError
+from cuda_part import cpu_platform
 
 
 def params(nx, lx, **extra):
@@ -52,9 +47,6 @@ def params(nx, lx, **extra):
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        sys.exit(77)  # ctest SKIP_RETURN_CODE
     failed = []
 
     # A max_iter exit must return fields, densities, box, Q and stress from the

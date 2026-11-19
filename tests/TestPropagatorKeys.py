@@ -29,6 +29,7 @@ import contextlib
 import numpy as np
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from cuda_part import cpu_platform
 
 n_pass = 0
 n_fail = 0
@@ -42,11 +43,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def solver(nx, lx, ds, bonds, aggregate=True, mask=None):

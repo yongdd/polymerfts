@@ -17,14 +17,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, ValidationError, PlatformSelector, LeimkuhlerMatthews
+from polymerfts import LFTS, CLFTS, ValidationError, LeimkuhlerMatthews
+from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return cpu[0] if cpu else None
 
 
 def params_for(work_dir, max_step, compressor="am", verbose_level=1):
@@ -67,9 +62,6 @@ class RecordingSteps(LeimkuhlerMatthews):
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        return 77  # ctest SKIP_RETURN_CODE
     ok = True
     root = tempfile.mkdtemp(prefix="polymerfts_lfts_")
     atexit.register(shutil.rmtree, root, ignore_errors=True)

@@ -161,9 +161,6 @@ def check_ignored_keys():
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        return 77  # ctest SKIP_RETURN_CODE
     ok = True
 
     from polymerfts.utils.validation import parse_chi_n

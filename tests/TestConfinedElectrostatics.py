@@ -35,13 +35,10 @@ import numpy as np
 from scipy.fft import dct, idct
 from scipy.optimize import root as solve_root
 from polymerfts import CLFTS, SCFT, PlatformSelector, ValidationError
+from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, silenced
 
 N, E = 20, 200.0
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def expect_validation_error(make, message):

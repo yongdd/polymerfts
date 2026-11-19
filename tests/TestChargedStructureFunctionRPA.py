@@ -72,7 +72,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import _core, CLFTS
+from polymerfts import CLFTS
+from cuda_part import cpu_platform
 
 CHI_N, ZETA_N, N, N_A, NX, LX, NBAR, STEPS = 6.0, 100.0, 20, 10, 32, 4.0, 1e6, 30000
 BLOCKS, ERRORS = 30, 2.0   # blocks of the statistics; tolerances must exceed ERRORS standard errors
@@ -134,11 +135,6 @@ def strong_screening(s_charge, coupling):
     """Shells with (E/k^2) S_c > 0.5, where the field-field form is the better one."""
     k_sq = (2 * np.pi * np.arange(1, N_MODES + 1) / LX) ** 2
     return s_charge * coupling / k_sq > 0.5
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def rpa(coupling):

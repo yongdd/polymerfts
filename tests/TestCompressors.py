@@ -13,18 +13,10 @@ import sys
 import numpy as np
 
 from polymerfts import LR, LRAM, PlatformSelector, PropagatorSolver
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+from cuda_part import cpu_platform
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        sys.exit(77)  # ctest SKIP_RETURN_CODE
     failed = []
     nx, lx = [8, 6, 4], [2.0, 1.5, 1.0]
     m = int(np.prod(nx))

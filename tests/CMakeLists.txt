@@ -1,15 +1,15 @@
-# Tests that read input files (Hexagonal*) run with the source directory as
-# working directory; the Python tests locate tests/data from their own path.
-# Nothing is copied into the build tree.
+# The native test that reads input files (TestHexagonalRectangularEquivalence reads
+# its initial fields) runs with the source directory as working directory; the
+# Python tests locate tests/data from their own path. Nothing is copied into the
+# build tree.
 
 # Every test carries a label; configuration stops for a test without one:
 #   basic      a quick check of every part (interfaces, transforms, solvers, SCFT,
-#              stress), which the Windows CI job and the MKL-only Linux CI job run
-#              (ctest -L basic -j 4)
+#              stress), which the Windows CI job runs (ctest -L basic -j 4)
 #   numerical  the physical and numerical regressions, for a change of a numerical
 #              algorithm (ctest -L numerical); some of them are basic too
 #   examples   the example scripts and the tutorial notebooks
-# Only a run without -L covers the whole suite.
+# Only a run without -L covers the whole suite, as the Linux CI jobs run it.
 SET(BASIC_TESTS
     # Parameter handling of the simulation classes and array handling of the
     # bindings (CPU, a few seconds each)
@@ -132,7 +132,6 @@ SET(BASIC_TESTS
     # Aggregation tests
     TestAggregation3D
     TestAggregationDendritic
-    TestAggregationDiscrete
     TestAggregationSideChains
     TestAggregationSlicedSideChains
 
@@ -260,7 +259,7 @@ FOREACH(FILE_NAME ${FILE_LIST})
     ADD_EXECUTABLE(${TEST_NAME} ${FILE_NAME})
     TARGET_LINK_LIBRARIES(${TEST_NAME} PRIVATE polymerfts_backends)
 
-    IF(${TEST_NAME} MATCHES "Hexagonal")
+    IF(TEST_NAME STREQUAL "TestHexagonalRectangularEquivalence")
         ADD_TEST(NAME ${TEST_NAME}
             COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

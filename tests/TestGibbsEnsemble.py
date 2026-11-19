@@ -52,14 +52,10 @@ from scipy.io import loadmat
 from scipy.optimize import brentq, fsolve
 from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector, ValidationError
 from polymerfts.utils.common import input_hash, json_ready
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
 N, CHI = 20, 3.0
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(directory, cycles, nbar=1e28, fractions=((0.7, 0.3), (0.3, 0.7)), charge=0.0, ions=None,

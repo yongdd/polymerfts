@@ -37,14 +37,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import SCFT, PlatformSelector, ValidationError
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 
 NX, N = 64, 50
 X = np.arange(NX) / NX
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(chi_n, electrostatics=None, lx=4.3, relax_cell=False, chain_model="discrete", platform=None):

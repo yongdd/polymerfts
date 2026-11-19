@@ -70,6 +70,7 @@ from polymerfts import _core, scft, LFTS, CLFTS
 from polymerfts.theory.smearing import Smearing
 from polymerfts.utils.common import calculate_sigma
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from cuda_part import cpu_platform
 from fts_checks import quiet
 
 n_pass = 0
@@ -84,11 +85,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def lattice_vectors(lx, angles):

@@ -75,7 +75,8 @@ os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import _core, scft, ValidationError
+from polymerfts import scft, ValidationError
+from cuda_part import cpu_platform
 
 n_pass = 0
 n_fail = 0
@@ -89,11 +90,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def base(nx, lx, chi_n, blocks, box):

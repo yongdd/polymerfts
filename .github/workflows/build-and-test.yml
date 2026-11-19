@@ -145,10 +145,10 @@ jobs:
             raise RuntimeError("Uninstall left package metadata")
         PY
 
-  # The MKL backend alone, as the Installation guide offers it: CPU tests that take the
-  # first CPU platform run on cpu-mkl here (cpu-fftw in the job above)
+  # The MKL backend alone, as the Installation guide offers it, with the whole test suite:
+  # the tests that take the first CPU platform run on cpu-mkl here (cpu-fftw in the job above)
   build-mkl:
-    name: Build and Test (CPU, MKL only, basic tests)
+    name: Build and Test (CPU, MKL only)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -199,11 +199,11 @@ jobs:
         assert platforms == ['cpu-mkl'], platforms
         "
 
-    - name: Run the basic tests
+    - name: Run tests
       run: |
         ulimit -s unlimited
         export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-        ctest --test-dir build-mkl -L basic -j$(nproc) --output-on-failure --timeout 900
+        ctest --test-dir build-mkl -j$(nproc) --output-on-failure --timeout 900
 
   build-windows:
     name: Build and Test (Windows, MSVC, MKL + FFTW)

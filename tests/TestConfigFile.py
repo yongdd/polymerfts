@@ -22,13 +22,8 @@ import warnings
 
 import numpy as np
 
-from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, load_config, ConfigError, ValidationError
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+from polymerfts import SCFT, LFTS, CLFTS, load_config, ConfigError, ValidationError
+from cuda_part import cpu_platform
 
 
 YAML = """
@@ -55,9 +50,6 @@ complex: "(-8)**0.5*np.pi"
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        sys.exit(77)  # ctest SKIP_RETURN_CODE
     failed = []
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as d:

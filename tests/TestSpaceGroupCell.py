@@ -14,13 +14,8 @@ angles each group fixes (None where free), as SCFT box relaxation reads them.
 
 import sys
 
-from polymerfts import PropagatorSolver, SpaceGroup, PlatformSelector
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+from polymerfts import PropagatorSolver, SpaceGroup
+from cuda_part import cpu_platform
 
 
 def solver(lx, symbol, hall=None, angles=None):
@@ -35,9 +30,6 @@ def solver(lx, symbol, hall=None, angles=None):
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        sys.exit(77)  # ctest SKIP_RETURN_CODE
     failed = []
 
     def expect_accept(what, make):

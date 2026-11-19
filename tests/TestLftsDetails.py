@@ -41,7 +41,7 @@ from polymerfts import _core, LFTS, ValidationError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.theory.smearing import Smearing
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
 n_pass = 0
@@ -56,11 +56,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def params(work_dir, nx, lx, max_step, **extra):

@@ -22,19 +22,11 @@ import weakref
 
 import numpy as np
 from polymerfts import PropagatorSolver, SpaceGroup, _core
-
-
-def cpu_platform():
-    avail = _core.PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return cpu[0] if cpu else None
+from cuda_part import cpu_platform
 
 
 def main():
     platform = cpu_platform()
-    if platform is None:
-        print("SKIP: no CPU platform in this build")
-        return 77  # ctest SKIP_RETURN_CODE
     ok = True
     nx, lx = [8, 8, 8], [2.0, 2.0, 2.0]
     n = int(np.prod(nx))

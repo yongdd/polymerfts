@@ -22,12 +22,8 @@ os.environ["OMP_NUM_THREADS"] = "2"
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import SCFT, PlatformSelector, SpaceGroup, ValidationError
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(nx, lx, angles, platform, f=0.4, chi_n=15.0, chain_model="continuous", relax_cell=False, **extra):

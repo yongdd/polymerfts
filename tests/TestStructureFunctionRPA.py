@@ -36,7 +36,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import _core, LFTS, CLFTS
+from polymerfts import LFTS, CLFTS
+from cuda_part import cpu_platform
 
 LFTS.draw_architectures = CLFTS.draw_architectures = False   # no polymer_<id>.png of the runs
 
@@ -55,11 +56,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def debye(f, x):

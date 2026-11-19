@@ -19,7 +19,10 @@
 // oblique), chain model and numerical method (rqm4, rk2, ps), real or complex
 // fields, polymer set and memory mode. Every row runs on every available
 // platform, and every length and angle derivative of the cell must match the
-// central difference of H within the tolerance of the row.
+// central difference of H within the tolerance of the row. The solver is built
+// in another cell (lengths times 1.1, oblique angles plus 3 degrees) and moved
+// to the checked cell before the stress, as a cell relaxation moves it: what the
+// solver keeps of its first cell (a stress basis or an operator) must follow.
 //
 // The fields are smooth: the modes with |m| <= 2 along each axis, random
 // amplitudes and phases, a standard deviation of 5 kT (2 kT for the imaginary
@@ -202,7 +205,14 @@ template <typename T>
 bool check_stress(const StressCase& c, const std::string& platform)
 {
     std::unique_ptr<AbstractFactory<T>> factory = create_factory<T>(platform, c.reduce_memory);
-    std::unique_ptr<ComputationBox<T>> cb = factory->create_computation_box(c.nx, c.lx, {}, c.angles);
+    // The solver is built in another cell and moved to the checked cell below
+    std::vector<double> lx_start = c.lx, angles_start = c.angles;
+    for (double& l : lx_start)
+        l *= 1.1;
+    for (double& a : angles_start)
+        if (a != 90.0)
+            a += 3.0;
+    std::unique_ptr<ComputationBox<T>> cb = factory->create_computation_box(c.nx, lx_start, {}, angles_start);
     std::unique_ptr<Molecules> molecules = factory->create_molecules_information(c.chain_model, c.ds, c.bond_lengths);
     for (const Chain& chain : c.chains)
         molecules->add_polymer(chain.volume_fraction, chain.blocks, {});
@@ -219,6 +229,8 @@ bool check_stress(const StressCase& c, const std::string& platform)
     for (const auto& item : w)
         w_input[item.first] = item.second.data();
 
+    cb->set_lattice_parameters(c.lx, c.angles);
+    solver->update_laplacian_operator();
     solver->compute_propagators(w_input, {});
     solver->compute_stress();
     const std::vector<T> stress = solver->get_stress();
@@ -288,10 +300,10 @@ int main()
         const std::vector<double> right_angles = {90.0, 90.0, 90.0};
         const std::map<std::string, double> bonds_ab = {{"A", 1.0}, {"B", 1.2}};
         auto diblock = [](double f) { return std::vector<Chain>{{1.0, {{"A", f, 0, 1}, {"B", 1.0 - f, 1, 2}}}}; };
-        // Two copies of one diblock: the stress sums over the polymers
+        // Two different diblocks (other Q, phi and alpha): the stress sums over the polymers
         const std::vector<Chain> two_diblocks = {
-            {0.5, {{"A", 0.5, 0, 1}, {"B", 0.5, 1, 2}}},
-            {0.5, {{"A", 0.5, 0, 1}, {"B", 0.5, 1, 2}}}};
+            {0.4, {{"A", 0.3, 0, 1}, {"B", 0.5, 1, 2}}},
+            {0.6, {{"A", 0.6, 0, 1}, {"B", 0.4, 1, 2}}}};
         // Two branched polymers, each with a junction of three blocks
         const std::vector<Chain> branched = {
             {0.3, {{"A", 0.2, 0, 1}, {"A", 0.4, 0, 2}, {"A", 0.3, 1, 3}, {"A", 0.4, 1, 4}}},

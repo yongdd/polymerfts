@@ -36,16 +36,13 @@ from scipy.io import loadmat
 from scipy.optimize import brentq
 from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
 from polymerfts.utils.validation import validate_scft_params
+from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, recording_dir, silenced
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 CHI, ZETA, Z_A = 2.0, 50.0, 0.2
 ALPHA_H, MU_H = 0.5, 0.1
 MU_ION = float(np.log(N * 0.05))   # c = 0.05 per segment at psi = 0
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(directory, steps=2, charges=None, ions=None, screening_length=None, **langevin):
