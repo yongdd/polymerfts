@@ -61,10 +61,6 @@ int main()
 
         PropagatorComputationOptimizer propagator_computation_optimizer(&molecules, false);
 
-        Scheduler sc(propagator_computation_optimizer.get_computation_propagators(), 4);
-
-        sc.display(propagator_computation_optimizer.get_computation_propagators());
-
         // The entries of the schedule run one after the other and the jobs of an entry in parallel.
         // Every propagator must be advanced through all its segments once, in order, at most once per
         // entry, and start only after an earlier entry has computed the segments of its dependencies

@@ -80,18 +80,26 @@ protected:
     /// q_recal[i] = q(r, n_first + i) of propagator key for i = 0..count-1.
     void recompute_segments(const std::string& key, int n_first, int count);
 
+    /// visit(n, q, q†(n), q†(n-1)) of for_each_segment_pair()
+    using SegmentVisit = std::function<void(int, BackendArray<T>*, BackendArray<T>*, BackendArray<T>*)>;
+
     /**
      * @brief Walk the segment pairs of a block in order.
      *
-     * Calls visit(n, q(left_offset - n), q†(n)) for n = n_first..n_last, where
-     * q is propagator key_left and q† is key_right. q† is advanced from its
-     * checkpoint at n_first; q is recomputed in chunks of at most
-     * checkpoint_interval segments that start at its regular checkpoints. A
-     * segment of q below first_segment is passed as nullptr.
+     * Calls visit(n, q(left_offset - n), q†(n), q†(n-1)) for n = n_first..n_last,
+     * where q is propagator key_left and q† is key_right. q† is advanced from its
+     * checkpoint at n_first, and q†(n_first-1) is passed as nullptr; q is
+     * recomputed in chunks of at most checkpoint_interval segments that start
+     * at its regular checkpoints. A segment of q below first_segment is passed
+     * as nullptr.
+     *
+     * With past_last, the walk also visits n_last + 1 with
+     * q(left_offset - n_last - 1), no q† (nullptr) and q†(n_last): the last
+     * bond of a discrete block, which joins q one segment past the last pair.
      */
     void for_each_segment_pair(const std::string& key_left, const std::string& key_right,
-                               int left_offset, int n_first, int n_last,
-                               const std::function<void(int, BackendArray<T>*, BackendArray<T>*)>& visit);
+                               int left_offset, int n_first, int n_last, const SegmentVisit& visit,
+                               bool past_last = false);
 
 public:
     virtual ~ComputationReduceMemoryBase();

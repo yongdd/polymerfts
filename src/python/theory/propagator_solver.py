@@ -198,13 +198,6 @@ class PropagatorSolver:
 
         Continuous chains default to RQM4, discrete chains to "ps".
         """
-        # The C++ resolver gives discrete chains their default for a continuous-chain name; refuse it here
-        methods = cls.numerical_methods()
-        name = (numerical_method or "").lower()
-        if chain_model == "discrete" and name in methods and methods[name]["chain_model"] == "continuous":
-            valid = ", ".join(f"'{m}'" for m, info in methods.items() if info["chain_model"] == "discrete")
-            raise ValueError(f"numerical_method '{numerical_method}' is for continuous chains; "
-                             f"discrete chains take {valid}.")
         try:
             name = _core.resolve_numerical_method(chain_model, (numerical_method or "").lower())
         except RuntimeError as exc:
@@ -894,6 +887,15 @@ class PropagatorSolver:
         Must be called after compute_propagators().
         """
         self._computed().compute_stress()
+
+    def compute_concentrations_and_stress(self) -> None:
+        """Compute the concentrations and the stress tensor.
+
+        The results of compute_concentrations() and compute_stress(), bit for bit; with
+        reduce_memory the propagators are recomputed from their checkpoints once for both.
+        Must be called after compute_propagators().
+        """
+        self._computed().compute_concentrations_and_stress()
 
     def get_stress(self) -> List[float]:
         """Get the computed stress tensor.

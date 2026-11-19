@@ -56,7 +56,7 @@ static double compute_Q(const std::string& platform, const std::string& chain_mo
     std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(nx, lx, bc);
 
     std::unique_ptr<PropagatorComputation<double>> solver =
-        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), "rqm4");
+        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), "");
     solver->compute_propagators({{"A", w.data()}});
     double Q = solver->get_total_partition(0);
 

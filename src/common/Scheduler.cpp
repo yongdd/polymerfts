@@ -22,7 +22,6 @@
  * @see PropagatorComputationOptimizer for propagator dependency analysis
  */
 
-#include <iostream>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -72,6 +71,8 @@ std::vector<std::vector<std::string>> Scheduler::group_by_height(
  */
 Scheduler::Scheduler(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators, int n_streams)
 {
+    // Stream and time interval (stream, start_time, end_time) of each propagator
+    std::map<std::string, std::tuple<int, int, int>, ComparePropagatorKey> job_assignment;
     std::vector<int> stream_available_time(n_streams, 0);
     std::vector<std::vector<std::string>> stream_jobs(n_streams);
 
@@ -116,21 +117,14 @@ Scheduler::Scheduler(const std::map<std::string, ComputationEdge, ComparePropaga
         }
     }
 
-    // Build sorted_jobs list
-    for (const auto& [key, assignment] : job_assignment)
-        sorted_jobs.emplace_back(key, std::get<1>(assignment));
-    std::sort(sorted_jobs.begin(), sorted_jobs.end(),
-        [](const auto& a, const auto& b) { return std::get<1>(a) < std::get<1>(b); });
-
-    // Collect unique time points (when jobs start or end)
+    // The times where the schedule changes: a job starts or ends
     std::set<int> time_point_set;
-    for (const auto& [key, start_time] : sorted_jobs)
+    for (const auto& [key, assignment] : job_assignment)
     {
-        int duration = std::max(propagators.at(key).max_n_segment, 1);
-        time_point_set.insert(start_time);
-        time_point_set.insert(start_time + duration);
+        time_point_set.insert(std::get<1>(assignment));
+        time_point_set.insert(std::get<2>(assignment));
     }
-    time_points.assign(time_point_set.begin(), time_point_set.end());
+    const std::vector<int> time_points(time_point_set.begin(), time_point_set.end());
 
     // Build schedule: for each time interval, list active jobs
     std::vector<std::vector<std::string>::iterator> stream_iters(n_streams);
@@ -184,26 +178,4 @@ Scheduler::Scheduler(const std::map<std::string, ComputationEdge, ComparePropaga
 std::vector<std::vector<std::tuple<std::string, int, int>>>& Scheduler::get_schedule()
 {
     return schedule;
-}
-
-void Scheduler::display(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators) const
-{
-    std::cout << "=== Propagator Schedule ===" << std::endl;
-
-    for (const auto& [key, start_time] : sorted_jobs)
-    {
-        int duration = propagators.at(key).max_n_segment;
-        std::cout << key << ":" << std::endl;
-        std::cout << "    n_segment=" << duration
-                  << ", start=" << start_time
-                  << ", end=" << start_time + duration << std::endl;
-    }
-
-    std::cout << "\n=== Time Slices ===" << std::endl;
-    for (size_t t = 0; t < schedule.size(); t++)
-    {
-        std::cout << "Time " << time_points[t] << "-" << time_points[t + 1] << ":" << std::endl;
-        for (const auto& [key, from, to] : schedule[t])
-            std::cout << "    " << key << ": segments " << from << "-" << to << std::endl;
-    }
 }

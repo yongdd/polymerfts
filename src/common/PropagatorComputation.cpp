@@ -218,28 +218,6 @@ std::vector<T> PropagatorComputation<T>::get_stress_gce(std::vector<double> fuga
     return stress;
 }
 
-// ==================== Space Group / Reduced Basis Methods ====================
-
-/**
- * @brief Set space group for reduced basis representation.
- *
- * The basis is fixed when the computation is constructed. Reattaching the same
- * group to its box is allowed, but changing it would invalidate the backend's
- * cached sizes and buffers.
- *
- * @param sg The group used at construction (nullptr if none)
- */
-template <typename T>
-void PropagatorComputation<T>::set_space_group(SpaceGroup* sg)
-{
-    if (sg != space_group_)
-        throw_with_line_number("The space group of a computation cannot change after construction; "
-            "create a new computation with the requested group.");
-
-    // Also set space group on ComputationBox for unified field operations
-    this->cb->set_space_group(sg);
-}
-
 template <typename T>
 bool PropagatorComputation<T>::check_total_partition(double tolerance)
 {

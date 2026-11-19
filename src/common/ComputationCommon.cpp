@@ -342,8 +342,16 @@ void ComputationCommon<T>::update_laplacian_operator()
 template <typename T>
 void ComputationCommon<T>::set_force_off_diagonal_stress(bool force)
 {
-    PropagatorComputation<T>::set_force_off_diagonal_stress(force);
     backend->set_force_off_diagonal_stress(force);
+}
+
+template <typename T>
+void ComputationCommon<T>::compute_concentrations_and_stress()
+{
+    // A method without stress computes neither, as in the reduced-memory classes
+    check_stress_supported();
+    this->compute_concentrations();
+    this->compute_stress();
 }
 
 template <typename T>
@@ -369,6 +377,26 @@ T ComputationCommon<T>::get_solvent_partition(int s)
 }
 
 template <typename T>
+void ComputationCommon<T>::collect_block_concentrations(
+    int p, const std::string& monomer_type, std::optional<double> fugacity,
+    std::vector<BackendArray<T>*>& arrays, std::vector<T>& weights) const
+{
+    for (const auto& [key, phi_b] : phi_block)
+    {
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
+        if ((p != -1 && std::get<0>(key) != p) || block.monomer_type != monomer_type || block.n_segment_right == 0)
+            continue;
+        if (fugacity)
+            weights.push_back(*fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
+        else if (!this->molecules->get_polymer(std::get<0>(key)).is_absent())
+            weights.push_back(concentration_norm(key));
+        else
+            continue;
+        arrays.push_back(phi_b);
+    }
+}
+
+template <typename T>
 void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* phi)
 {
     this->check_box_space_group();
@@ -377,19 +405,7 @@ void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* 
     validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
     std::vector<BackendArray<T>*> arrays;
     std::vector<T> weights;
-    for (const auto& [key, phi_b] : phi_block)
-    {
-        const std::string& key_left = std::get<1>(key);
-        const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-        // An absent species adds nothing, also when its unused propagators are not
-        // finite; an occupied one whose Q overflows keeps its non-finite density
-        if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-            && !this->molecules->get_polymer(std::get<0>(key)).is_absent())
-        {
-            arrays.push_back(phi_b);
-            weights.push_back(concentration_norm(key));
-        }
-    }
+    collect_block_concentrations(-1, monomer_type, std::nullopt, arrays, weights);
     for (int s = 0; s < this->molecules->get_n_solvent_types(); s++)
     {
         if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
@@ -414,18 +430,7 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
 
     std::vector<BackendArray<T>*> arrays;
     std::vector<T> weights;
-    for (const auto& [key, phi_b] : phi_block)
-    {
-        const std::string& key_left = std::get<1>(key);
-        const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-        // An absent species adds nothing (see the overload above)
-        if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-            && !this->molecules->get_polymer(p).is_absent())
-        {
-            arrays.push_back(phi_b);
-            weights.push_back(concentration_norm(key));
-        }
-    }
+    collect_block_concentrations(p, monomer_type, std::nullopt, arrays, weights);
     backend->sum_to_host(phi, arrays, weights);
 }
 
@@ -451,17 +456,7 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
 
     std::vector<BackendArray<T>*> arrays;
     std::vector<T> weights;
-    for (const auto& [key, phi_b] : phi_block)
-    {
-        const std::string& key_left = std::get<1>(key);
-        const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-        if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
-        {
-            arrays.push_back(phi_b);
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            weights.push_back(fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
-        }
-    }
+    collect_block_concentrations(p, monomer_type, fugacity, arrays, weights);
     backend->sum_to_host(phi, arrays, weights);
 }
 

@@ -84,7 +84,7 @@ int main()
                     propagator_computation_optimizer->display_blocks();
                     propagator_computation_optimizer->display_propagators();
 
-                    std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "rqm4");
+                    std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "");
 
                     // -------------- Print simulation parameters ------------
                     std::cout << std::setprecision(default_precision);

@@ -350,10 +350,6 @@ std::map<int, std::vector<int>>& Polymer::get_adjacent_nodes()
 {
     return adjacent_nodes;
 }
-std::map<std::pair<int, int>, int>& Polymer::get_block_indexes()
-{
-    return edge_to_block_index;
-}
 void Polymer::set_propagator_key(const std::string code, const int v, const int u)
 {
     edge_to_propagator_key[std::make_pair(v, u)] = code;

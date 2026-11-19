@@ -40,7 +40,7 @@ from cuda_part import cuda_part_missing
 TOL = 1e-12
 
 
-def solve(platform, chain_model, ds, nx, lx, bc, w, method="rqm4",
+def solve(platform, chain_model, ds, nx, lx, bc, w, method="",
           diblock=False, w2=None):
     factory = _core.PlatformSelector.create_factory(platform, False, "complex")
     cb = factory.create_computation_box(nx, lx, bc=bc)
@@ -62,7 +62,7 @@ def solve(platform, chain_model, ds, nx, lx, bc, w, method="rqm4",
     return phi, solver.get_total_partition(0)
 
 
-def run_case(platform, chain_model, method="rqm4", diblock=False):
+def run_case(platform, chain_model, method="", diblock=False):
     nz = 16
     nx_a = [4, 4, nz]
     nx_b = [4, 4, 2 * nz]
@@ -98,7 +98,7 @@ def run_case(platform, chain_model, method="rqm4", diblock=False):
     im_max = np.abs(phi_a.imag).max()
 
     tag = chain_model + ("-diblock" if diblock else "") + \
-        ("" if method == "rqm4" else "-" + method)
+        ("-" + method if method else "")
     print(f"  {platform:8s} {tag:18s}: |dQ| = {q_err:.2e}, "
           f"mirror = {sym_err:.2e}, reflecting-vs-periodic = {eq_err:.2e}, "
           f"max|Im phi| = {im_max:.2e}")

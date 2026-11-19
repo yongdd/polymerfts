@@ -44,6 +44,7 @@ SET(BASIC_TESTS
     TestComplexMask
     TestComputationSafety
     TestComputationState
+    TestConcentrationsAndStress
     TestInputChecks
     TestErrorMessages
     TestPropagatorParserSafety

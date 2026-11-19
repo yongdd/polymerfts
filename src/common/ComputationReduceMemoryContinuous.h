@@ -6,7 +6,8 @@
  * only at checkpoints: s = 0, every checkpoint_interval segments, and the
  * segments other propagators start from. Every other segment is recomputed
  * from the last checkpoint before it when the concentrations, the stress,
- * or a propagator are needed. The solvers are deterministic, so the
+ * or a propagator are needed; compute_concentrations_and_stress() walks the
+ * segments once for both. The solvers are deterministic, so the
  * recomputed segments equal the stored ones bit for bit, and the sums over
  * segment pairs run in the same order as in full storage.
  *
@@ -52,6 +53,9 @@ private:
     /// One segment per polymer for its partition function: (polymer, key, n, key†, n_aggregated)
     std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 
+    /// The concentrations, the stress or both, in one walk along each block.
+    void compute_blocks(bool with_concentrations, bool with_stress);
+
 protected:
     int propagator_ds_index(const std::string& key) const override;
 
@@ -66,6 +70,7 @@ public:
     void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
     void compute_concentrations() override;
     void compute_stress() override;
+    void compute_concentrations_and_stress() override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;
     std::vector<double> compute_partition_errors() override;
 };

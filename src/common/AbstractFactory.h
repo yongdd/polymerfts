@@ -228,7 +228,7 @@ public :
      *                                        - "cn-adi2": 2nd-order Crank-Nicolson ADI (real-space, continuous)
      *                                        - "ps": bond convolution through FFTs (discrete chains, default)
      *                                        - "rs": bond convolution summed on the grid (real-space, discrete)
-     *                                        A continuous-chain name given for discrete chains selects "ps".
+     *                                        A method of the other chain model throws.
      * @param space_group                     Optional space group (reduced basis, real fields only)
      * @return PropagatorComputation solver with the platform's backend. The box,
      *         molecules, optimizer and space group must outlive it.

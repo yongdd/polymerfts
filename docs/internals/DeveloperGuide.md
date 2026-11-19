@@ -78,7 +78,7 @@ SCFT.run (src/python/scft/scft.py)
 └─ AndersonMixing.calculate_new_fields(w, w_out - w)
 ```
 
-Reduce-memory mode runs the same steps one propagator at a time, keeping q only at checkpoints and recomputing the other segments when a sum needs them; the results are the same bit for bit.
+Reduce-memory mode runs the same steps one propagator at a time, keeping q only at checkpoints and recomputing the other segments when a sum needs them; the results are the same bit for bit. `compute_concentrations_and_stress()` gives the concentrations and the stress of an iteration with cell relaxation from one recomputation instead of two.
 
 ---
 
@@ -242,6 +242,7 @@ PropagatorComputation<T>                      [Abstract Base]
 ├── compute_propagators(w, q_init)            [pure virtual]
 ├── compute_concentrations()                  [pure virtual]
 ├── compute_stress()                          [pure virtual]
+├── compute_concentrations_and_stress()       [pure virtual]
 ├── get_total_partition(polymer)              [pure virtual]
 ├── get_chain_propagator(p, v, u, n)          [pure virtual]
 ├── get_total_concentration(monomer)          [pure virtual]
@@ -277,7 +278,8 @@ computation sets its own when it completes. The getters throw instead of
 returning values of other fields or another box: `get_total_partition()`,
 `get_chain_propagator()`, `compute_concentrations()`, `compute_stress()` and
 `compute_partition_errors()` need the propagators, the concentration getters
-also `compute_concentrations()`, `get_stress()` also `compute_stress()`. A new
+also `compute_concentrations()`, `get_stress()` also `compute_stress()`
+(`compute_concentrations_and_stress()` sets both). A new
 computation class sets the flags at the end of its `compute_*` methods and
 calls the `require_*` checks first in its getters. `compute_partition_errors()`
 returns the forward/backward error of every polymer and prints nothing;

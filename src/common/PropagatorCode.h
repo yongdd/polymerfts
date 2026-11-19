@@ -11,9 +11,10 @@
  *
  * A propagator code is a string that uniquely identifies a propagator and
  * encodes its dependencies. For example:
- * - "A10" - A-type propagator of length 10 from a free end
- * - "A10(B20)" - A-type propagator depending on B-type sub-propagator
- * - "A10(B20,C15)" - Junction: A-type depending on both B and C branches
+ * - "A10" - A-type propagator of length index 10 from a free end
+ * - "(B20)A10" - A-type propagator depending on a B-type sub-propagator
+ * - "(B20C15)A10" - Junction: A-type depending on both B and C branches
+ * - "{wall}A10" - A-type propagator from the grafting point labelled "wall"
  *
  * **Dynamic Programming:**
  *
@@ -71,11 +72,15 @@ class ContourLengthMapping;
  *
  * **Code Format:**
  *
- * The code format is: `TYPE` `N_SEGMENT` `(DEPS)` `[INIT]`
+ * The code format is DKN: `{INIT}` or `(DEPS)`, then `TYPE` and `N`
+ * - {INIT}: Initial condition label of a grafted end
+ * - (DEPS): The sorted codes of the branches that meet at the start, concatenated;
+ *   "B2:3" stands for three identical B2 branches
  * - TYPE: Monomer type (e.g., "A", "B")
- * - N_SEGMENT: Number of contour steps
- * - (DEPS): Optional comma-separated list of dependency codes
- * - [INIT]: Optional initial condition label for grafted ends
+ * - N: Length index of the block (ContourLengthMapping)
+ *
+ * The key of a propagator replaces N by "+ds_index" (DK+M, e.g. "(B20C15)A+0").
+ * See docs/internals/PropagatorSystem.md for aggregated keys "[...]".
  *
  * **Height:**
  *
@@ -149,9 +154,9 @@ public:
      *
      * @example
      * @code
-     * // For key "A30(B20,C10)"
+     * // For key "(B20C10)A+0"
      * auto deps = PropagatorCode::get_deps_from_key(key);
-     * // deps contains entries for B20 and C10 dependencies
+     * // deps holds ("B", 20, 1) and ("C", 10, 1)
      * @endcode
      */
     static std::vector<std::tuple<std::string, int, double>> get_deps_from_key(const std::string& key);

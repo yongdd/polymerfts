@@ -238,7 +238,7 @@ static std::unique_ptr<AbstractFactory<T>> make_factory(bool reduce_memory)
 struct ComputationSpec
 {
     std::string chain_model = "continuous";
-    std::string method = "rqm4";
+    std::string method;                    ///< empty: the default of the chain model
     bool reduce_memory = false;
     std::vector<int> nx = {16, 16, 16};
     std::vector<double> lx = {1.9, 1.9, 1.9};

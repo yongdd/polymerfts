@@ -70,8 +70,6 @@ ComputationDiscrete<T>::ComputationDiscrete(
             if (p != current_p)
                 continue;
             const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            if (block.n_segment_left == 0)
-                continue;
             const double n_aggregated = block.n_copies/block.n_repeated;
             single_partition_segment.push_back(std::make_tuple(
                 p,

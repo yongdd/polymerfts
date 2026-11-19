@@ -342,6 +342,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
  * - get_solvent_concentration(s): Solvent density
  * - get_chain_propagator(polymer, v, u, n): Extract propagator at step n
  * - compute_stress(): Calculate stress tensor
+ * - compute_concentrations_and_stress(): Both, in one recomputation with reduced memory
  * - get_stress(): Retrieve computed stress
  * - get_stress_gce(): Grand canonical stress
  * - compute_partition_errors(): Relative partition function error of each polymer
@@ -529,6 +530,8 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
             }
         })
         .def("compute_stress", &PropagatorComputation<T>::compute_stress)
+        .def("compute_concentrations_and_stress", &PropagatorComputation<T>::compute_concentrations_and_stress,
+            "compute_concentrations() and compute_stress(), with one recomputation of the propagators in reduced memory")
         .def("set_force_off_diagonal_stress", &PropagatorComputation<T>::set_force_off_diagonal_stress,
             "Force cross-term (V12/V13/V23) stress accumulation even for orthogonal boxes. "
             "Needed when angle optimization starts at exactly 90 degree angles.")

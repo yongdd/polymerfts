@@ -5,7 +5,8 @@
  * Same physics and arithmetic as ComputationDiscrete, but q(r, n) is kept
  * only at checkpoints (see ComputationReduceMemoryBase) and recomputed from
  * the last checkpoint before it when needed; the sums over segment pairs run
- * in the same order as in full storage.
+ * in the same order as in full storage. compute_concentrations_and_stress()
+ * walks the segments once for both.
  *
  * The half-bond states q(r, n+1/2) that junctions need are always kept, as
  * half_checkpoint(key, n): the junction value a propagator starts from
@@ -60,6 +61,9 @@ private:
     void free_half_checkpoints();
     CheckpointArray<T>* half_checkpoint_at(const std::string& key, int n);
 
+    /// The concentrations, the stress or both, in one walk along each block.
+    void compute_blocks(bool with_concentrations, bool with_stress);
+
 protected:
     int propagator_ds_index(const std::string&) const override { return 0; }
 
@@ -75,6 +79,7 @@ public:
     void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
     void compute_concentrations() override;
     void compute_stress() override;
+    void compute_concentrations_and_stress() override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;
     std::vector<double> compute_partition_errors() override;
 };

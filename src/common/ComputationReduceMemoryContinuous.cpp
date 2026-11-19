@@ -150,55 +150,35 @@ void ComputationReduceMemoryContinuous<T>::advance_propagator_single_segment(T* 
 template <typename T>
 void ComputationReduceMemoryContinuous<T>::compute_concentrations()
 {
-    this->check_box_space_group();
-    this->require_propagators();
-    try
-    {
-        // Concentration of each block (several blocks when propagators are aggregated)
-        for (const auto& [key, phi] : this->phi_block)
-        {
-            const auto& [p, key_left, key_right] = key;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
-
-            // A block without segments has no concentration
-            this->backend->set_zero(0, phi);
-            if (N_RIGHT == 0)
-                continue;
-
-            // φ = Σ_n c_n q(N_LEFT-n) q†(n), Simpson's rule over the segments of the block
-            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-            this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
-                [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
-                {
-                    this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
-                });
-
-            // Getters normalize the integral for the requested ensemble.
-        }
-        this->backend->synchronize();
-
-        this->compute_solvent_concentrations();
-        this->concentrations_computed_ = true;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    compute_blocks(true, false);
 }
 
 template <typename T>
 void ComputationReduceMemoryContinuous<T>::compute_stress()
 {
+    compute_blocks(false, true);
+}
+
+template <typename T>
+void ComputationReduceMemoryContinuous<T>::compute_concentrations_and_stress()
+{
+    compute_blocks(true, true);
+}
+
+template <typename T>
+void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentrations, bool with_stress)
+{
     this->check_box_space_group();
     this->require_propagators();
     try
     {
-        this->check_stress_supported();
-        this->backend->prepare_stress();
+        if (with_stress)
+        {
+            this->check_stress_supported();
+            this->backend->prepare_stress();
+        }
 
-        // Stress of each block: Simpson's rule over the segment stresses
+        // Concentration and stress of each block (several blocks when propagators are aggregated)
         std::vector<std::array<T, 6>> stress_of_block;
         for (const auto& [key, phi] : this->phi_block)
         {
@@ -207,27 +187,47 @@ void ComputationReduceMemoryContinuous<T>::compute_stress()
             const int N_LEFT  = block.n_segment_left;
             const int N_RIGHT = block.n_segment_right;
 
+            // A block without segments has no concentration and no stress
+            if (with_concentrations)
+                this->backend->set_zero(0, phi);
             std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
             if (N_RIGHT > 0)
             {
-                // Every segment contributes, the chain ends included (see ComputationContinuous)
+                // φ = Σ_n c_n q(N_LEFT-n) q†(n) and the stress Σ_n c_n σ(q(N_LEFT-n), q†(n)),
+                // Simpson's rule over the segments of the block. Every segment contributes
+                // to the stress, the chain ends included (see ComputationContinuous).
                 const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
                 this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
-                    [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger)
+                    [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>*)
                     {
-                        const std::array<T, 6> segment = this->backend->block_stress(
-                            0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
-                        for (int d = 0; d < 6; d++)
-                            stress[d] += segment[d];
+                        if (with_concentrations)
+                            this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
+                        if (with_stress)
+                        {
+                            const std::array<T, 6> segment = this->backend->block_stress(
+                                0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
+                            for (int d = 0; d < 6; d++)
+                                stress[d] += segment[d];
+                        }
                     });
                 this->scale_by_contour_step(stress, key_right);
             }
             stress_of_block.push_back(stress);
+            // Getters normalize the concentration integral for the requested ensemble.
         }
+        this->backend->synchronize();
 
-        // Sum the blocks of each polymer
-        this->set_stress_from_blocks(stress_of_block);
-        this->stress_computed_ = true;
+        if (with_concentrations)
+        {
+            this->compute_solvent_concentrations();
+            this->concentrations_computed_ = true;
+        }
+        if (with_stress)
+        {
+            // Sum the blocks of each polymer
+            this->set_stress_from_blocks(stress_of_block);
+            this->stress_computed_ = true;
+        }
     }
     catch (std::exception& exc)
     {
@@ -273,7 +273,7 @@ std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_erro
         const double n_propagators = block.n_copies;
 
         this->for_each_segment_pair(key_left, key_right, block.n_segment_left, 0, block.n_segment_right,
-            [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger)
+            [&](int, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>*)
             {
                 T total_partition = this->backend->inner_product(q, q_dagger)*(block.n_repeated/this->cb->get_volume());
                 total_partition /= n_propagators;

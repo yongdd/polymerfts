@@ -327,10 +327,10 @@ int main()
     std::vector<Case> cases = {
         {"rqm4, Im-3m m3 basis (recursive 3m)", "continuous", "rqm4", {16, 16, 16}, {1.9, 1.9, 1.9}, {}, "Im-3m", 529, "m3"},
         {"rk2, Im-3m m3 basis (recursive 3m)", "continuous", "rk2", {16, 16, 16}, {1.9, 1.9, 1.9}, {}, "Im-3m", 529, "m3"},
-        {"discrete, Pmmm basis (Pmmm DCT)", "discrete", "rqm4", {16, 16, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
+        {"discrete, Pmmm basis (Pmmm DCT)", "discrete", "ps", {16, 16, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
         {"rqm4, Pmmm basis (Pmmm DCT)", "continuous", "rqm4", {16, 16, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
         {"rk2, P6_3/mmc z-mirror basis (ObliqueZ)", "continuous", "rk2", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
-        {"discrete, P6_3/mmc z-mirror basis (ObliqueZ)", "discrete", "rqm4", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
+        {"discrete, P6_3/mmc z-mirror basis (ObliqueZ)", "discrete", "ps", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
     };
 
     bool all_ok = true;
@@ -409,6 +409,7 @@ int main()
             all_ok = path_work<CudaSolverPseudoRQM4<double>>(c, "rqm4") && all_ok;
             all_ok = path_work<CudaSolverPseudoRK2<double>>(c, "rk2") && all_ok;
             c.chain_model = "discrete";
+            c.method = "ps";
             all_ok = path_work<CudaSolverPseudoDiscrete<double>>(c, "discrete") && all_ok;
         }
     }

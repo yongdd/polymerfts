@@ -336,10 +336,8 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
     int state = 1;
     // States: 1 = reading key, 2 = reading n_segment, 3 = reading n_repeated
 
-    // Validate all delimiters before parsing dependencies, including the part
-    // after the first semicolon. Public callers may supply malformed keys.
-    // A semicolon at depth 1 selects that format for ALL dependencies.
-    bool use_semicolon_format = false;
+    // Validate all delimiters before parsing dependencies. Public callers may
+    // supply malformed keys.
     {
         std::stack<char> temp_stack;
         bool in_label = false;
@@ -367,8 +365,6 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
             {
                 throw_with_line_number("Unmatched initial condition label brace in propagator key.");
             }
-            else if(key[i] == ';' && temp_stack.size() == 1)
-                use_semicolon_format = true;
         }
         if (in_label || !temp_stack.empty())
             throw_with_line_number("Unclosed parentheses or initial condition label in propagator key.");
@@ -388,20 +384,8 @@ std::vector<std::tuple<std::string, int, double>> PropagatorCode::get_deps_from_
         }
         if(stack_brace.size() == 1)
         {
-            // For keys using ; separator format: look for ';' to find end of key
-            if(state==1 && key[i]==';')
-            {
-                // Remove a comma at start
-                if (key[pos_start] == ',')
-                    pos_start += 1;
-
-                sub_key = key.substr(pos_start, i-pos_start);
-                state = 2;
-                pos_start = i+1; // skip the ';'
-            }
-            // For non-aggregated keys: look for first digit after alpha (length_index)
-            // Only use digit-based parsing if the key doesn't use ; format
-            else if(state==1 && std::isdigit(static_cast<unsigned char>(key[i])) && !use_semicolon_format)
+            // The first digit after a sub-key starts its n_segment (or length_index)
+            if(state==1 && std::isdigit(static_cast<unsigned char>(key[i])))
             {
                 // Remove a comma
                 if (key[pos_start] == ',')
@@ -503,10 +487,10 @@ std::string PropagatorCode::get_monomer_type_from_key(const std::string& key)
  * For key in DK+M format "(A1B2)C+1", returns 1.
  * For simple key "A+2", returns 2.
  * Returns -1 if no ds_index is found (no '+' separator).
- * Note: ds_index uses 1-based indexing.
+ * Note: ds_index is 0-based (ContourLengthMapping::get_ds_index()).
  *
  * @param key Propagator key in DK+M format
- * @return ds_index value (1-based), or -1 if not present
+ * @return ds_index value (0-based), or -1 if not present
  */
 int PropagatorCode::get_ds_index_from_key(const std::string& key)
 {

@@ -318,12 +318,6 @@ public:
     std::map<int, std::vector<int>>& get_adjacent_nodes();
 
     /**
-     * @brief Get edge to block index mapping.
-     * @return Map from (v,u) pair to block index
-     */
-    std::map<std::pair<int, int>, int>& get_block_indexes();
-
-    /**
      * @brief Set propagator computation code for an edge.
      * @param deps Dependency code string
      * @param v First vertex

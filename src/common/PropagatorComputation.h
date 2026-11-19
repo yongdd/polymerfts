@@ -94,6 +94,7 @@ constexpr double PARTITION_TOLERANCE = 1e-7;
  *
  * 1. compute_propagators(w): Solve diffusion equations for all propagators
  * 2. compute_concentrations(): Integrate propagator products to get φ(r)
+ *    (compute_concentrations_and_stress() also gives the stress)
  * 3. get_total_concentration(): Retrieve computed concentration fields
  *
  * **Memory Management:**
@@ -142,20 +143,6 @@ protected:
      * irreducible mesh points. Set to nullptr when not using symmetry.
      */
     SpaceGroup* space_group_;
-
-    /**
-     * @brief Force computation of off-diagonal (cross-term) stress sums.
-     *
-     * By default (false), the stress computation skips the cross-term sums
-     * (V₁₂, V₁₃, V₂₃) for orthogonal boxes as a performance optimization,
-     * because angle optimization is normally inactive for orthogonal crystal
-     * systems. However, when angle optimization starts at exactly 90° angles
-     * (e.g., Monoclinic/Triclinic/Oblique2D runs initialized orthogonal),
-     * the angle derivatives would then be reported as zero and the angles
-     * would never move. Setting this flag to true forces the cross-term
-     * accumulation even for orthogonal boxes.
-     */
-    bool force_off_diagonal_stress_ = false;
 
     /**
      * @brief What has been computed for the current fields and box.
@@ -286,6 +273,17 @@ public:
     virtual void compute_stress() = 0;
 
     /**
+     * @brief Compute the concentrations and the stress of the current propagators.
+     *
+     * Gives the results of compute_concentrations() followed by compute_stress(),
+     * bit for bit. With reduced memory, one walk along each block gives both, so the
+     * propagators are recomputed from the checkpoints once instead of twice.
+     *
+     * @pre compute_propagators() must be called first.
+     */
+    virtual void compute_concentrations_and_stress() = 0;
+
+    /**
      * @brief Get single-chain partition function.
      *
      * @param polymer Polymer index (0 to n_polymer_types-1)
@@ -411,18 +409,11 @@ public:
     // ==================== Space Group / Reduced Basis Methods ====================
 
     /**
-     * @brief Reattach this computation's space group to its box.
+     * @brief Get the space group, fixed at construction.
      *
-     * The space group is fixed at construction because backend buffers and
-     * solvers use its basis. Passing a different group (including nullptr)
-     * throws before changing either the computation or the box.
+     * The backend buffers and solvers use its basis; the computation refuses its
+     * results while its box holds another group.
      *
-     * @param sg The group used at construction (nullptr if none)
-     */
-    virtual void set_space_group(SpaceGroup* sg);
-
-    /**
-     * @brief Get the current space group.
      * @return Pointer to SpaceGroup, or nullptr if not set
      */
     SpaceGroup* get_space_group() const { return space_group_; }
@@ -430,20 +421,17 @@ public:
     /**
      * @brief Force off-diagonal (cross-term) stress computation for orthogonal boxes.
      *
-     * Explicit opt-in used when angle optimization is active but the box is
-     * (initially) exactly orthogonal; otherwise the orthogonal-box fast path
-     * would report zero angle derivatives. Platform implementations forward
-     * this flag to their propagator solvers.
+     * By default (false), the stress computation skips the cross-term sums
+     * (V₁₂, V₁₃, V₂₃) for orthogonal boxes, because angle optimization is
+     * normally inactive for orthogonal crystal systems. When angle optimization
+     * starts at exactly 90° angles (e.g., Monoclinic/Triclinic/Oblique2D runs
+     * initialized orthogonal), the angle derivatives would then be zero and the
+     * angles would never move. Platform implementations forward this flag to
+     * their propagator solvers.
      *
      * @param force true to always accumulate V₁₂/V₁₃/V₂₃; false (default)
      *              keeps the orthogonal-box skip.
      */
-    virtual void set_force_off_diagonal_stress(bool force) { force_off_diagonal_stress_ = force; }
-
-    /**
-     * @brief Get the force-off-diagonal-stress flag.
-     * @return Current flag value (default false)
-     */
-    bool get_force_off_diagonal_stress() const { return force_off_diagonal_stress_; }
+    virtual void set_force_off_diagonal_stress(bool force) = 0;
 };
 #endif

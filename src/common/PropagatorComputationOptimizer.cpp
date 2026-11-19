@@ -783,7 +783,7 @@ void PropagatorComputationOptimizer::display_propagators() const
     if (this->model_name == "continuous")
         std::cout << "Total number of modified diffusion equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;    
     else if (this->model_name == "discrete")
-        std::cout << "(Total number of integral equation steps (time complexity to compute propagators: " << total_mde_steps_without_reduction << std::endl;    
+        std::cout << "Total number of integral equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;
     std::cout << "Total number of steps after optimizing computation : " << reduced_mde_steps << std::endl;
 
     double percent = 0.0;

@@ -290,35 +290,35 @@ struct ComputationEdge {
 std::vector<std::vector<std::tuple<std::string, int, int>>> schedule;
 ```
 
-### Internal Variables
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `job_assignment` | `map<string, tuple<int,int,int>>` | Maps key → (stream, start, end) |
-| `sorted_jobs` | `vector<tuple<string, int>>` | Jobs sorted by start time |
-| `time_points` | `vector<int>` | Discrete times where schedule changes |
+The constructor keeps only the schedule: the stream and interval (stream, start, end) of each
+propagator and the times where a job starts or ends are local to it.
 
 ---
 
 ## 6. Execution
 
 The schedule is executed once for both platforms, in `ComputationContinuous::compute_propagators`
-and `ComputationDiscrete::compute_propagators` (`src/common`). The propagators of one group run
-concurrently on OpenMP threads; thread `i` passes stream index `i` to the backend, which runs the
-work on that OpenMP thread (CPU) or queues it on CUDA stream `i` (GPU). After each group the
-backend synchronizes, so the next group sees every propagator it depends on.
+and `ComputationDiscrete::compute_propagators` (`src/common`). The constructor of each computation
+resolves the jobs of `sc->get_schedule()` once into its own `schedule` of `Job` entries: the key, the
+`ComputationEdge`, the propagator storage, the segment range and the sources of a junction or an
+aggregation. The propagators of one group run concurrently on OpenMP threads; thread `i` passes
+stream index `i` to the backend, which runs the work on that OpenMP thread (CPU) or queues it on
+CUDA stream `i` (GPU). After each group the backend synchronizes, so the next group sees every
+propagator it depends on.
 
 ```cpp
-for (const auto& parallel_job : sc->get_schedule())
+for (const std::vector<Job>& parallel_jobs : schedule)
 {
     ParallelErrors errors;
     #pragma omp parallel for num_threads(n_streams)
-    for (size_t job = 0; job < parallel_job.size(); job++)
+    for (size_t j = 0; j < parallel_jobs.size(); j++)
     {
         errors.run([&]
         {
             const int STREAM = omp_get_thread_num();
-            // initial condition, then backend->advance_propagator(STREAM, q[n], q[n+1], ...)
+            const Job& job = parallel_jobs[j];
+            // initial condition from job.sources, then
+            // backend->advance_propagator(STREAM, job.q[n], job.q[n+1], ...)
         });
     }
     backend->synchronize();   // CPU: nothing to do; CUDA: cudaDeviceSynchronize
@@ -358,36 +358,18 @@ for (size_t t = 0; t < schedule.size(); t++) {
     }
     // Synchronize streams at interval boundary
 }
-
-// Display schedule for debugging
-scheduler.display(propagators);
 ```
 
-### Example Output
+### Example Schedule
 
-For a star polymer with 3 arms A, B and C of contour length 1.0 meeting at a junction (continuous chains, ds = 0.1, no aggregation, 4 streams):
+For a star polymer with 3 arms A, B and C of contour length 1.0 meeting at a junction (continuous chains, ds = 0.1, no aggregation, 4 streams), the free ends start at time 0 and the junction propagators at time 10, each for 10 segments:
 
 ```
-=== Propagator Schedule ===
-C+0:
-    n_segment=10, start=0, end=10
-B+0:
-    n_segment=10, start=0, end=10
-A+0:
-    n_segment=10, start=0, end=10
-(B1C1)A+0:
-    n_segment=10, start=10, end=20
-(A1C1)B+0:
-    n_segment=10, start=10, end=20
-(A1B1)C+0:
-    n_segment=10, start=10, end=20
-
-=== Time Slices ===
-Time 0-10:
+schedule[0] (time 0-10):
     C+0: segments 0-10
     B+0: segments 0-10
     A+0: segments 0-10
-Time 10-20:
+schedule[1] (time 10-20):
     (A1C1)B+0: segments 0-10
     (A1B1)C+0: segments 0-10
     (B1C1)A+0: segments 0-10

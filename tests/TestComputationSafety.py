@@ -102,6 +102,15 @@ def test_method_checks(platform, reduced):
         opt = fac.create_propagator_computation_optimizer(mol, False)
         cb = fac.create_computation_box([8]*3, [3.0]*3, angles)
         rejects(lambda: fac.create_propagator_computation(cb, mol, opt, method), message)
+    # A method of the other chain model is refused, not replaced by the default
+    fac = _core.PlatformSelector.create_factory(platform, reduced, "real")
+    for model, method, message in (("discrete", "rqm4", "'rqm4' is for continuous chains; discrete chains take ps, rs."),
+                                   ("continuous", "ps", "'ps' is for discrete chains; continuous chains take rqm4")):
+        other = molecules(fac, model)
+        opt = fac.create_propagator_computation_optimizer(other, False)
+        cb = fac.create_computation_box([8]*3, [3.0]*3)
+        rejects(lambda: fac.create_propagator_computation(cb, other, opt, method), message)
+        rejects(lambda: _core.resolve_numerical_method(model, method), message)
 
 
 def test_gce(platform, reduced):
@@ -114,7 +123,7 @@ def test_gce(platform, reduced):
             mol = molecules(fac, model, fraction)
             opt = fac.create_propagator_computation_optimizer(mol, True)
             cb = fac.create_computation_box([16], [4.0])
-            pc = fac.create_propagator_computation(cb, mol, opt, "rqm4")
+            pc = fac.create_propagator_computation(cb, mol, opt, "")
             pc.compute_propagators(w)
             pc.compute_concentrations()
             assert pc.check_total_partition()
