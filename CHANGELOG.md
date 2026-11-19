@@ -11,8 +11,9 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 ### Installation and platforms
 
 - CI builds the package with MKL alone on Linux, checks that `cpu-mkl` is its only platform and
-  runs the basic tests (2026-11-18). Pushes of one commit to `main` and `devel` share one run, and
-  the script tests without the package run inside the Linux CPU job instead of a job of their own.
+  runs the whole test suite (2026-11-18, the whole suite since 2026-11-19, so that the numerical
+  tests run on cpu-mkl too). Pushes of one commit to `main` and `devel` share one run, and the script
+  tests without the package run inside the Linux CPU job instead of a job of their own.
 - `import polymerfts` sets `OMP_NUM_THREADS=1` and `OMP_STACKSIZE=1G` unless they are set, before
   NumPy and the native module load (2026-11-18). Since 0.10.0 `scft`, `lfts` and `clfts` set them
   after libgomp had read its environment, so they had no effect: the CPU Fourier transforms used every
@@ -443,6 +444,39 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- Python interface changes of 2026-11-19:
+  A key that an option section does not take (`langevin`, `recording`, `saddle`, `compressor`,
+  `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics`, `gibbs_ensemble`) raises
+  `ValidationError` naming it, the closest valid key and the keys of the section, as a misspelled
+  top-level key does (`validation.SECTION_KEYS`); before, a misspelled key in most sections left its
+  option at the default without a word (for example `langevin.integrater` ran `lm`, and the
+  deep-langevin-fts names `wtmd.l` and `wtmd.dT` ran with ℓ = 4 and ΔT = 5). Sections of another
+  method are still ignored as a whole.
+  The SCFT option `stress_interval` is removed: the cell relaxation computes the stress in every
+  iteration, together with the concentrations (`PropagatorSolver.compute_concentrations_and_stress()`).
+  Every method ignores a given `stress_interval` with one warning; a later release will refuse it.
+  Results of the default (1) do not change. Fewer stress computations did not pay: the gyroid with 4
+  was as fast on cpu-mkl and 13 % slower on CUDA, a 1D lamella needed 3.6 times the iterations.
+  `SCFT.stress_interval` is gone, `SCFT.cell.error_at()` and `current_error()` are replaced by
+  `SCFT.cell.stress_error(w, phi)`, and `SCFT.compute_concentrations(w, q_init, stress=False)`
+  computes the stress with the concentrations when `stress` is set; a subclass that overrides
+  `compute_concentrations` must accept `stress` (the run loop passes it).
+  A numerical method of the other chain model raises an error also in `_core.resolve_numerical_method`
+  and the native factories (discrete chains took `ps` for `rqm4`, `rk2` or `cn-adi2`).
+  A Gibbs-ensemble continuation may change `verbose_level`, `platform`, `reduce_memory` and
+  `aggregate_propagator_computation`, as a CL-FTS continuation may; histories written by earlier
+  versions continue with the input that wrote them. An L-FTS or CL-FTS checkpoint whose input held
+  keys that no release read in `saddle` or `compressor` continues without them; a Gibbs history of
+  such an input, which stores only a hash of it, cannot continue.
+  `LFTS/CLFTS.save_simulation_data` takes `w_aux` and the `RunRecord` of the run as required
+  arguments. Parameters.md states that `sim.wtmd.u`, `up` and `I1` hold U, U′ and I₁ divided by CV,
+  while the WTMD statistics files and checkpoints store them times CV.
+- `scripts/analysis/plot_wtmd_chib_AB.ipynb` reads the chain model, N, ζN, smearing, grid, box and N̄
+  that z_inf needs from a `fields_*.mat` file of the run (`renormalization.read_simulation`), which
+  refuses oblique boxes, unequal segment lengths and files of another run; its parameters
+  `chain_model`, `n_segments`, `zeta_n`, `smearing` and `z_inf` are gone (2026-11-19). A continuous,
+  compressible or smeared run left at the former defaults got a wrong z_inf without a message.
+  `seeds.from_file` of the SCFT examples reads JSON results too.
 - Python interface changes of 2026-11-18:
   `MeanFieldElectrostatics` keeps ψ as its `psi` property, transformed once when it is set, with the
   point-ion densities computed once per ψ; its methods take no ψ argument and it takes the smearing,
@@ -464,6 +498,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   `get_block_index_from_edge`, `get_adjacent_nodes` and `get_block_indexes`,
   `Molecules.get_global_ds` and `get_bond_lengths`, and the optimizer's `get_computation_block`,
   `display_propagators`, `display_blocks` and `get_monomer_type_from_key`.
+- C++ interface changes of 2026-11-19: one `CpuFactory<T>(FFTBackend)` replaces `FftwFactory` and
+  `MklFactory`; `FFT<T>` keeps only its `double*` forward and backward (with
+  `backward_with_factors`); `PropagatorComputation` gains `compute_concentrations_and_stress()` and
+  loses `set_space_group()` and `get_force_off_diagonal_stress()`; `Polymer::get_block_indexes()`,
+  `Scheduler::display()`, `SpaceGroup::enable_physical_basis()`, the z-mirror translation getter and
+  the ';' form of propagator keys are removed; one `CudaAndersonMixing` keeps its history in device
+  or pinned host memory (`CudaAndersonMixingReduceMemory` and `PinnedCircularBuffer` are removed).
 - An error of the native layer names its place once (2026-11-18): a catch block that rethrows passes
   a polymerfts error through unchanged instead of prepending its own file and function, so a wrong
   monomer type reports one location instead of three. Python exception types are unchanged.
@@ -510,9 +551,6 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   (`ComputationBox.get_dv_base()`). Results of these boxes change at round-off: at most 7e-16
   relative in Q, φ and the stress of one evaluation in a space-group cell, about 1e-13 in a
   converged SCFT free energy (`TestBoxVolumeElement`).
-- The stress schedule of SCFT (`stress_interval`, the reuse of a stress and its recomputation before
-  convergence or a stop) moved from the run loop to `SCFT.cell.error_at()`, and `SCFT.stress_interval`
-  is now `SCFT.cell.stress_interval` (2026-11-16). Results do not change.
 - The simulation classes share more of their setup (2026-11-16). `WTMD` saves, checks and restores
   its own checkpoint state (`checkpoint_data`, `validate_checkpoint`, `restore` and `settings`).
   `SymmetricPolymerTheory.dt_scaling()` gives the mobilities of the auxiliary fields,
@@ -799,6 +837,8 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `plot_wtmd_chib_AB.ipynb` prints phase areas that sum P(Ψ) times the bin width (2026-11-19); they
+  added up to 1/dψ (the ordered fraction was right).
 - `load_config` reads YAML and JSON files as UTF-8 under every locale (2026-11-18): under a Windows
   cp949 or cp1252 locale a file with Greek letters raised `UnicodeDecodeError`.
 - The tutorials run on every installation (2026-11-18): `00_QuickStart` named `cpu-fftw`, which
@@ -1098,6 +1138,25 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- Performance work of 2026-11-19 (review 9). Results are bitwise unchanged:
+  - With `reduce_memory`, the concentrations and the stress come from one recomputation of the
+    propagators instead of two: an SCFT iteration with cell relaxation is 26-31 % faster (64³, rqm4
+    and ps, cpu-fftw and CUDA A10).
+  - Cells with an axis orthogonal to the other two (hexagonal, monoclinic) search the least and tied
+    aliases once per mode of each component instead of once per mode of the grid: the stress basis of
+    a hexagonal 64³ cell takes 2.2 instead of 11.6 ms, a CUDA cell change of the HCP relaxation 6.6
+    instead of 13.9 ms (run 9 % faster), a hexagonal 64³ cell change on cpu-mkl 8.0 instead of 18.4 ms.
+    Pseudo keeps no zero stress tables in 1D and 2D, and a CPU solver whose stress takes the CrysFFT
+    fast path builds no Boltzmann tables.
+  - CUDA: full-memory runs allocate no junction staging and accumulator per stream (256 MiB at 128³
+    with 4 streams), and the pseudo-spectral solvers share one spectral scratch per stream between the
+    steps and the stress, with no periodic spectra on walls: 13-23 % less device memory at 128³
+    (periodic rqm4 2372 → 2044 MiB, walls rqm4 3408 → 2640 MiB, 4 streams). One Anderson mixing class
+    keeps its history in device or pinned host memory and adds the history terms in one pass per 16
+    terms (26 % less time per call at 128³ with 20 histories).
+  - CPU: the wall transforms and the Pmmm CrysFFT apply the bond and Boltzmann factors inside their
+    loops (1-3 % per step with walls); every per-thread scratch is an `AlignedScratch`, and FftwFFT
+    takes scratch only for the arrays it copies.
 - Performance work of 2026-11-18 (review 8). Results are bitwise unchanged unless stated:
   - `compute_propagators` resolves the jobs of the schedule when the computation is built and looks
     up no propagator keys: a linear chain of 1000 blocks on a 16-point grid takes 3.4 instead of 52 ms
@@ -1306,6 +1365,15 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 ### Tests
 
 Tests new since 0.10.0:
+- Tests added 2026-11-19: `TestConcentrationsAndStress` (the combined call against the two calls,
+  bit for bit, in both memory modes on every platform), `TestOpenMPDefaults` (the OpenMP defaults of
+  the package reach the runtime; Linux), `TestTutorials` (the code cells of every tutorial notebook,
+  Langevin runs capped at 5 steps); new checks in `TestScftElectrostatics` (a relaxation with point
+  ions against finite differences of F), `TestWtmdLifecycle` (every WTMD key at a non-default value),
+  `TestGibbsEnsemble` (continuations that change the platform and the memory mode),
+  `TestParams` (unknown section keys), `TestSmearingLattice` (length derivatives on the half
+  spectrum), `TestAndersonMixing` (20 histories in both memory modes), `TestMinimalFormAlias`
+  (component-wise grid loops against the per-mode search).
 - `TestAbsentPointIons`, `TestAbsentSolvent`: point ions and solvents of zero amount, whose Q is
   zero, have zero density and finite observables; such ions run and continue bit for bit, and
   occupied solvents keep their normalization.
@@ -1562,22 +1630,36 @@ Tests that check more or differently than in 0.10.0:
   and complex fields, `rqm4`, `rk2` (3D `rk2` was not checked before) and `ps`, and branched chains
   in every aggregation and memory mode, on every platform (several old tests ran on cpu-fftw only);
   14 s instead of 187 s.
-- `TestAggregationDiscreteCpu` is `TestAggregationDiscrete` and runs on every platform (2026-11-18).
 - Every test carries a CTest label, `basic`, `numerical` or `examples`, and configuration stops for a
   test without one (2026-11-18): `ctest -L numerical` now includes the stress, space-group phase,
   SCFT, smearing and phase-equilibrium tests that had no label.
 - `TestSpaceGroupPhases` requires the reduced-memory free energies to equal the full-memory ones bit
   for bit (2026-11-18).
+- Changed 2026-11-19, with the user's approval of the conditions: `TestStressFiniteDifference` has
+  a row of two different diblocks, and each solver is built at another cell and moved to the
+  checked one, so per-polymer bugs and stale stress tables fail it; `TestAggregationDiscreteCpu`
+  of 0.10.0, which ran at zero fields where Q is 1 in every mode, is removed
+  (`TestPseudoBranchedDiscrete3D` covers the same modes with fields); the cn-adi2 case of
+  `TestSpaceGroupPlatformEquivalence` uses blocks 0.35/0.65 (two contour steps); `TestScftOptions`
+  runs the 3D `axis_ordering` case for 10 iterations (17.6 → 6.7 s) and checks that a given
+  `stress_interval` is ignored with one warning. `TestCrankNicolson1D/2D/3D` check stored
+  reference values and the reflecting/absorbing case of `TestCompareRealSpacePseudoSpectral` the
+  mirrored box, so a build without a GPU tests the CPU CN-ADI solver; `TestScft1D` runs its CUDA
+  part on four streams. `TestExamples` runs the examples on the platform they select (it ran the
+  "auto" Langevin examples on a CPU platform), and `TestWtmdReweighting` runs every cell of the
+  notebook. One `cpu_platform()` (tests/cuda_part.py) replaces 22 copies. `TestCudaFFT`,
+  `TestCudaCubReduceSum`, `TestCudaCubReduceSumClass` and `TestCudaPinnedMemory`, which tested
+  cuFFT, CUB and cudaMemcpy only, are removed.
 - `TestClftsElectrostatics` checks the fluctuation of Im ψ (2026-11-18): Re ψ of the decoupled
   neutral case is round-off, exactly zero with MKL, so the test failed in a build with MKL alone.
 - Tests added 2026-11-18: `TestException` and `TestErrorMessages` (an error passed through the
-  wrappers keeps one location and its type); `TestScftElectrostatics` (2D oblique electrostatic stress
-  against finite differences), `TestScftOptions` (the 3D `axis_ordering` angle permutation, and
-  `stress_interval` 4 and "adaptive" with the guard against a stale stress), `TestSmearingLattice`
-  (the angle derivative at the Nyquist planes on the half spectrum), `TestConfigFile` (UTF-8 under an
-  ASCII locale), `TestGibbsEnsemble` (continuations that change the keys of the cycles, histories
-  of the old hash) and `TestCudaDeviceBuffer` (plans that share a work area). The RPA tests run at
-  `verbose_level` 0 and the test helpers draw no architectures (about 60 s less in the suite).
+  wrappers keeps one location and its type); `TestScftElectrostatics` (2D oblique electrostatic
+  stress against finite differences), `TestScftOptions` (the 3D `axis_ordering` angle
+  permutation), `TestSmearingLattice` (the angle derivative at the Nyquist planes on the half
+  spectrum), `TestConfigFile` (UTF-8 under an ASCII locale), `TestGibbsEnsemble` (continuations
+  that change the keys of the cycles, histories of the old hash) and `TestCudaDeviceBuffer` (plans
+  that share a work area). The RPA tests run at `verbose_level` 0 and the test helpers draw no
+  architectures (about 60 s less in the suite).
 - `TestCrysFFTBench`, a benchmark outside ctest, times its full-FFT baseline as the solvers run it;
   docs/internals/FFTImplementation.md gives the gains measured this way (CUDA recursive 3m 2.3x,
   Pmmm 1.5x, where the former baseline gave 3.1x and 2.0x).
