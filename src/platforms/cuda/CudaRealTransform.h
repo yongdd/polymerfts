@@ -96,15 +96,6 @@ public:
 
     /// Set CUDA stream for execution.
     void set_stream(cudaStream_t stream);
-
-    /// Get the input/output size.
-    int get_size() const;
-
-    /// Get transform type.
-    CudaTransformType get_type() const { return type_; }
-
-    /// Get normalization factor for round-trip.
-    double get_normalization() const;
 };
 
 //==============================================================================
@@ -190,18 +181,6 @@ public:
 
     /// Set CUDA stream for execution.
     void set_stream(cudaStream_t stream);
-
-    /// Get the input/output size.
-    int get_size() const { return M_; }
-
-    /// Get dimensions for this transform.
-    void get_dims(int& nx, int& ny) const;
-
-    /// Get transform types for each dimension.
-    void get_types(CudaTransformType& type_x, CudaTransformType& type_y) const;
-
-    /// Get normalization factor for round-trip.
-    double get_normalization() const;
 };
 
 //==============================================================================
@@ -303,18 +282,6 @@ public:
 
     /// Set CUDA stream for execution.
     void set_stream(cudaStream_t stream);
-
-    /// Get the input/output size.
-    int get_size() const { return M_; }
-
-    /// Get dimensions for this transform.
-    void get_dims(int& nx, int& ny, int& nz) const;
-
-    /// Get transform types for each dimension.
-    void get_types(CudaTransformType& type_x, CudaTransformType& type_y, CudaTransformType& type_z) const;
-
-    /// Get normalization factor for round-trip.
-    double get_normalization() const;
 };
 
 #endif // CUDA_REAL_TRANSFORM_H_

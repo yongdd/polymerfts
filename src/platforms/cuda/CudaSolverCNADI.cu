@@ -311,51 +311,14 @@ void CudaSolverCNADI::update_laplacian_operator()
         throw_without_line_number(exc.what());
     }
 }
-void CudaSolverCNADI::update_dw(const std::map<std::string, const double*>& d_w_input)
+void CudaSolverCNADI::update_dw(const std::map<std::string, const double*>& d_w)
 {
     try{
         if (!cb->is_orthogonal())
             throw_with_line_number("CN-ADI requires an orthogonal computation box.");
-
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-
-        const int M = this->cb->get_total_grid();
-        const bool use_reduced_basis = (space_group_ != nullptr);
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        for(const auto& [monomer_type, d_w_input_monomer] : d_w_input)
-        {
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                if (d_exp_dw[ds_idx].find(monomer_type) == d_exp_dw[ds_idx].end())
-                    throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
-            }
-
-            // The full-grid field: the input itself, or with a space group its expansion
-            // into the table of the last ds, which is computed last (in place)
-            const double* d_w = d_w_input_monomer;
-            if (use_reduced_basis)
-            {
-                double* d_stage = d_exp_dw.at(n_unique_ds - 1).at(monomer_type);
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, d_w_input_monomer, d_full_to_reduced_map_, M);
-                CUDA_CHECK_LAUNCH();
-                d_w = d_stage;
-            }
-
-            // d_exp_dw = exp(-w*local_ds/2) for each unique ds value
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                const double local_ds = mapping.get_ds_from_index(ds_idx);
-                ker_exp<<<N_BLOCKS, N_THREADS>>>(
-                    d_exp_dw.at(ds_idx).at(monomer_type).get(), d_w, 1.0, -0.50*local_ds, M);
-                CUDA_CHECK_LAUNCH();
-            }
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // exp(-w ds/2) on the full grid, on both sides of the implicit step
+        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(), cb->get_total_grid(),
+                             space_group_ != nullptr ? d_full_to_reduced_map_ : nullptr, false, 0.5, 0.0);
     }
     catch(std::exception& exc)
     {
@@ -517,8 +480,6 @@ void CudaSolverCNADI::advance_propagator_2d(
             _d_yl, _d_yd, _d_yh, nx[1],
             d_temp[STREAM], d_q_in, M);
         CUDA_CHECK_LAUNCH();
-
-        // CUDA_CHECK(cudaMemcpy(d_q_out, d_q_star, sizeof(double)*M, cudaMemcpyDeviceToDevice));
 
         solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_y, nx[1], nx[1], nx[0]);
 

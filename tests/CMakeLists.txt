@@ -98,7 +98,6 @@ SET(BASIC_TESTS
     TestFourierTransform
 
     # CUDA FFT & utilities
-    TestCudaFFT
     TestCudaFFTMixedBC
     TestCudaMakhoulTransform
     TestCudaDCT
@@ -106,9 +105,6 @@ SET(BASIC_TESTS
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
-    TestCudaPinnedMemory
-    TestCudaCubReduceSum
-    TestCudaCubReduceSumClass
     TestCrysFFT
     TestCrysFFTObliqueZGlide
     TestCrysFFTObliqueZCuda

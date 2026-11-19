@@ -41,9 +41,6 @@
 #include "Exception.h"
 #include "GridLimits.h"
 
-// // The maximum of GPUs
-// #define MAX_GPUS 2
-
 /**
  * @def MAX_STREAMS
  * @brief Maximum number of parallel CUDA streams for propagator computation.
@@ -53,12 +50,6 @@
  * but increase memory usage.
  */
 #define MAX_STREAMS 4
-
-/**
- * @typedef ftsComplex
- * @brief Alias for cuDoubleComplex (CUDA double-precision complex).
- */
-typedef cuDoubleComplex ftsComplex;
 
 /**
  * @brief Type mapping from C++ types to CUDA device types.
@@ -81,7 +72,7 @@ using CuDeviceData = std::conditional_t<std::is_same_v<T, double>,              
 >;
 
 // Complex buffers are copied with sizeof(T)*n bytes and their pointers are
-// reinterpreted between the two types (reinterpret_map, raw casts), so the
+// reinterpreted between the two types (raw casts), so the
 // host and device complex types must have the same size.
 static_assert(sizeof(std::complex<double>) == sizeof(cuDoubleComplex),
               "std::complex<double> and cuDoubleComplex must have the same size");
@@ -103,28 +94,11 @@ struct ComplexSumOp {
 };
 
 /**
- * @brief Convert cuDoubleComplex to std::complex<double>.
- * @param z CUDA complex number
- * @return Equivalent std::complex<double>
- */
-std::complex<double> cuDoubleToStdComplex(cuDoubleComplex z);
-
-/**
  * @brief Convert std::complex<double> to cuDoubleComplex.
  * @param z Standard library complex number
  * @return Equivalent cuDoubleComplex
  */
 cuDoubleComplex stdToCuDoubleComplex(const std::complex<double>& z);
-
-/**
- * @brief Reinterpret a map of pointers from one type to another.
- * @tparam From Source pointer type
- * @tparam To Target pointer type
- * @param input Map with From* values
- * @return Map with To* values (reinterpret_cast)
- */
-template<typename From, typename To>
-std::map<std::string, const To*> reinterpret_map(const std::map<std::string, const From*>& input);
 
 /**
  * @class CudaCommon
@@ -489,7 +463,6 @@ __global__ void ker_exp(cuDoubleComplex* dst, const cuDoubleComplex* src, double
 __global__ void ker_multi(double* dst, const double* src1, const double* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);
-__global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M);
 __global__ void ker_multi_complex_conjugate(double* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, const int M);
 __global__ void ker_multi_complex_conjugate(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, const int M);
 
@@ -514,12 +487,7 @@ __global__ void ker_lin_comb_exp(
     const double* src2, const double* exp2, double b,
     const double* mask, const int M);
 
-__global__ void ker_add_lin_comb(double* dst, double a, const double* src1, double b, const double* src2, const int M);
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M);
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, cuDoubleComplex a, const cuDoubleComplex* src1, cuDoubleComplex b, const cuDoubleComplex* src2, const int M);
-
 __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, double a, const int M);
-__global__ void ker_multi_complex_real(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M);
 
 __global__ void ker_multi_exp_dw_two(
     double* dst1, const double* src1, const double* exp_dw1,
@@ -611,9 +579,6 @@ __global__ void ker_multi_map(
  */
 __global__ void ker_multi_weight(
     double* dst, const double* src, const int* weights, const int n);
-
-__global__ void ker_multi_weight(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* weights, const int n);
 
 //==============================================================================
 // Owning CUDA allocations

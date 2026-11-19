@@ -6,7 +6,8 @@ proportional to [1, i] has nonzero norm although its bilinear square vanishes.
 Nonproportional complex histories also check conjugation of cached cross
 products and the right-hand side. Longer sequences compare with a rectangular
 least-squares solve through history wrap-around and reset, for both field types
-and both memory modes. The real-field cases preserve the existing algorithm.
+and both memory modes, and with 20 histories, where the two memory modes must
+give the same bits. The real-field cases preserve the existing algorithm.
 """
 
 import numpy as np
@@ -97,6 +98,39 @@ def test_history_wrap_and_reset(platform, reduced, field_type):
         np.testing.assert_array_equal(step(am, field, residual), expected)
 
 
+def test_long_history(platform, field_type):
+    """20 histories (CUDA adds them to the new field 16 per launch from device memory and
+    one at a time from the pinned history of the memory-saving mode): the least-squares
+    result, and the same bits in both memory modes."""
+    rng = np.random.default_rng(1103)
+    n_steps, n_var, max_hist = 26, 64, 20
+    fields = rng.normal(0.0, 5.0, (n_steps, n_var))
+    residuals = rng.normal(0.0, 5.0, (n_steps, n_var))
+    if field_type == "complex":
+        fields = fields + 1j * rng.normal(0.0, 5.0, fields.shape)
+        residuals = residuals + 1j * rng.normal(0.0, 5.0, residuals.shape)
+    outputs = {}
+    for reduced in (False, True):
+        am = mixer(platform, reduced, field_type, n_var, max_hist)
+        outputs[reduced] = []
+        for k, (field, residual) in enumerate(zip(fields, residuals)):
+            if k == 0:
+                expected = field + 0.101 * residual
+            else:
+                ages = list(range(k - 1, max(-1, k - max_hist - 1), -1))
+                differences = np.column_stack([residual - residuals[j] for j in ages])
+                coefficients = np.linalg.lstsq(differences, residual, rcond=1e-12)[0]
+                expected = field + residual
+                for coefficient, j in zip(coefficients, ages):
+                    expected = expected + coefficient * (fields[j] + residuals[j] - field - residual)
+            result = step(am, field, residual)
+            np.testing.assert_allclose(result, expected, rtol=1e-11, atol=1e-10,
+                                       err_msg=f"{platform}, {field_type}, reduce_memory={reduced}, step {k}")
+            outputs[reduced].append(result.copy())
+    for k, (a, b) in enumerate(zip(outputs[False], outputs[True])):
+        assert a.tobytes() == b.tobytes(), (platform, field_type, k, "the memory modes differ")
+
+
 def test_complex_non_finite_history(platform, reduced):
     am = mixer(platform, reduced, "complex", 3)
     field = np.array([0.5 + 0.25j, -0.5 + 0.5j, 0.25 - 0.5j])
@@ -119,6 +153,9 @@ def main():
                 test_history_wrap_and_reset(platform, reduced, field_type)
             test_complex_non_finite_history(platform, reduced)
             print(f"PASS: Anderson least squares, {platform}, reduce_memory={reduced}")
+        for field_type in ("real", "complex"):
+            test_long_history(platform, field_type)
+        print(f"PASS: 20 histories, both memory modes, {platform}")
     if cuda_part_missing():
         return 1
     return 0 if platforms else 77

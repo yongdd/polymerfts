@@ -89,7 +89,7 @@ CudaComputationBackend<T>::CudaComputationBackend(
     SpaceGroup* space_group, int max_n_streams)
     : cb(nullptr), space_group(space_group),
       solver_discrete(nullptr), discrete_chains(std::string(method_info.chain_model) == "discrete"),
-      n_streams(0), n_basis(0), force_off_diagonal_stress(false)
+      n_streams(0), n_basis(0), force_off_diagonal_stress(false), exp_dw_ds(0.0)
 {
     for (int i = 0; i < MAX_STREAMS; i++)
         streams[i] = nullptr;
@@ -159,6 +159,11 @@ CudaComputationBackend<T>::CudaComputationBackend(
                                    std::string(method_info.name) + "\".");
         }
 
+        // The contour step of the Boltzmann factor of discrete chains (the global ds, index 0),
+        // which update_dw() computes in the reduced basis
+        if (discrete_chains && space_group != nullptr)
+            exp_dw_ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
+
         // Ones for free chain ends
         std::vector<T> unity(M, T(1.0));
         d_q_unity.allocate(M);
@@ -172,11 +177,19 @@ CudaComputationBackend<T>::CudaComputationBackend(
         }
 
         d_sum.allocate(M);
-        for (int i = 0; i < n_streams; i++)
+        // The accumulator of a junction product over several launches of device-resident
+        // sources: only a vertex with more arms than one launch takes needs it (checkpoint
+        // products allocate it with their staging, allocate_checkpoint())
+        int max_degree = 0;
+        for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
         {
-            d_junction_stage[i].allocate(2*static_cast<size_t>(n_basis));
-            d_junction_state[i].allocate(2*static_cast<size_t>(n_basis));
+            std::map<int, int> degree;
+            for (const Block& block : molecules->get_polymer(p).get_blocks())
+                max_degree = std::max({max_degree, ++degree[block.v], ++degree[block.u]});
         }
+        if (max_degree > junction_product::MAX_SOURCES_PER_LAUNCH)
+            for (int i = 0; i < n_streams; i++)
+                d_junction_state[i].allocate(2*static_cast<size_t>(n_basis));
         for (int i = 0; i < MAX_STREAMS; i++)
         {
             d_segment_stress[i].allocate(6);
@@ -272,6 +285,12 @@ void CudaComputationBackend<T>::copy_to_host(T* dst, BackendArray<T>* src)
 template <typename T>
 CheckpointArray<T>* CudaComputationBackend<T>::allocate_checkpoint()
 {
+    // Products and sums of checkpoints stage them on the device, two per launch
+    for (int i = 0; i < n_streams; i++)
+    {
+        provide(d_junction_stage[i], 2*static_cast<size_t>(n_basis));
+        provide(d_junction_state[i], 2*static_cast<size_t>(n_basis));
+    }
     void* h_a = counted_cuda_allocate<CudaPinnedMemory>(sizeof(T)*n_basis);
     return reinterpret_cast<CheckpointArray<T>*>(h_a);
 }
@@ -311,9 +330,10 @@ void CudaComputationBackend<T>::update_dw(const std::map<std::string, BackendArr
         d_w[monomer_type] = raw(w_monomer);
     solver->update_dw(d_w);
 
-    // The discrete solvers keep exp(-w ds) on the full grid, reduced here to the basis,
-    // unless the CrysFFT path of the pseudo-spectral one stores it in the basis already
-    // (boltzmann_factor() then returns the solver's table)
+    // The discrete solvers keep exp(-w ds) on the full grid, unless the CrysFFT path of the
+    // pseudo-spectral one stores it in the basis already (boltzmann_factor() then returns the
+    // solver's table). Its copy in the basis is computed here from the fields, which come in
+    // the basis: the same values as the solver's table at the points of the basis.
     if (discrete_chains && space_group != nullptr && !exp_dw_in_solver_basis())
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
@@ -327,8 +347,7 @@ void CudaComputationBackend<T>::update_dw(const std::map<std::string, BackendArr
                 // Enter the buffer only once it exists, so a failed allocation can be retried
                 found = d_exp_dw_reduced.emplace(monomer_type, CudaDeviceBuffer<CuDeviceData<T>>(n_basis)).first;
             }
-            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS>>>(
-                found->second.get(), solver->d_exp_dw.at(0).at(monomer_type), d_reduced_basis_indices, n_basis);
+            ker_exp<<<N_BLOCKS, N_THREADS>>>(found->second.get(), raw(item.second), 1.0, -exp_dw_ds, n_basis);
             CUDA_CHECK_LAUNCH();
         }
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -402,6 +421,11 @@ void CudaComputationBackend<T>::multiply_sources(
     // launch, staged in d_junction_stage
     constexpr bool staged = std::is_same_v<Source, CheckpointArray<T>>;
     const size_t batch_size = staged ? 2 : junction_product::MAX_SOURCES_PER_LAUNCH;
+    // A product over several launches needs the accumulator, which the constructor allocates
+    // for a vertex of more arms than one launch takes (and allocate_checkpoint() for checkpoints)
+    if (sources.size() > batch_size && d_junction_state[stream].empty())
+        throw_with_line_number("A junction product of " + std::to_string(sources.size()) +
+            " sources has no accumulator: no vertex has that many arms.");
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     for (size_t begin = 0; begin < sources.size(); begin += batch_size)
     {

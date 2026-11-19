@@ -45,6 +45,7 @@ private:
     int n_streams;
     int n_basis;
     bool force_off_diagonal_stress;
+    double exp_dw_ds;                              ///< Discrete chains with a space group: the ds of d_exp_dw_reduced
 
     cudaStream_t streams[MAX_STREAMS];     ///< One stream per stream index
 

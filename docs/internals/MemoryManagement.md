@@ -48,6 +48,7 @@ GPU Device Memory:
 ├── propagator[key][n]             # All segment propagators
 ├── propagator_half_steps[key][n]  # Junction half-bonds (discrete chains)
 ├── phi_block[key]                 # Block concentrations
+├── junction_state                 # Only with more than 32 arms at a junction: its running product
 └── Solver workspace               # FFT, Boltzmann factors
 ```
 

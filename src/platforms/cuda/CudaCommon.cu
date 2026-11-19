@@ -18,15 +18,13 @@
  * - Exponential: ker_exp (dst = a*exp(b*src))
  * - Multiplication: ker_multi (element-wise products)
  * - Division: ker_divide (element-wise division)
- * - Linear combination: ker_lin_comb, ker_add_lin_comb
+ * - Linear combination: ker_lin_comb
  * - Complex operations: ker_multi_complex_conjugate, ker_multi_complex_real
  * - Batched exp-dw: ker_multi_exp_dw_two
  *
  * **Type Conversion:**
  *
- * - cuDoubleToStdComplex: CUDA to std::complex conversion
  * - stdToCuDoubleComplex: std::complex to CUDA conversion
- * - reinterpret_map: Convert pointer maps between types
  *
  * @see CudaCommon for singleton interface
  */
@@ -60,21 +58,8 @@ void report_cuda_allocation_error(cudaError_t code, size_t bytes, const char *ki
     throw thrust::system_error(code, thrust::cuda_category(), what);
 }
 
-std::complex<double> cuDoubleToStdComplex(cuDoubleComplex z) {
-    return std::complex<double>(z.x, z.y);
-}
-
 cuDoubleComplex stdToCuDoubleComplex(const std::complex<double>& z) {
     return make_cuDoubleComplex(z.real(), z.imag());
-}
-
-template<typename From, typename To>
-std::map<std::string, const To*> reinterpret_map(const std::map<std::string, const From*>& input) {
-    std::map<std::string, const To*> output;
-    for (const auto& [key, ptr] : input) {
-        output[key] = reinterpret_cast<const To*>(ptr);
-    }
-    return output;
 }
 
 namespace
@@ -206,24 +191,6 @@ __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, con
         temp_dst.x = a * (src1[i].x * src2[i].x - src1[i].y * src2[i].y);
         temp_dst.y = a * (src1[i].x * src2[i].y + src1[i].y * src2[i].x);
         dst[i] = temp_dst;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Multiply src1[i] and src2[i]
-        cuDoubleComplex temp;
-        temp.x = src1[i].x * src2[i].x - src1[i].y * src2[i].y;
-        temp.y = src1[i].x * src2[i].y + src1[i].y * src2[i].x;
-
-        // Multiply the result by the complex number a
-        dst[i].x = a.x * temp.x - a.y * temp.y;
-        dst[i].y = a.x * temp.y + a.y * temp.x;
-
         i += blockDim.x * gridDim.x;
     }
 }
@@ -363,42 +330,6 @@ __global__ void ker_lin_comb_exp(
     }
 }
 
-__global__ void ker_add_lin_comb(double* dst, double a, const double* src1, double b, const double* src2, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i] += a * src1[i] + b * src2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i].x += a * src1[i].x + b * src2[i].x;
-        dst[i].y += a * src1[i].y + b * src2[i].y;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, cuDoubleComplex a, const cuDoubleComplex* src1, cuDoubleComplex b, const cuDoubleComplex* src2, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Use a temporary variable to avoid overwriting when dst and src share the same address
-        cuDoubleComplex temp_dst;
-        temp_dst.x = a.x * src1[i].x - a.y * src1[i].y + b.x * src2[i].x - b.y * src2[i].y;
-        temp_dst.y = a.x * src1[i].y + a.y * src1[i].x + b.x * src2[i].y + b.y * src2[i].x;
-        dst[i].x += temp_dst.x;
-        dst[i].y += temp_dst.y;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -406,17 +337,6 @@ __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, 
     {
         dst[i].x = a * dst[i].x * src[i];
         dst[i].y = a * dst[i].y * src[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_complex_real(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i].x = a * src1[i].x * src2[i];
-        dst[i].y = a * src1[i].y * src2[i];
         i += blockDim.x * gridDim.x;
     }
 }
@@ -582,23 +502,3 @@ __global__ void ker_multi_weight(
         i += blockDim.x * gridDim.x;
     }
 }
-
-__global__ void ker_multi_weight(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* weights, const int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n)
-    {
-        double w = static_cast<double>(weights[i]);
-        dst[i] = make_cuDoubleComplex(src[i].x * w, src[i].y * w);
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-// Explicit template instantiation
-
-template std::map<std::string, const double*>
-reinterpret_map<double, double>(const std::map<std::string, const double*>& input);
-
-template std::map<std::string, const cuDoubleComplex*>
-reinterpret_map<std::complex<double>, cuDoubleComplex>(const std::map<std::string, const std::complex<double>*>& input);

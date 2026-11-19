@@ -98,12 +98,6 @@ static int getFFTSize(CudaTransformType type, int N)
     }
 }
 
-// Round-trip scale of one axis of N points: DCT-3(DCT-2(x)) = DST-3(DST-2(x)) = 2N x
-static double getNormFactor(CudaTransformType, int N)
-{
-    return 2.0 * N;
-}
-
 //==============================================================================
 // 1D DCT Kernels
 //==============================================================================
@@ -2144,16 +2138,6 @@ void CudaRealTransform1D::execute(double* d_data)
     }
 }
 
-int CudaRealTransform1D::get_size() const
-{
-    return N_;
-}
-
-double CudaRealTransform1D::get_normalization() const
-{
-    return getNormFactor(type_, N_);
-}
-
 //==============================================================================
 // CudaRealTransform2D Implementation
 //==============================================================================
@@ -2501,23 +2485,6 @@ void CudaRealTransform2D::execute(double* d_data)
         default:
             throw std::runtime_error("Unsupported transform type for X dimension");
     }
-}
-
-void CudaRealTransform2D::get_dims(int& nx, int& ny) const
-{
-    nx = Nx_;
-    ny = Ny_;
-}
-
-void CudaRealTransform2D::get_types(CudaTransformType& type_x, CudaTransformType& type_y) const
-{
-    type_x = type_x_;
-    type_y = type_y_;
-}
-
-double CudaRealTransform2D::get_normalization() const
-{
-    return getNormFactor(type_x_, Nx_) * getNormFactor(type_y_, Ny_);
 }
 
 //==============================================================================
@@ -2934,25 +2901,4 @@ void CudaRealTransform3D::execute(double* d_data)
         default:
             throw std::runtime_error("Unsupported transform type for X dimension");
     }
-}
-
-void CudaRealTransform3D::get_dims(int& nx, int& ny, int& nz) const
-{
-    nx = Nx_;
-    ny = Ny_;
-    nz = Nz_;
-}
-
-void CudaRealTransform3D::get_types(CudaTransformType& type_x,
-                                     CudaTransformType& type_y,
-                                     CudaTransformType& type_z) const
-{
-    type_x = type_x_;
-    type_y = type_y_;
-    type_z = type_z_;
-}
-
-double CudaRealTransform3D::get_normalization() const
-{
-    return getNormFactor(type_x_, Nx_) * getNormFactor(type_y_, Ny_) * getNormFactor(type_z_, Nz_);
 }

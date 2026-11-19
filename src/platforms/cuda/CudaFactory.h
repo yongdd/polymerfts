@@ -75,7 +75,7 @@
  *
  * When reduce_memory=true:
  * - Uses the reduce-memory propagator computations
- * - Uses CudaAndersonMixingReduceMemory
+ * - Keeps the Anderson mixing history in pinned host memory
  * - Stores propagator history in pinned host memory
  * - Enqueues the checkpoint transfers on the stream of each propagator
  */
@@ -129,8 +129,8 @@ public :
     /**
      * @brief Create CUDA Anderson mixing optimizer.
      *
-     * Creates CudaAndersonMixing or CudaAndersonMixingReduceMemory
-     * based on the reduce_memory setting.
+     * Creates CudaAndersonMixing, with its history in pinned host memory
+     * when reduce_memory is set.
      *
      * @param n_var      Number of field variables
      * @param max_hist   Maximum history length

@@ -621,8 +621,8 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaCrysFFT.cu
         src/platforms/cuda/CudaCrysFFTRecursive3m.cu
         src/platforms/cuda/CudaCrysFFTObliqueZ.cu
-        src/platforms/cuda/CudaCrysFFTStress.cu
         src/platforms/cuda/CudaRealTransform.cu
+        src/platforms/cuda/CudaSolver.cu
         src/platforms/cuda/CudaSolverPseudoBase.cu
         src/platforms/cuda/CudaSolverPseudoRQM4.cu
         src/platforms/cuda/CudaSolverPseudoRK2.cu
@@ -631,9 +631,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaSolverRealSpaceDiscrete.cu
         src/platforms/cuda/CudaComputationBackend.cu
         src/platforms/cuda/CudaCircularBuffer.cu
-        src/platforms/cuda/PinnedCircularBuffer.cu
         src/platforms/cuda/CudaAndersonMixing.cu
-        src/platforms/cuda/CudaAndersonMixingReduceMemory.cu
         src/platforms/cuda/CudaMakhoulTransform.cu
         src/platforms/cuda/CudaFourierTransform.cu
         src/platforms/cuda/CudaFactory.cu

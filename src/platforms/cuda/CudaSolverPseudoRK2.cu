@@ -63,27 +63,14 @@ template <typename T>
 CudaSolverPseudoRK2<T>::~CudaSolverPseudoRK2() = default;
 
 template <typename T>
-void CudaSolverPseudoRK2<T>::allocate_work(int, bool full_grid)
+void CudaSolverPseudoRK2<T>::allocate_work(int, bool)
 {
-    // The CrysFFT steps need no buffer of their own; the full-grid path uses these
-    if (!full_grid)
+    // The full-grid steps (the CrysFFT steps need no buffer of their own)
+    if (use_crysfft_)
         return;
     const int M = cb->get_total_grid();
-    const int M_COMPLEX = this->total_complex_grid();
     for(int i=0; i<n_streams; i++)
-    {
-        // Workspaces: advance_propagator() uses d_q_work and the first half of
-        // d_qk_work, the stress the spectra of both propagators in d_qk_work
-        if (!use_crysfft_)
-            provide(d_q_work[i], M);
-        provide(d_qk_work[i], 2*static_cast<size_t>(M_COMPLEX));
-        if (!is_periodic_)
-        {
-            // Real coefficient buffers for the DCT/DST path
-            provide(d_rk_in_1[i], M_COMPLEX);
-            provide(d_rk_in_2[i], M_COMPLEX);
-        }
-    }
+        provide(d_q_work[i], M);
 }
 
 template <typename T>
@@ -145,16 +132,16 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Execute a forward FFT
-            fft_forward(STREAM, d_q_work[STREAM], d_qk_work[STREAM], 1);
+            fft_forward(STREAM, d_q_work[STREAM], d_qk_[STREAM], 1);
             CUDA_CHECK_LAUNCH();
 
             // Step 3: Multiply exp(-k^2 ds/6) in fourier space
             ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_qk_work[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
+                d_qk_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // Step 4: Execute a backward FFT
-            fft_backward(STREAM, d_qk_work[STREAM], fft_out, 1);
+            fft_backward(STREAM, d_qk_[STREAM], fft_out, 1);
             CUDA_CHECK_LAUNCH();
 
             // Step 5: Evaluate exp(-w*ds/2) in real space and normalize
@@ -176,14 +163,14 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Forward transform (DCT/DST)
-            fft_[STREAM]->forward_stream(d_q_step, d_rk_in_1[STREAM], streams[STREAM]);
+            fft_[STREAM]->forward_stream(d_q_step, d_rk_1_[STREAM], streams[STREAM]);
 
             // Step 3: Multiply by Boltzmann factor (real coefficients)
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_in_1[STREAM], d_rk_in_1[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // Step 4: Backward transform (inverse DCT/DST) - normalization included
-            fft_[STREAM]->backward_stream(d_rk_in_1[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM]);
+            fft_[STREAM]->backward_stream(d_rk_1_[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM]);
 
             // Step 5: Evaluate exp(-w*ds/2) in real space
             ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0, M);
@@ -197,12 +184,6 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
     {
         throw_without_line_number(exc.what());
     }
-}
-
-template <typename T>
-typename CudaSolverPseudoBase<T>::StressScratch CudaSolverPseudoRK2<T>::stress_scratch(int STREAM)
-{
-    return {d_qk_work[STREAM], d_rk_in_1[STREAM], d_rk_in_2[STREAM]};
 }
 
 // Explicit template instantiation

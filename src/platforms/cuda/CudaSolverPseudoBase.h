@@ -12,10 +12,12 @@
  *   (fft_forward / fft_backward, batch of 1 or 2 fields; the plans of a stream
  *   share one work area) and per-stream DCT/DST objects (fft_) for
  *   non-periodic boundaries,
+ * - the spectral scratch of the full-grid path (d_qk_, or d_rk_1_/d_rk_2_ with
+ *   walls), which the propagator steps and the segment stress share,
  * - the stress reduction workspace,
  * - the space-group reduced basis and the CrysFFT fast path.
  *
- * Derived classes own only their propagator work buffers, because the number
+ * Derived classes own only their real-space work buffers, because the number
  * and size of those buffers is what distinguishes the three methods. Every
  * resource is held by an owning member (CudaDeviceBuffer, CufftPlan,
  * std::unique_ptr), so the solvers have no cleanup code and leave nothing behind
@@ -51,7 +53,6 @@
 #include "CudaSolver.h"
 #include "CudaCommon.h"
 #include "CudaCrysFFT.h"   // CudaCrysFFTBase, CudaCrysFFTMode
-#include "CudaCrysFFTStress.h"
 
 class SpaceGroup;
 struct CrysFFTBasisMapping;
@@ -83,11 +84,16 @@ protected:
     // d_q_multi and sums it by blocks into d_stress_partial_ (see provide_work())
     size_t temp_storage_bytes[MAX_STREAMS];
     CudaDeviceBuffer<unsigned char> d_temp_storage[MAX_STREAMS];
-    CudaDeviceBuffer<CuDeviceData<T>> d_stress_sum[MAX_STREAMS];
-    CudaDeviceBuffer<CuDeviceData<T>> d_stress_sum_out[MAX_STREAMS];
+    CudaDeviceBuffer<double> d_stress_sum[MAX_STREAMS];   ///< CrysFFT fast path (real fields): the integrand
     CudaDeviceBuffer<CuDeviceData<T>> d_q_multi[MAX_STREAMS];
     CudaDeviceBuffer<cuDoubleComplex> d_qk_conj_[MAX_STREAMS];   ///< q2(-k) gather of the stress (complex fields; nullptr for real)
     CudaDeviceBuffer<CuDeviceData<T>> d_stress_partial_[MAX_STREAMS];   ///< Per-block partial sums of the stress components
+
+    // Spectral scratch of the full-grid path, shared by the propagator steps and the segment
+    // stress, which run one after another on a stream (see provide_work())
+    CudaDeviceBuffer<cuDoubleComplex> d_qk_[MAX_STREAMS];   ///< Periodic BC: the spectra of two fields (2*M_COMPLEX)
+    CudaDeviceBuffer<double> d_rk_1_[MAX_STREAMS];          ///< Non-periodic BC: DCT/DST coefficients of a field
+    CudaDeviceBuffer<double> d_rk_2_[MAX_STREAMS];          ///< Non-periodic BC: DCT/DST coefficients of a second field
 
     // Space group symmetry (reduced basis)
     SpaceGroup* space_group_;                        ///< Space group pointer (nullptr if not used)
@@ -144,9 +150,9 @@ protected:
      * @brief Allocate what the path in use needs and is missing.
      *
      * The exp(-w ds) tables (reduced basis on the CrysFFT path, full grid
-     * otherwise) and, when full_grid_path(), the full-grid transforms, stress
-     * workspace, reduced-basis expansion buffers and Pseudo tables of the current
-     * cell; then the derived solver's buffers (allocate_work()). Buffers are kept
+     * otherwise) and, when full_grid_path(), the full-grid transforms, spectral
+     * scratch, stress workspace, reduced-basis expansion buffers and Pseudo tables of
+     * the current cell; then the derived solver's buffers (allocate_work()). Buffers are kept
      * once allocated; one of another size is replaced. Called by init_path() and,
      * as the force-off-diagonal flag can turn the stress to the full grid, by
      * prepare_stress() before its loop.
@@ -193,29 +199,12 @@ protected:
 
     /**
      * @brief Shared body of update_dw(): d_exp_dw = exp(-factor*ds*w) and,
-     *        if with_half, d_exp_dw_half = exp(-factor_half*ds*w).
+     *        if with_half, d_exp_dw_half = exp(-factor_half*ds*w), in the basis of
+     *        the steps (CudaSolver::compute_exp_dw()).
      */
     void update_dw_impl(
         const std::map<std::string, const CuDeviceData<T>*>& d_w,
         bool with_half, double factor, double factor_half);
-
-    /**
-     * @brief Device scratch a derived solver lends to compute_single_segment_stress().
-     *
-     * Buffers of the derived solver that are free while one segment's stress is
-     * computed: qk_pair takes the forward FFTs of the two propagators
-     * (2*M_COMPLEX), rk_1/rk_2 their DCT/DST coefficients (non-periodic BC; nullptr
-     * when periodic): M_COMPLEX doubles each for real fields, 2*M_COMPLEX for complex
-     * fields, whose real and imaginary parts come as interleaved pairs. With a space
-     * group each propagator is expanded into d_q_full_in_ before its transform.
-     */
-    struct StressScratch
-    {
-        cuDoubleComplex* qk_pair;
-        double* rk_1;
-        double* rk_2;
-    };
-    virtual StressScratch stress_scratch(int STREAM) = 0;
 
     /**
      * @brief Boltzmann bond factor multiplied into the stress integrand (full-grid path).
@@ -237,14 +226,14 @@ protected:
     bool full_grid_path() const;
 
     /**
-     * @brief Allocate the derived solver's work buffers that are missing or of another size.
+     * @brief Allocate the derived solver's work buffers that are missing or of another size
+     *        (default: none).
      *
      * @param n_field   Values of a field in the propagator steps (n_basis_ on the
      *                  CrysFFT path, the full grid otherwise)
-     * @param full_grid Also the buffers of the full-grid path (its FFT workspaces
-     *                  and the stress scratch of stress_scratch())
+     * @param full_grid The full-grid path is in use (full_grid_path())
      */
-    virtual void allocate_work(int n_field, bool full_grid) = 0;
+    virtual void allocate_work([[maybe_unused]] int n_field, [[maybe_unused]] bool full_grid) {}
 
     /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
     virtual bool stress_has_bond_factor() const { return false; }
@@ -290,8 +279,19 @@ private:
     bool crysfft_stress_fast_path() const;
     /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).
     double stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const;
-    /// Arguments of the CrysFFT stress fast path on this stream.
-    CudaCrysFFTStressArgs crysfft_stress_args(int STREAM, double bond_length_sq, bool include_bond_factor);
+    /**
+     * @brief Segment stress of the CrysFFT fast path: V₁₁, V₂₂, V₃₃ into d_segment_stress[0..2].
+     *
+     * Mirrors the CPU fast path in CpuSolverPseudoBase::compute_single_segment_stress():
+     * q2 on the physical grid, one k-space multiplier per group of equivalent axes
+     * (Σ_{d in group} k_d², times exp(-k²·b²·ds/6) for discrete chains), back to the
+     * reduced basis, the orbit-weighted sum with q1, and the group sum shared equally by
+     * the axes of the group, scaled by b²·M_full/L_d² as in the full-grid path. Only the
+     * diagonal is written: the path serves orthogonal cells, whose cross terms the caller
+     * does not read.
+     */
+    void crysfft_segment_stress(int STREAM, double bond_length_sq,
+                                const double* d_q_1, const double* d_q_2, double* d_segment_stress);
 
 public:
     virtual ~CudaSolverPseudoBase();
@@ -300,8 +300,7 @@ public:
      * @brief Stress contribution of one segment: V_ij = sum_k q1(k) q2(-k) v_i v_j.
      *
      * Shared by RQM4, RK2 and the discrete chain; they differ only in the
-     * Boltzmann bond factor (get_stress_boltz_bond()) and in the scratch
-     * buffers they lend (stress_scratch()). Paths: CrysFFT fast path for
+     * Boltzmann bond factor (get_stress_boltz_bond()). Paths: CrysFFT fast path for
      * orthogonal 3D reduced-basis runs, cuFFT for periodic BC, DCT/DST
      * for non-periodic BC (real fields). Cross terms are accumulated only for
      * non-orthogonal boxes or when force_off_diagonal_stress_ is set.

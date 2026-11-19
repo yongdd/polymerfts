@@ -155,5 +155,27 @@ public:
     /// Build the tables compute_single_segment_stress() needs, before the streams
     /// compute the segment stresses (default: nothing).
     virtual void prepare_stress() {}
+
+protected:
+    /**
+     * @brief The Boltzmann factors of the fields at every contour step, the body of update_dw().
+     *
+     * d_exp_dw[ds] = exp(-factor·ds·w) and, if with_half, d_exp_dw_half[ds] =
+     * exp(-factor_half·ds·w), n_table values each; then waits for the device.
+     *
+     * @param d_w               Fields by monomer type (device), in the basis of the propagators
+     * @param mapping           Contour steps of the chains (ds of each ds index)
+     * @param n_table           Values of a table: the full grid, or the reduced basis on the CrysFFT path
+     * @param d_full_to_reduced nullptr when the fields come in the basis of the tables; otherwise
+     *                          they come in the reduced basis of a space group and are expanded to
+     *                          the full grid of the tables through this map (device), staged in the
+     *                          table written last
+     * @param with_half         Also d_exp_dw_half
+     * @param factor            Factor of ds in d_exp_dw
+     * @param factor_half       Factor of ds in d_exp_dw_half
+     */
+    void compute_exp_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w,
+                        const ContourLengthMapping& mapping, int n_table, const int* d_full_to_reduced,
+                        bool with_half, double factor, double factor_half);
 };
 #endif

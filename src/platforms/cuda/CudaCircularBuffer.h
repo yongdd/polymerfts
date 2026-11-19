@@ -1,32 +1,23 @@
 /**
  * @file CudaCircularBuffer.h
- * @brief Circular buffer for storing arrays in GPU device memory.
+ * @brief Ring buffer of arrays in GPU device memory or in pinned host memory.
  *
- * This header provides CudaCircularBuffer, a ring buffer data structure
- * that stores fixed-size arrays in GPU device memory. Used by Anderson
- * mixing to maintain history of field values on the GPU.
- *
- * **GPU Memory Usage:**
- *
- * Allocates length × width × sizeof(T) bytes of GPU memory upfront.
- * Arrays are stored contiguously in device memory for efficient access.
+ * CudaAndersonMixing keeps the history of its fields and residuals in two of
+ * these: in device memory, or in memory-saving mode in pinned (page-locked)
+ * host memory, from which it copies an entry to the device when it uses it.
  *
  * **Usage Pattern:**
  *
  * @code
- * CudaCircularBuffer<double> buffer(10, 1024);  // 10 arrays of 1024 elements
+ * CudaCircularBuffer<double> buffer(10, 1024, false);  // 10 device arrays of 1024 elements
  *
- * // Insert new array (copies to GPU)
- * buffer.insert(d_new_field);
- *
- * // Access history
- * double* d_prev = buffer.get_array(0);  // Most recent
- * double* d_prev2 = buffer.get_array(1); // Second most recent
+ * buffer.insert(d_new_field);              // copies the array in (device or host memory)
+ * double* d_prev = buffer.get_array(0);    // most recent
+ * double* d_prev2 = buffer.get_array(1);   // second most recent
  * @endcode
  *
- * @see CircularBuffer for CPU version
- * @see PinnedCircularBuffer for pinned host memory version
- * @see CudaAndersonMixing for usage in SCFT iteration
+ * @see CircularBuffer for the CPU version
+ * @see CudaAndersonMixing for its use
  */
 
 #ifndef CUDA_CIRCULAR_BUFFER_H_
@@ -37,24 +28,11 @@
 
 /**
  * @class CudaCircularBuffer
- * @brief Ring buffer storing arrays in GPU device memory.
+ * @brief Ring buffer of `length` arrays of `width` values, in device or pinned host memory.
  *
- * Maintains a fixed-capacity circular buffer of GPU arrays for
- * efficient history storage in iterative algorithms.
+ * When full, the newest array overwrites the oldest.
  *
  * @tparam T Numeric type (double or std::complex<double>)
- *
- * **Memory Layout:**
- *
- * - d_elems: Array of device pointers
- * - Each element points to a width-sized array in device memory
- * - When full, oldest element is overwritten
- *
- * **Performance:**
- *
- * - Insert: O(1) device-to-device copy
- * - Access: O(1) pointer lookup
- * - No host-device transfers during normal operation
  */
 template <typename T>
 class CudaCircularBuffer
@@ -64,47 +42,42 @@ private:
     int width;     ///< Size of each array (n_grid)
     int start;     ///< Index of oldest element
     int n_items;   ///< Current number of items stored
-    std::vector<CudaDeviceBuffer<CuDeviceData<T>>> d_elems;  ///< One owning device array per slot
+    std::vector<CudaDeviceBuffer<CuDeviceData<T>>> device_elems;  ///< One device array per slot (device history)
+    std::vector<CudaPinnedBuffer<CuDeviceData<T>>> host_elems;    ///< One pinned host array per slot (host history)
+
+    /// The array of slot i (device or pinned host memory)
+    CuDeviceData<T>* slot(int i) { return on_host() ? host_elems[i].get() : device_elems[i].get(); }
 
 public:
     /**
-     * @brief Construct circular buffer with given capacity.
+     * @brief Allocate `length` arrays of `width` zeros.
      *
-     * @param length Maximum number of arrays to store
-     * @param width  Size of each array (number of elements)
+     * @param length  Maximum number of arrays to store
+     * @param width   Size of each array (number of elements)
+     * @param on_host Keep the arrays in pinned host memory instead of device memory
      */
-    CudaCircularBuffer(int length, int width);
+    CudaCircularBuffer(int length, int width, bool on_host);
 
-    /// Destructor. Frees all GPU memory.
-    ~CudaCircularBuffer();
-
-    /**
-     * @brief Clear buffer (logical reset, memory retained).
-     *
-     * Resets indices but does not deallocate memory.
-     */
+    /// Clear the buffer (the memory is kept).
     void reset();
 
     /**
-     * @brief Insert new array at front of buffer.
+     * @brief Copy an array in as the newest, overwriting the oldest when the buffer is full.
      *
-     * If buffer is full, overwrites oldest entry.
-     * Performs device-to-device copy.
-     *
-     * @param d_new_arr Source array in device memory (size width)
+     * @param new_arr Source array of `width` values, in device or host memory
      */
-    void insert(CuDeviceData<T>* d_new_arr);
+    void insert(const CuDeviceData<T>* new_arr);
 
     /**
-     * @brief Get array at position n in history.
+     * @brief Array n of the history.
      *
      * @param n History index (0 = most recent, 1 = second most recent, ...)
-     * @return Device pointer to array
+     * @return Device pointer, or pinned host pointer when on_host()
      */
     CuDeviceData<T>* get_array(int n);
+
+    /// True when the arrays are in pinned host memory.
+    bool on_host() const { return !host_elems.empty(); }
 };
 
 #endif
-
-
-

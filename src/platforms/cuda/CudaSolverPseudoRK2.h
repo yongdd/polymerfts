@@ -64,12 +64,8 @@ class CudaCrysFFTBase;
  *
  * **Memory per Stream:**
  *
- * - d_q_work: real-space workspace of advance_propagator() (M)
- * - d_qk_work: Fourier-space workspace (2*M_COMPLEX: advance_propagator() uses the
- *   first half, the stress the spectra of both propagators)
- *
- * Both belong to the full-grid path (see allocate_work()); with CrysFFT steps and the
- * full-grid stress only d_qk_work.
+ * - d_q_work: real-space workspace of advance_propagator() on the full grid (M); the
+ *   spectra go to the base's scratch (d_qk_ or d_rk_1_), which the stress shares
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
@@ -86,21 +82,11 @@ private:
     using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
     using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
+    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
 
     /// @name Workspace Arrays (per stream)
     /// @{
     CudaDeviceBuffer<CuDeviceData<T>> d_q_work[MAX_STREAMS];            ///< Real-space workspace (M)
-    /// @}
-
-    /// @name Fourier Space Buffers (periodic BC - complex coefficients)
-    /// @{
-    CudaDeviceBuffer<cuDoubleComplex> d_qk_work[MAX_STREAMS];           ///< Complex coefficients workspace (2*M_COMPLEX)
-    /// @}
-
-    /// @name Spectral Space Buffers (non-periodic BC - real coefficients)
-    /// @{
-    CudaDeviceBuffer<double> d_rk_in_1[MAX_STREAMS];                    ///< Real coefficients buffer 1
-    CudaDeviceBuffer<double> d_rk_in_2[MAX_STREAMS];                    ///< Real coefficients buffer 2
     /// @}
 
 
@@ -147,8 +133,6 @@ public:
     void advance_propagator_half_bond_step(
         const int, CuDeviceData<T> *, CuDeviceData<T> *, std::string) override {};
 
-    /// Scratch buffers lent to CudaSolverPseudoBase::compute_single_segment_stress()
-    typename Base::StressScratch stress_scratch(int STREAM) override;
     void allocate_work(int n_field, bool full_grid) override;
     /// CrysFFT steps of a block: full steps only
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override

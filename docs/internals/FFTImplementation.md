@@ -420,7 +420,6 @@ public:
                         CudaTransformType type_z);
 
     void execute(double* d_data);
-    double get_normalization() const;
 };
 ```
 
@@ -523,9 +522,9 @@ The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 
 A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine and 1.2-2.0x with ObliqueZ).
 
-Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
+Stress (`compute_stress` after the propagators and concentrations, median of nine calls with CUDA): on a cubic cell the group gains 2.6x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.6x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.55x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
 
-Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
+Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 3.0x with CUDA (0.113 against 0.038 s per iteration), 4.7x with MKL, 4.6x with FFTW.
 
 ### 8.6 Boxes that Mix Periodic Axes and Walls
 

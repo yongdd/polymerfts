@@ -307,46 +307,16 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 }
 
 template <typename T>
-void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w_input)
+void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
     try
     {
         // Even a one-bead chain (with no convolution) needs a completed update.
         if (!refusal_.empty())
             throw_with_line_number(refusal_);
-
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = cb->get_total_grid();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        const int n_unique_ds = mapping.get_n_unique_ds();
-
-        for (const auto& [monomer_type, d_w_input_monomer] : d_w_input)
-        {
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-                if (!this->d_exp_dw[ds_idx].contains(monomer_type))
-                    throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
-
-            // The full-grid field: the input itself, or with a space group (the field comes in
-            // its reduced basis) its expansion into the table of the last ds, which is computed
-            // last (in place)
-            const CuDeviceData<T>* d_w = d_w_input_monomer;
-            if (space_group_ != nullptr)
-            {
-                CuDeviceData<T>* d_stage = this->d_exp_dw.at(n_unique_ds - 1).at(monomer_type);
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, d_w, d_full_to_reduced_map_, M);
-                CUDA_CHECK_LAUNCH();
-                d_w = d_stage;
-            }
-            // exp(-w ds): one full segment per bond
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                ker_exp<<<N_BLOCKS, N_THREADS>>>(this->d_exp_dw.at(ds_idx).at(monomer_type).get(), d_w, 1.0,
-                                                 -mapping.get_ds_from_index(ds_idx), M);
-                CUDA_CHECK_LAUNCH();
-            }
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // exp(-w ds) on the full grid: one full segment per bond
+        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(), cb->get_total_grid(),
+                             space_group_ != nullptr ? d_full_to_reduced_map_ : nullptr, false, 1.0, 0.0);
     }
     catch (std::exception& exc)
     {

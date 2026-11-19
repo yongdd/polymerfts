@@ -1,5 +1,5 @@
 /**
- * @file TestCudaFFT.cu
+ * @file TestCudaFFTMixedBC.cu
  * @brief Test CUDA DCT-II/III and DST-II/III transforms for mixed boundary conditions.
  *
  * This test verifies that CudaFFT correctly implements:

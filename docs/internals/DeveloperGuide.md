@@ -140,7 +140,7 @@ The classes each platform provides (the computation classes above them are share
 | Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
-| Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
+| Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
 
 ### Platform Selection
 
@@ -381,7 +381,8 @@ CpuSolver<T>                                  [Abstract Base]
             └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
-The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
+The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base, whose
+`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver;
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the
 three pseudo-spectral solvers share -- it uses the computation box and the backend's streams,
 and owns the `Pseudo` helper, the stress reduction workspace, the space-group work buffers
@@ -393,8 +394,9 @@ constructor argument; the plans of a stream share one work area) and per-stream 
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
-(as `CpuSolverPseudoBase` does on the CPU): the derived classes only lend their
-work buffers through `stress_scratch()`, and the discrete solver overrides
+(as `CpuSolverPseudoBase` does on the CPU) and owns the spectral scratch that the
+propagator steps and the stress share (`d_qk_` for periodic boundaries, `d_rk_1_`/`d_rk_2_`
+for walls); the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
 tables exist only for a path that uses them (`provide_work()` with the derived solvers'
@@ -403,7 +405,7 @@ again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
 Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
-their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
+their real-space work buffers and `update_dw()`/`advance_propagator()`;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
 bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
@@ -499,11 +501,9 @@ AndersonMixing<T>                             [Abstract Base]
         ├── CpuAndersonMixing<T>              [CPU Implementation]
         │   └── Uses CircularBuffer for history
         │
-        ├── CudaAndersonMixing<T>             [GPU, Standard]
-        │   └── Uses CudaCircularBuffer (device memory)
-        │
-        └── CudaAndersonMixingReduceMemory<T> [GPU, Memory-saving]
-            └── Uses PinnedCircularBuffer (host memory)
+        └── CudaAndersonMixing<T>             [GPU]
+            └── Uses CudaCircularBuffer (device memory, or pinned host
+                memory in memory-saving mode)
 ```
 
 ### 3.6 Molecules and Polymer

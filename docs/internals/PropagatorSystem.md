@@ -188,8 +188,9 @@ continues as a mantissa and one binary exponent (one for both parts of a complex
 while the whole product is finite. Block
 multiplicities are at most $`10^6`$, so these exponents stay exact in a double. On CUDA one
 kernel launch multiplies up to 32 device-resident sources with the product in registers; the
-reduced-memory mode stages two checkpoints per launch and keeps the partial product between
-launches in the stress scratch buffers, so a junction needs no memory of its own.
+reduced-memory mode stages two checkpoints per launch. A product over several launches keeps
+its partial product between them in a scratch field per stream (`junction_state`), which the
+backend allocates only when a junction has more than 32 arms or checkpoints are stored.
 
 ### Aggregated Computation (D with Square Brackets)
 
