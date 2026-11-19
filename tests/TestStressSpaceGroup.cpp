@@ -108,7 +108,7 @@ int run_case(const std::string& platform, const std::string& chain_model, const 
     molecules_sg->add_polymer(1.0, blocks, {});
     auto optimizer_sg = std::make_unique<PropagatorComputationOptimizer>(molecules_sg.get(), false);
     std::unique_ptr<PropagatorComputation<double>> solver_sg = factory->create_propagator_computation(
-        cb_sg.get(), molecules_sg.get(), optimizer_sg.get(), "rqm4", cs.sg);
+        cb_sg.get(), molecules_sg.get(), optimizer_sg.get(), "", cs.sg);
 
     // Solver 2: WITHOUT space group; fed the same symmetrized full-grid fields
     std::unique_ptr<ComputationBox<double>> cb_std = factory->create_computation_box(cs.nx, cs.lx, {});
@@ -116,7 +116,7 @@ int run_case(const std::string& platform, const std::string& chain_model, const 
     molecules_std->add_polymer(1.0, blocks, {});
     auto optimizer_std = std::make_unique<PropagatorComputationOptimizer>(molecules_std.get(), false);
     std::unique_ptr<PropagatorComputation<double>> solver_std = factory->create_propagator_computation(
-        cb_std.get(), molecules_std.get(), optimizer_std.get(), "rqm4");
+        cb_std.get(), molecules_std.get(), optimizer_std.get(), "");
 
     std::map<std::string, const double*> w_map_sg =
         {{"A", cs.w_red.data()}, {"B", cs.w_red.data()+n_red}};

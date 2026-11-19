@@ -1,8 +1,9 @@
 """WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set on sim.wtmd.
 
-A fresh run (from step 1) keeps the bias and statistics the object holds, also a bias set on sim.wtmd
-before the first run or between two runs, and drops the samples an earlier run left pending. The WTMD
-state is Python: the first CPU platform runs the simulations.
+Every key of the input "wtmd" reaches WTMD, built directly and by LFTS. A fresh run (from step 1) keeps
+the bias and statistics the object holds, also a bias set on sim.wtmd before the first run or between two
+runs, and drops the samples an earlier run left pending. The updates of the bias keep U' the derivative
+of U. The WTMD state is Python: the first CPU platform runs the simulations.
 """
 import copy
 import os
@@ -39,21 +40,10 @@ def assert_state(wtmd, expected):
 
 
 def constructor_state():
-    inputs = {"u": np.linspace(0.01, 0.07, 20), "up": np.linspace(-0.05, 0.02, 20),
-              "I0": np.linspace(1.0, 2.0, 20), "I1": {"A,B": np.linspace(0.1, 0.9, 20)}}
-    originals = copy.deepcopy(inputs)
-    wtmd = quiet(WTMD, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0],
-                 psi_max=2.0, dpsi=0.1, **inputs)
-    expected = state(wtmd)
-    for name in ("u", "up", "I0"):
-        np.testing.assert_array_equal(inputs[name], originals[name])
-        np.testing.assert_array_equal(expected[name], inputs[name] / (1 if name == "I0" else wtmd.CV))
-        inputs[name][:] = -99.0   # caller-owned arrays must not change the object's state
-    np.testing.assert_array_equal(inputs["I1"]["A,B"], originals["I1"]["A,B"])
-    np.testing.assert_array_equal(expected["I1"]["A,B"], inputs["I1"]["A,B"] / wtmd.CV)
-    inputs["I1"]["A,B"][:] = -99.0
-    assert_state(wtmd, expected)
+    wtmd = quiet(WTMD, {"psi_max": 2.0, "dpsi": 0.1}, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0])
+    assert_state(wtmd, {"u": np.zeros(20), "up": np.zeros(20), "I0": np.zeros(20), "I1": {}, "samples": [], "dH": {}})
     # A fresh run drops pending samples and keeps whatever bias and statistics the object holds
+    wtmd.I1["A,B"] = np.zeros(wtmd.bins)
     wtmd.u[:] = 7.0
     wtmd.up[:] = 8.0
     wtmd.I0[:] = 9.0
@@ -64,6 +54,42 @@ def constructor_state():
     expected = dict(state(wtmd), samples=[], dH={})
     wtmd.start_fresh_run()
     assert_state(wtmd, expected)
+
+
+def bias_updates():
+    """After a few updates U' is the derivative of U: a hill adds its derivative times the well-tempering
+    factor e^(-CV U/ΔT) and its height times the derivative of that factor, -CV U'/ΔT (update_statistics)."""
+    wtmd = quiet(WTMD, {"psi_max": 2.0, "delta_t": 5.0, "sigma_psi": 0.16}, [4, 4, 4], [2.0] * 3, 10000.0,
+                 np.array([-15.0, 0.0]), [0])
+    random = np.random.default_rng(1)
+    for _ in range(3):
+        for psi in random.normal(1.0, 0.15, 500):
+            wtmd.store_order_parameter(psi, {"A,B": 1.0})
+        quiet(wtmd.update_statistics)
+    inner = slice(50, -50)   # np.gradient is of first order at the ends
+    error = np.max(np.abs(wtmd.up - np.gradient(wtmd.u, wtmd.dpsi))[inner]) / np.max(np.abs(wtmd.up))
+    assert error < 1e-4, f"U' differs from dU/dpsi by {error:.2e} of max |U'|"
+
+
+# Every key of the input "wtmd" with a value other than its default (two of them are the attributes l and dT)
+WTMD_INPUT = {"ell": 2.5, "kc": 4.5, "delta_t": 3.0, "sigma_psi": 0.2, "psi_min": 0.5, "psi_max": 2.5,
+              "dpsi": 0.05, "update_freq": 7, "recording_period": 21}
+WTMD_ATTRIBUTES = {"ell": "l", "delta_t": "dT"}
+
+
+def check_input(wtmd, label):
+    """wtmd holds the values of WTMD_INPUT, and its settings, which checkpoints and files store, are those."""
+    expected = {WTMD_ATTRIBUTES.get(key, key): value for key, value in WTMD_INPUT.items()}
+    held = {name: getattr(wtmd, name) for name in expected}
+    assert held == expected, (label, held)
+    assert {**wtmd.settings(), "recording_period": wtmd.recording_period} == {**expected, "bins": 40}, label
+
+
+def input_keys(root, platform):
+    check_input(quiet(WTMD, WTMD_INPUT, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0]), "WTMD")
+    params = parameters(root / "input_keys", platform)
+    params["wtmd"] = dict(WTMD_INPUT)
+    check_input(quiet(LFTS, params, random_seed=1).wtmd, "LFTS")
 
 
 def parameters(directory, platform, steps=2):
@@ -265,10 +291,12 @@ def samples_of_the_fields_before_the_step(root, platform):
 
 def main():
     constructor_state()
-    print("[PASS] WTMD constructor copies and fresh start")
+    bias_updates()
+    print("[PASS] WTMD constructor state, fresh start and the derivative of the bias")
     platform = python_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_lifecycle_") as directory:
         root = Path(directory)
+        input_keys(root, platform)
         sim = repeated_runs(root, platform)
         manual_continuation(sim)
         checkpoint_restart(root, platform)
@@ -276,8 +304,8 @@ def main():
         bias_between_runs(root, platform)
         bias_at_intermediate_fields(root, platform)
         samples_of_the_fields_before_the_step(root, platform)
-        print(f"[PASS] {platform}: WTMD fresh runs, manual continuation, checkpoint restart, preset bias, "
-              "a bias set between runs, the bias of intermediate forces and the fields of the samples")
+        print(f"[PASS] {platform}: WTMD input keys, fresh runs, manual continuation, checkpoint restart, "
+              "preset bias, a bias set between runs, the bias of intermediate forces and the fields of the samples")
     return 0
 
 

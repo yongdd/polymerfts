@@ -8,7 +8,7 @@ assumption about the system.
 | File | Content |
 |------|---------|
 | `phase_diagram.py` | The algorithm: `run()` computes and saves a diagram, `connect()` joins its boundary points into curves, `plot()` draws a saved one |
-| `seeds.py` | Initial fields of lamellae, cylinders, double gyroid and BCC spheres of AB block copolymers |
+| `../seeds.py` | Initial fields of common AB phases (lamellae, cylinders, double gyroid, BCC spheres), shared with `../phases/` and `../crystal_systems/` |
 | `AB_Diblock.py` | AB diblock melt in the (f, χN) plane |
 | `ABA_Triblock.py` | ABA triblock melt in the (f, χN) plane; only the system definition differs |
 
@@ -94,7 +94,7 @@ Copy a system script and change:
   block length must stay a multiple of `ds`; a point where it does not cannot be computed.
 - `phases`: for every candidate phase a seed, the point (x, y) where it is converged,
   and the parameters of the phase (`nx`, `space_group`, ...). A seed is initial fields
-  `{"w": {monomer: array}, "lx": lx}`, as built by `seeds.py`, or a file saved by
+  `{"w": {monomer: array}, "lx": lx}`, as built by `../seeds.py`, or a file saved by
   `SCFT.save_results` (`.json` or `.mat`) in `seed_dir`. An optional `region` limits a
   phase to a rectangle.
 - The arguments of `run()`: grids, boundary tolerances, derivatives, axis labels and
@@ -105,7 +105,7 @@ Copy a system script and change:
 
 A seed needs only the symmetry, the rough shape and roughly the period of its phase,
 since its first solve converges it, and the same seed can serve several systems
-(`seeds.py` serves the diblock and, in cells of 0.63 the size, the triblock). Its
+(`../seeds.py` serves the diblock and, in cells of 0.63 the size, the triblock). Its
 point must lie where the phase exists in the system; a phase whose seed melts there is
 left out. A seed in a much larger cell than the period can melt or converge to a
 supercell.

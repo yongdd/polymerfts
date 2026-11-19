@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <type_traits>
 #include <vector>
 #include "FFT.h"
 #include "ComputationBox.h"
@@ -75,7 +76,8 @@ inline std::unique_ptr<MakhoulTransform::RealFFT> createRealFFT(const std::vecto
  * RODFT10 / 2 per axis, the cosine or sine series, and backward() their inverse with the
  * 1/N normalization. A complex field (CL-FTS) has the coefficients of its real and imaginary
  * parts as (re, im) pairs, the periodic complex layout used by the solvers. The transforms
- * may run in place and concurrently (MakhoulTransform).
+ * may run in place and concurrently (MakhoulTransform), and backward_with_factors() applies
+ * its factors inside the loops of MakhoulTransform.
  */
 template <typename T>
 class MakhoulFFT : public FFT<T>
@@ -102,15 +104,10 @@ public:
     void forward(T* rdata, double* cdata) override { makhoul_.forward(rdata, cdata, forward_scale_); }
     void backward(double* cdata, T* rdata) override { makhoul_.backward(cdata, rdata, backward_scale_); }
 
-    void forward(T*, std::complex<double>*) override
+    /// One k_factor per coefficient (a (re, im) pair of a complex field); cdata is kept
+    void backward_with_factors(double* cdata, const double* k_factor, T* rdata, const T* r_factor) override
     {
-        throw_with_line_number("Complex output interface requires all periodic BC. "
-                               "Use forward(T*, double*) for non-periodic BC.");
-    }
-    void backward(std::complex<double>*, T*) override
-    {
-        throw_with_line_number("Complex input interface requires all periodic BC. "
-                               "Use backward(double*, T*) for non-periodic BC.");
+        makhoul_.backward_with_factors(cdata, k_factor, rdata, r_factor, backward_scale_);
     }
 };
 

@@ -11,7 +11,14 @@
 
 #include <vector>
 #include <array>
+#include <cmath>
 #include <string>
+
+/// The fractional part v - floor(v) of a lattice coordinate (a translation modulo the lattice)
+inline double wrap01(double v)
+{
+    return v - std::floor(v);
+}
 
 /**
  * @brief Physical (CrysFFT) basis layered on top of the irreducible basis.
@@ -60,13 +67,12 @@ private:
     std::vector<int> reduced_basis_indices_full_;
     std::vector<int> full_to_reduced_map_full_;
     std::vector<int> orbit_counts_full_;
-    std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index
+    std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index (empty without a physical basis)
 
     // Physical basis flags
     PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
     mutable bool in_use_{false};  ///< set once a computation box or solver holds this group
     int z_mirror_shift_{0};
-    double z_mirror_translation_{0.0};
 
     /// Initialize space group from Hall number.
     void initialize(std::vector<int> nx, int hall_number);
@@ -89,6 +95,9 @@ private:
     /// Per axis: the grid size must be a multiple of the lcm of the denominators of
     /// the translation components of all symmetry operations along that axis.
     std::array<int, 3> get_required_grid_divisors() const;
+
+    /// Fill reduced_to_irreducible_map_ for the physical basis just built.
+    void map_reduced_to_irreducible();
 
 public:
     /**
@@ -161,18 +170,6 @@ public:
      */
     void symmetrize(const double* field_in, double* field_out, int n_fields) const;
 
-    /**
-     * @brief Symmetrize reduced-basis fields using full space-group orbits.
-     *
-     * When a physical basis is enabled, reduced basis points may include multiple
-     * representatives from the same irreducible orbit. This routine averages
-     * those representatives to enforce full space-group symmetry.
-     *
-     * @param reduced_field Input/output field on reduced basis
-     * @param n_fields Number of field components
-     */
-    void symmetrize_reduced_basis(double* reduced_field, int n_fields) const;
-
     // Getters
     int get_hall_number() const { return hall_number_; }
     int get_spacegroup_number() const { return spacegroup_number_; }
@@ -218,7 +215,7 @@ public:
     const std::vector<int>& get_nx() const { return nx_; }
     int get_total_grid() const { return total_grid_; }
     int get_n_reduced_basis() const { return n_irreducible_; }
-    int get_n_reduced_basis_full() const { return n_irreducible_full_ > 0 ? n_irreducible_full_ : n_irreducible_; }
+    int get_n_reduced_basis_full() const { return n_irreducible_full_; }
     int get_n_symmetry_ops() const { return n_symmetry_ops_; }
     const std::vector<int>& get_reduced_basis_indices() const { return reduced_basis_indices_; }
     const std::vector<int>& get_full_to_reduced_map() const { return full_to_reduced_map_; }
@@ -286,8 +283,18 @@ public:
      */
     bool get_z_mirror_translation(double& t_z, double tol = 1e-10) const;
 
-    /// Enable one physical basis (None restores the irreducible basis).
-    void enable_physical_basis(PhysicalBasis basis);
+    /**
+     * @brief The z offset, in grid points, of the half grid of a z-mirror basis; -1 without one.
+     *
+     * The (x,y,-z) + t mirror (get_z_mirror_translation) has its planes at z = t_z/2 and
+     * t_z/2 + 1/2. With t_z = 0 the half grid starts at 0 and needs an even nz; with
+     * t_z = 1/2 it starts at nz/4 and needs nz divisible by 4. Other translations have
+     * no half-grid basis. The z-mirror physical basis and the ObliqueZ CrysFFT use this rule.
+     *
+     * @param why Receives the reason when the result is -1 (when not null).
+     */
+    int z_mirror_half_grid_shift(std::string* why = nullptr) const;
+
     PhysicalBasis physical_basis() const { return physical_basis_; }
     /// Human-readable name of the active basis ("irreducible", "pmmm", "m3", "z-mirror").
     std::string physical_basis_name() const;
@@ -338,7 +345,6 @@ public:
     void enable_z_mirror_physical_basis();
     bool using_z_mirror_physical_basis() const { return physical_basis_ == PhysicalBasis::ZMirror; }
     int get_z_mirror_shift() const { return z_mirror_shift_; }
-    double get_z_mirror_translation() const { return z_mirror_translation_; }
 
 };
 

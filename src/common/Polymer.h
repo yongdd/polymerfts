@@ -318,12 +318,6 @@ public:
     std::map<int, std::vector<int>>& get_adjacent_nodes();
 
     /**
-     * @brief Get edge to block index mapping.
-     * @return Map from (v,u) pair to block index
-     */
-    std::map<std::pair<int, int>, int>& get_block_indexes();
-
-    /**
      * @brief Set propagator computation code for an edge.
      * @param deps Dependency code string
      * @param v First vertex
@@ -338,12 +332,6 @@ public:
      * @return Propagator code string encoding dependencies
      */
     std::string get_propagator_key(const int v, const int u) const;
-
-    /**
-     * @brief Get the chain_end_to_q_init mapping.
-     * @return Reference to the chain end to q_init mapping
-     */
-    std::map<int, std::string>& get_chain_end_to_q_init();
 
     /**
      * @brief Regenerate propagator keys using contour length mapping.

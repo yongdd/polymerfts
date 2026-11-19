@@ -12,7 +12,6 @@
 #define FFTW_CRYS_FFT_OBLIQUEZ_H_
 
 #include <fftw3.h>
-#include <memory>
 #include <vector>
 #include "CrysFFTObliqueZBase.h"
 
@@ -26,25 +25,11 @@ private:
     fftw_plan plan_fft_forward_xy_{nullptr};
     fftw_plan plan_fft_backward_xy_{nullptr};
 
-    /// Per-thread FFTW work buffers of diffusion(); see get_thread_buffers().
-    struct RealDeleter { void operator()(double* ptr) const { if (ptr) fftw_free(ptr); } };
-    struct ComplexDeleter { void operator()(fftw_complex* ptr) const { if (ptr) fftw_free(ptr); } };
-    struct ThreadBuffers
-    {
-        std::unique_ptr<double, RealDeleter> real_in;
-        std::unique_ptr<double, RealDeleter> real_tmp;
-        std::unique_ptr<fftw_complex, ComplexDeleter> complex;
-        int size_real = 0;
-        int size_complex = 0;
-    };
-
     void initFFTPlans();
 
     /// Destroy the plans (also after a failed construction); idempotent.
     void release();
 
-    /// Thread-local work buffers, (re)allocated to the current grid size.
-    ThreadBuffers& get_thread_buffers() const;
     /// DCT-II along z (REDFT10)
     void dct2_execute(const double* in, double* out) const;
     /// DCT-III along z (REDFT01)

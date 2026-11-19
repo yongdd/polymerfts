@@ -50,18 +50,14 @@ void check_space_group(const std::string& platform, bool reduced, bool with_grou
     pc->compute_concentrations();
     pc->get_total_concentration("A", before.data());
 
-    rejects([&] { pc->set_space_group(&replacement); });
-    if (with_group)
-        rejects([&] { pc->set_space_group(nullptr); });
-    else
-        rejects([&] { pc->set_space_group(&initial); });
-    if (pc->get_space_group() != group || cb->get_space_group() != group || cb->get_n_basis() != n)
-        throw std::runtime_error("Rejected space-group change modified the computation or box.");
-
-    // The same group can be reattached after another user of the box changed it.
+    // The computation refuses its results while another user of the box changed its group,
+    // and gives them again once the box holds the group of the computation.
     cb->set_space_group(&replacement);
     rejects([&] { pc->get_total_partition(0); });
-    pc->set_space_group(group);
+    rejects([&] { pc->get_total_concentration("A", after.data()); });
+    cb->set_space_group(group);
+    if (pc->get_space_group() != group || cb->get_n_basis() != n)
+        throw std::runtime_error("Restoring the space group of the box changed the computation.");
     pc->get_total_concentration("A", after.data());
     if (before != after || !pc->check_total_partition() || !(std::abs(cb->mean(after.data()) - 1.0) <= 1e-10))
         throw std::runtime_error("The original computation was not preserved after rejecting a group change.");

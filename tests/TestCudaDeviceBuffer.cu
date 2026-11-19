@@ -7,22 +7,23 @@
  *    memory), release, containers, the destructor, pinned memory, a failed
  *    allocation (its message names the caller and the size). The owning cuFFT
  *    plan handle CufftPlan: creation, replacement, moves, a failed creation,
- *    reset, lending and the destructor, by the live plan count.
+ *    reset, lending and the destructor, by the live plan count, and plans created
+ *    without a work area of their own that run in one shared area.
  * 2. Every kind of CUDA object (propagator computations of all solvers, the CrysFFT
  *    engines, non-periodic transforms, complex fields, the Anderson mixers), built
  *    with 4 streams (reduce-memory computations use one), returns everything when
  *    destroyed. Checked exactly with the library's live counters: CudaBuffer and
  *    the backend's propagator and checkpoint arrays (count and bytes), cuFFT
- *    plans, streams and events (other processes and cuFFT's own retained memory
- *    do not affect them); a live computation is checked to hold its streams,
- *    events and plans first. No release may fail (cuda_release_failures(); a
+ *    plans and streams (other processes and cuFFT's own retained memory do not
+ *    affect them); a live computation is checked to hold its streams and plans
+ *    first. No release may fail (cuda_release_failures(); a
  *    double free would count).
  * 3. Failure-injection sweep with 2 streams: the test hook
  *    cuda_buffer_fail_countdown() makes the N-th counted allocation throw; N runs
  *    over every allocation of each construction (and its first run), and after
  *    each failure the counters must be back where they started; the run in which
- *    no allocation fails must succeed. Failures of cuFFT plan, stream and event
- *    creation are not injected; section 4 may reach them for real.
+ *    no allocation fails must succeed. Failures of cuFFT plan and stream creation
+ *    are not injected; section 4 may reach them for real.
  * 4. A small construction that really runs out of device memory releases what it
  *    took (the counters, and device memory end to end: this process's usage from
  *    NVML, or the device's free memory where NVML cannot tell): a ballast holds
@@ -71,16 +72,15 @@ static long long live_pinned() { return CudaPinnedMemory::counters().live_count.
 static long long live_device_bytes() { return CudaDeviceMemory::counters().live_bytes.load(); }
 
 /// Everything the library counts: live device and pinned allocations, cuFFT
-/// plans, streams and events.
+/// plans and streams.
 struct Live
 {
-    long long device = 0, pinned = 0, device_bytes = 0, pinned_bytes = 0, plans = 0, streams = 0, events = 0;
+    long long device = 0, pinned = 0, device_bytes = 0, pinned_bytes = 0, plans = 0, streams = 0;
     static Live now()
     {
         const CudaHandleCounters& h = cuda_handle_counters();
         return {live_device(), live_pinned(), CudaDeviceMemory::counters().live_bytes.load(),
-                CudaPinnedMemory::counters().live_bytes.load(), h.cufft_plans.load(), h.streams.load(),
-                h.events.load()};
+                CudaPinnedMemory::counters().live_bytes.load(), h.cufft_plans.load(), h.streams.load()};
     }
     bool operator==(const Live&) const = default;
     std::string minus(const Live& before) const
@@ -88,8 +88,7 @@ struct Live
         return std::to_string(device - before.device) + " device and " + std::to_string(pinned - before.pinned)
             + " pinned allocations (" + std::to_string(device_bytes - before.device_bytes) + " and "
             + std::to_string(pinned_bytes - before.pinned_bytes) + " bytes), " + std::to_string(plans - before.plans)
-            + " cuFFT plans, " + std::to_string(streams - before.streams) + " streams, "
-            + std::to_string(events - before.events) + " events";
+            + " cuFFT plans, " + std::to_string(streams - before.streams) + " streams";
     }
 };
 
@@ -239,7 +238,7 @@ static std::unique_ptr<AbstractFactory<T>> make_factory(bool reduce_memory)
 struct ComputationSpec
 {
     std::string chain_model = "continuous";
-    std::string method = "rqm4";
+    std::string method;                    ///< empty: the default of the chain model
     bool reduce_memory = false;
     std::vector<int> nx = {16, 16, 16};
     std::vector<double> lx = {1.9, 1.9, 1.9};
@@ -652,6 +651,65 @@ int main(int argc, char** argv)
             c.reset();
             ok &= check(c.empty() && live_plans() == plans_start, "reset() destroys the plan");
             CUFFT_CHECK(c.create(cufftPlan1d, 16, CUFFT_D2Z, 1));
+
+            // Two plans without work areas of their own share one: the forward and
+            // backward transform of a constant give it back times the length
+            int n4096[1] = {4096};
+            CufftPlan forward, backward;
+            size_t work_bytes = 0;
+            ok &= check(forward.create_without_work_area(work_bytes, cufftMakePlanMany, 1, n4096, nullptr, 1, 0,
+                                                          nullptr, 1, 0, CUFFT_D2Z, 2) == CUFFT_SUCCESS
+                        && backward.create_without_work_area(work_bytes, cufftMakePlanMany, 1, n4096, nullptr, 1, 0,
+                                                             nullptr, 1, 0, CUFFT_Z2D, 2) == CUFFT_SUCCESS
+                        && live_plans() == plans_start + 3,
+                        "create_without_work_area() makes plans and counts them");
+            size_t forward_bytes = 0;
+            CUFFT_CHECK(cufftGetSize(forward, &forward_bytes));
+            ok &= check(work_bytes >= forward_bytes, "the work size is the largest of the plans");
+            CudaDeviceBuffer<double> work((work_bytes + sizeof(double) - 1) / sizeof(double) + 1);
+            if (work_bytes > 0)
+            {
+                CUFFT_CHECK(cufftSetWorkArea(forward, work.get()));
+                CUFFT_CHECK(cufftSetWorkArea(backward, work.get()));
+            }
+            std::vector<double> twos(2 * 4096, 2.0), back(2 * 4096, 0.0);
+            CudaDeviceBuffer<double> field(2 * 4096);
+            CudaDeviceBuffer<cuDoubleComplex> spectrum(2 * 2049);
+            CUDA_CHECK(cudaMemcpy(field, twos.data(), field.bytes(), cudaMemcpyHostToDevice));
+            CUFFT_CHECK(cufftExecD2Z(forward, field, spectrum));
+            CUFFT_CHECK(cufftExecZ2D(backward, spectrum, field));
+            CUDA_CHECK(cudaMemcpy(back.data(), field, field.bytes(), cudaMemcpyDeviceToHost));
+            double worst = 0.0;
+            for (double v : back)
+                worst = std::max(worst, std::abs(v - 2.0 * 4096));
+            ok &= check(worst < 1e-8, "the plans run in the shared work area");
+            // A large plan without a work area of its own takes far less device memory than
+            // its work area (cuFFT allocates the area of a plan made the usual way). Measured
+            // as this process's usage (NVML) where available, which other processes on a
+            // shared GPU do not change, else as the device's free memory.
+            {
+                int n128[3] = {128, 128, 128};
+                size_t big_bytes = 0;
+                CUDA_CHECK(cudaDeviceSynchronize());
+                const long long process_before = process_device_bytes();
+                const size_t free_before = free_bytes();
+                CufftPlan big;
+                CUFFT_CHECK(big.create_without_work_area(big_bytes, cufftMakePlanMany, 3, n128, nullptr, 1, 0,
+                                                         nullptr, 1, 0, CUFFT_D2Z, 2));
+                const long long process_after = process_device_bytes();
+                const long long taken = (process_before >= 0 && process_after >= 0)
+                    ? process_after - process_before
+                    : static_cast<long long>(free_before) - static_cast<long long>(free_bytes());
+                ok &= check(big_bytes >= (16u << 20) && taken < static_cast<long long>(big_bytes / 2),
+                            "a plan without a work area takes " + std::to_string(taken >> 20) + " MB, its work size is "
+                            + std::to_string(big_bytes >> 20) + " MB");
+            }
+            const size_t unchanged = work_bytes;
+            int n0[1] = {0};
+            ok &= check(backward.create_without_work_area(work_bytes, cufftMakePlanMany, 1, n0, nullptr, 1, 0,
+                                                          nullptr, 1, 0, CUFFT_Z2D, 1) != CUFFT_SUCCESS
+                        && backward.empty() && live_plans() == plans_start + 2 && work_bytes == unchanged,
+                        "a failed create_without_work_area() leaves the handle empty and the work size as it was");
         }
         ok &= check(live_plans() == plans_start, "the destructor destroys the plan");
         ok &= check(no_cuda_error("the plan checks"), "no plan destroy failed (a double destroy would count)");
@@ -660,13 +718,12 @@ int main(int argc, char** argv)
     //--------------------------------------------------------------------------
     // 2. Every kind of object returns everything it took
     //--------------------------------------------------------------------------
-    printf("--- objects release their buffers, plans, streams and events (4 streams) ---\n");
+    printf("--- objects release their buffers, plans and streams (4 streams) ---\n");
     const std::vector<Case> all = cases();
     {
         ScopedStreams streams("4");
-        // The counters see what a live computation holds: 4 streams with a kernel
-        // and a copy stream and two events each (reduce-memory computations use
-        // one stream), and its plans and buffers
+        // The counters see what a live computation holds: 4 streams (reduce-memory
+        // computations use one), and its plans and buffers
         {
             const Live before = Live::now();
             std::unique_ptr<AbstractFactory<double>> factory(make_factory<double>(false));
@@ -677,9 +734,9 @@ int main(int argc, char** argv)
             std::unique_ptr<PropagatorComputation<double>> computation(
                 factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), "rqm4"));
             const Live alive = Live::now();
-            ok &= check(alive.streams - before.streams == 8 && alive.events - before.events == 8
+            ok &= check(alive.streams - before.streams == 4
                         && alive.plans > before.plans && alive.device > before.device,
-                        "a live 4-stream computation holds 8 streams, 8 events, " + std::to_string(alive.plans - before.plans)
+                        "a live 4-stream computation holds 4 streams, " + std::to_string(alive.plans - before.plans)
                         + " cuFFT plans and " + std::to_string(alive.device - before.device) + " device allocations");
         }
         for (const Case& c : all)

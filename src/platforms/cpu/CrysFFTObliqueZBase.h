@@ -14,16 +14,13 @@
 
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 #include "CpuCrysFFT.h"
 #include "Exception.h"
 #include "MinimalFormAlias.h"
 #include "ReciprocalMetric.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 /**
  * @class CrysFFTObliqueZBase
@@ -76,7 +73,7 @@ public:
         const double G22 = recip_metric[3];
         const double G23 = recip_metric[4];
         const double G33 = recip_metric[5];
-        const double factor = 4.0 * M_PI * M_PI;
+        const double factor = 4.0 * std::numbers::pi * std::numbers::pi;
 
         // For oblique in-plane cells (gamma != 90), pick the in-plane alias
         // representative minimizing the metric form, matching the invariant

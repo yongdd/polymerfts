@@ -45,12 +45,10 @@ private:
     void apply_spectral(const double* q_in, double* q_out, const std::vector<double>& multiplier) const
     {
         check_table(multiplier, M_physical_);
-        // DCT-II into q_out, the multiplier, then DCT-III with normalization in place
-        // (MakhoulTransform reads its whole input before it writes)
+        // DCT-II into q_out, then DCT-III of the coefficients times the multiplier, with
+        // normalization, in place (MakhoulTransform reads its whole input before it writes)
         dct_->forward(q_in, q_out, 1.0);
-        for (int i = 0; i < M_physical_; ++i)
-            q_out[i] *= multiplier[i];
-        dct_->backward(q_out, q_out, norm_factor_);
+        dct_->backward_with_factors(q_out, multiplier.data(), q_out, nullptr, norm_factor_);
     }
 
 public:

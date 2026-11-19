@@ -24,6 +24,10 @@ class LftsStructureFunctions:
         self.monomer_types, self.mpt = sim.monomer_types, sim.mpt
         self.prop_solver, self.smearing = sim.prop_solver, sim.smearing
         self.periodic_box = sim._periodic_box
+        # The real fields with λ ≠ 0 fluctuate: all but the last one (pressure field or, compressible,
+        # the field of the largest eigenvalue), which stays at its saddle point
+        M = len(self.monomer_types)
+        self.kept = [k for k in range(M-1) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
 
     def empty_sums(self):
         """Sums of <u(k) phi(-k)> on the half spectrum of rfftn."""
@@ -46,7 +50,7 @@ class LftsStructureFunctions:
         # Perform Fourier transforms (all densities in one call, all fields in another).
         # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
         # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>
-        kept = [k for k in range(M-1) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
+        kept = self.kept
         phi_k = self._transform([phi[name] for name in self.monomer_types])/self.prop_solver.n_grid
         w_k = self._transform(w_aux[kept])/self.prop_solver.n_grid if kept else None
         mu_fourier = {}
@@ -76,7 +80,7 @@ class LftsStructureFunctions:
             # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
             # basis while S(k) is a Fourier transform, so it is recorded as it is.
             if self.smearing.enabled and self.smearing.periodic:
-                gamma = self.smearing.fourier[..., :self.prop_solver.nx[-1]//2+1]
+                gamma = self.smearing.kernel()   # on the half spectrum, as the sums
                 sf_average[key] = np.divide(sf_average[key], gamma, out=np.zeros_like(sf_average[key]), where=gamma > 1e-12)
             mdic["structure_function_" + pair_suffix(key)] = sf_average[key]
         mdic["sample_count"] = sf_sample_count
@@ -93,6 +97,9 @@ class ClftsStructureFunctions:
         self.prop_solver, self.smearing = sim.prop_solver, sim.smearing
         self.electrostatics = sim.electrostatics
         self.periodic_box = sim._periodic_box
+        # All fields fluctuate in CL-FTS; only the incompressible pressure field (λ = 0) is left out
+        M = len(self.monomer_types)
+        self.kept = [k for k in range(M) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
 
         # Structure functions: composition modes with a zero eigenvalue carry no auxiliary field,
         # but ψ measures the charge direction z, <((k² + κ²)/E) ψ(k) φ_j(-k)> = Σ_i z_i <Γ_i φ_i φ_j>.
@@ -103,12 +110,15 @@ class ClftsStructureFunctions:
         # structure functions are Fourier transforms
         self.psi_probe = None
         if self.electrostatics is not None and self.electrostatics.coupling > 0 and self.periodic_box:
-            M = len(self.monomer_types)
-            kept = [k for k in range(M) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
-            projector = np.eye(M) - sum(np.outer(self.mpt.matrix_a[:, k], self.mpt.matrix_a[:, k]) for k in kept) / M
+            projector = np.eye(M) - sum(np.outer(self.mpt.matrix_a[:, k], self.mpt.matrix_a[:, k]) for k in self.kept) / M
             u = projector @ np.array([self.electrostatics.charges[name] for name in self.monomer_types])
             if u @ u > 1e-12:
                 self.psi_probe = u / (u @ u)
+        # The transform of the fixed charge, which does not change, for the estimators with ψ
+        self.fixed_charge_k = None
+        if self.electrostatics is not None and self.electrostatics.coupling > 0 and self.periodic_box \
+                and self.electrostatics.fixed_charge is not None:
+            self.fixed_charge_k = self._transform(self.electrostatics.fixed_charge)[0]
 
     def empty_sums(self):
         """Sums of <u(k) phi(-k)> on the full spectrum of complex fields, and of the charge structure function."""
@@ -136,12 +146,12 @@ class ClftsStructureFunctions:
         M = len(self.monomer_types)
         # Perform Fourier transforms (full FFT for complex fields).
         # Shifting the Gaussian integral over Ω_k gives <Ω_k φ_j> = (λ_k/M) Σ_l A_lk <φ_l φ_j>,
-        # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>. All fields
-        # fluctuate in CL-FTS; only the incompressible pressure field (λ = 0) is left out.
+        # and A Aᵀ = M I, so μ_i = Σ_k A_ik Ω_k/λ_k gives <μ_i φ_j> = <δφ_i δφ_j>, summed over
+        # the fluctuating fields self.kept.
         # The fields are complex, so φ(-k) is not the conjugate of φ(k):
         # φ(-k) = conj(FFT[conj φ](k)).
         # All densities are transformed in one call, all fields in another
-        kept = [k for k in range(M) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
+        kept = self.kept
         phi_mk = np.conj(self._transform(np.conj([phi[name] for name in self.monomer_types]))) / self.prop_solver.n_grid
         w_k = self._transform(w_aux[kept]) / self.prop_solver.n_grid if kept else None
         mu_fourier = {}
@@ -160,7 +170,7 @@ class ClftsStructureFunctions:
             if es.ions:
                 probe -= np.reshape(self._transform(es.ion_charge())[0], probe.shape) / self.prop_solver.n_grid
             if es.fixed_charge is not None:
-                probe -= np.reshape(self._transform(es.fixed_charge)[0], probe.shape) / self.prop_solver.n_grid
+                probe -= np.reshape(self.fixed_charge_k, probe.shape) / self.prop_solver.n_grid
             # k = 0 is not a structure function in the canonical ensemble; with screening
             # κ²ψ(0)/E would carry a net charge there
             probe[(0,) * len(self.prop_solver.nx)] = 0.0
@@ -185,7 +195,7 @@ class ClftsStructureFunctions:
                 ion_mk = np.conj(self._transform(np.conj(es.ion_charge()))[0]) / n_grid
                 charge_mk = charge_mk + np.reshape(ion_mk, np.shape(psi_k))
             if es.fixed_charge is not None:
-                fixed_mk = np.conj(self._transform(es.fixed_charge)[0]) / n_grid
+                fixed_mk = np.conj(self.fixed_charge_k) / n_grid
                 charge_mk = charge_mk + np.reshape(fixed_mk, np.shape(psi_k))
             rate = es.screened_k_sq / es.coupling
             with np.errstate(divide="ignore", invalid="ignore"):

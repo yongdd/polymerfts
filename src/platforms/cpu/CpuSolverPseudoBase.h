@@ -39,9 +39,6 @@
 #include <map>
 #include <complex>
 #include <memory>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
 #include <utility>
 
 #include "Exception.h"
@@ -82,15 +79,7 @@ template <typename T>
 class CpuSolverPseudoBase : public CpuSolver<T>
 {
 protected:
-    /**
-     * @brief Work arrays of one calling thread.
-     *
-     * The propagators run in OpenMP threads, so every thread needs its own
-     * arrays. They are owned by the solver and released with it (thread_local
-     * arrays would stay allocated until the threads end). Each step function
-     * and the stress routine use them from start to end of one call; nothing
-     * nests, so one set per thread is enough.
-     */
+    /// Work arrays of one calling thread (PerThread)
     struct WorkArrays
     {
         std::vector<T> q_1, q_2;                     ///< Step results (RQM4 full step and half steps)
@@ -98,20 +87,15 @@ protected:
         std::vector<double> k_1, k_2;                ///< Spectral coefficients
         std::vector<double> phys_in, phys_out;       ///< CrysFFT physical grid
         std::vector<T> pair_1, pair_2;               ///< Stress: full-grid propagator pair
-        std::vector<double> phys_1, phys_2, phys_3;  ///< Stress: CrysFFT physical grid
+        std::vector<double> phys_1, phys_2;          ///< Stress: CrysFFT physical grid
         std::vector<double> reduced;                 ///< Stress: reduced-basis sum
     };
 
     /// Work arrays of the calling thread (created on first use)
-    WorkArrays& work_arrays() const
-    {
-        std::lock_guard<std::mutex> lock(work_mutex_);
-        return work_arrays_[std::this_thread::get_id()];
-    }
+    WorkArrays& work_arrays() const { return work_arrays_.get(); }
 
     ComputationBox<T>* cb;       ///< Computation box for grid info
     Molecules* molecules;        ///< Molecules container
-    std::string chain_model;     ///< Chain model identifier
 
     /**
      * @brief Spectral transform object for FFT/DCT/DST (handles all BCs).
@@ -129,7 +113,9 @@ protected:
 
     FFTBackend fft_backend_;  ///< Selected FFT backend (FFTW or MKL)
 
-    std::unique_ptr<Pseudo<T>> pseudo;   ///< Pseudo-spectral operator helper
+    /// Fourier-space tables of the full grid (Boltzmann bond factors, stress basis), computed for
+    /// the cell when a full-grid path uses them (update_pseudo())
+    std::unique_ptr<Pseudo<T>> pseudo;
 
     bool is_periodic_;           ///< True if all BCs are periodic
     int dim_;                    ///< Number of dimensions (1, 2, or 3)
@@ -189,14 +175,17 @@ protected:
     void transform_forward(T* rdata, double* cdata) { fft_->forward(rdata, cdata); }
 
     /**
-     * @brief Perform backward transform.
+     * @brief Backward transform with factors: rdata = r_factor · backward(k_factor · cdata)
+     *        (FFT<T>::backward_with_factors()).
      *
-     * Delegates to fft_->backward() which handles all boundary conditions.
-     *
-     * @param cdata Fourier/DCT coefficient input
-     * @param rdata Real-space data output
+     * k_factor (a Boltzmann bond factor, one value per coefficient) and r_factor
+     * (one value per grid point) may be nullptr; cdata may be overwritten. The
+     * result equals separate loops around transform_backward() bit for bit.
      */
-    void transform_backward(double* cdata, T* rdata) { fft_->backward(cdata, rdata); }
+    void transform_backward(double* cdata, const double* k_factor, T* rdata, const T* r_factor)
+    {
+        fft_->backward_with_factors(cdata, k_factor, rdata, r_factor);
+    }
 
     /**
      * @brief Whether spectral coefficients are stored as complex pairs.
@@ -215,111 +204,14 @@ protected:
     }
 
     /**
-     * @brief Multiply Fourier coefficients by a factor array.
-     *
-     * Handles both periodic BC (complex coefficients) and non-periodic BC
-     * (real coefficients from DCT/DST).
-     *
-     * @param k_data    Fourier coefficient array (modified in-place)
-     * @param factor    Multiplicative factor array
-     * @param n_complex Number of complex elements (M_COMPLEX)
-     */
-    void multiply_fourier_coeffs(double* k_data, const double* factor, int n_complex)
-    {
-        if (complex_coeffs())
-        {
-            std::complex<double>* k_complex = reinterpret_cast<std::complex<double>*>(k_data);
-            for (int i = 0; i < n_complex; ++i)
-                k_complex[i] *= factor[i];
-        }
-        else
-        {
-            for (int i = 0; i < n_complex; ++i)
-                k_data[i] *= factor[i];
-        }
-    }
-
-    /**
-     * @brief Linear combination: k_out = a*k_in1 + b*k_in2
-     *
-     * Handles periodic (complex) and non-periodic (real) coefficient types.
-     */
-    void fourier_linear_combination_2(
-        double* k_out, const double* a, const double* k_in1,
-        const double* b, const double* k_in2, int n_complex)
-    {
-        if (complex_coeffs())
-        {
-            std::complex<double>* out = reinterpret_cast<std::complex<double>*>(k_out);
-            const std::complex<double>* in1 = reinterpret_cast<const std::complex<double>*>(k_in1);
-            const std::complex<double>* in2 = reinterpret_cast<const std::complex<double>*>(k_in2);
-            for (int i = 0; i < n_complex; ++i)
-                out[i] = a[i] * in1[i] + b[i] * in2[i];
-        }
-        else
-        {
-            for (int i = 0; i < n_complex; ++i)
-                k_out[i] = a[i] * k_in1[i] + b[i] * k_in2[i];
-        }
-    }
-
-    /**
-     * @brief Linear combination: k_out = a*k_in1 + b*k_in2 + c*k_in3
-     *
-     * Handles periodic (complex) and non-periodic (real) coefficient types.
-     */
-    void fourier_linear_combination_3(
-        double* k_out, const double* a, const double* k_in1,
-        const double* b, const double* k_in2,
-        const double* c, const double* k_in3, int n_complex)
-    {
-        if (complex_coeffs())
-        {
-            std::complex<double>* out = reinterpret_cast<std::complex<double>*>(k_out);
-            const std::complex<double>* in1 = reinterpret_cast<const std::complex<double>*>(k_in1);
-            const std::complex<double>* in2 = reinterpret_cast<const std::complex<double>*>(k_in2);
-            const std::complex<double>* in3 = reinterpret_cast<const std::complex<double>*>(k_in3);
-            for (int i = 0; i < n_complex; ++i)
-                out[i] = a[i] * in1[i] + b[i] * in2[i] + c[i] * in3[i];
-        }
-        else
-        {
-            for (int i = 0; i < n_complex; ++i)
-                k_out[i] = a[i] * k_in1[i] + b[i] * k_in2[i] + c[i] * k_in3[i];
-        }
-    }
-
-    /**
-     * @brief Linear combination: k_out += a*(k_in1 - k_in2)
-     *
-     * Handles periodic (complex) and non-periodic (real) coefficient types.
-     */
-    void fourier_add_scaled_diff(
-        double* k_out, const double* a,
-        const double* k_in1, const double* k_in2, int n_complex)
-    {
-        if (complex_coeffs())
-        {
-            std::complex<double>* out = reinterpret_cast<std::complex<double>*>(k_out);
-            const std::complex<double>* in1 = reinterpret_cast<const std::complex<double>*>(k_in1);
-            const std::complex<double>* in2 = reinterpret_cast<const std::complex<double>*>(k_in2);
-            for (int i = 0; i < n_complex; ++i)
-                out[i] += a[i] * (in1[i] - in2[i]);
-        }
-        else
-        {
-            for (int i = 0; i < n_complex; ++i)
-                k_out[i] += a[i] * (k_in1[i] - k_in2[i]);
-        }
-    }
-
-    /**
      * @brief Initialize shared components in constructor.
      *
      * Sets up:
      * - Boundary condition checking (is_periodic_)
      * - FFT object creation (fft_) using specified backend
-     * - Pseudo-spectral operator (pseudo)
+     * - The contour steps (ds_values_) and the Fourier-space tables (pseudo), which
+     *   update_laplacian_operator() computes for the cell (the owner calls it after
+     *   set_space_group(), as CpuComputationBackend does)
      *
      * @param cb Computation box
      * @param molecules Molecules container
@@ -341,6 +233,9 @@ protected:
      */
     virtual const double* get_stress_boltz_bond(
         std::string monomer_type, bool is_half_bond_length) const;
+
+    /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
+    virtual bool stress_has_bond_factor() const { return false; }
 
     // ---- space group / CrysFFT setup (set_space_group) ----------------------
     /// Drop the CrysFFT engine, its tables and the index map.
@@ -388,14 +283,14 @@ protected:
      * prepare_stress(). Returns false when the fast path does not apply;
      * `stress` is then untouched.
      */
-    bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq,
-                                const double* boltz_bond, std::vector<T>& stress);
+    bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq, std::vector<T>& stress);
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
-    /// Accumulate Σ_k kernel(k) v_i v_j from DCT/DST coefficients (non-periodic BC; complex pairs for complex fields).
+    /// Accumulate Σ_k kernel(k) v_i² from DCT/DST coefficients (non-periodic BC, orthogonal cells; complex
+    /// pairs for complex fields).
     void accumulate_stress_nonperiodic(const double* qk_1, const double* qk_2, double bond_length_sq,
-                                       const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
+                                       const double* boltz_bond, std::vector<T>& stress) const;
 
 public:
     /// Default constructor.
@@ -413,9 +308,6 @@ public:
      * @param sg Space group pointer (nullptr to disable reduced basis)
      */
     void set_space_group(SpaceGroup* sg) override;
-
-    /// Register contour step size for a ds index.
-    void register_ds_value(int ds_index, double ds) { ds_values_[ds_index] = ds; }
 
     /// Get the contour step size for a ds index.
     double get_ds_value(int ds_index) const;
@@ -480,8 +372,15 @@ protected:
         T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length) override;
 
 private:
-    mutable std::mutex work_mutex_;
-    mutable std::unordered_map<std::thread::id, WorkArrays> work_arrays_;   ///< Per-thread work arrays (see WorkArrays)
+    bool pseudo_current_ = false;   ///< pseudo's tables are those of the current cell (see update_pseudo())
+
+    /// Compute the Pseudo tables of the current cell.
+    void update_pseudo();
+    /// Whether a full-grid path (propagator steps or stress) uses the Pseudo tables: not when the
+    /// CrysFFT steps propagate and the stress takes the CrysFFT fast path.
+    bool full_grid_path() const;
+
+    PerThread<WorkArrays> work_arrays_;   ///< Work arrays of each thread
 };
 
 #endif

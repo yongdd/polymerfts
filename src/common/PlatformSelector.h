@@ -23,8 +23,7 @@
  *   - Available when compiled with CUDA support
  *
  * @see AbstractFactory for the factory interface
- * @see FftwFactory for FFTW CPU implementation details
- * @see MklFactory for MKL CPU implementation details
+ * @see CpuFactory for CPU implementation details (FFTW or MKL transforms)
  * @see CudaFactory for GPU implementation details
  *
  * @example

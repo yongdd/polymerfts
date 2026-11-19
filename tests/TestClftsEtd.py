@@ -46,15 +46,12 @@ from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
 from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
+from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
 NX, LX = [12, 10], [2.0, 1.8]
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(directory, steps=6, screening_length=None):

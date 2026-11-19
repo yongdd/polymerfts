@@ -34,29 +34,27 @@ inline constexpr std::array<NumericalMethodInfo, 5> numerical_methods = {{
     {NumericalMethodId::RS, "rs", "discrete", "realspace", 0, true, true, true, true}
 }};
 
-inline const NumericalMethodInfo& resolve_numerical_method(
-    std::string_view chain_model, std::string_view name, std::string_view solver_type = "")
+inline const NumericalMethodInfo& resolve_numerical_method(std::string_view chain_model, std::string_view name)
 {
     if (chain_model != "continuous" && chain_model != "discrete")
         throw_with_line_number("Unknown chain model: " + std::string(chain_model));
-    // Callers that loop over both chain models pass one continuous-chain name; discrete chains then
-    // take their default (the Python interface rejects such a name instead)
-    bool continuous_name = false;
-    for (const auto& info : numerical_methods)
-        continuous_name = continuous_name || (name == info.name && std::string_view(info.chain_model) == "continuous");
-    if (chain_model == "discrete" && (name.empty() || continuous_name))
-        name = solver_type == "realspace" ? "rs" : "ps";
-    else if (name.empty())
-        name = solver_type == "realspace" ? "cn-adi2" : "rqm4";
+    if (name.empty())
+        name = (chain_model == "discrete") ? "ps" : "rqm4";
 
     std::string valid;
+    std::string_view chain_model_of_name;  // A method of the other chain model
     for (const auto& info : numerical_methods)
     {
         if (name == info.name && chain_model == info.chain_model)
             return info;
+        if (name == info.name)
+            chain_model_of_name = info.chain_model;
         if (chain_model == info.chain_model)
             valid += (valid.empty() ? "" : ", ") + std::string(info.name);
     }
+    if (!chain_model_of_name.empty())
+        throw_with_line_number("The numerical method '" + std::string(name) + "' is for " + std::string(chain_model_of_name) +
+            " chains; " + std::string(chain_model) + " chains take " + valid + ".");
     throw_with_line_number("Unknown numerical method '" + std::string(name) + "' for " + std::string(chain_model) +
         " chains (valid: " + valid + ").");
 }

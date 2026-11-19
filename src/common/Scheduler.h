@@ -63,27 +63,12 @@
  * - Overlap of memory transfers with computation
  * - Better GPU utilization for small propagators
  *
- * Typical speedup: 1.5-3x for branched polymers vs single-stream.
+ * Measured speedups of 4 streams over one on an A10 are 1.0-1.9x for
+ * branched polymers (docs/internals/PropagatorSystem.md).
  */
 class Scheduler
 {
 private:
-    /**
-     * @brief Job assignment for each propagator.
-     *
-     * Maps propagator key to (stream_id, start_time, end_time).
-     */
-    std::map<std::string, std::tuple<int, int, int>, ComparePropagatorKey> job_assignment;
-
-    /// Time when each propagator's dependencies are resolved.
-    std::map<std::string, int> dependency_resolved_time;
-
-    /// Propagators sorted by start time: (key, start_time).
-    std::vector<std::tuple<std::string, int>> sorted_jobs;
-
-    /// Discrete time points where schedule changes (job starts or ends).
-    std::vector<int> time_points;
-
     /**
      * @brief The computed schedule.
      *
@@ -116,10 +101,10 @@ public:
      * @param propagators Map of propagators with dependencies
      * @param n_streams   Number of parallel streams available
      *
-     * @note On CPU, typically use n_streams=1 (OpenMP parallelizes within each propagator).
-     *       On GPU, use n_streams=4 for good performance.
+     * @note The CPU computes up to OMP_NUM_THREADS propagators at once (default 4), each
+     *       on one thread; CUDA uses up to 4 streams. Reduced memory uses one stream.
      */
-    Scheduler(std::map<std::string, ComputationEdge, ComparePropagatorKey> propagators, int n_streams);
+    Scheduler(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators, int n_streams);
 
     /// Destructor.
     ~Scheduler() {};
@@ -131,12 +116,5 @@ public:
      *         containing list of (key, segment_from, segment_to) tuples.
      */
     std::vector<std::vector<std::tuple<std::string, int, int>>>& get_schedule();
-
-    /**
-     * @brief Display schedule in human-readable format.
-     *
-     * @param propagators Propagator information for display
-     */
-    void display(std::map<std::string, ComputationEdge, ComparePropagatorKey> propagators);
 };
 #endif

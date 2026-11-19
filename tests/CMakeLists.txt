@@ -1,13 +1,15 @@
-# Tests that read input files (Stress*/Hexagonal*/Scft*) run with the source
-# directory as working directory; the Python tests locate tests/data from
-# their own path. Nothing is copied into the build tree.
+# The native test that reads input files (TestHexagonalRectangularEquivalence reads
+# its initial fields) runs with the source directory as working directory; the
+# Python tests locate tests/data from their own path. Nothing is copied into the
+# build tree.
 
-# Basic tests for verification (label "basic"), which the Windows CI job runs:
-# about one and a half minutes in a CPU-only build run one test at a time with one
-# OpenMP thread. The "numerical" label below marks the physical and numerical
-# regressions, some of them basic too. Many tests carry neither label, longer
-# ones among them, so only a run without -L covers the whole suite.
-# Run with: ctest -L basic -j 4
+# Every test carries a label; configuration stops for a test without one:
+#   basic      a quick check of every part (interfaces, transforms, solvers, SCFT,
+#              stress), which the Windows CI job runs (ctest -L basic -j 4)
+#   numerical  the physical and numerical regressions, for a change of a numerical
+#              algorithm (ctest -L numerical); some of them are basic too
+#   examples   the example scripts and the tutorial notebooks
+# Only a run without -L covers the whole suite, as the Linux CI jobs run it.
 SET(BASIC_TESTS
     # Parameter handling of the simulation classes and array handling of the
     # bindings (CPU, a few seconds each)
@@ -42,7 +44,9 @@ SET(BASIC_TESTS
     TestComplexMask
     TestComputationSafety
     TestComputationState
+    TestConcentrationsAndStress
     TestInputChecks
+    TestErrorMessages
     TestPropagatorParserSafety
     TestMoleculesValidation
     TestPartitionGuard
@@ -54,8 +58,10 @@ SET(BASIC_TESTS
     TestPackageHashes
     # Platform & utilities
     TestConsoleEncoding
+    TestOpenMPDefaults
     TestDisplayArchitecture
     TestCircularBuffer
+    TestException
     TestScheduler
     TestPropagatorCode
     TestPropagatorCodeStack
@@ -69,6 +75,14 @@ SET(BASIC_TESTS
     TestSmearingAliases
     TestWtmdZeroModes
     TestWtmdRange
+    TestCompressors
+    TestConfigFile
+    TestGridLimits
+    TestPropagatorKeys
+    TestSaveVtk
+    TestScftCallback
+    TestScftResult
+    TestPartitionFunctionCheck
 
     # CPU FFT (all types)
     TestCpuFFT1D
@@ -85,7 +99,6 @@ SET(BASIC_TESTS
     TestFourierTransform
 
     # CUDA FFT & utilities
-    TestCudaFFT
     TestCudaFFTMixedBC
     TestCudaMakhoulTransform
     TestCudaDCT
@@ -93,15 +106,15 @@ SET(BASIC_TESTS
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
-    TestCudaPinnedMemory
-    TestCudaCubReduceSum
-    TestCudaCubReduceSumClass
     TestCrysFFT
     TestCrysFFTObliqueZGlide
     TestCrysFFTObliqueZCuda
     TestCrysFFTSelector
     TestCudaCrysTablesAllocation
     TestCudaCrysFFTStreams
+    TestCudaDeviceBuffer
+    TestCudaDeviceBufferOutOfMemory
+    TestCpuCrysFFTTables
 
     # Propagator solvers
     TestCrankNicolson1D
@@ -119,7 +132,6 @@ SET(BASIC_TESTS
     # Aggregation tests
     TestAggregation3D
     TestAggregationDendritic
-    TestAggregationDiscreteCpu
     TestAggregationSideChains
     TestAggregationSlicedSideChains
 
@@ -132,21 +144,72 @@ SET(BASIC_TESTS
     # SCFT & Stress
     TestScft1D
     TestScft2D
-    TestStress1D
-    TestStress1DComplex
-    TestStressDiscrete1D
+    TestStressFiniteDifference
 
     # Space Group
     TestSpaceGroupReducedBasis
+    TestSpaceGroupBasisSelection
+    TestSpaceGroupCell
+    TestSpaceGroupReduceMemorySafety
     TestMklRealTransform
     TestMklFftwAccuracyAllTypes
 )
 
-# Helper function to set test labels
-FUNCTION(SET_TEST_LABELS TEST_NAME)
-    IF(${TEST_NAME} IN_LIST BASIC_TESTS)
-        SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES LABELS "basic")
+# Physical and numerical regressions (label "numerical")
+SET(NUMERICAL_TESTS
+    TestParameterNames TestFtsReliability TestCheckpointValidation TestExtensions TestPropagatorAnalytic TestConvergenceOrderLite TestSamplingStatistics
+    TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
+    TestLftsRun TestLftsDetails TestLftsIdealLimit TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
+    TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
+    TestJunctionRange TestBlockMultiplicity
+    TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
+    TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
+    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
+    TestPartitionIntegrand
+    # Stress, SCFT and propagators
+    TestStressFiniteDifference TestStressSpaceGroup TestStressComplexPlatforms
+    TestScft3D TestScftCompressible TestScftHexagonalCylinder2D TestScftOptions TestSpaceGroupPhases TestCrysFFTM3SmallGrid
+    TestSmearingLattice TestPhaseEquilibrium TestPolymerFieldTheory TestBlockConcentration TestMinimalFormAlias
+    TestPseudoLinearContinuous3DComplex TestPseudoLinearDiscrete3DComplex TestPseudoSolventContinuous3D
+    TestPseudoSolventContinuous3DComplex TestPseudoSolventDiscrete3D TestPseudoSolventDiscrete3DComplex
+    TestNanoParticle2D TestNonMonotonicConvergence TestHexagonalRectangularEquivalence
+    # Boundary conditions and platforms
+    TestAbsorbingVsMask TestComplexNonPeriodicMirror TestCompareRealSpacePseudoSpectral
+    TestCpuCudaNonPeriodicEquivalence TestCudaOddReflecting
+)
+
+SET(EXAMPLES_TESTS
+    TestExamples
+    TestTutorials
+)
+
+# Every name in the lists is a test of this directory
+FOREACH(TEST_NAME IN LISTS BASIC_TESTS NUMERICAL_TESTS EXAMPLES_TESTS)
+    IF(NOT TEST_NAME STREQUAL "TestCudaDeviceBufferOutOfMemory"
+       AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.py
+       AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.cpp
+       AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.cu)
+        MESSAGE(FATAL_ERROR "tests/CMakeLists.txt labels ${TEST_NAME}, which is not a test of tests/.")
     ENDIF()
+ENDFOREACH()
+
+# The labels of a test from the lists above
+FUNCTION(SET_TEST_LABELS TEST_NAME)
+    SET(_labels "")
+    IF(${TEST_NAME} IN_LIST BASIC_TESTS)
+        LIST(APPEND _labels basic)
+    ENDIF()
+    IF(${TEST_NAME} IN_LIST NUMERICAL_TESTS)
+        LIST(APPEND _labels numerical)
+    ENDIF()
+    IF(${TEST_NAME} IN_LIST EXAMPLES_TESTS)
+        LIST(APPEND _labels examples)
+    ENDIF()
+    IF(NOT _labels)
+        MESSAGE(FATAL_ERROR "${TEST_NAME} has no label: add it to BASIC_TESTS, NUMERICAL_TESTS or "
+            "EXAMPLES_TESTS in tests/CMakeLists.txt.")
+    ENDIF()
+    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES LABELS "${_labels}")
 ENDFUNCTION()
 
 # Windows looks for the DLLs of an executable on PATH. The spglib DLL lies in
@@ -177,16 +240,6 @@ FOREACH(FILE_NAME ${FILE_LIST})
     SET_TEST_LABELS(${TEST_NAME})
 ENDFOREACH()
 
-SET_PROPERTY(TEST TestParameterNames TestFtsReliability TestCheckpointValidation TestExtensions TestPropagatorAnalytic TestConvergenceOrderLite TestSamplingStatistics
-    TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
-    TestLftsRun TestLftsDetails TestLftsIdealLimit TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
-    TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
-    TestJunctionRange TestBlockMultiplicity
-    TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
-    TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
-    TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
-    APPEND PROPERTY LABELS numerical)
-
 # Generate files named "Test*.cpp"
 FILE(GLOB FILE_LIST "Test*.cpp")
 FOREACH(FILE_NAME ${FILE_LIST})
@@ -206,7 +259,7 @@ FOREACH(FILE_NAME ${FILE_LIST})
     ADD_EXECUTABLE(${TEST_NAME} ${FILE_NAME})
     TARGET_LINK_LIBRARIES(${TEST_NAME} PRIVATE polymerfts_backends)
 
-    IF(${TEST_NAME} MATCHES "Scft" OR ${TEST_NAME} MATCHES "Stress" OR ${TEST_NAME} MATCHES "Hexagonal")
+    IF(TEST_NAME STREQUAL "TestHexagonalRectangularEquivalence")
         ADD_TEST(NAME ${TEST_NAME}
             COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -220,8 +273,6 @@ FOREACH(FILE_NAME ${FILE_LIST})
     SET_TEST_LABELS(${TEST_NAME})
     SET_TEST_DLL_PATH(${TEST_NAME})
 ENDFOREACH()
-
-SET_PROPERTY(TEST TestPartitionIntegrand APPEND PROPERTY LABELS numerical)
 
 # Benchmark executables (not added to ctest)
 FILE(GLOB BENCHMARK_LIST "Benchmark*.cpp")
@@ -270,6 +321,7 @@ IF(POLYMERFTS_BUILD_CUDA)
     IF(TARGET TestCudaDeviceBuffer)
         ADD_TEST(TestCudaDeviceBufferOutOfMemory ${CMAKE_CURRENT_BINARY_DIR}/TestCudaDeviceBuffer --out-of-memory)
         SET_TEST_DLL_PATH(TestCudaDeviceBufferOutOfMemory)
+        SET_TEST_LABELS(TestCudaDeviceBufferOutOfMemory)
         # Exit code 77: the device memory could not be held, or the driver backs it with
         # system memory (the WDDM sysmem fallback), so no construction can run out
         SET_TESTS_PROPERTIES(TestCudaDeviceBufferOutOfMemory PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77)

@@ -136,7 +136,7 @@ int main()
             {"3D", {64, 64, 64}, {3.1, 3.3, 3.5}},
         };
         std::vector<std::pair<std::string, std::string>> models = {
-            {"Continuous", "rqm4"}, {"Continuous", "rk2"}, {"Discrete", "rqm4"},
+            {"Continuous", "rqm4"}, {"Continuous", "rk2"}, {"Discrete", "ps"},
         };
         std::vector<std::string> platforms = PlatformSelector::avail_platforms();
         std::cout << "Platforms:";

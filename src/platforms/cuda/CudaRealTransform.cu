@@ -18,7 +18,7 @@
 #endif
 
 //==============================================================================
-// DCT lookup table helpers (optional sin/cos precompute)
+// Sin/cos lookup tables of the twiddle factors (every transform allocates its own)
 //==============================================================================
 
 static void allocate_dct2_lut(int N, CudaDeviceBuffer<double>& d_sin, CudaDeviceBuffer<double>& d_cos)
@@ -98,12 +98,6 @@ static int getFFTSize(CudaTransformType type, int N)
     }
 }
 
-// Round-trip scale of one axis of N points: DCT-3(DCT-2(x)) = DST-3(DST-2(x)) = 2N x
-static double getNormFactor(CudaTransformType, int N)
-{
-    return 2.0 * N;
-}
-
 //==============================================================================
 // 1D DCT Kernels
 //==============================================================================
@@ -145,12 +139,8 @@ __global__ void kernel_dct2_postOp(double* data, int N,
             data[0] = sh_in[0] * 2;
         } else {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2 * N), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = sh_in[i] + sh_in[N - i];
             double Tb = sh_in[i] - sh_in[N - i];
 
@@ -168,12 +158,8 @@ __global__ void kernel_dct3_preOp(double* data, int N,
     for (int i = threadIdx.x; i < N / 2; i += blockDim.x) {
         double sina, cosa;
         int k = i + 1;
-        if (sin_lut && cos_lut) {
-            sina = sin_lut[k];
-            cosa = cos_lut[k];
-        } else {
-            sincos(k * M_PI / (2 * N), &sina, &cosa);
-        }
+        sina = sin_lut[k];
+        cosa = cos_lut[k];
         double Ta = data[i + 1] + data[N - i - 1];
         double Tb = data[i + 1] - data[N - i - 1];
 
@@ -252,12 +238,8 @@ __global__ void kernel_dst2_postOp(double* pin, int N,
     for (int i = threadIdx.x; i < N / 2 + 1; i += blockDim.x) {
         if (i != 0) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * N), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = sh_in[i] + sh_in[N - i];
             double Tb = sh_in[i] - sh_in[N - i];
             pin[i] = (Ta * sina + Tb * cosa);
@@ -278,12 +260,8 @@ __global__ void kernel_dst3_preOp(double* pin, int N,
     // Thread i owns the pair (i, N-i), so no barrier is needed between its reads and writes
     for (int i = threadIdx.x; i < N / 2 + 1; i += blockDim.x) {
         double sina, cosa;
-        if (sin_lut && cos_lut) {
-            sina = sin_lut[i];
-            cosa = cos_lut[i];
-        } else {
-            sincos(i * M_PI / (2.0 * N), &sina, &cosa);
-        }
+        sina = sin_lut[i];
+        cosa = cos_lut[i];
         double Ta = pin[i] + pin[N - i];
         double Tb = pin[i] - pin[N - i];
         pin[i] = Ta * cosa + Tb * sina;
@@ -377,12 +355,8 @@ __global__ void kernel_dct2_2d_postOp_y(
             out[idx] = in[ix * Ny] * 2.0;
         } else {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[iy];
-                cosa = cos_lut[iy];
-            } else {
-                sincos(iy * M_PI / (2.0 * Ny), &sina, &cosa);
-            }
+            sina = sin_lut[iy];
+            cosa = cos_lut[iy];
             double Ta = in[ix * Ny + iy] + in[ix * Ny + (Ny - iy)];
             double Tb = in[ix * Ny + iy] - in[ix * Ny + (Ny - iy)];
             out[idx] = Ta * cosa + Tb * sina;
@@ -441,12 +415,8 @@ __global__ void kernel_dct2_2d_postOp_x(
             out[idx] = in[iy * Nx] * 2.0;
         } else {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[ix];
-                cosa = cos_lut[ix];
-            } else {
-                sincos(ix * M_PI / (2.0 * Nx), &sina, &cosa);
-            }
+            sina = sin_lut[ix];
+            cosa = cos_lut[ix];
             double Ta = in[iy * Nx + ix] + in[iy * Nx + (Nx - ix)];
             double Tb = in[iy * Nx + ix] - in[iy * Nx + (Nx - ix)];
             out[idx] = Ta * cosa + Tb * sina;
@@ -475,12 +445,8 @@ __global__ void kernel_dct3_2d_preOp_y(
         int iy2 = Ny - iy - 1;
 
         double sina, cosa;
-        if (sin_lut && cos_lut) {
-            sina = sin_lut[iy1];
-            cosa = cos_lut[iy1];
-        } else {
-            sincos(iy1 * M_PI / (2.0 * Ny), &sina, &cosa);
-        }
+        sina = sin_lut[iy1];
+        cosa = cos_lut[iy1];
         double Ta = data[base + iy1] + data[base + iy2];
         double Tb = data[base + iy1] - data[base + iy2];
 
@@ -543,12 +509,8 @@ __global__ void kernel_dct3_2d_preOp_x_strided(
         int idx2 = ix2 * Ny + iy;
 
         double sina, cosa;
-        if (sin_lut && cos_lut) {
-            sina = sin_lut[ix1];
-            cosa = cos_lut[ix1];
-        } else {
-            sincos(ix1 * M_PI / (2.0 * Nx), &sina, &cosa);
-        }
+        sina = sin_lut[ix1];
+        cosa = cos_lut[ix1];
         double Ta = data[idx1] + data[idx2];
         double Tb = data[idx1] - data[idx2];
 
@@ -652,12 +614,8 @@ __global__ void kernel_dst2_2d_postOp_y(
         } else if (k <= Ny / 2) {
             // First half: apply twiddle formula
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k];
-                cosa = cos_lut[k];
-            } else {
-                sincos(k * M_PI / (2.0 * Ny), &sina, &cosa);
-            }
+            sina = sin_lut[k];
+            cosa = cos_lut[k];
             double Ta = in[ix * Ny + k] + in[ix * Ny + Ny - k];
             double Tb = in[ix * Ny + k] - in[ix * Ny + Ny - k];
             out[idx] = (Ta * sina + Tb * cosa);
@@ -665,12 +623,8 @@ __global__ void kernel_dst2_2d_postOp_y(
             // Second half: use symmetric formula
             int k_mirror = Ny - k;
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k_mirror];
-                cosa = cos_lut[k_mirror];
-            } else {
-                sincos(k_mirror * M_PI / (2.0 * Ny), &sina, &cosa);
-            }
+            sina = sin_lut[k_mirror];
+            cosa = cos_lut[k_mirror];
             double Ta = in[ix * Ny + k_mirror] + in[ix * Ny + k];
             double Tb = in[ix * Ny + k_mirror] - in[ix * Ny + k];
             out[idx] = (Ta * cosa - Tb * sina);
@@ -735,12 +689,8 @@ __global__ void kernel_dst2_2d_postOp_x(
         } else if (k <= Nx / 2) {
             // First half: apply twiddle formula
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k];
-                cosa = cos_lut[k];
-            } else {
-                sincos(k * M_PI / (2.0 * Nx), &sina, &cosa);
-            }
+            sina = sin_lut[k];
+            cosa = cos_lut[k];
             double Ta = in[iy * Nx + k] + in[iy * Nx + Nx - k];
             double Tb = in[iy * Nx + k] - in[iy * Nx + Nx - k];
             out[idx] = (Ta * sina + Tb * cosa);
@@ -748,12 +698,8 @@ __global__ void kernel_dst2_2d_postOp_x(
             // Second half: use symmetric formula
             int k_mirror = Nx - k;
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k_mirror];
-                cosa = cos_lut[k_mirror];
-            } else {
-                sincos(k_mirror * M_PI / (2.0 * Nx), &sina, &cosa);
-            }
+            sina = sin_lut[k_mirror];
+            cosa = cos_lut[k_mirror];
             double Ta = in[iy * Nx + k_mirror] + in[iy * Nx + k];
             double Tb = in[iy * Nx + k_mirror] - in[iy * Nx + k];
             out[idx] = (Ta * cosa - Tb * sina);
@@ -810,12 +756,8 @@ __global__ void kernel_dst3_2d_preOp_y(
         // Thread i owns the pair (i, L-i)
         for (int i = threadIdx.x; i <= L / 2; i += blockDim.x) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * L), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = pin[i] + pin[L - i];
             double Tb = pin[i] - pin[L - i];
             pin[i] = Ta * cosa + Tb * sina;
@@ -929,12 +871,8 @@ __global__ void kernel_dst3_2d_preOp_x(
         // Thread i owns the pair (i, L-i)
         for (int i = threadIdx.x; i <= L / 2; i += blockDim.x) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * L), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = pin[i] + pin[L - i];
             double Tb = pin[i] - pin[L - i];
             pin[i] = Ta * cosa + Tb * sina;
@@ -1048,35 +986,6 @@ __global__ void kernel_dct2_3d_preOp_z(
     }
 }
 
-__global__ void kernel_dct2_3d_postOp_z(
-    const double* __restrict__ in,
-    double* __restrict__ out,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Nx * Ny * Nz;
-
-    while (idx < total) {
-        int iz = idx % Nz;
-        int iy = (idx / Nz) % Ny;
-        int ix = idx / (Nz * Ny);
-
-        int in_base = (ix * Ny + iy) * Nz;
-
-        if (iz == 0) {
-            out[idx] = in[in_base] * 2.0;
-        } else {
-            double sina, cosa;
-            sincos(iz * M_PI / (2.0 * Nz), &sina, &cosa);
-            double Ta = in[in_base + iz] + in[in_base + (Nz - iz)];
-            double Tb = in[in_base + iz] - in[in_base + (Nz - iz)];
-            out[idx] = Ta * cosa + Tb * sina;
-        }
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void kernel_dct2_3d_postOp_z_lut(
     const double* __restrict__ in,
     double* __restrict__ out,
@@ -1137,35 +1046,6 @@ __global__ void kernel_dct2_3d_preOp_y(
             double v_odd = in[(ix * Ny + iy_odd) * Nz + iz];
             out[out_idx].x = (v_even + v_odd) / 2.0;
             out[out_idx].y = -((v_odd - v_even) / 2.0);
-        }
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void kernel_dct2_3d_postOp_y(
-    const double* __restrict__ in,
-    double* __restrict__ out,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Nx * Ny * Nz;
-
-    while (idx < total) {
-        int iz = idx % Nz;
-        int iy = (idx / Nz) % Ny;
-        int ix = idx / (Nz * Ny);
-
-        int in_base = (ix * Nz + iz) * Ny;
-
-        if (iy == 0) {
-            out[idx] = in[in_base] * 2.0;
-        } else {
-            double sina, cosa;
-            sincos(iy * M_PI / (2.0 * Ny), &sina, &cosa);
-            double Ta = in[in_base + iy] + in[in_base + (Ny - iy)];
-            double Tb = in[in_base + iy] - in[in_base + (Ny - iy)];
-            out[idx] = Ta * cosa + Tb * sina;
         }
 
         idx += blockDim.x * gridDim.x;
@@ -1238,35 +1118,6 @@ __global__ void kernel_dct2_3d_preOp_x(
     }
 }
 
-__global__ void kernel_dct2_3d_postOp_x(
-    const double* __restrict__ in,
-    double* __restrict__ out,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Nx * Ny * Nz;
-
-    while (idx < total) {
-        int iz = idx % Nz;
-        int iy = (idx / Nz) % Ny;
-        int ix = idx / (Nz * Ny);
-
-        int in_base = (iy * Nz + iz) * Nx;
-
-        if (ix == 0) {
-            out[idx] = in[in_base] * 2.0;
-        } else {
-            double sina, cosa;
-            sincos(ix * M_PI / (2.0 * Nx), &sina, &cosa);
-            double Ta = in[in_base + ix] + in[in_base + (Nx - ix)];
-            double Tb = in[in_base + ix] - in[in_base + (Nx - ix)];
-            out[idx] = Ta * cosa + Tb * sina;
-        }
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void kernel_dct2_3d_postOp_x_lut(
     const double* __restrict__ in,
     double* __restrict__ out,
@@ -1301,34 +1152,6 @@ __global__ void kernel_dct2_3d_postOp_x_lut(
 //------------------------------------------------------------------------------
 // 3D DCT-3 Kernels
 //------------------------------------------------------------------------------
-
-__global__ void kernel_dct3_3d_preOp_z(
-    double* __restrict__ data,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Nx * Ny * (Nz / 2);
-
-    while (idx < total) {
-        int iz = idx % (Nz / 2);
-        int iy = (idx / (Nz / 2)) % Ny;
-        int ix = idx / ((Nz / 2) * Ny);
-
-        int base = (ix * Ny + iy) * Nz;
-        int iz1 = iz + 1;
-        int iz2 = Nz - iz - 1;
-
-        double sina, cosa;
-        sincos(iz1 * M_PI / (2.0 * Nz), &sina, &cosa);
-        double Ta = data[base + iz1] + data[base + iz2];
-        double Tb = data[base + iz1] - data[base + iz2];
-
-        data[base + iz1] = Ta * sina + Tb * cosa;
-        data[base + iz2] = Ta * cosa - Tb * sina;
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
 
 __global__ void kernel_dct3_3d_preOp_z_lut(
     double* __restrict__ data,
@@ -1413,34 +1236,6 @@ __global__ void kernel_dct3_3d_preOp_y_transpose(
     }
 }
 
-__global__ void kernel_dct3_3d_preOp_y(
-    double* __restrict__ data,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Nx * Nz * (Ny / 2);
-
-    while (idx < total) {
-        int iy = idx % (Ny / 2);
-        int iz = (idx / (Ny / 2)) % Nz;
-        int ix = idx / ((Ny / 2) * Nz);
-
-        int base = (ix * Nz + iz) * Ny;
-        int iy1 = iy + 1;
-        int iy2 = Ny - iy - 1;
-
-        double sina, cosa;
-        sincos(iy1 * M_PI / (2.0 * Ny), &sina, &cosa);
-        double Ta = data[base + iy1] + data[base + iy2];
-        double Tb = data[base + iy1] - data[base + iy2];
-
-        data[base + iy1] = Ta * sina + Tb * cosa;
-        data[base + iy2] = Ta * cosa - Tb * sina;
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void kernel_dct3_3d_preOp_y_lut(
     double* __restrict__ data,
     int Nx, int Ny, int Nz,
@@ -1500,36 +1295,6 @@ __global__ void kernel_dct3_3d_postOp_y(
                 out[idx] = re + im;
             }
         }
-
-        idx += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void kernel_dct3_3d_preOp_x_strided(
-    double* __restrict__ data,
-    int Nx, int Ny, int Nz)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = Ny * Nz * (Nx / 2);
-
-    while (idx < total) {
-        int ix = idx % (Nx / 2);
-        int iz = (idx / (Nx / 2)) % Nz;
-        int iy = idx / ((Nx / 2) * Nz);
-
-        int ix1 = ix + 1;
-        int ix2 = Nx - ix - 1;
-
-        int idx1 = (ix1 * Ny + iy) * Nz + iz;
-        int idx2 = (ix2 * Ny + iy) * Nz + iz;
-
-        double sina, cosa;
-        sincos(ix1 * M_PI / (2.0 * Nx), &sina, &cosa);
-        double Ta = data[idx1] + data[idx2];
-        double Tb = data[idx1] - data[idx2];
-
-        data[idx1] = Ta * sina + Tb * cosa;
-        data[idx2] = Ta * cosa - Tb * sina;
 
         idx += blockDim.x * gridDim.x;
     }
@@ -1658,24 +1423,16 @@ __global__ void kernel_dst2_3d_postOp_z(
             out[idx] = 2.0 * in[ixy * Nz];
         } else if (k <= Nz / 2) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k];
-                cosa = cos_lut[k];
-            } else {
-                sincos(k * M_PI / (2.0 * Nz), &sina, &cosa);
-            }
+            sina = sin_lut[k];
+            cosa = cos_lut[k];
             double Ta = in[ixy * Nz + k] + in[ixy * Nz + Nz - k];
             double Tb = in[ixy * Nz + k] - in[ixy * Nz + Nz - k];
             out[idx] = (Ta * sina + Tb * cosa);
         } else {
             int k_mirror = Nz - k;
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k_mirror];
-                cosa = cos_lut[k_mirror];
-            } else {
-                sincos(k_mirror * M_PI / (2.0 * Nz), &sina, &cosa);
-            }
+            sina = sin_lut[k_mirror];
+            cosa = cos_lut[k_mirror];
             double Ta = in[ixy * Nz + k_mirror] + in[ixy * Nz + k];
             double Tb = in[ixy * Nz + k_mirror] - in[ixy * Nz + k];
             out[idx] = (Ta * cosa - Tb * sina);
@@ -1740,24 +1497,16 @@ __global__ void kernel_dst2_3d_postOp_y(
             out[idx] = 2.0 * in[ixz * Ny];
         } else if (k <= Ny / 2) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k];
-                cosa = cos_lut[k];
-            } else {
-                sincos(k * M_PI / (2.0 * Ny), &sina, &cosa);
-            }
+            sina = sin_lut[k];
+            cosa = cos_lut[k];
             double Ta = in[ixz * Ny + k] + in[ixz * Ny + Ny - k];
             double Tb = in[ixz * Ny + k] - in[ixz * Ny + Ny - k];
             out[idx] = (Ta * sina + Tb * cosa);
         } else {
             int k_mirror = Ny - k;
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k_mirror];
-                cosa = cos_lut[k_mirror];
-            } else {
-                sincos(k_mirror * M_PI / (2.0 * Ny), &sina, &cosa);
-            }
+            sina = sin_lut[k_mirror];
+            cosa = cos_lut[k_mirror];
             double Ta = in[ixz * Ny + k_mirror] + in[ixz * Ny + k];
             double Tb = in[ixz * Ny + k_mirror] - in[ixz * Ny + k];
             out[idx] = (Ta * cosa - Tb * sina);
@@ -1822,24 +1571,16 @@ __global__ void kernel_dst2_3d_postOp_x(
             out[idx] = 2.0 * in[iyz * Nx];
         } else if (k <= Nx / 2) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k];
-                cosa = cos_lut[k];
-            } else {
-                sincos(k * M_PI / (2.0 * Nx), &sina, &cosa);
-            }
+            sina = sin_lut[k];
+            cosa = cos_lut[k];
             double Ta = in[iyz * Nx + k] + in[iyz * Nx + Nx - k];
             double Tb = in[iyz * Nx + k] - in[iyz * Nx + Nx - k];
             out[idx] = (Ta * sina + Tb * cosa);
         } else {
             int k_mirror = Nx - k;
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[k_mirror];
-                cosa = cos_lut[k_mirror];
-            } else {
-                sincos(k_mirror * M_PI / (2.0 * Nx), &sina, &cosa);
-            }
+            sina = sin_lut[k_mirror];
+            cosa = cos_lut[k_mirror];
             double Ta = in[iyz * Nx + k_mirror] + in[iyz * Nx + k];
             double Tb = in[iyz * Nx + k_mirror] - in[iyz * Nx + k];
             out[idx] = (Ta * cosa - Tb * sina);
@@ -1891,12 +1632,8 @@ __global__ void kernel_dst3_3d_preOp_z(
         // Thread i owns the pair (i, L-i)
         for (int i = threadIdx.x; i <= L / 2; i += blockDim.x) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * L), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = pin[i] + pin[L - i];
             double Tb = pin[i] - pin[L - i];
             pin[i] = Ta * cosa + Tb * sina;
@@ -2004,12 +1741,8 @@ __global__ void kernel_dst3_3d_preOp_y(
         // Thread i owns the pair (i, L-i)
         for (int i = threadIdx.x; i <= L / 2; i += blockDim.x) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * L), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = pin[i] + pin[L - i];
             double Tb = pin[i] - pin[L - i];
             pin[i] = Ta * cosa + Tb * sina;
@@ -2119,12 +1852,8 @@ __global__ void kernel_dst3_3d_preOp_x(
         // Thread i owns the pair (i, L-i)
         for (int i = threadIdx.x; i <= L / 2; i += blockDim.x) {
             double sina, cosa;
-            if (sin_lut && cos_lut) {
-                sina = sin_lut[i];
-                cosa = cos_lut[i];
-            } else {
-                sincos(i * M_PI / (2.0 * L), &sina, &cosa);
-            }
+            sina = sin_lut[i];
+            cosa = cos_lut[i];
             double Ta = pin[i] + pin[L - i];
             double Tb = pin[i] - pin[L - i];
             pin[i] = Ta * cosa + Tb * sina;
@@ -2407,16 +2136,6 @@ void CudaRealTransform1D::execute(double* d_data)
         default:
             throw std::runtime_error("Unsupported transform type");
     }
-}
-
-int CudaRealTransform1D::get_size() const
-{
-    return N_;
-}
-
-double CudaRealTransform1D::get_normalization() const
-{
-    return getNormFactor(type_, N_);
 }
 
 //==============================================================================
@@ -2768,23 +2487,6 @@ void CudaRealTransform2D::execute(double* d_data)
     }
 }
 
-void CudaRealTransform2D::get_dims(int& nx, int& ny) const
-{
-    nx = Nx_;
-    ny = Ny_;
-}
-
-void CudaRealTransform2D::get_types(CudaTransformType& type_x, CudaTransformType& type_y) const
-{
-    type_x = type_x_;
-    type_y = type_y_;
-}
-
-double CudaRealTransform2D::get_normalization() const
-{
-    return getNormFactor(type_x_, Nx_) * getNormFactor(type_y_, Ny_);
-}
-
 //==============================================================================
 // CudaRealTransform3D Implementation
 //==============================================================================
@@ -2901,11 +2603,8 @@ void CudaRealTransform3D::executeZ_DCT2(double* d_data)
     kernel_dct2_3d_preOp_z<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_data, d_complex, Nx_, Ny_, Nz_);
     CUDA_CHECK_LAUNCH();
     CUFFT_CHECK(cufftExecZ2D(plan_z_, d_complex, d_work_));
-    if (!dct2_sin_z_.empty() && !dct2_cos_z_.empty())
-        kernel_dct2_3d_postOp_z_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
-            d_work_, d_temp_, Nx_, Ny_, Nz_, dct2_sin_z_, dct2_cos_z_);
-    else
-        kernel_dct2_3d_postOp_z<<<numBlocks_postOp, blockSize, 0, stream_>>>(d_work_, d_temp_, Nx_, Ny_, Nz_);
+    kernel_dct2_3d_postOp_z_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
+        d_work_, d_temp_, Nx_, Ny_, Nz_, dct2_sin_z_, dct2_cos_z_);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -2918,11 +2617,8 @@ void CudaRealTransform3D::executeZ_DCT3(double* d_data)
 
     CUDA_CHECK(cudaMemcpyAsync(d_temp_, d_data, sizeof(double) * M_, cudaMemcpyDeviceToDevice, stream_));
 
-    if (!dct3_sin_z_.empty() && !dct3_cos_z_.empty())
-        kernel_dct3_3d_preOp_z_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
-            d_temp_, Nx_, Ny_, Nz_, dct3_sin_z_, dct3_cos_z_);
-    else
-        kernel_dct3_3d_preOp_z<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_temp_, Nx_, Ny_, Nz_);
+    kernel_dct3_3d_preOp_z_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
+        d_temp_, Nx_, Ny_, Nz_, dct3_sin_z_, dct3_cos_z_);
     CUDA_CHECK_LAUNCH();
 
     cufftDoubleComplex* d_complex = reinterpret_cast<cufftDoubleComplex*>(d_x1_.get());
@@ -3000,11 +2696,8 @@ void CudaRealTransform3D::executeY_DCT2(double* d_data)
     kernel_dct2_3d_preOp_y<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_temp_, d_complex, Nx_, Ny_, Nz_);
     CUDA_CHECK_LAUNCH();
     CUFFT_CHECK(cufftExecZ2D(plan_y_, d_complex, d_work_));
-    if (!dct2_sin_y_.empty() && !dct2_cos_y_.empty())
-        kernel_dct2_3d_postOp_y_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
-            d_work_, d_temp_, Nx_, Ny_, Nz_, dct2_sin_y_, dct2_cos_y_);
-    else
-        kernel_dct2_3d_postOp_y<<<numBlocks_postOp, blockSize, 0, stream_>>>(d_work_, d_temp_, Nx_, Ny_, Nz_);
+    kernel_dct2_3d_postOp_y_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
+        d_work_, d_temp_, Nx_, Ny_, Nz_, dct2_sin_y_, dct2_cos_y_);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -3020,11 +2713,8 @@ void CudaRealTransform3D::executeY_DCT3(double* d_data)
     kernel_dct3_3d_preOp_y_transpose<<<numBlocks_transpose, blockSize, 0, stream_>>>(
         d_temp_, d_work_, Nx_, Ny_, Nz_);
     CUDA_CHECK_LAUNCH();
-    if (!dct3_sin_y_.empty() && !dct3_cos_y_.empty())
-        kernel_dct3_3d_preOp_y_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
-            d_work_, Nx_, Ny_, Nz_, dct3_sin_y_, dct3_cos_y_);
-    else
-        kernel_dct3_3d_preOp_y<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_work_, Nx_, Ny_, Nz_);
+    kernel_dct3_3d_preOp_y_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
+        d_work_, Nx_, Ny_, Nz_, dct3_sin_y_, dct3_cos_y_);
     CUDA_CHECK_LAUNCH();
 
     cufftDoubleComplex* d_complex = reinterpret_cast<cufftDoubleComplex*>(d_x1_.get());
@@ -3102,11 +2792,8 @@ void CudaRealTransform3D::executeX_DCT2(double* d_data)
     kernel_dct2_3d_preOp_x<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_temp_, d_complex, Nx_, Ny_, Nz_);
     CUDA_CHECK_LAUNCH();
     CUFFT_CHECK(cufftExecZ2D(plan_x_, d_complex, d_work_));
-    if (!dct2_sin_x_.empty() && !dct2_cos_x_.empty())
-        kernel_dct2_3d_postOp_x_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
-            d_work_, d_data, Nx_, Ny_, Nz_, dct2_sin_x_, dct2_cos_x_);
-    else
-        kernel_dct2_3d_postOp_x<<<numBlocks_postOp, blockSize, 0, stream_>>>(d_work_, d_data, Nx_, Ny_, Nz_);
+    kernel_dct2_3d_postOp_x_lut<<<numBlocks_postOp, blockSize, 0, stream_>>>(
+        d_work_, d_data, Nx_, Ny_, Nz_, dct2_sin_x_, dct2_cos_x_);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -3117,11 +2804,8 @@ void CudaRealTransform3D::executeX_DCT3(double* d_data)
     int total_preOp = Ny_ * Nz_ * (Nx_ / 2);
     int numBlocks_preOp = grid_blocks(total_preOp, blockSize);
 
-    if (!dct3_sin_x_.empty() && !dct3_cos_x_.empty())
-        kernel_dct3_3d_preOp_x_strided_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
-            d_temp_, Nx_, Ny_, Nz_, dct3_sin_x_, dct3_cos_x_);
-    else
-        kernel_dct3_3d_preOp_x_strided<<<numBlocks_preOp, blockSize, 0, stream_>>>(d_temp_, Nx_, Ny_, Nz_);
+    kernel_dct3_3d_preOp_x_strided_lut<<<numBlocks_preOp, blockSize, 0, stream_>>>(
+        d_temp_, Nx_, Ny_, Nz_, dct3_sin_x_, dct3_cos_x_);
     CUDA_CHECK_LAUNCH();
 
     cufftDoubleComplex* d_complex = reinterpret_cast<cufftDoubleComplex*>(d_x1_.get());
@@ -3217,25 +2901,4 @@ void CudaRealTransform3D::execute(double* d_data)
         default:
             throw std::runtime_error("Unsupported transform type for X dimension");
     }
-}
-
-void CudaRealTransform3D::get_dims(int& nx, int& ny, int& nz) const
-{
-    nx = Nx_;
-    ny = Ny_;
-    nz = Nz_;
-}
-
-void CudaRealTransform3D::get_types(CudaTransformType& type_x,
-                                     CudaTransformType& type_y,
-                                     CudaTransformType& type_z) const
-{
-    type_x = type_x_;
-    type_y = type_y_;
-    type_z = type_z_;
-}
-
-double CudaRealTransform3D::get_normalization() const
-{
-    return getNormFactor(type_x_, Nx_) * getNormFactor(type_y_, Ny_) * getNormFactor(type_z_, Nz_);
 }

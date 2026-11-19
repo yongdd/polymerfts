@@ -103,12 +103,31 @@ int main()
             SpaceGroup p63mmc({12, 12, 8}, "P6_3/mmc", 488);
             const auto glide = select(p63mmc, {12, 12, 8}, false, true);
             ok &= expect(glide, CrysFFTChoice::ObliqueZ, "P6_3/mmc 12x12x8");
-            ok &= check(glide.oblique_z_shift == 2 && std::abs(glide.oblique_z_translation - 0.5) < 1e-12,
+            double t_z = 0.0;
+            ok &= check(glide.oblique_z_shift == 2 && p63mmc.get_z_mirror_translation(t_z) && std::abs(t_z - 0.5) < 1e-12,
                 "P6_3/mmc: shift nz/4 = 2 for the translation 1/2");
             SpaceGroup p63mmc_10({12, 12, 10}, "P6_3/mmc", 488);
             const auto odd_quarter = select(p63mmc_10, {12, 12, 10}, false, true);
             ok &= expect(odd_quarter, CrysFFTChoice::None, "P6_3/mmc 12x12x10 (nz/4 not an integer)");
             ok &= check(!odd_quarter.can_oblique_z, "P6_3/mmc 12x12x10: no ObliqueZ");
+            ok &= check(throws([&]{ p63mmc_10.enable_z_mirror_physical_basis(); }),
+                "P6_3/mmc 12x12x10: no z-mirror basis either (the same shift rule)");
+        }
+        {
+            // The shift rule of the z-mirror basis and ObliqueZ (SpaceGroup::z_mirror_half_grid_shift)
+            std::string why;
+            SpaceGroup p6mmm_odd({12, 12, 9}, "P6/mmm");
+            ok &= check(p6mmm_odd.z_mirror_half_grid_shift(&why) == -1 && why.find("even Nz") != std::string::npos,
+                "P6/mmm 12x12x9: no half grid along an odd z (" + why + ")");
+            ok &= check(!select(p6mmm_odd, {12, 12, 9}, false, true).can_oblique_z, "P6/mmm 12x12x9: no ObliqueZ");
+            SpaceGroup p63mmc_10({12, 12, 10}, "P6_3/mmc", 488);
+            ok &= check(p63mmc_10.z_mirror_half_grid_shift(&why) == -1 && why.find("divisible by 4") != std::string::npos,
+                "P6_3/mmc 12x12x10: the translation 1/2 needs nz divisible by 4 (" + why + ")");
+            SpaceGroup p_1({8, 8, 8}, "P-1");
+            ok &= check(p_1.z_mirror_half_grid_shift(&why) == -1 && why.find("does not contain") != std::string::npos,
+                "P-1: no z mirror (" + why + ")");
+            SpaceGroup p63mmc_16({12, 12, 16}, "P6_3/mmc", 488);
+            ok &= check(p63mmc_16.z_mirror_half_grid_shift() == 4, "P6_3/mmc 12x12x16: shift nz/4 = 4");
         }
 
         std::cout << "=== Orthogonal cells ===" << std::endl;

@@ -145,7 +145,7 @@ int main()
                         std::unique_ptr<Molecules> molecules = factory->create_molecules_information(chain_model, ds, bond_lengths);
                         molecules->add_polymer(1.0, blocks, {});
                         auto propagator_computation_optimizer = std::make_unique<PropagatorComputationOptimizer>(molecules.get(), aggregate_propagator_computation);
-                        std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "rqm4");
+                        std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "");
                         std::unique_ptr<AndersonMixing<double>> am = factory->create_anderson_mixing(am_n_var,
                                             am_max_hist, am_start_error, am_mix_min, am_mix_init);
 

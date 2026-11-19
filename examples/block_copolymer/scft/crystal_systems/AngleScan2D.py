@@ -13,10 +13,10 @@ alone: Oblique2D varies a, b and gamma together and reaches the hexagonal cell
 """
 
 import os
+import sys
 import contextlib
 import io
 import numpy as np
-from scipy.ndimage import gaussian_filter
 from scipy.optimize import brentq
 
 # OpenMP environment variables (set before importing polymerfts)
@@ -24,6 +24,10 @@ os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import SCFT
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 f = 1/3                 # A-fraction: the A blocks form the cylinders
 chi_n = 18.0
@@ -42,16 +46,10 @@ def free_energy(a, b, gamma):
         "optimizer":{"name":"am", "max_hist":20, "start_error":1e-2, "mix_min":0.1, "mix_init":0.1},
         "max_iter":2000, "tolerance":1e-8,
     }
-    nx, ny = params["nx"]
-    u = np.arange(nx)[:, None] / nx
-    v = np.arange(ny)[None, :] / ny
-    u, v = u - np.round(u), v - np.round(v)
-    r = np.sqrt(np.maximum(u**2 + v**2 + 2 * np.cos(np.radians(gamma)) * u * v, 0.0))
-    w_A = -gaussian_filter(0.5 * (1.0 - np.tanh((r - 0.2) / 0.05)), sigma=1.0, mode="wrap")
-    w_A *= 0.5 * chi_n / np.abs(w_A).max()
+    seed = seeds.oblique_cylinder(params["nx"], params["lx"], gamma, 0.5 * chi_n)
     with contextlib.redirect_stdout(io.StringIO()):
         calculation = SCFT(params=params)
-        result = calculation.run(initial_fields={"A": w_A, "B": -w_A}, return_result=True)
+        result = calculation.run(initial_fields=seed["w"], return_result=True)
         w = np.array([result.w[m] for m in calculation.monomer_types])
         calculation.compute_concentrations(w)
         stress = calculation.cell.stress(w, result.phi)

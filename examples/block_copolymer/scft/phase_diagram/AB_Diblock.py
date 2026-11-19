@@ -11,6 +11,7 @@ saved in AB_Diblock.json and AB_Diblock.png.
 """
 
 import os
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -18,12 +19,14 @@ os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 import numpy as np
 import phase_diagram
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import seeds
 
 # Parameters shared by all phases
 base_params = {
     "relax_cell": True,
-    "stress_interval": 1,
     "chain_model": "continuous",
     "ds": 1/100,
     "segment_lengths": {"A": 1.0, "B": 1.0},

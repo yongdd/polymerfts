@@ -35,10 +35,9 @@ params = {
     "polymers": [{"volume_fraction": 0.5, "blocks": [{"type": "A", "length": 1.0}]},
                  {"volume_fraction": 0.5, "blocks": [{"type": "B", "length": 1.0}]}],
 
-    "langevin": {"dt": 0.5, "nbar": 10000, "max_step": 1},   # max_step: set by the cycles
+    "langevin": {"dt": 0.5, "nbar": 10000},   # the cycles set max_step
 
-    "recording": {"dir": "data_gibbs", "checkpoint_interval": 1, "sample_interval": 2,
-                  "statistics_save_interval": 1},                # intervals: set by the cycles
+    "recording": {"dir": "data_gibbs", "sample_interval": 2},   # the cycles set the other intervals
 
     "gibbs_ensemble": {
         # Starting compositions; the totals stay fixed

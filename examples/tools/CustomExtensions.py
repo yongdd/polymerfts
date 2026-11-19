@@ -38,10 +38,6 @@ class PredictorCorrector:
         self.force_evaluations = count
 
 
-# Compatibility with scripts that imported the example under its earlier name.
-StochasticHeun = PredictorCorrector
-
-
 class CompositionVariance:
     def __init__(self, every=1):
         self.interval = every

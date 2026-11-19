@@ -46,7 +46,7 @@ def underscore_names(platform, chain_model, names):
     mol.add_polymer(0.5, [[a, 0.4, 0, 1], [a, 0.4, 0, 2], [b, 0.3, 0, 3]])
     opt = fac.create_propagator_computation_optimizer(mol, True)
     cb = fac.create_computation_box([16], [4.0])
-    pc = fac.create_propagator_computation(cb, mol, opt, "rqm4")
+    pc = fac.create_propagator_computation(cb, mol, opt, "")
     w = np.random.default_rng(41).normal(0, 5, (2, 16))
     pc.compute_propagators({a: w[0], b: w[1]})
     pc.compute_concentrations()
@@ -143,7 +143,7 @@ def test_single_segment_reduced_basis(platform):
                 mol = fac.create_molecules_information(chain_model, 0.05, {"A": 1.0, "B": 1.0})
                 mol.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
                 opt = fac.create_propagator_computation_optimizer(mol, False)
-                pc = fac.create_propagator_computation(cb, mol, opt, "rqm4", group)
+                pc = fac.create_propagator_computation(cb, mol, opt, "", group)
                 rejects(lambda: pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1))
                 pc.compute_propagators({m: basis(w[m]) for m in "AB"})
                 out = pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1)
@@ -221,8 +221,9 @@ def test_complex_into_real(platform):
     # Space-group fields and masks, real for every field type: no field_type in the message
     always_real = (lambda: sg_solver.to_reduced_basis(np.ones(512) + 1j),
                    lambda: sg_solver.from_reduced_basis(reduced + 1j),
-                   lambda: sg.symmetrize(np.ones(512) + 1j), lambda: sg.symmetrize_reduced_basis(reduced + 1j),
+                   lambda: sg.symmetrize(np.ones(512) + 1j),
                    lambda: sg.reduced_to_irreducible(reduced + 1j),
+                   lambda: sg.irreducible_to_reduced(sg.reduced_to_irreducible(reduced) + 1j),
                    lambda: fac.create_computation_box([8, 8], [2.0, 2.0], mask=np.ones(64) + 0j))
     for calls, names_field_type in ((fields, True), (always_real, False)):
         for call in calls:

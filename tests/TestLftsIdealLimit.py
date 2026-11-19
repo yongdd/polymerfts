@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """LFTS's noninteracting canonical limit has no auxiliary fields or saddle search.
 
-Check analytic mixture densities and H with each compressor, actual LM/Euler
-runs, checkpointed RNG/noise/pending observations, and an intermediate-force
-extension. Finite compressibility and incompressibility keep their pressure
-saddle and serve as controls. The ideal limit is decided in Python, but every
-platform runs it: the L-FTS runs with the LR and LRAM compressors run on CUDA too.
+Without an imaginary field no compressor is built: every compressor input gives the same
+simulation, which is checked at its construction. Check analytic mixture densities and H,
+actual LM/Euler runs, checkpointed RNG/noise/pending observations, and an intermediate-force
+extension. Finite compressibility and incompressibility keep their pressure saddle and serve
+as controls, with each compressor. The ideal limit is decided in Python, but every platform
+runs it: the controls with the LR and LRAM compressors run on CUDA too.
 """
 
 import copy
@@ -69,14 +70,21 @@ class Observations:
         self.masses = list(state["masses"])
 
 
-def ideal_runs(root, platform, compressor, method):
+def no_compressor(root, platform):
+    # Without an imaginary field the saddle search builds no compressor, whichever the input names
+    for compressor in ("am", "lr", "lram"):
+        sim = quiet(LFTS, parameters(root / compressor, platform, compressor), random_seed=17)
+        assert sim.mpt.R == sim.mpt.I == 0 and sim.saddle.compressor is None, compressor
+
+
+def ideal_runs(root, platform, method):
     observers, simulations, initial_rng = {}, {}, {}
 
     def make(name, steps, seed):
         observers[name] = Observations()
-        sim = quiet(LFTS, parameters(root / name, platform, compressor, method, steps),
+        sim = quiet(LFTS, parameters(root / name, platform, method=method, steps=steps),
                     random_seed=seed, callbacks={"observations": observers[name]})
-        assert sim.mpt.R == sim.mpt.I == 0
+        assert sim.mpt.R == sim.mpt.I == 0 and sim.saddle.compressor is None
         assert len(sim.mpt.aux_fields_dropped_idx) == 2
         if name == "full":
             initial_rng.update(copy.deepcopy(sim.random_bg.state))
@@ -117,7 +125,7 @@ def ideal_runs(root, platform, compressor, method):
     np.testing.assert_array_equal(recorded["drift_max_history"], np.zeros(4))
 
     # A new run restores the observer's constructor state, and empty noise still leaves RNG untouched.
-    if compressor == "am" and method == "lm":
+    if method == "lm":
         quiet(simulations["full"].run, initial)
         assert observers["full"].steps == [1, 2, 3, 4]
         assert simulations["full"].random_bg.state == initial_rng
@@ -142,34 +150,35 @@ def active_real_without_saddle(root, platform):
     # The positive eigenvalues fall below the existing dropped-mode threshold,
     # while the negative eigenvalue is retained. No imaginary field does not
     # imply that the supplied real field, its densities or its energy are zero.
+    # Without an imaginary field no compressor is built: every compressor input gives this simulation.
     fractions = {"A": 0.2, "B": 0.3, "C": 0.5}
-    for compressor in ("am", "lr", "lram"):
+    for compressor in ("lr", "lram", "am"):
         params = parameters(root / compressor, platform, compressor)
         params.update(segment_lengths={name: 1.0 for name in fractions},
                       chi_n={"A,B": -7.5e-9, "A,C": -7.5e-9, "B,C": -7.5e-9},
                       polymers=[{"volume_fraction": fraction, "blocks": [{"type": name, "length": 1.0}]}
                                 for name, fraction in fractions.items()])
         sim = quiet(LFTS, params, random_seed=17)
-        assert sim.mpt.R == 1 and sim.mpt.I == 0
-        assert len(sim.mpt.aux_fields_dropped_idx) == 2
-        fields = np.zeros((3, 4))
-        fields[sim.mpt.aux_fields_real_idx[0]] = np.array([2.0, -3.0, 4.0, -1.0]) * 1e-5
-        before = fields.copy()
-        expected_phi, _ = quiet(sim.compute_concentrations, fields)
-        expected_phi = {name: values.copy() for name, values in expected_phi.items()}
-        partitions = [sim.prop_solver.get_partition_function(p) for p in range(3)]
-        expected_h = sim.mpt.compute_hamiltonian(
-            sim.prop_solver.molecules, fields, partitions, sim.cb,
-            include_const_term=True, phi=sim.smearing.apply_to_dict(expected_phi))
-        assert np.isfinite(expected_h) and abs(expected_h) > 1e-5
-        phi, _, hamiltonian, iterations, error = quiet(sim.saddle.solve, fields)
-        np.testing.assert_array_equal(fields, before)
-        assert iterations == 0 and error == 0.0
-        np.testing.assert_allclose(hamiltonian, expected_h, rtol=0, atol=2e-13)
-        for name, fraction in fractions.items():
-            np.testing.assert_allclose(phi[name], expected_phi[name], rtol=0, atol=2e-13)
-            np.testing.assert_allclose(np.mean(phi[name]), fraction, rtol=0, atol=2e-12)
-        assert quiet(sim.prop_solver.check_total_partition)
+        assert sim.mpt.R == 1 and sim.mpt.I == 0 and sim.saddle.compressor is None, compressor
+    assert len(sim.mpt.aux_fields_dropped_idx) == 2
+    fields = np.zeros((3, 4))
+    fields[sim.mpt.aux_fields_real_idx[0]] = np.array([2.0, -3.0, 4.0, -1.0]) * 1e-5
+    before = fields.copy()
+    expected_phi, _ = quiet(sim.compute_concentrations, fields)
+    expected_phi = {name: values.copy() for name, values in expected_phi.items()}
+    partitions = [sim.prop_solver.get_partition_function(p) for p in range(3)]
+    expected_h = sim.mpt.compute_hamiltonian(
+        sim.prop_solver.molecules, fields, partitions, sim.cb,
+        include_const_term=True, phi=sim.smearing.apply_to_dict(expected_phi))
+    assert np.isfinite(expected_h) and abs(expected_h) > 1e-5
+    phi, _, hamiltonian, iterations, error = quiet(sim.saddle.solve, fields)
+    np.testing.assert_array_equal(fields, before)
+    assert iterations == 0 and error == 0.0
+    np.testing.assert_allclose(hamiltonian, expected_h, rtol=0, atol=2e-13)
+    for name, fraction in fractions.items():
+        np.testing.assert_allclose(phi[name], expected_phi[name], rtol=0, atol=2e-13)
+        np.testing.assert_allclose(np.mean(phi[name]), fraction, rtol=0, atol=2e-12)
+    assert quiet(sim.prop_solver.check_total_partition)
 
 
 class ProbeEmptyForce:
@@ -196,13 +205,13 @@ def main():
     platforms = PlatformSelector.avail_platforms()
     if not platforms:
         return int(cuda_part_missing()) or 77
-    # Also the L-FTS runs with the LR and LRAM compressors on CUDA
+    # Also the controls with the LR and LRAM compressors on CUDA
     for platform in platforms:
         with tempfile.TemporaryDirectory(prefix="polymerfts_lfts_ideal_") as directory:
             root = Path(directory)
-            for compressor in ("am", "lr", "lram"):
-                for method in ("lm", "euler"):
-                    ideal_runs(root / f"{compressor}_{method}", platform, compressor, method)
+            no_compressor(root / "no_compressor", platform)
+            for method in ("lm", "euler"):
+                ideal_runs(root / method, platform, method)
             pressure_controls(root / "controls", platform)
             active_real_without_saddle(root / "active_real", platform)
             intermediate_force(root / "intermediate", platform)

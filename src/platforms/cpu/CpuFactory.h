@@ -1,23 +1,24 @@
 /**
- * @file MklFactory.h
- * @brief Concrete factory for Intel MKL-based CPU implementations.
+ * @file CpuFactory.h
+ * @brief Concrete factory for the CPU platforms (cpu-fftw and cpu-mkl).
  *
- * This header provides the MklFactory class, which is the concrete implementation
- * of AbstractFactory for CPU-based computations using Intel Math Kernel Library (MKL).
- * It creates CPU-optimized versions of all simulation objects.
+ * This header provides the CpuFactory class, the implementation of
+ * AbstractFactory for computations on the host. The two CPU platforms differ
+ * only in the FFT library of their transforms, the FFTBackend the factory
+ * passes to the objects it creates:
+ *
+ * - cpu-fftw: FFTW3. FFTW3 is licensed under GPL; distributing binaries built
+ *   with it requires compliance with GPL terms.
+ * - cpu-mkl: Intel MKL. The factory turns MKL's internal threading off: the
+ *   parallelism is at the propagator level.
  *
  * **Platform Features:**
  *
- * - Uses Intel MKL for FFT operations (highly optimized for Intel CPUs)
- * - OpenMP parallelization for multi-core CPUs
- * - Supports both continuous and discrete chain models
- * - Supports pseudo-spectral and real-space solvers
- *
- * **Performance Notes:**
- *
- * - Best for 1D simulations where GPU overhead isn't worthwhile
- * - Good for debugging and validation (easier to debug than GPU code)
- * - Can be faster than GPU for small grids (< 32^3)
+ * - OpenMP parallelization over propagators
+ * - Continuous and discrete chain models, pseudo-spectral and real-space solvers
+ * - DCT/DST through MakhoulTransform over the real FFT of the backend
+ * - Whether FFTW or MKL is faster depends on the processor
+ *   (docs/internals/FFTImplementation.md, Section 8.2)
  *
  * @see AbstractFactory for the factory interface
  * @see CudaFactory for GPU implementation
@@ -25,8 +26,8 @@
  *
  * @example
  * @code
- * // Create MKL factory
- * MklFactory<double> factory(false);  // reduce_memory=false for speed
+ * // Create the factory of the cpu-fftw platform
+ * CpuFactory<double> factory(false, FFTBackend::FFTW);  // reduce_memory=false for speed
  *
  * // Create simulation objects (each create function returns a std::unique_ptr)
  * auto cb = factory.create_computation_box(nx, lx, bc);
@@ -40,8 +41,8 @@
  * @endcode
  */
 
-#ifndef MKL_FACTORY_H_
-#define MKL_FACTORY_H_
+#ifndef CPU_FACTORY_H_
+#define CPU_FACTORY_H_
 
 #include "ComputationBox.h"
 #include "Polymer.h"
@@ -49,35 +50,36 @@
 #include "PropagatorComputation.h"
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
-#include "SpaceGroup.h"
+#include "FFT.h"  // FFTBackend
 
 /**
- * @class MklFactory
- * @brief Factory for creating Intel MKL-based CPU simulation objects.
+ * @class CpuFactory
+ * @brief Factory for creating CPU simulation objects with FFTW3 or Intel MKL transforms.
  *
- * Implements AbstractFactory to create CPU-optimized objects using Intel MKL.
  * All created objects operate on host memory and use OpenMP for parallelization.
  *
  * @tparam T Numeric type (double or std::complex<double>)
  *
  * **Created Object Types:**
  *
- * - CpuComputationBox: Grid and integration on CPU
- * - Propagator computations with the CPU backend (MKL transforms)
+ * - ComputationBox: Grid and integration on CPU
+ * - Propagator computations with the CPU backend (transforms of the FFT backend)
  * - CpuAndersonMixing: Iteration accelerator
+ * - CpuFourierTransform: Fourier multipliers of whole fields
  *
  * @note The reduce_memory flag enables checkpointing mode for memory-constrained
  *       simulations at the cost of increased computation time.
  */
 template <typename T>
-class MklFactory : public AbstractFactory<T>
+class CpuFactory : public AbstractFactory<T>
 {
 public :
     /**
-     * @brief Construct an MKL factory.
+     * @brief Construct a CPU factory.
      * @param reduce_memory Enable checkpointing mode (reduces memory, increases compute)
+     * @param backend       FFT library of the transforms (one the build includes)
      */
-    MklFactory(bool reduce_memory);
+    CpuFactory(bool reduce_memory, FFTBackend backend);
 
     /**
      * @brief Create a CPU computation box.
@@ -85,7 +87,7 @@ public :
      * @param lx   Box lengths
      * @param bc   Boundary conditions
      * @param mask Optional mask for impenetrable regions
-     * @return CpuComputationBox instance
+     * @return ComputationBox instance
      */
     std::unique_ptr<ComputationBox<T>> create_computation_box(
         std::vector<int> nx,
@@ -100,7 +102,7 @@ public :
      * @param bc     Boundary conditions
      * @param angles Lattice angles [alpha, beta, gamma] in degrees
      * @param mask   Optional mask for impenetrable regions
-     * @return CpuComputationBox instance
+     * @return ComputationBox instance
      */
     std::unique_ptr<ComputationBox<T>> create_computation_box(
         std::vector<int> nx,
@@ -123,7 +125,7 @@ public :
         double mix_min, double mix_init) override;
 
     /**
-     * @brief Create a CPU (MKL) Fourier transform.
+     * @brief Create a CPU Fourier transform with the transforms of the FFT backend.
      * @param cb Computation box
      * @param bc Transform of each axis
      * @return CpuFourierTransform instance
@@ -134,14 +136,17 @@ public :
     /**
      * @brief Display CPU platform information.
      *
-     * Prints MKL version, number of threads, and other configuration details.
+     * Prints the version of the FFT library (and, for MKL, its configuration).
      */
     void display_info() override;
 
 protected:
-    /// CPU backend with MKL transforms (see AbstractFactory::create_backend())
+    /// CPU backend with the transforms of the FFT backend (see AbstractFactory::create_backend())
     std::unique_ptr<ComputationBackend<T>> create_backend(
         ComputationBox<T>* cb, Molecules* molecules, const NumericalMethodInfo& method_info,
         SpaceGroup* space_group, int max_n_streams) override;
+
+private:
+    FFTBackend backend_;   ///< FFT library of the transforms
 };
 #endif

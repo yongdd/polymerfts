@@ -33,7 +33,7 @@ def test_clfts_parameters_and_dispatch(smearing, expected, tmp_path, monkeypatch
     CHECKS["VALIDATION"]["validate_lfts_params"](params, complex_fields=True)
     assert params["zeta_n"] == 100
     assert params["dynamic_stabilization"] == .01
-    assert params["langevin"] == {"max_step": 100000, "dt": 1, "nbar": 10000}
+    assert params["langevin"] == {"max_step": 100000, "dt": 1, "nbar": 100000}
     assert params.get("smearing") == expected
     assert not {"optimizer", "saddle", "compressor", "relax_cell"}.intersection(params)
     assert "saved" not in calls

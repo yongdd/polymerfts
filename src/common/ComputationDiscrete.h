@@ -23,8 +23,8 @@
  * from.
  *
  * The class is platform neutral: the grid work goes through a
- * ComputationBackend, which the platform factories (MklFactory, FftwFactory,
- * CudaFactory) pass in.
+ * ComputationBackend, which the platform factories (CpuFactory, CudaFactory)
+ * pass in.
  *
  * **Propagator storage:** propagator[key][n] for n = 1..max_n_segment
  * (segment n; index 0 is unused).
@@ -50,6 +50,22 @@ class ComputationDiscrete : public ComputationCommon<T>
 private:
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;             ///< q(r, n), n = 1..max_n_segment
     std::map<std::string, std::vector<BackendArray<T>*>> propagator_half_steps;  ///< q(r, n+1/2) where needed, else nullptr
+
+    /// A job of the scheduler with what it reads, resolved once: the schedule and the
+    /// storage are fixed after construction, and keys grow with the size of a polymer
+    struct Job
+    {
+        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
+        const ComputationEdge* edge;  ///< Its monomer type and dependencies
+        BackendArray<T>** q;          ///< propagator[key]
+        BackendArray<T>** q_half;     ///< propagator_half_steps[key]
+        int n_segment_from;           ///< The job computes the segments n_segment_from+1 .. n_segment_to
+        int n_segment_to;
+        /// (q_i, n_i) of an aggregation (half-bond states at a junction, else segments) or of a
+        /// junction (half-bond states)
+        std::vector<std::pair<BackendArray<T>*, double>> sources;
+    };
+    std::vector<std::vector<Job>> schedule;  ///< The scheduler's groups of concurrent jobs
 
     /// One segment per polymer for its partition function: (polymer, q, q†, monomer type, n_aggregated)
     std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, std::string, double>> single_partition_segment;

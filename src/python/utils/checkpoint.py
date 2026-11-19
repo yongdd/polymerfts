@@ -20,7 +20,7 @@ from scipy.io import loadmat
 
 from .common import atomic_write_json, fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .mat_fields import decode_mat_fields
-from .validation import _rename_parameter, normalize_params, ValidationError, SaddlePointError
+from .validation import _rename_parameter, normalize_params, ValidationError, SaddlePointError, SECTION_KEYS
 
 
 def checkpoint_settings(sim):
@@ -51,8 +51,9 @@ def checkpoint_settings(sim):
     return json_ready(result)
 
 
-def checkpoint_data(sim):
-    """Version, compatibility settings and complete RNG/measurement state."""
+def checkpoint_data(sim, record):
+    """Version, compatibility settings and complete RNG/measurement state, with the measurements of the
+    RunRecord `record` since its last statistics file."""
     settings = checkpoint_settings(sim)
     data = {"checkpoint_format_version": 2, "checkpoint_settings_json": settings_json(settings),
             "checkpoint_settings_hash": input_hash(settings),
@@ -60,27 +61,21 @@ def checkpoint_data(sim):
             "simulation_metadata_json": json.dumps(json_ready(sim.metadata)),
             "run_status_json": json.dumps(json_ready(sim.run_status))}
     data["extension_state_json"] = json.dumps(extension_state(sim), allow_nan=False)
-    record = getattr(sim, "_recording_state", None)
-    if record is None:
-        raise ValidationError("Checkpointing requires the recording state of an accepted run step")
     data.update(record.checkpoint_arrays())
     return data
 
 
 def system_data(sim):
-    """The system, at the head of the structure function files."""
-    chi_n = {}
-    for key in sim.chi_n:
-        monomer_pair = sorted(key.split(","))
-        chi_n[monomer_pair[0] + "," + monomer_pair[1]] = sim.chi_n[key]
+    """The system, at the head of the structure function files (sim.chi_n has sorted pairs: parse_chi_n)."""
     return {"dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
-            "angles": list(sim.prop_solver.get_angles_degrees()), "chi_n": chi_n,
+            "angles": list(sim.prop_solver.get_angles_degrees()), "chi_n": dict(sim.chi_n),
             "chain_model": sim.chain_model, "ds": sim.ds, "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"],
             "initial_params": mat_ready(sim.params)}
 
 
-def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
-    """The system and the checkpoint of a fields file, without the fields of its model."""
+def fields_data(sim, w_aux, langevin_step, normal_noise_prev, record):
+    """The system and the checkpoint of a fields file with the auxiliary fields w_aux and the measurements
+    of `record` (checkpoint_data), without the fields of its model."""
     data = {"initial_params": mat_ready(sim.params),
             "dim": sim.prop_solver.dim, "nx": sim.prop_solver.nx, "lx": sim.prop_solver.get_lx(),
             "angles": list(sim.prop_solver.get_angles_degrees()),
@@ -94,9 +89,9 @@ def fields_data(sim, w, langevin_step, normal_noise_prev, w_aux=None):
             "random_state_state": str(sim.random_bg.state["state"]["state"]),
             "random_state_inc": str(sim.random_bg.state["state"]["inc"]),
             "normal_noise_prev": normal_noise_prev}
-    data.update(checkpoint_data(sim))
+    data.update(checkpoint_data(sim, record))
     # The auxiliary fields; validation refuses a monomer type named "aux" in L-FTS, whose field would be w_aux
-    data["w_aux"] = sim.mpt.to_aux_fields(w) if w_aux is None else w_aux
+    data["w_aux"] = w_aux
     return data
 
 
@@ -225,6 +220,12 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         if stored.get("numerical_method") == "discrete":
             stored["numerical_method"] = "ps"
         current = checkpoint_settings(sim)
+        # An input of an earlier release could hold keys that no release read in saddle or compressor,
+        # which are refused now (SECTION_KEYS): its checkpoint compares without them
+        for section in ("saddle", "compressor"):
+            if isinstance(stored.get(section), dict) and isinstance(current.get(section), dict):
+                stored[section] = {key: value for key, value in stored[section].items()
+                                   if key in current[section] or key in SECTION_KEYS[section]}
         # Version 1 predates extensions and always used LM without callbacks.
         if version == 1:
             stored.setdefault("extensions", {"integrator": {"name": "lm", "settings": {}}, "callbacks": {}})

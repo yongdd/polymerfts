@@ -62,7 +62,7 @@ static RunResult run(const std::string& platform, bool reduce_memory, bool aggre
     molecules->add_polymer(1.0, blocks, {});
     std::unique_ptr<PropagatorComputationOptimizer> optimizer(new PropagatorComputationOptimizer(molecules.get(), aggregate));
     std::unique_ptr<PropagatorComputation<double>> solver(
-        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), "rqm4"));
+        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), ""));
 
     RunResult result;
     result.n_segments = 0;

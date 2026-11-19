@@ -41,7 +41,7 @@ from polymerfts import _core, LFTS, ValidationError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.theory.smearing import Smearing
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
 n_pass = 0
@@ -56,11 +56,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def params(work_dir, nx, lx, max_step, **extra):
@@ -125,7 +120,7 @@ def test_wtmd_restart(root):
 
 def test_wtmd_cell():
     nx, lx, angles = [10, 10, 8], [1.8, 1.8, 2.3], [90.0, 90.0, 120.0]
-    wt = quiet(WTMD, nx, lx, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
+    wt = quiet(WTMD, {}, nx, lx, 10000, np.array([-15.0, 0.0]), [0], angles=angles)
     volume = lx[0] * lx[1] * lx[2] * np.sin(np.deg2rad(120.0))
     sm = quiet(Smearing, nx, lx, {"type": "gaussian", "a_int": 0.1}, angles=angles)
     k_ref = np.sqrt(sm.k_sq[:, :, :nx[2] // 2 + 1])
@@ -137,7 +132,7 @@ def test_wtmd_cell():
     # own conjugate. Coarse grids, where fk does not vanish on that plane, show it
     rng = np.random.default_rng(7)
     for nx, lx in (([6, 6, 6], [2.0] * 3), ([6, 6, 5], [2.0] * 3), ([12, 12, 9], [4.0] * 3)):
-        wt = quiet(WTMD, nx, lx, 10000, np.array([-12.0, 200.0]), [0])
+        wt = quiet(WTMD, {}, nx, lx, 10000, np.array([-12.0, 200.0]), [0])
         w = rng.normal(0, 5, nx)
         psi = wt.order_parameter(np.array([w.ravel(), np.zeros(w.size)]))
         k = np.meshgrid(*[2 * np.pi / lx[d] * np.fft.fftfreq(nx[d], 1.0 / nx[d]) for d in range(3)], indexing="ij")
@@ -151,17 +146,11 @@ def test_wtmd_cell():
     psi = quiet(wt.add_bias, np.zeros([2, int(np.prod(nx))]), langevin)
     check(psi == 0.0 and np.array_equal(langevin, np.zeros_like(langevin)), "WTMD: no bias at a zero exchange field")
 
-    # The constructor scales copies of the given statistics, not the caller's arrays
-    I1 = {"A,B": np.ones(wt.bins)}
-    wt = quiet(WTMD, nx, lx, 10000, np.array([-12.0, 200.0]), [0], I1=I1)
-    check(np.array_equal(I1["A,B"], np.ones(wt.bins)) and np.allclose(wt.I1["A,B"], 1.0 / wt.CV, rtol=1e-15, atol=0),
-          "WTMD: the given I1 arrays are left unchanged")
-
 
 def test_wtmd_hills():
     def update(psis):
-        wt = quiet(WTMD, [4, 4, 4], [1.0, 1.0, 1.0], 10000, np.array([-12.0, 200.0]), [0],
-                   sigma_psi=0.05, psi_min=0.0, psi_max=2.0, dpsi=1e-3)
+        wt = quiet(WTMD, {"sigma_psi": 0.05, "psi_min": 0.0, "psi_max": 2.0, "dpsi": 1e-3},
+                   [4, 4, 4], [1.0, 1.0, 1.0], 10000, np.array([-12.0, 200.0]), [0])
         for psi in psis:
             wt.store_order_parameter(psi, {"A,B": 2.5})
         quiet(wt.update_statistics)

@@ -36,14 +36,11 @@ from polymerfts import CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import _measurement_key
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
+from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, silenced
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(directory, steps=2, screening_length=None, ions=None, **electrostatics):

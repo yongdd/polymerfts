@@ -12,9 +12,8 @@
  * **Multi-Stream Architecture:**
  *
  * The library supports up to MAX_STREAMS (4) parallel CUDA streams for
- * concurrent propagator computation. Each stream has two sub-streams:
- * one for kernel execution and one for memory transfers, enabling
- * overlap of computation and data movement.
+ * concurrent propagator computation, one CUDA stream per stream index; the
+ * transfers of a propagator are enqueued on the stream that computes it.
  *
  * **Type System:**
  *
@@ -42,9 +41,6 @@
 #include "Exception.h"
 #include "GridLimits.h"
 
-// // The maximum of GPUs
-// #define MAX_GPUS 2
-
 /**
  * @def MAX_STREAMS
  * @brief Maximum number of parallel CUDA streams for propagator computation.
@@ -54,12 +50,6 @@
  * but increase memory usage.
  */
 #define MAX_STREAMS 4
-
-/**
- * @typedef ftsComplex
- * @brief Alias for cuDoubleComplex (CUDA double-precision complex).
- */
-typedef cuDoubleComplex ftsComplex;
 
 /**
  * @brief Type mapping from C++ types to CUDA device types.
@@ -82,7 +72,7 @@ using CuDeviceData = std::conditional_t<std::is_same_v<T, double>,              
 >;
 
 // Complex buffers are copied with sizeof(T)*n bytes and their pointers are
-// reinterpreted between the two types (reinterpret_map, raw casts), so the
+// reinterpreted between the two types (raw casts), so the
 // host and device complex types must have the same size.
 static_assert(sizeof(std::complex<double>) == sizeof(cuDoubleComplex),
               "std::complex<double> and cuDoubleComplex must have the same size");
@@ -104,28 +94,11 @@ struct ComplexSumOp {
 };
 
 /**
- * @brief Convert cuDoubleComplex to std::complex<double>.
- * @param z CUDA complex number
- * @return Equivalent std::complex<double>
- */
-std::complex<double> cuDoubleToStdComplex(cuDoubleComplex z);
-
-/**
  * @brief Convert std::complex<double> to cuDoubleComplex.
  * @param z Standard library complex number
  * @return Equivalent cuDoubleComplex
  */
 cuDoubleComplex stdToCuDoubleComplex(const std::complex<double>& z);
-
-/**
- * @brief Reinterpret a map of pointers from one type to another.
- * @tparam From Source pointer type
- * @tparam To Target pointer type
- * @param input Map with From* values
- * @return Map with To* values (reinterpret_cast)
- */
-template<typename From, typename To>
-std::map<std::string, const To*> reinterpret_map(const std::map<std::string, const From*>& input);
 
 /**
  * @class CudaCommon
@@ -201,8 +174,8 @@ public:
  * Release calls are not checked: they run in destructors and release() paths,
  * which must not throw. cudaFree/cudaFreeHost go through ignore_release_error()
  * so a failed one is not reported by a later check; cuFFT plans are owned by
- * CufftPlan, and streams and events are created and destroyed through the
- * counting helpers (count_cuda_stream(), release_cuda_stream(), ...).
+ * CufftPlan, and streams are created and destroyed through the counting
+ * helpers count_cuda_stream() and release_cuda_stream().
  *
  * @example
  * @code
@@ -294,8 +267,8 @@ inline std::atomic<long long>& cuda_release_failures()
 
 /**
  * @brief Take the result of a release call (cudaFree, cudaFreeHost) without
- *        throwing; streams, events and cuFFT plans go through the counting
- *        release_cuda_stream(), release_cuda_event() and release_cufft_plan().
+ *        throwing; streams and cuFFT plans go through the counting
+ *        release_cuda_stream() and release_cufft_plan().
  *
  * Releases run in destructors and release() paths, which must not throw, and a
  * failed release cannot be retried. A failed runtime call (cudaFree, ...) still
@@ -319,7 +292,7 @@ inline void ignore_release_error(cudaError_t code) noexcept
         cuda_release_failures().fetch_add(1, std::memory_order_relaxed);
     }
 }
-/// Live cuFFT plans, CUDA streams and CUDA events created by the library. Like
+/// Live cuFFT plans and CUDA streams created by the library. Like
 /// the allocation counters below they are exact, so the tests can check that
 /// destroyed objects released all of them (device free memory shows a leaked
 /// plan's work area only roughly).
@@ -327,7 +300,6 @@ struct CudaHandleCounters
 {
     std::atomic<long long> cufft_plans{0};
     std::atomic<long long> streams{0};
-    std::atomic<long long> events{0};
 };
 inline CudaHandleCounters& cuda_handle_counters()
 {
@@ -369,13 +341,24 @@ inline void release_cufft_plan(cufftHandle plan) noexcept
  * arguments of that call; it counts a created plan (count_cufft_plan()) and returns
  * the cuFFT result for CUFFT_CHECK or the caller's own message. The handle is lent
  * by the implicit conversion, so cufftExec*, cufftSetStream and cufftMakePlan* read
- * as before.
+ * as before. create_without_work_area() makes a plan that has no work area of its
+ * own, so that plans that never run at the same time (those of one stream) can
+ * share one.
  *
  * @code
  * CufftPlan plan;
  * CUFFT_CHECK(plan.create(cufftPlanMany, rank, n, nullptr, 1, 0, nullptr, 1, 0, CUFFT_D2Z, 1));
  * CUFFT_CHECK(cufftSetStream(plan, stream));
  * CUFFT_CHECK(cufftExecD2Z(plan, d_in, d_out));
+ *
+ * // Two plans with one work area
+ * CufftPlan forward, backward;
+ * size_t work_bytes = 0;
+ * CUFFT_CHECK(forward.create_without_work_area(work_bytes, cufftMakePlanMany, rank, n, nullptr, 1, 0, nullptr, 1, 0, CUFFT_D2Z, 1));
+ * CUFFT_CHECK(backward.create_without_work_area(work_bytes, cufftMakePlanMany, rank, n, nullptr, 1, 0, nullptr, 1, 0, CUFFT_Z2D, 1));
+ * CudaDeviceBuffer<char> work(work_bytes);
+ * CUFFT_CHECK(cufftSetWorkArea(forward, work.get()));
+ * CUFFT_CHECK(cufftSetWorkArea(backward, work.get()));
  * @endcode
  */
 class CufftPlan
@@ -417,6 +400,30 @@ public:
         }
         return code;
     }
+    /// Destroy the plan held, then create one without a work area of its own:
+    /// cufftCreate(), automatic work-area allocation off, then make(handle, args...,
+    /// &bytes) with a cufftMakePlan* call. work_bytes grows to the size the plan needs;
+    /// before the plan runs, the owner lends it an area of that size with
+    /// cufftSetWorkArea() (none when the size is 0). The object holds the plan only
+    /// when every step succeeded.
+    template <typename Make, typename... Args>
+    cufftResult create_without_work_area(size_t& work_bytes, Make make, Args&&... args)
+    {
+        cufftResult code = create(cufftCreate);
+        if (code == CUFFT_SUCCESS)
+            code = cufftSetAutoAllocation(handle_, 0);
+        size_t bytes = 0;
+        if (code == CUFFT_SUCCESS)
+            code = make(handle_, std::forward<Args>(args)..., &bytes);
+        if (code != CUFFT_SUCCESS)
+        {
+            reset();
+            return code;
+        }
+        if (bytes > work_bytes)
+            work_bytes = bytes;
+        return code;
+    }
     /// Destroy the plan (no-op when empty).
     void reset() noexcept
     {
@@ -445,25 +452,10 @@ inline void release_cuda_stream(cudaStream_t stream) noexcept
     cuda_handle_counters().streams.fetch_sub(1, std::memory_order_relaxed);
     ignore_release_error(cudaStreamDestroy(stream));
 }
-/// Count a created event (pass the result of cudaEventCreate* through this).
-inline cudaError_t count_cuda_event(cudaError_t code) noexcept
-{
-    if (code == cudaSuccess)
-        cuda_handle_counters().events.fetch_add(1, std::memory_order_relaxed);
-    return code;
-}
-/// Destroy an event counted by count_cuda_event(), without throwing.
-inline void release_cuda_event(cudaEvent_t event) noexcept
-{
-    cuda_handle_counters().events.fetch_sub(1, std::memory_order_relaxed);
-    ignore_release_error(cudaEventDestroy(event));
-}
 
 __global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M);
 
 __global__ void ker_linear_scaling(double* dst, const double* src, double a, double b, const int M);
-__global__ void ker_linear_scaling(cuDoubleComplex* dst, const cuDoubleComplex* src, double a, cuDoubleComplex b, const int M);
-__global__ void ker_linear_scaling(cuDoubleComplex* dst, const cuDoubleComplex* src, cuDoubleComplex a, double b, const int M);
 
 __global__ void ker_exp(double* dst, const double* src, double a, double exp_b, const int M);
 __global__ void ker_exp(cuDoubleComplex* dst, const cuDoubleComplex* src, double a, double exp_b, const int M);
@@ -471,12 +463,6 @@ __global__ void ker_exp(cuDoubleComplex* dst, const cuDoubleComplex* src, double
 __global__ void ker_multi(double* dst, const double* src1, const double* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M);
 __global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);
-__global__ void ker_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M);
-// Combined stress kernels for non-orthogonal boxes
-
-__global__ void ker_mutiple_multi(int n_comp, double* dst, const double* src1, const double* src2, double  a, const int M);
-__global__ void ker_mutiple_multi(int n_comp, cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double  a, const int M);
-
 __global__ void ker_multi_complex_conjugate(double* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, const int M);
 __global__ void ker_multi_complex_conjugate(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, const int M);
 
@@ -485,10 +471,6 @@ __global__ void ker_divide(cuDoubleComplex* dst, const cuDoubleComplex* src1, co
 /// Divide only at accessible sites; zero mask/weights means an excluded site, not a zero-divisor clamp.
 __global__ void ker_divide_masked(double* dst, const double* src1, const double* src2, double a, const double* mask, const int M);
 __global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const double* mask, const int M);
-
-__global__ void ker_add_multi(double* dst, const double* src1, const double* src2, double a, const int M);
-__global__ void ker_add_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, double a, const int M);
-__global__ void ker_add_multi(cuDoubleComplex* dst, const cuDoubleComplex* src1, const cuDoubleComplex* src2, cuDoubleComplex a, const int M);
 
 __global__ void ker_lin_comb(double* dst, double a, const double* src1, double b, const double* src2, const int M);
 __global__ void ker_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M);
@@ -505,12 +487,7 @@ __global__ void ker_lin_comb_exp(
     const double* src2, const double* exp2, double b,
     const double* mask, const int M);
 
-__global__ void ker_add_lin_comb(double* dst, double a, const double* src1, double b, const double* src2, const int M);
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M);
-__global__ void ker_add_lin_comb(cuDoubleComplex* dst, cuDoubleComplex a, const cuDoubleComplex* src1, cuDoubleComplex b, const cuDoubleComplex* src2, const int M);
-
 __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, double a, const int M);
-__global__ void ker_multi_complex_real(cuDoubleComplex* dst, const cuDoubleComplex* src1, const double* src2, double a, const int M);
 
 __global__ void ker_multi_exp_dw_two(
     double* dst1, const double* src1, const double* exp_dw1,
@@ -602,9 +579,6 @@ __global__ void ker_multi_map(
  */
 __global__ void ker_multi_weight(
     double* dst, const double* src, const int* weights, const int n);
-
-__global__ void ker_multi_weight(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* weights, const int n);
 
 //==============================================================================
 // Owning CUDA allocations

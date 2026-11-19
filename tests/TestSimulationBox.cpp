@@ -115,30 +115,23 @@ static bool check_host_reductions(ComputationBox<double>& cb)
 #ifdef USE_CUDA
 // Device reductions of a box against its host ones, for two fields of length n
 // (the full grid, or the reduced basis with a space group); returns the largest
-// difference, including the field after zero_mean_device
+// difference
 static double device_host_difference(CudaComputationBox<double>& cb, int n)
 {
-    std::vector<double> g(2*n), h(2*n), g_device(n);
-    for (int i = 0; i < 2*n; i++)
+    std::vector<double> g(n), h(n);
+    for (int i = 0; i < n; i++)
     {
         g[i] = std::sin(0.7*i + 0.3) + 0.5;
         h[i] = std::cos(1.3*i) - 0.2;
     }
     double *d_g, *d_h;
-    CUDA_CHECK(cudaMalloc((void**)&d_g, sizeof(double)*2*n));
-    CUDA_CHECK(cudaMalloc((void**)&d_h, sizeof(double)*2*n));
-    CUDA_CHECK(cudaMemcpy(d_g, g.data(), sizeof(double)*2*n, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_h, h.data(), sizeof(double)*2*n, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc((void**)&d_g, sizeof(double)*n));
+    CUDA_CHECK(cudaMalloc((void**)&d_h, sizeof(double)*n));
+    CUDA_CHECK(cudaMemcpy(d_g, g.data(), sizeof(double)*n, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_h, h.data(), sizeof(double)*n, cudaMemcpyHostToDevice));
 
     double diff = std::abs(cb.integral_device(d_g) - cb.integral(g.data()));
     diff = max_or_nan(diff, std::abs(cb.inner_product_device(d_g, d_h) - cb.inner_product(g.data(), h.data())));
-    diff = max_or_nan(diff, std::abs(cb.multi_inner_product_device(2, d_g, d_h) - cb.multi_inner_product(2, g.data(), h.data())));
-
-    cb.zero_mean(g.data());
-    cb.zero_mean_device(d_g);
-    CUDA_CHECK(cudaMemcpy(g_device.data(), d_g, sizeof(double)*n, cudaMemcpyDeviceToHost));
-    for (int i = 0; i < n; i++)
-        diff = max_or_nan(diff, std::abs(g_device[i] - g[i]));
 
     cudaFree(d_g);
     cudaFree(d_h);
@@ -147,9 +140,7 @@ static double device_host_difference(CudaComputationBox<double>& cb, int n)
 
 // Device reductions = host reductions, on the full grid and on the reduced
 // basis of Im-3m with a mask of that symmetry (cavities at the corner and the
-// body center). Until 2026-10 zero_mean_device added the sum to real fields
-// instead of subtracting the mean, and the device multi inner product and
-// zero mean ignored the space group.
+// body center).
 static bool check_device_reductions()
 {
     CudaComputationBox<double> cb({1,2,2}, {4.5,3.5,2.5}, {});

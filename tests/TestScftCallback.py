@@ -13,13 +13,8 @@ import sys
 
 import numpy as np
 
-from polymerfts import SCFT, IterationInfo, PlatformSelector
-
-
-def cpu_platform():
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+from polymerfts import SCFT, IterationInfo
+from cuda_part import cpu_platform
 
 
 def lamella_params():
@@ -43,9 +38,6 @@ def initial_fields():
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        sys.exit(77)  # ctest SKIP_RETURN_CODE
     failed = []
 
     # A callback returning False stops the run

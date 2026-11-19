@@ -53,9 +53,22 @@ private:
     /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
     RealSpaceBond::Bonds bonds;
 
+    /// Work arrays of one calling thread (PerThread)
+    struct WorkArrays
+    {
+        std::vector<T> full_1, full_2;   ///< full-grid propagators (space group): the input and output, or the stress pair
+        std::vector<T> dq;               ///< stress: the derivative of the bond applied to q_2
+        std::vector<T> pass_a, pass_b;   ///< convolve(): results of the axis passes
+        std::vector<T> line;             ///< convolve(): a line with its halo
+    };
+    PerThread<WorkArrays> work_arrays_;   ///< Work arrays of each thread
+
+    /// Work arrays of the calling thread (created on first use)
+    WorkArrays& work_arrays() const { return work_arrays_.get(); }
+
     /// q_out = g * q_in, one axis after another, on the full grid; a derivative replaces the kernel
     /// of axis derivative_axis
-    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
+    void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels, WorkArrays& work,
                   int derivative_axis = -1, const RealSpaceBond::Derivative* derivative = nullptr) const;
     /// q on the full grid: q itself, or with a space group its expansion into buffer
     const T* expanded(const T* q, std::vector<T>& buffer) const;

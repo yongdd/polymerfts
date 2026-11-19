@@ -33,10 +33,12 @@ Two homopolymers A and B (discrete chains, N = 20) on 4x4 grids:
    projection on neutral moves, against the stated mobility, and the bounded step of boxes of
    equal composition, where the Hessians of the boxes are singular.
 8. Options of other methods in the input: one warning at the line that builds the ensemble and none
-   from its runs; a continuation without them reproduces the uninterrupted run, and the hash of an
-   input without them is that of earlier histories.
+   from its runs; a continuation without them, and with other verbosity and memory options,
+   reproduces the uninterrupted run, a continuation may change the platform, and the histories of
+   earlier versions continue with the input that wrote them.
 """
 
+import copy
 import json
 import os
 import tempfile
@@ -50,14 +52,10 @@ from scipy.io import loadmat
 from scipy.optimize import brentq, fsolve
 from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector, ValidationError
 from polymerfts.utils.common import input_hash, json_ready
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
 N, CHI = 20, 3.0
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(directory, cycles, nbar=1e28, fractions=((0.7, 0.3), (0.3, 0.7)), charge=0.0, ions=None,
@@ -369,8 +367,12 @@ def restart(root):
 def input_keys(root):
     """The options of other methods in the input: one warning, at the line that builds the ensemble, and
     none from its runs. The boxes and the hash of the history leave them out, so that a continuation
-    may drop them; the hash of an input without them is that of the histories written before (every key
-    but gibbs_ensemble, langevin without max_step), and a key given as None is absent."""
+    may drop them, and so does the hash with the keys that the boxes take from the cycles (max_step, the
+    recording directory and intervals, the volume fractions of the polymers) and with the verbosity,
+    platform and memory options, which a continuation may change or drop; a key given as None is absent.
+    A history written before, whose hash holds every key but gibbs_ensemble and max_step, or every key
+    but those and the keys of the cycles, continues with the input that wrote it, takes the hash without
+    those keys, and refuses an input that changes one of them."""
     def make(directory, cycles, **extra):
         params = parameters(directory, cycles, nbar=1e4)
         params.update(extra)
@@ -388,15 +390,47 @@ def input_keys(root):
     assert os.path.realpath(warned(caught)[0].filename) == os.path.realpath(__file__), warned(caught)[0].filename
     for b in range(2):
         assert not set(ignored) & set(part.box_params(b, part.amounts[b], 0)), "a box takes the ignored keys"
-    part = make(root / "keys_part", 2)
+    polymers = [dict(polymer, volume_fraction=0.9) for polymer in part.params["polymers"]]
+    part = make(root / "keys_part", 2, langevin={"nbar": 1e4, "dt": 0.5}, polymers=polymers,
+                recording={"dir": str(root / "keys_part"), "sample_interval": 1, "checkpoint_interval": 7},
+                verbose_level=1, reduce_memory=True, aggregate_propagator_computation=False)
     quiet(part.continue_run)
     full = make(root / "keys_full", 2)
     quiet(full.run)
     assert part.history["cycles"] == full.history["cycles"], "continuation without the ignored keys differs"
+    assert make(root / "keys_full", 2, angles=None, smearing=None).settings() == full.settings()
+    for platform in PlatformSelector.avail_platforms():
+        if platform.startswith("cpu") and platform != full.params["platform"]:
+            cycles = len(part.history["cycles"]) + 1
+            part = make(root / "keys_part", cycles, platform=platform)
+            quiet(part.continue_run)
+            assert len(part.history["cycles"]) == cycles, platform
+
+    # A history written before
     template = {key: value for key, value in full.params.items() if key != "gibbs_ensemble"}
     template["langevin"] = {key: value for key, value in template["langevin"].items() if key != "max_step"}
-    assert full.settings()["input_hash"] == input_hash(json_ready(template)), "the hash of earlier histories changed"
-    assert make(root / "keys_full", 2, angles=None, smearing=None).settings() == full.settings()
+    path = root / "keys_full" / "gibbs_history.json"
+    history = json.loads(path.read_text())
+    assert history["settings"]["input_hash"] == full.settings()["input_hash"] != input_hash(json_ready(template))
+    history["settings"]["input_hash"] = input_hash(json_ready(template))
+    path.write_text(json.dumps(history))
+    changed = make(root / "keys_full", 3, recording=dict(full.params["recording"], checkpoint_interval=2))
+    expect_validation_error(changed.continue_run, "input differs")
+    quiet(make(root / "keys_full", 3).continue_run)
+    history = json.loads(path.read_text())
+    assert len(history["cycles"]) == 3 and history["settings"]["input_hash"] == full.settings()["input_hash"]
+    # A history written until 2026-11-19, whose hash holds the verbosity, platform and memory options too
+    template = copy.deepcopy(template)
+    for key in ("dir", "checkpoint_interval", "statistics_save_interval"):
+        template["recording"].pop(key)
+    for polymer in template["polymers"]:
+        polymer.pop("volume_fraction")
+    history["settings"]["input_hash"] = input_hash(json_ready(template))
+    path.write_text(json.dumps(history))
+    expect_validation_error(make(root / "keys_full", 4, verbose_level=1).continue_run, "input differs")
+    quiet(make(root / "keys_full", 4).continue_run)
+    history = json.loads(path.read_text())
+    assert len(history["cycles"]) == 4 and history["settings"]["input_hash"] == full.settings()["input_hash"]
 
 
 def snapped_parameters(directory, cycles, platform):

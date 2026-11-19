@@ -12,7 +12,12 @@ AB diblocks with charged blocks in 1D periodic boxes (Gaussian smearing 0.05):
    lamella approach those of the neutral diblock with chi_eff as 1/kappa^2, and the Richardson
    extrapolation agrees with them.
 4. The stress equals the derivative of the free energy with respect to the box length, with
-   canonical point ions (unscreened) and with grand-canonical ions and screening.
+   canonical point ions (unscreened) and with grand-canonical ions and screening. In a 2D oblique
+   cell (100 degrees, canonical ions, 24 x 20) the stress of L1, L2 and gamma equals the central
+   differences of F (1e-6); without its electrostatic part it does not (1e-2). A lamella with
+   canonical point ions relaxed with relax_cell from L = 3.6 reaches a period where dF/dL of
+   fixed-cell runs vanishes (1e-6): the Coulomb kernel and the smearing of the point ions follow
+   the cell (kept at the first cell, they move the period by 6 % and 0.2 %).
 5. Homogeneous states: grand-canonical salt gives the Donnan potential, a screened net charge
    psi_0 = E q/kappa^2, and both have the free energy of the homogeneous reference; canonical
    point ions add their ideal terms N c_s (ln N c_s - 1) to it, and their charge to q.
@@ -32,14 +37,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import SCFT, PlatformSelector, ValidationError
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 
 NX, N = 64, 50
 X = np.arange(NX) / NX
-
-
-def cpu_platform():
-    return next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu"))
 
 
 def parameters(chi_n, electrostatics=None, lx=4.3, relax_cell=False, chain_model="discrete", platform=None):
@@ -155,6 +156,60 @@ def stress():
         assert abs(derivative - expected) < 1e-5 * abs(expected), f"{name}: stress {derivative:.10e}, dF/dL {expected:.10e}"
 
 
+def stress_oblique():
+    """The stress (L1, L2, gamma) of a 2D oblique cell (100 degrees) with canonical point ions equals the central
+    differences of F, and the electrostatic part of it matters."""
+    nx, lx, gamma = [24, 20], [2.2, 2.0], 100.0
+    electrostatics = {"charges": {"A": 0.2}, "coupling": 600.0,
+                      "ions": {"Na": {"valence": 1.0, "concentration": 0.02, "smearing_length": 0.07},
+                               "Cl": {"valence": -1.0, "concentration": 0.02, "smearing_length": 0.12}}}
+
+    def oblique(lx, gamma):
+        params = parameters(16.0, electrostatics)
+        params.update(nx=nx, lx=lx, angles=[gamma], ds=1 / 20, segment_lengths={"A": 1.0, "B": 1.2},
+                      smearing={"type": "gaussian", "a_int": 0.1}, tolerance=1e-11, max_iter=4000,
+                      polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.4},
+                                                                     {"type": "B", "length": 0.6}]}])
+        return params
+
+    f = np.meshgrid(*[np.arange(n) / n for n in nx], indexing="ij")
+    w0 = (3.0 * np.cos(2 * np.pi * f[0]) + 2.0 * np.sin(2 * np.pi * (f[0] + f[1]))).ravel()
+    sim, result = run(oblique(lx, gamma), {"A": w0, "B": -w0})
+    w = np.array([result.w[m] for m in sim.monomer_types])
+    with contextlib.redirect_stdout(io.StringIO()):
+        sim.compute_concentrations(w)
+    stress = sim.cell.stress(w, result.phi)[:3]
+    electrostatic = sim.electrostatics.stress(sim.smearing.lattice_derivatives_k_sq())[:3]
+    h, derivatives = 1e-4, []
+    for slot in range(3):
+        energies = []
+        for sign in (1.0, -1.0):
+            box, angle = list(lx), gamma
+            if slot < 2:
+                box[slot] += sign * h
+            else:
+                angle += sign * np.rad2deg(h)
+            energies.append(run(oblique(box, angle), dict(result.w), result.psi)[1].free_energy_absolute)
+        derivatives.append((energies[0] - energies[1]) / (2 * h))
+    scale = np.max(np.abs(derivatives))
+    error = np.max(np.abs(stress - derivatives)) / scale
+    error_without = np.max(np.abs(stress - electrostatic - derivatives)) / scale
+    assert error < 1e-6 and error_without > 1e-2, \
+        f"oblique stress {stress}, dF/d(L1, L2, gamma) {derivatives}: rel. error {error:.1e} " \
+        f"(without the electrostatic part {error_without:.1e})"
+
+
+def relaxation():
+    electrostatics = {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()}
+    _, result = run(parameters(18.0, electrostatics, lx=3.6, relax_cell=True))
+    length, delta, energies = result.lx[0], 1e-4, []
+    for sign in (1.0, -1.0):
+        _, shifted = run(parameters(18.0, electrostatics, lx=length + sign * delta), dict(result.w), result.psi)
+        energies.append(shifted.free_energy_absolute)
+    derivative = (energies[0] - energies[1]) / (2 * delta)
+    assert abs(derivative) < 1e-6, f"relaxed period {length:.6f}: dF/dL {derivative:.1e} of fixed-cell runs"
+
+
 def homogeneous():
     # Donnan: 0.1 + c0 (x - 1/x) = 0 for the A charge 0.2 at phi_A = 0.5, x = exp(-psi_0/N)
     c0 = 0.02
@@ -162,7 +217,7 @@ def homogeneous():
                                        "ions": ions("chemical_potential", (np.log(N * c0),) * 2)}))
     x = (-0.1 / c0 + np.sqrt((0.1 / c0) ** 2 + 4.0)) / 2.0
     assert np.max(np.abs(result.psi + N * np.log(x))) < 1e-8 * N, "Donnan potential"
-    numbers = sim.electrostatics.ion_number_densities(sim.psi)
+    numbers = sim.electrostatics.ion_number_densities()
     assert np.allclose(numbers, [N * c0 * x, N * c0 / x], rtol=1e-8), "Donnan ion numbers"
     assert abs(result.free_energy) < 1e-10, f"Donnan free energy {result.free_energy}"
     # Screened net charge q = 0.1: psi_0 = E q/kappa^2, F = E q^2/(2 kappa^2) on top of Flory-Huggins
@@ -193,10 +248,10 @@ def homogeneous():
 def ensembles():
     sim, canonical = run(parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()}))
     mu = canonical.ion_chemical_potentials
-    numbers = sim.electrostatics.ion_number_densities(sim.psi)
+    numbers = sim.electrostatics.ion_number_densities()
     sim, grand = run(parameters(18.0, {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions("chemical_potential", mu)}))
     assert np.max(np.abs(grand.phi["A"] - canonical.phi["A"])) < 1e-8, "concentrations"
-    assert np.allclose(sim.electrostatics.ion_number_densities(sim.psi), numbers, rtol=1e-8), "numbers of ions"
+    assert np.allclose(sim.electrostatics.ion_number_densities(), numbers, rtol=1e-8), "numbers of ions"
     expected = canonical.free_energy_absolute - float(np.dot(numbers, mu))
     assert abs(grand.free_energy_absolute - expected) < 1e-8, \
         f"grand free energy {grand.free_energy_absolute:.10f} against {expected:.10f}"
@@ -247,7 +302,8 @@ def main():
     if not any(p.startswith("cpu") for p in PlatformSelector.avail_platforms()):
         return 77
     for name, check in (("inputs", inputs), ("neutral reduction", neutral_reduction),
-                        ("strong screening", strong_screening), ("stress", stress),
+                        ("strong screening", strong_screening), ("stress", stress), ("oblique stress", stress_oblique),
+                        ("relaxation", relaxation),
                         ("homogeneous states", homogeneous), ("ensembles", ensembles), ("axis ordering", axis_ordering),
                         ("platforms", platforms)):
         check()

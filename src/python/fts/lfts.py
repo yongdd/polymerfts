@@ -29,10 +29,6 @@ from ..theory.smearing import smearing_of
 from .structure_functions import LftsStructureFunctions
 from .wtmd import WTMD
 
-# OpenMP environment variables
-os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
-os.environ.setdefault("OMP_STACKSIZE", "1G")
-
 
 class LFTS:
     """Langevin field-theoretic simulation (L-FTS) of polymer melts and solutions.
@@ -81,6 +77,11 @@ class LFTS:
     Complete scripts: examples/block_copolymer/lfts/ (Lamella.py, Gyroid.py) and
     examples/blend/lfts/MixtureBlockRandom.py.
     """
+
+    # run() draws the chain architectures into the recording directory unless this is False (on the
+    # object, or on the class for every simulation built afterwards)
+    draw_architectures = True
+
     @classmethod
     def from_file(cls, path, random_seed=None, *, integrator=None, callbacks=None, **overrides):
         """Create a simulation from a YAML or JSON parameter file.
@@ -166,27 +167,19 @@ class LFTS:
 
     def _create_wtmd(self, params):
         # Well-Tempered Metadynamics (WTMD), if parameters are provided. The WTMD class
-        # follows deep-langevin-fts; the input names differ: "ell" and "delta_t" here for its
-        # "l" and "dT"
+        # follows deep-langevin-fts and reads the input "wtmd" with its defaults
         wtmd_params = params.get("wtmd", None)
         if wtmd_params is not None:
             wtmd = WTMD(
+                wtmd_params,
                 nx=list(self.cb.get_nx()),
                 lx=list(self.cb.get_lx()),
                 angles=self.prop_solver.get_angles_degrees(),
                 nbar=params["langevin"]["nbar"],
                 eigenvalues=self.mpt.eigenvalues,
                 real_fields_idx=self.mpt.aux_fields_real_idx,
-                l=wtmd_params.get("ell", 4),
-                kc=wtmd_params.get("kc", 6.02),
-                dT=wtmd_params.get("delta_t", 5.0),
-                sigma_psi=wtmd_params.get("sigma_psi", 0.16),
-                psi_min=wtmd_params.get("psi_min", 0.0),
-                psi_max=wtmd_params.get("psi_max", 10.0),
-                dpsi=wtmd_params.get("dpsi", 1e-3),
-                update_freq=wtmd_params.get("update_freq", 1000),
-                recording_period=wtmd_params.get("recording_period", 100000),
                 fourier=self.prop_solver.fourier if self._periodic_box else None,
+                verbose_level=params["verbose_level"],
             )
             print("WTMD enabled: l=%d, sigma_psi=%.4f, dT=%.4f, kc=%.4f, exchange_idx=%d, langevin_idx=%d" % (
                 wtmd.l, wtmd.sigma_psi, wtmd.dT, wtmd.kc, wtmd.exchange_idx, wtmd.langevin_idx))
@@ -232,7 +225,7 @@ class LFTS:
         check_partition_once(self, lambda: self.mpt.to_monomer_fields_dict(w_aux))
         return phi, elapsed_time
 
-    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):
+    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux, record):
         """Save L-FTS simulation checkpoint data to MATLAB file.
 
         Saves the current state of the simulation including fields, concentrations,
@@ -251,10 +244,14 @@ class LFTS:
         normal_noise_prev : ndarray
             Previous Langevin noise (needed for Leimkuhler-Matthews method),
             shape (R, total_grid) where R is number of real auxiliary fields.
+        w_aux : ndarray
+            The auxiliary fields of w, shape (M, total_grid).
+        record : RunRecord
+            The measurements of the run since its last statistics file.
         """
 
         # Make dictionary for data
-        mdic = fields_data(self, w, langevin_step, normal_noise_prev, w_aux)
+        mdic = fields_data(self, w_aux, langevin_step, normal_noise_prev, record)
 
         # Add w fields to the dictionary
         for i, name in enumerate(self.monomer_types):
@@ -449,11 +446,11 @@ class LFTS:
 
             # Save simulation data
             if langevin_step % self.recording["checkpoint_interval"] == 0:
-                self._recording_state = record
                 w = self.mpt.to_monomer_fields(w_aux)
                 self.save_simulation_data(
                     path=os.path.join(self.recording["dir"], "fields_%06d.mat" % (langevin_step)),
-                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux)
+                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux,
+                    record=record)
 
         print("Cumulative failed saddle-point solves: %d times" % self.run_status["saddle_failures"])
 

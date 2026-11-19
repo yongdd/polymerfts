@@ -29,7 +29,8 @@ os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import _core, scft
+from polymerfts import scft
+from cuda_part import cpu_platform
 
 NX = 64
 x = np.arange(NX)
@@ -46,11 +47,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def run(chi_n, blocks, lx, zeta_n, initial, extra=None):

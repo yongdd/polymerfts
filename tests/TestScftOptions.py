@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-SCFT options: angle relaxation, axis_ordering, the field-residual projector and tied lengths.
+SCFT options: angle relaxation, axis_ordering, the retired stress_interval, the field-residual projector and tied
+lengths.
 
 1. Angle relaxation (Oblique2D): hexagonal cylinders started from gamma = 100 deg
    relax to gamma = 120 deg with a = b. The angles enter the optimizer in radians,
@@ -11,7 +12,14 @@ SCFT options: angle relaxation, axis_ordering, the field-residual projector and 
 2. axis_ordering: a run whose nx, lx, bc and initial fields are given in the
    order ["b", "a"] reproduces the run in the standard order (results are in the
    standard order). Until 2026-10 the initial fields and the boundary conditions
-   were not reordered (walls on the wrong axis: dF 9e-2 here).
+   were not reordered (walls on the wrong axis: dF 9e-2 here). A triclinic 3D cell
+   given in three other axis orders reproduces the standard run: its angles move
+   with the axes. The four runs agree step by step, so 10 iterations show it (with
+   the angles not moved: dF 1.6-1.9e-2).
+   stress_interval: the stress is computed in every iteration of the cell
+   relaxation; a given stress_interval (the option of earlier releases that computed
+   it every few iterations) is ignored with one warning, also through from_file, and
+   the run is that of the input without it, bit for bit.
 3. Free energy: the full CE value from the monomer fields does not change when
    the field means are moved to the saddle point (the fields of L-FTS), 1e-10.
    Subtracting the ideal mixing term gives the field-theoretic Hamiltonian with
@@ -57,15 +65,18 @@ SCFT options: angle relaxation, axis_ordering, the field-residual projector and 
 import os
 import io
 import sys
+import json
 import contextlib
 import tempfile
+import warnings
 from pathlib import Path
 
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import _core, scft, ValidationError
+from polymerfts import scft, ValidationError
+from cuda_part import cpu_platform
 
 n_pass = 0
 n_fail = 0
@@ -79,11 +90,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def base(nx, lx, chi_n, blocks, box):
@@ -149,6 +155,66 @@ def test_axis_ordering():
     check(abs(standard.free_energy - reordered.free_energy) < 1e-10 and d_phi < 1e-8,
           f"axis_ordering ['b', 'a'] with walls on a reproduces the standard run "
           f"(dF {abs(standard.free_energy - reordered.free_energy):.1e}, dphi {d_phi:.1e})")
+
+
+def test_axis_ordering_3d():
+    """A triclinic cell given in three other axis orders: the angles move with the axes."""
+    nx, lx, angles = [8, 10, 12], [2.0, 2.3, 2.6], [80.0, 95.0, 105.0]
+    g = np.meshgrid(*[np.arange(n) / n for n in nx], indexing="ij")
+    w_a = 3.0 * np.cos(2 * np.pi * g[0]) + 2.0 * np.cos(2 * np.pi * (g[1] + g[2])) + np.sin(2 * np.pi * g[2])
+
+    def params(nx, lx, angles, order=None):
+        p = base(nx, lx, {"A,B": 14.0}, [("A", 0.4), ("B", 0.6)], False)
+        p.update(angles=angles, ds=1 / 20, tolerance=1e-10, max_iter=10)
+        if order is not None:
+            p["axis_ordering"] = order
+        return p
+
+    standard = run(params(nx, lx, angles), {"A": w_a.ravel(), "B": -w_a.ravel()})
+    pair = {(1, 2): 0, (0, 2): 1, (0, 1): 2}   # [alpha, beta, gamma]: the angles between axes (b, c), (a, c), (a, b)
+    for order in (["c", "b", "a"], ["b", "c", "a"], ["c", "a", "b"]):
+        axes = ["abc".index(label) for label in order]   # the user's axis k is the standard axis axes[k]
+        user_angles = [angles[pair[tuple(sorted((axes[i], axes[j])))]] for i, j in ((1, 2), (0, 2), (0, 1))]
+        field = np.transpose(w_a, axes).ravel()
+        reordered = run(params([nx[a] for a in axes], [lx[a] for a in axes], user_angles, order), {"A": field, "B": -field})
+        d_f = abs(standard.free_energy - reordered.free_energy)
+        d_phi = np.max(np.abs(np.array(standard.phi["A"]) - np.array(reordered.phi["A"])))
+        d_angles = np.max(np.abs(np.array(reordered.prop_solver.get_angles_degrees()) - angles))
+        check(d_f < 1e-10 and d_phi < 1e-8 and d_angles < 1e-10,
+              f"axis_ordering {order}, triclinic cell with angles {user_angles} in that order: reproduces the "
+              f"standard run (dF {d_f:.1e}, dphi {d_phi:.1e}, angles {d_angles:.1e} from {angles})")
+
+
+def test_stress_interval():
+    """A given stress_interval is ignored with one warning at the line of the caller, also through from_file,
+    and the run is that of the input without it."""
+    nx = 64
+    wave = 5.0 * np.cos(2 * np.pi * np.arange(nx) / nx)
+    params = base([nx], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
+    params["max_iter"] = 30
+    results = []
+    for given in ({}, {"stress_interval": 4}):
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter("always")
+            calc = scft.SCFT(params={**params, **given})
+            result = calc.run(initial_fields={"A": wave, "B": -wave}, return_result=True)
+        results.append(result)
+        warned = [w for w in caught if "'stress_interval' is ignored" in str(w.message)]
+        check(len(warned) == len(given) and len(caught) == len(given)
+              and all(Path(w.filename).resolve() == Path(__file__).resolve() for w in warned),
+              f"input {given}: {len(warned)} warning(s) about stress_interval, at the line of the caller")
+    check(results[0].free_energy == results[1].free_energy and results[0].lx == results[1].lx,
+          f"stress_interval 4 is ignored: the run is that of the input without it (F {results[1].free_energy:.12f}, "
+          f"L {results[1].lx[0]:.10f})")
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "params.json"
+        path.write_text(json.dumps({**params, "stress_interval": "adaptive"}))
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter("always")
+            scft.SCFT.from_file(path)
+    warned = [w for w in caught if "'stress_interval' is ignored" in str(w.message)]
+    check(len(warned) == 1 and Path(warned[0].filename).resolve() == Path(__file__).resolve(),
+          f"from_file with stress_interval: {len(warned)} warning(s), at the line of the caller")
 
 
 def test_free_energy():
@@ -324,6 +390,8 @@ def test_tied_lengths():
 def main():
     test_angle_relaxation()
     test_axis_ordering()
+    test_axis_ordering_3d()
+    test_stress_interval()
     test_free_energy()
     test_field_residual()
     test_singular_chi()

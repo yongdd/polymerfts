@@ -1,7 +1,5 @@
 import os
 import numpy as np
-from scipy.io import savemat, loadmat
-from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -22,7 +20,6 @@ params = {
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
     "relax_cell":True,     # Relax cell lengths and allowed angles during SCFT iteration.
-    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
     "chain_model":"continuous", # "discrete" or "continuous" chain model
     "ds":1/100,                 # Contour step interval, which is equal to 1/N_Ref.
 
@@ -75,12 +72,8 @@ for i in range(0,params["nx"][0]):
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
 calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")

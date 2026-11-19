@@ -44,8 +44,8 @@ struct SegmentProducts
     int n;
 };
 
-// phi += Σ_k weight_k q_1k q_2k in the order of the pairs, with the same arithmetic as one
-// ker_add_multi per pair, but phi is read and written once per launch
+// phi += Σ_k weight_k q_1k q_2k in the order of the pairs, one pair after another
+// (phi += weight q_1 q_2), but phi is read and written once per launch
 __global__ void ker_add_segment_products(double* phi, SegmentProducts<double> p, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -89,15 +89,10 @@ CudaComputationBackend<T>::CudaComputationBackend(
     SpaceGroup* space_group, int max_n_streams)
     : cb(nullptr), space_group(space_group),
       solver_discrete(nullptr), discrete_chains(std::string(method_info.chain_model) == "discrete"),
-      n_streams(0), n_basis(0), force_off_diagonal_stress(false)
+      n_streams(0), n_basis(0), force_off_diagonal_stress(false), exp_dw_ds(0.0)
 {
     for (int i = 0; i < MAX_STREAMS; i++)
-    {
-        streams[i][0] = nullptr;
-        streams[i][1] = nullptr;
-        kernel_done[i] = nullptr;
-        copy_done[i] = nullptr;
-    }
+        streams[i] = nullptr;
 
     // Everything allocated so far is released if a step below throws
     try
@@ -123,12 +118,7 @@ CudaComputationBackend<T>::CudaComputationBackend(
 
         n_streams = std::min({this->n_streams_from_env(/*default_n_streams=*/MAX_STREAMS), MAX_STREAMS, max_n_streams});
         for (int i = 0; i < n_streams; i++)
-        {
-            CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&streams[i][0])));  // kernels
-            CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&streams[i][1])));  // copies
-            CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&kernel_done[i], cudaEventDisableTiming)));
-            CUDA_CHECK(count_cuda_event(cudaEventCreateWithFlags(&copy_done[i], cudaEventDisableTiming)));
-        }
+            CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&streams[i])));
 
         // The solver of the method, with the space group and the maps above (nullptr without
         // a group): it expands and reduces around its full-grid steps and allocates the work
@@ -169,6 +159,11 @@ CudaComputationBackend<T>::CudaComputationBackend(
                                    std::string(method_info.name) + "\".");
         }
 
+        // The contour step of the Boltzmann factor of discrete chains (the global ds, index 0),
+        // which update_dw() computes in the reduced basis
+        if (discrete_chains && space_group != nullptr)
+            exp_dw_ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
+
         // Ones for free chain ends
         std::vector<T> unity(M, T(1.0));
         d_q_unity.allocate(M);
@@ -182,11 +177,19 @@ CudaComputationBackend<T>::CudaComputationBackend(
         }
 
         d_sum.allocate(M);
-        for (int i = 0; i < n_streams; i++)
+        // The accumulator of a junction product over several launches of device-resident
+        // sources: only a vertex with more arms than one launch takes needs it (checkpoint
+        // products allocate it with their staging, allocate_checkpoint())
+        int max_degree = 0;
+        for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
         {
-            d_q_pair[i][0].allocate(2*M);
-            d_q_pair[i][1].allocate(2*M);
+            std::map<int, int> degree;
+            for (const Block& block : molecules->get_polymer(p).get_blocks())
+                max_degree = std::max({max_degree, ++degree[block.v], ++degree[block.u]});
         }
+        if (max_degree > junction_product::MAX_SOURCES_PER_LAUNCH)
+            for (int i = 0; i < n_streams; i++)
+                d_junction_state[i].allocate(2*static_cast<size_t>(n_basis));
         for (int i = 0; i < MAX_STREAMS; i++)
         {
             d_segment_stress[i].allocate(6);
@@ -225,23 +228,14 @@ void CudaComputationBackend<T>::release()
 
     for (int i = 0; i < MAX_STREAMS; i++)
     {
-        d_q_pair[i][0].release();
-        d_q_pair[i][1].release();
+        d_junction_stage[i].release();
+        d_junction_state[i].release();
         d_segment_stress[i].release();
         d_block_stress[i].release();
         h_block_stress[i].release();
-        if (kernel_done[i] != nullptr)
-            release_cuda_event(kernel_done[i]);
-        if (copy_done[i] != nullptr)
-            release_cuda_event(copy_done[i]);
-        if (streams[i][0] != nullptr)
-            release_cuda_stream(streams[i][0]);
-        if (streams[i][1] != nullptr)
-            release_cuda_stream(streams[i][1]);
-        kernel_done[i] = nullptr;
-        copy_done[i] = nullptr;
-        streams[i][0] = nullptr;
-        streams[i][1] = nullptr;
+        if (streams[i] != nullptr)
+            release_cuda_stream(streams[i]);
+        streams[i] = nullptr;
     }
 }
 
@@ -279,7 +273,7 @@ void CudaComputationBackend<T>::deallocate(BackendArray<T>* a)
 template <typename T>
 void CudaComputationBackend<T>::copy_from_host(int stream, BackendArray<T>* dst, const T* src)
 {
-    CUDA_CHECK(cudaMemcpyAsync(raw(dst), src, sizeof(T)*n_basis, cudaMemcpyHostToDevice, streams[stream][0]));
+    CUDA_CHECK(cudaMemcpyAsync(raw(dst), src, sizeof(T)*n_basis, cudaMemcpyHostToDevice, streams[stream]));
 }
 
 template <typename T>
@@ -291,6 +285,12 @@ void CudaComputationBackend<T>::copy_to_host(T* dst, BackendArray<T>* src)
 template <typename T>
 CheckpointArray<T>* CudaComputationBackend<T>::allocate_checkpoint()
 {
+    // Products and sums of checkpoints stage them on the device, two per launch
+    for (int i = 0; i < n_streams; i++)
+    {
+        provide(d_junction_stage[i], 2*static_cast<size_t>(n_basis));
+        provide(d_junction_state[i], 2*static_cast<size_t>(n_basis));
+    }
     void* h_a = counted_cuda_allocate<CudaPinnedMemory>(sizeof(T)*n_basis);
     return reinterpret_cast<CheckpointArray<T>*>(h_a);
 }
@@ -304,13 +304,13 @@ void CudaComputationBackend<T>::deallocate_checkpoint(CheckpointArray<T>* a)
 template <typename T>
 void CudaComputationBackend<T>::store_checkpoint(int stream, CheckpointArray<T>* dst, BackendArray<T>* src)
 {
-    CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis, cudaMemcpyDeviceToHost, streams[stream][0]));
+    CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis, cudaMemcpyDeviceToHost, streams[stream]));
 }
 
 template <typename T>
 void CudaComputationBackend<T>::load_checkpoint(int stream, BackendArray<T>* dst, CheckpointArray<T>* src)
 {
-    CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis, cudaMemcpyHostToDevice, streams[stream][0]));
+    CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis, cudaMemcpyHostToDevice, streams[stream]));
 }
 
 // ==================== Solver ====================
@@ -322,18 +322,23 @@ void CudaComputationBackend<T>::update_laplacian_operator()
 }
 
 template <typename T>
-void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_input)
+void CudaComputationBackend<T>::update_dw(const std::map<std::string, BackendArray<T>*>& w)
 {
-    solver->update_dw("cpu", w_input);
+    // The fields that set_fields uploaded
+    std::map<std::string, const CuDeviceData<T>*> d_w;
+    for (const auto& [monomer_type, w_monomer] : w)
+        d_w[monomer_type] = raw(w_monomer);
+    solver->update_dw(d_w);
 
-    // The discrete solvers keep exp(-w ds) on the full grid, reduced here to the basis,
-    // unless the CrysFFT path of the pseudo-spectral one stores it in the basis already
-    // (boltzmann_factor() then returns the solver's table)
+    // The discrete solvers keep exp(-w ds) on the full grid, unless the CrysFFT path of the
+    // pseudo-spectral one stores it in the basis already (boltzmann_factor() then returns the
+    // solver's table). Its copy in the basis is computed here from the fields, which come in
+    // the basis: the same values as the solver's table at the points of the basis.
     if (discrete_chains && space_group != nullptr && !exp_dw_in_solver_basis())
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        for (const auto& item : w_input)
+        for (const auto& item : w)
         {
             const std::string& monomer_type = item.first;
             auto found = d_exp_dw_reduced.find(monomer_type);
@@ -342,8 +347,7 @@ void CudaComputationBackend<T>::update_dw(std::map<std::string, const T*> w_inpu
                 // Enter the buffer only once it exists, so a failed allocation can be retried
                 found = d_exp_dw_reduced.emplace(monomer_type, CudaDeviceBuffer<CuDeviceData<T>>(n_basis)).first;
             }
-            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS>>>(
-                found->second.get(), solver->d_exp_dw.at(0).at(monomer_type), d_reduced_basis_indices, n_basis);
+            ker_exp<<<N_BLOCKS, N_THREADS>>>(found->second.get(), raw(item.second), 1.0, -exp_dw_ds, n_basis);
             CUDA_CHECK_LAUNCH();
         }
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -392,20 +396,20 @@ template <typename T>
 void CudaComputationBackend<T>::set_unity(int stream, BackendArray<T>* q)
 {
     CUDA_CHECK(cudaMemcpyAsync(raw(q), d_q_unity, sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
+                                    cudaMemcpyDeviceToDevice, streams[stream]));
 }
 
 template <typename T>
 void CudaComputationBackend<T>::set_zero(int stream, BackendArray<T>* a)
 {
-    CUDA_CHECK(cudaMemsetAsync(raw(a), 0, sizeof(T)*n_basis, streams[stream][0]));
+    CUDA_CHECK(cudaMemsetAsync(raw(a), 0, sizeof(T)*n_basis, streams[stream]));
 }
 
 template <typename T>
 void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendArray<T>* src)
 {
     CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream][0]));
+                                    cudaMemcpyDeviceToDevice, streams[stream]));
 }
 
 template <typename T>
@@ -414,9 +418,14 @@ void CudaComputationBackend<T>::multiply_sources(
     int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources)
 {
     // Device-resident sources: up to MAX_SOURCES_PER_LAUNCH per launch. Checkpoints: two per
-    // launch, staged in the first stress pair buffer, which is free while propagators are computed
+    // launch, staged in d_junction_stage
     constexpr bool staged = std::is_same_v<Source, CheckpointArray<T>>;
     const size_t batch_size = staged ? 2 : junction_product::MAX_SOURCES_PER_LAUNCH;
+    // A product over several launches needs the accumulator, which the constructor allocates
+    // for a vertex of more arms than one launch takes (and allocate_checkpoint() for checkpoints)
+    if (sources.size() > batch_size && d_junction_state[stream].empty())
+        throw_with_line_number("A junction product of " + std::to_string(sources.size()) +
+            " sources has no accumulator: no vertex has that many arms.");
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     for (size_t begin = 0; begin < sources.size(); begin += batch_size)
     {
@@ -427,19 +436,19 @@ void CudaComputationBackend<T>::multiply_sources(
             const auto& [source, power] = sources[begin + k];
             if constexpr (staged)
             {
-                CuDeviceData<T>* d_source = d_q_pair[stream][0].get() + k*n_basis;
+                CuDeviceData<T>* d_source = d_junction_stage[stream].get() + k*n_basis;
                 CUDA_CHECK(cudaMemcpyAsync(d_source, raw(source), sizeof(T)*n_basis,
-                                           cudaMemcpyHostToDevice, streams[stream][0]));
+                                           cudaMemcpyHostToDevice, streams[stream]));
                 batch.q[k] = d_source;
             }
             else
                 batch.q[k] = raw(source);
             batch.power[k] = power;
         }
-        // A product over several launches keeps its accumulator in q and in the second
-        // stress pair buffer
-        junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream][0]>>>(
-            raw(q), batch, d_q_pair[stream][1].get(), begin == 0, begin + batch.n == sources.size(), n_basis);
+        // A product over several launches keeps its accumulator in q and in d_junction_state
+        junction_product::ker_junction_product<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, streams[stream]>>>(
+            raw(q), batch, reinterpret_cast<CuDeviceData<T>*>(d_junction_state[stream].get()),
+            begin == 0, begin + batch.n == sources.size(), n_basis);
         CUDA_CHECK_LAUNCH();
     }
 }
@@ -452,10 +461,10 @@ void CudaComputationBackend<T>::junction_sum(
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_q = raw(q);
 
-    CUDA_CHECK(cudaMemsetAsync(d_q, 0, sizeof(T)*n_basis, streams[stream][0]));
+    CUDA_CHECK(cudaMemsetAsync(d_q, 0, sizeof(T)*n_basis, streams[stream]));
     for (const auto& [src, n_repeated] : sources)
     {
-        ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(
+        ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[stream]>>>(
             d_q, 1.0, d_q, n_repeated, raw(src), n_basis);
         CUDA_CHECK_LAUNCH();
     }
@@ -475,15 +484,15 @@ void CudaComputationBackend<T>::junction_sum(
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_q = raw(q);
-    // The stress pair buffer is free while propagators are computed; stage each checkpoint in it
-    CuDeviceData<T>* d_stage = d_q_pair[stream][0];
+    // Each checkpoint is staged in d_junction_stage
+    CuDeviceData<T>* d_stage = d_junction_stage[stream];
 
-    CUDA_CHECK(cudaMemsetAsync(d_q, 0, sizeof(T)*n_basis, streams[stream][0]));
+    CUDA_CHECK(cudaMemsetAsync(d_q, 0, sizeof(T)*n_basis, streams[stream]));
     for (const auto& [src, n_repeated] : sources)
     {
         CUDA_CHECK(cudaMemcpyAsync(d_stage, raw(src), sizeof(T)*n_basis,
-                                        cudaMemcpyHostToDevice, streams[stream][0]));
-        ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(
+                                        cudaMemcpyHostToDevice, streams[stream]));
+        ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[stream]>>>(
             d_q, 1.0, d_q, n_repeated, d_stage, n_basis);
         CUDA_CHECK_LAUNCH();
     }
@@ -503,7 +512,7 @@ void CudaComputationBackend<T>::apply_mask(int stream, BackendArray<T>* q)
         return;
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(q), raw(q), d_q_mask, 1.0, n_basis);
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream]>>>(raw(q), raw(q), d_q_mask, 1.0, n_basis);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -512,7 +521,7 @@ void CudaComputationBackend<T>::multiply_boltzmann_factor(int stream, BackendArr
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[stream]>>>(
         raw(q), raw(q), raw(boltzmann_factor(monomer_type)), 1.0, n_basis);
     CUDA_CHECK_LAUNCH();
 }
@@ -555,28 +564,21 @@ void CudaComputationBackend<T>::add_segment_products(
             chunk.q_2[k] = raw(pairs[first + k].q_2);
             chunk.weight[k] = pairs[first + k].weight;
         }
-        ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream][0]>>>(raw(phi), chunk, n_basis);
+        ker_add_segment_products<<<N_BLOCKS, N_THREADS, 0, streams[stream]>>>(raw(phi), chunk, n_basis);
         CUDA_CHECK_LAUNCH();
     }
-    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
-void CudaComputationBackend<T>::normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor)
+void CudaComputationBackend<T>::divide_by_boltzmann_factor(int stream, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     CuDeviceData<T>* d_phi = raw(phi);
-    cudaStream_t s = streams[stream][0];
-    if (divisor != nullptr)
-    {
-        if (!d_q_mask.empty())
-            ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, d_q_mask, n_basis);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, d_phi, raw(divisor), 1.0, n_basis);
-    }
-    CUDA_CHECK_LAUNCH();
-    ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, s>>>(d_phi, to_device_scalar(norm), d_phi, 0.0, d_phi, n_basis);
+    cudaStream_t s = streams[stream];
+    if (!d_q_mask.empty())
+        ker_divide_masked<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(boltzmann_factor), 1.0, d_q_mask, n_basis);
+    else
+        ker_divide<<<grid_blocks(n_basis, N_THREADS), N_THREADS, 0, s>>>(d_phi, d_phi, raw(boltzmann_factor), 1.0, n_basis);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -600,58 +602,26 @@ std::array<T, 6> CudaComputationBackend<T>::block_stress(
     const bool is_ortho = cb->is_orthogonal() && !force_off_diagonal_stress;
     const int N_STRESS_DIM = (DIM == 3) ? (is_ortho ? 3 : 6) : ((DIM == 2) ? 3 : 1);
 
-    cudaStream_t s_kernel = streams[stream][0];
-    cudaStream_t s_copy   = streams[stream][1];
+    cudaStream_t s = streams[stream];
     CuDeviceData<T>* d_segment = d_segment_stress[stream];
     CuDeviceData<T>* d_block   = d_block_stress[stream];
-    CUDA_CHECK(cudaMemsetAsync(d_segment, 0, sizeof(T)*6, s_kernel));
-    CUDA_CHECK(cudaMemsetAsync(d_block,   0, sizeof(T)*6, s_kernel));
+    CUDA_CHECK(cudaMemsetAsync(d_segment, 0, sizeof(T)*6, s));
+    CUDA_CHECK(cudaMemsetAsync(d_block,   0, sizeof(T)*6, s));
 
-    cudaEvent_t kernel_done_s = kernel_done[stream];
-    cudaEvent_t copy_done_s   = copy_done[stream];
-
-    // The pairs may still be computed on the kernel stream (reduce-memory
-    // recomputation): the copies wait for it
-    CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-    CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-
-    // The solver reads the pair as one contiguous [q_1 | q_2] buffer; copy the
-    // next pair on the copy stream while the current one is computed.
-    auto copy_pair = [&](size_t i, CuDeviceData<T>* d_pair)
+    // The pairs are computed on this stream (also the reduce-memory recomputation)
+    for (const SegmentPair<T>& pair : pairs)
     {
-        CUDA_CHECK(cudaMemcpyAsync(&d_pair[0], raw(pairs[i].q_1), sizeof(T)*n_basis,
-                                        cudaMemcpyDeviceToDevice, s_copy));
-        CUDA_CHECK(cudaMemcpyAsync(&d_pair[n_basis], raw(pairs[i].q_2), sizeof(T)*n_basis,
-                                        cudaMemcpyDeviceToDevice, s_copy));
-        CUDA_CHECK(cudaEventRecord(copy_done_s, s_copy));
-    };
-
-    int prev = 0, next = 1;
-    copy_pair(0, d_q_pair[stream][prev]);
-    CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-
-    for (size_t i = 0; i < pairs.size(); i++)
-    {
-        if (i + 1 < pairs.size())
-            copy_pair(i + 1, d_q_pair[stream][next]);
-
         // block += weight * segment, summed on the device
-        solver->compute_single_segment_stress(stream, d_q_pair[stream][prev], d_segment,
-                                              monomer_type, pairs[i].is_half_bond_length);
-        ker_lin_comb<<<1, 32, 0, s_kernel>>>(d_block, 1.0, d_block, pairs[i].weight, d_segment, N_STRESS_DIM);
+        solver->compute_single_segment_stress(stream, raw(pair.q_1), raw(pair.q_2), d_segment,
+                                              monomer_type, pair.is_half_bond_length);
+        ker_lin_comb<<<1, 32, 0, s>>>(d_block, 1.0, d_block, pair.weight, d_segment, N_STRESS_DIM);
         CUDA_CHECK_LAUNCH();
-        CUDA_CHECK(cudaEventRecord(kernel_done_s, s_kernel));
-
-        CUDA_CHECK(cudaStreamWaitEvent(s_copy, kernel_done_s, 0));
-        CUDA_CHECK(cudaStreamWaitEvent(s_kernel, copy_done_s, 0));
-        std::swap(prev, next);
     }
 
     // One copy per block; waiting on this stream only lets the other streams run on
     CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*N_STRESS_DIM,
-                                    cudaMemcpyDeviceToHost, s_kernel));
-    CUDA_CHECK(cudaStreamSynchronize(s_kernel));
-    CUDA_CHECK(cudaStreamSynchronize(s_copy));
+                                    cudaMemcpyDeviceToHost, s));
+    CUDA_CHECK(cudaStreamSynchronize(s));
 
     for (int d = 0; d < N_STRESS_DIM; d++)
         stress[d] = h_block_stress[stream][d];

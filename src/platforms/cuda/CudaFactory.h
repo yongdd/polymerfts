@@ -10,7 +10,6 @@
  *
  * - Uses cuFFT for GPU-accelerated FFT operations
  * - Multiple CUDA streams for parallel propagator computation
- * - Asynchronous memory transfers to hide latency
  * - Supports both continuous and discrete chain models
  * - Checkpointing mode stores propagators in pinned host memory
  *
@@ -27,7 +26,7 @@
  *   async transfers (2-4× slower but uses much less GPU memory)
  *
  * @see AbstractFactory for the factory interface
- * @see FftwFactory for CPU implementation
+ * @see CpuFactory for CPU implementation
  * @see PlatformSelector for factory instantiation
  *
  * @example
@@ -76,9 +75,9 @@
  *
  * When reduce_memory=true:
  * - Uses the reduce-memory propagator computations
- * - Uses CudaAndersonMixingReduceMemory
+ * - Keeps the Anderson mixing history in pinned host memory
  * - Stores propagator history in pinned host memory
- * - Overlaps kernel execution with async memory transfers
+ * - Enqueues the checkpoint transfers on the stream of each propagator
  */
 template <typename T>
 class CudaFactory : public AbstractFactory<T>
@@ -130,8 +129,8 @@ public :
     /**
      * @brief Create CUDA Anderson mixing optimizer.
      *
-     * Creates CudaAndersonMixing or CudaAndersonMixingReduceMemory
-     * based on the reduce_memory setting.
+     * Creates CudaAndersonMixing, with its history in pinned host memory
+     * when reduce_memory is set.
      *
      * @param n_var      Number of field variables
      * @param max_hist   Maximum history length

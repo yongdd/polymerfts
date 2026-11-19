@@ -79,7 +79,7 @@ def plates(d_tilde):
     with contextlib.redirect_stdout(io.StringIO()):
         calculation = SCFT(params=params)
         result = calculation.run(initial_fields={"S": np.zeros(nx)}, return_result=True)
-    (c,), _ = calculation.electrostatics.ion_densities(result.psi)
+    (c,), _ = calculation.electrostatics.ion_densities()    # of the final psi
     x = (np.arange(nx) + 0.5) * dx
     scale = (coupling / n_segments) * sigma ** 2 / 2       # 2 pi l_B sigma^2 in code units
     lam = pb_lambda(d_tilde)

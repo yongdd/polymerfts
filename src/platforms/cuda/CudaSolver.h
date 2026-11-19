@@ -105,10 +105,10 @@ public:
     /**
      * @brief Update Boltzmann factors from potential fields.
      *
-     * @param device  Memory location of w_input ("gpu" or "cpu")
-     * @param w_input Map of potential fields by monomer type
+     * @param d_w Device fields by monomer type, in the basis of the propagators
+     *            (the reduced basis with a space group)
      */
-    virtual void update_dw(std::string device, std::map<std::string, const T*> w_input) = 0;
+    virtual void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) = 0;
 
     /**
      * @brief Advance propagator by one contour step on GPU.
@@ -141,18 +141,41 @@ public:
      * @brief Compute stress contribution from one segment.
      *
      * @param STREAM           CUDA stream index
-     * @param d_q_pair         Forward and backward propagators, contiguous (device)
+     * @param d_q_1            Forward propagator of the segment (device)
+     * @param d_q_2            Backward propagator of the segment (device)
      * @param d_segment_stress Output stress array (device)
      * @param monomer_type     Monomer type
      * @param is_half_bond_length Whether using half bond (discrete)
      */
     virtual void compute_single_segment_stress(
         const int STREAM,
-        CuDeviceData<T> *d_q_pair, CuDeviceData<T> *d_segment_stress,
+        CuDeviceData<T> *d_q_1, CuDeviceData<T> *d_q_2, CuDeviceData<T> *d_segment_stress,
         std::string monomer_type, bool is_half_bond_length) = 0;
 
     /// Build the tables compute_single_segment_stress() needs, before the streams
     /// compute the segment stresses (default: nothing).
     virtual void prepare_stress() {}
+
+protected:
+    /**
+     * @brief The Boltzmann factors of the fields at every contour step, the body of update_dw().
+     *
+     * d_exp_dw[ds] = exp(-factor·ds·w) and, if with_half, d_exp_dw_half[ds] =
+     * exp(-factor_half·ds·w), n_table values each; then waits for the device.
+     *
+     * @param d_w               Fields by monomer type (device), in the basis of the propagators
+     * @param mapping           Contour steps of the chains (ds of each ds index)
+     * @param n_table           Values of a table: the full grid, or the reduced basis on the CrysFFT path
+     * @param d_full_to_reduced nullptr when the fields come in the basis of the tables; otherwise
+     *                          they come in the reduced basis of a space group and are expanded to
+     *                          the full grid of the tables through this map (device), staged in the
+     *                          table written last
+     * @param with_half         Also d_exp_dw_half
+     * @param factor            Factor of ds in d_exp_dw
+     * @param factor_half       Factor of ds in d_exp_dw_half
+     */
+    void compute_exp_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w,
+                        const ContourLengthMapping& mapping, int n_table, const int* d_full_to_reduced,
+                        bool with_half, double factor, double factor_half);
 };
 #endif

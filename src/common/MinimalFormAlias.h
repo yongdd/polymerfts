@@ -21,6 +21,13 @@
  * forms, so an arbitrarily short orthogonal axis cannot inflate a plane's
  * search or hide differences between its aliases in floating-point addition.
  * AliasSearch finds the components once per grid; the loops over a grid reuse it.
+ * The least alias and the tied aliases of a mode are those of its parts on each
+ * component, so the loops over a grid of several components (a cell with
+ * α = β = 90°: the xy plane and z) search each component's modes once,
+ * N1 N2 + N3 searches instead of N1 N2 N3, and combine them per mode.
+ * AliasSearch also finds λ₁², the least form of a nonzero period vector of each
+ * component: a mode with 4 f(m) < λ₁² is its own unique alias of least form (every
+ * other alias u = m + N t has |u| ≥ λ₁ - |m| > |m|), so most modes need no search.
  * Within a component the box spans about abc/V times the ratio of the
  * component's grid spacings in periods along each axis; ComputationBox refuses
  * nearly flat oblique cells (V < 0.1 abc).
@@ -32,6 +39,7 @@
 #ifndef MINIMAL_FORM_ALIAS_H_
 #define MINIMAL_FORM_ALIAS_H_
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
@@ -86,14 +94,41 @@ struct IndexForm
 /// Centered (signed) index of loop index i on an axis of n points
 inline int centered_index(int i, int n) { return (i > n / 2) ? i - n : i; }
 
+/// Σ_d strides[d] (m_d mod n_d): the row-major position of the centered mode m (|m_d| < n_d)
+inline long long mode_position(const std::array<int, 3>& m, const std::array<int, 3>& n,
+                               const std::array<long long, 3>& strides)
+{
+    long long position = 0;
+    for (int d = 0; d < 3; ++d)
+        position += strides[d] * (m[d] < 0 ? m[d] + n[d] : m[d]);
+    return position;
+}
+
 /// Grid sizes of 1 to 3 axes, padded to three axes at the end like index_metric_of()
 inline std::array<int, 3> padded_grid(const std::vector<int>& n)
 {
     return {n[0], n.size() > 1 ? n[1] : 1, n.size() > 2 ? n[2] : 1};
 }
 
+/// Visit the centered modes m of a periodic grid of n points: visit(index, m) in the
+/// row-major order of `shape` (n or, for the r2c half spectrum, n with its last axis
+/// of more than one point cut to n/2 + 1)
+template <typename Visit>
+inline void for_each_centered_mode(const std::array<int, 3>& n, const std::array<int, 3>& shape, Visit&& visit)
+{
+    long long index = 0;
+    for (int i = 0; i < shape[0]; ++i)
+        for (int j = 0; j < shape[1]; ++j)
+            for (int k = 0; k < shape[2]; ++k)
+                visit(index++, std::array<int, 3>{centered_index(i, n[0]), centered_index(j, n[1]),
+                                                  centered_index(k, n[2])});
+}
+
 namespace min_form_alias_detail
 {
+/// Relative difference of the forms of aliases tied for the least form (tied_alias_moments)
+inline constexpr double tie_tolerance = 1e-10;
+
 /// Connected components of the searched axes. Numerically orthogonal axes
 /// have independent alias minima. Searching each component separately keeps
 /// a large constant form on one axis out of another component's search bound
@@ -125,57 +160,67 @@ inline int components(const std::array<int, 3>& n, const IndexMetric& g, std::ar
     return count;
 }
 
-/// Ranges of the period shifts (a, b, c) that can hold an alias whose form does
-/// not exceed f_center, the form of m itself.
-inline void search_box(
-    const std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g,
-    double f_center, std::array<int, 3>& lo, std::array<int, 3>& hi)
+/// What search_box() needs of a grid's metric, found once per grid: the searched
+/// axes and the diagonal of the inverse of the metric restricted to them.
+struct BoxMetric
+{
+    int n_active = 0;
+    std::array<int, 3> active{};
+    std::array<double, 3> inv_diag{};
+};
+
+inline BoxMetric box_metric(const std::array<int, 3>& n, const IndexMetric& g)
 {
     const double G[3][3] = {{g.g11, g.g12, g.g13}, {g.g12, g.g22, g.g23}, {g.g13, g.g23, g.g33}};
-    int active[3];
-    int n_active = 0;
+    BoxMetric box;
     for (int d = 0; d < 3; ++d)
-    {
-        lo[d] = hi[d] = 0;
         if (n[d] > 1 && G[d][d] > 0.0)
-            active[n_active++] = d;
-    }
-    if (n_active == 0 || !(f_center > 0.0))
-        return;
-
-    // Diagonal of the inverse of the metric restricted to the searched axes
-    double inv_diag[3] = {0.0, 0.0, 0.0};
-    if (n_active == 1)
+            box.active[box.n_active++] = d;
+    const std::array<int, 3>& a = box.active;
+    if (box.n_active == 1)
     {
-        inv_diag[0] = 1.0 / G[active[0]][active[0]];
+        box.inv_diag[0] = 1.0 / G[a[0]][a[0]];
     }
-    else if (n_active == 2)
+    else if (box.n_active == 2)
     {
-        const double p = G[active[0]][active[0]], q = G[active[0]][active[1]], r = G[active[1]][active[1]];
+        const double p = G[a[0]][a[0]], q = G[a[0]][a[1]], r = G[a[1]][a[1]];
         const double det = p * r - q * q;
-        inv_diag[0] = r / det;
-        inv_diag[1] = p / det;
+        box.inv_diag[0] = r / det;
+        box.inv_diag[1] = p / det;
     }
-    else
+    else if (box.n_active == 3)
     {
         const double det = G[0][0] * (G[1][1] * G[2][2] - G[1][2] * G[1][2])
                          - G[0][1] * (G[0][1] * G[2][2] - G[1][2] * G[0][2])
                          + G[0][2] * (G[0][1] * G[1][2] - G[1][1] * G[0][2]);
-        inv_diag[0] = (G[1][1] * G[2][2] - G[1][2] * G[1][2]) / det;
-        inv_diag[1] = (G[0][0] * G[2][2] - G[0][2] * G[0][2]) / det;
-        inv_diag[2] = (G[0][0] * G[1][1] - G[0][1] * G[0][1]) / det;
+        box.inv_diag[0] = (G[1][1] * G[2][2] - G[1][2] * G[1][2]) / det;
+        box.inv_diag[1] = (G[0][0] * G[2][2] - G[0][2] * G[0][2]) / det;
+        box.inv_diag[2] = (G[0][0] * G[1][1] - G[0][1] * G[0][1]) / det;
     }
-
-    for (int i = 0; i < n_active; ++i)
-    {
-        const int d = active[i];
-        // A cell of V >= 0.1 abc (ComputationBox) has a positive-definite metric with a
-        // positive, finite inverse diagonal; a window of a few periods would not be exact
-        if (!(inv_diag[i] > 0.0) || !std::isfinite(inv_diag[i]))
+    // A cell of V >= 0.1 abc (ComputationBox) has a positive-definite metric with a
+    // positive, finite inverse diagonal; a window of a few periods would not be exact
+    for (int i = 0; i < box.n_active; ++i)
+        if (!(box.inv_diag[i] > 0.0) || !std::isfinite(box.inv_diag[i]))
             throw_with_line_number("The reciprocal metric of the alias search is degenerate "
                 "(not positive definite): the cell is flat.");
+    return box;
+}
+
+/// Ranges of the period shifts (a, b, c) that can hold an alias whose form does
+/// not exceed f_center, the form of m itself.
+inline void search_box(
+    const std::array<int, 3>& m, const std::array<int, 3>& n, const BoxMetric& box,
+    double f_center, std::array<int, 3>& lo, std::array<int, 3>& hi)
+{
+    lo = {0, 0, 0};
+    hi = {0, 0, 0};
+    if (!(f_center > 0.0))
+        return;
+    for (int i = 0; i < box.n_active; ++i)
+    {
+        const int d = box.active[i];
         // A small slack only adds candidates, so rounding cannot drop an alias
-        const double reach = std::sqrt(f_center * inv_diag[i]) * (1.0 + 1e-9) + 1e-9;
+        const double reach = std::sqrt(f_center * box.inv_diag[i]) * (1.0 + 1e-9) + 1e-9;
         lo[d] = static_cast<int>(std::ceil((-reach - m[d]) / n[d]));
         hi[d] = static_cast<int>(std::floor((reach - m[d]) / n[d]));
         if (lo[d] > 0) lo[d] = 0;
@@ -183,14 +228,17 @@ inline void search_box(
     }
 }
 
-/// Replace m by its alias of least form on a grid of one coupled component
+/// Replace m by its alias of least form on a grid of one coupled component; a mode whose
+/// form is below `unique_below` (see unique_alias_bound) is its own least alias
 template <typename Form>
 inline void component_min_alias(
-    std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, Form&& form)
+    std::array<int, 3>& m, const std::array<int, 3>& n, const BoxMetric& box, Form&& form, double unique_below)
 {
     const double f_center = form(m[0], m[1], m[2]);
+    if (f_center < unique_below)
+        return;
     std::array<int, 3> lo, hi;
-    min_form_alias_detail::search_box(m, n, g, f_center, lo, hi);
+    search_box(m, n, box, f_center, lo, hi);
 
     std::array<int, 3> best_rep = m;
     double best = f_center;
@@ -212,6 +260,69 @@ inline void component_min_alias(
             }
     m = best_rep;
 }
+
+/**
+ * @brief A quarter of λ₁², the least form of a nonzero period vector N t of the
+ *        searched axes, reduced by 1e-9; zero without a searched axis.
+ *
+ * A mode m with f(m) below it is the unique alias of least form: every other alias
+ * u = m + N t has |u| ≥ λ₁ - |m| > |m| (1 + 1e-9), so f(u) exceeds f(m) by far more
+ * than the tie tolerances (1e-10) and the rounding of the forms.
+ */
+inline double unique_alias_bound(const std::array<int, 3>& n, const IndexMetric& g, const BoxMetric& box)
+{
+    const double G[3] = {g.g11, g.g22, g.g33};
+    // The least form of a period along one axis bounds λ₁² from above
+    double bound = 0.0;
+    for (int d = 0; d < 3; ++d)
+        if (n[d] > 1 && G[d] > 0.0)
+        {
+            const double f_axis = G[d] * n[d] * n[d];
+            bound = (bound == 0.0) ? f_axis : std::min(bound, f_axis);
+        }
+    if (bound == 0.0)
+        return 0.0;
+    // Every period vector N t of a form not above the bound lies in the box of the aliases of mode 0
+    const IndexForm form{g};
+    std::array<int, 3> lo, hi;
+    search_box({0, 0, 0}, n, box, bound, lo, hi);
+    double least = bound;
+    for (int a = lo[0]; a <= hi[0]; ++a)
+        for (int b = lo[1]; b <= hi[1]; ++b)
+            for (int c = lo[2]; c <= hi[2]; ++c)
+                if (a != 0 || b != 0 || c != 0)
+                    least = std::min(least, form(static_cast<double>(a) * n[0], static_cast<double>(b) * n[1],
+                                                 static_cast<double>(c) * n[2]));
+    return 0.25 * least * (1.0 - 1e-9);
+}
+
+/// <v_a v_b> with v = scale · G u, averaged over the aliases u added
+struct MomentSum
+{
+    const IndexMetric& g;
+    double scale;
+    std::array<double, 6> sum{};
+    int count = 0;
+
+    void add(int a, int b, int c)
+    {
+        const double v1 = scale * (g.g11 * a + g.g12 * b + g.g13 * c);
+        const double v2 = scale * (g.g12 * a + g.g22 * b + g.g23 * c);
+        const double v3 = scale * (g.g13 * a + g.g23 * b + g.g33 * c);
+        sum[0] += v1 * v1; sum[1] += v2 * v2; sum[2] += v3 * v3;
+        sum[3] += v1 * v2; sum[4] += v1 * v3; sum[5] += v2 * v3;
+        ++count;
+    }
+
+    std::array<double, 6> mean() const
+    {
+        std::array<double, 6> result = sum;
+        if (count > 1)   // most modes have a single alias of least form
+            for (double& value : result)
+                value /= count;
+        return result;
+    }
+};
 }  // namespace min_form_alias_detail
 
 /// One coupled component of a grid's alias search: its axes (bit d of mask for
@@ -221,11 +332,84 @@ struct AliasComponent
     int mask = 0;
     std::array<int, 3> n{};
     IndexMetric g{};
+    min_form_alias_detail::BoxMetric box{};   ///< what search_box() needs of n and g
+    double unique_below = 0.0;   ///< modes of a smaller form are their own unique least alias (unique_alias_bound)
 
     /// The indices of m on this component's axes, zero elsewhere
     std::array<int, 3> part(const std::array<int, 3>& m) const
     {
         return {mask & 1 ? m[0] : 0, mask & 2 ? m[1] : 0, mask & 4 ? m[2] : 0};
+    }
+
+    /// Visit this component's modes of a grid of `shape` (the parts of its centered modes) in row-major order
+    template <typename Visit>
+    void for_each_mode(const std::array<int, 3>& shape, Visit&& visit) const
+    {
+        const std::array<int, 3> sub_shape = {mask & 1 ? shape[0] : 1, mask & 2 ? shape[1] : 1, mask & 4 ? shape[2] : 1};
+        for_each_centered_mode(n, sub_shape, [&](long long, const std::array<int, 3>& sub_m) { visit(sub_m); });
+    }
+
+    /// Strides of the position of a mode's part in the order of for_each_mode(shape): the
+    /// part of the centered mode m is at mode_position(m, n, strides), zero off this component
+    std::array<long long, 3> mode_strides(const std::array<int, 3>& shape) const
+    {
+        std::array<long long, 3> strides{0, 0, 0};
+        long long stride = 1;
+        for (int d = 2; d >= 0; --d)
+            if (mask & (1 << d))
+            {
+                strides[d] = stride;
+                stride *= shape[d];
+            }
+        return strides;
+    }
+
+    /**
+     * @brief The box of period shifts around sub_m (a mode of this component) that holds
+     *        its aliases tied for the least form, and the largest form of a tie (the least
+     *        form plus rel_tol times it); false when sub_m is its only tie (a form below
+     *        unique_below, or a box that holds sub_m alone).
+     */
+    template <typename Form>
+    bool tie_box(const std::array<int, 3>& sub_m, Form&& form, double rel_tol,
+                 std::array<int, 3>& lo, std::array<int, 3>& hi, double& limit) const
+    {
+        const double f_center = form(sub_m[0], sub_m[1], sub_m[2]);
+        if (f_center < unique_below)
+            return false;
+        min_form_alias_detail::search_box(sub_m, n, box, f_center, lo, hi);
+        if (lo == hi)
+            return false;
+        double best = f_center;
+        for (int a = lo[0]; a <= hi[0]; ++a)
+            for (int b = lo[1]; b <= hi[1]; ++b)
+                for (int c = lo[2]; c <= hi[2]; ++c)
+                {
+                    const double f = form(sub_m[0] + a * n[0], sub_m[1] + b * n[1], sub_m[2] + c * n[2]);
+                    if (f < best)
+                        best = f;
+                }
+        limit = best + rel_tol * best;
+        return true;
+    }
+
+    /// Append the period shifts (a, b, c) of the aliases of sub_m tied for its least form, in (a, b, c) order
+    template <typename Form>
+    void append_ties(const std::array<int, 3>& sub_m, Form&& form, double rel_tol,
+                     std::vector<std::array<int, 3>>& ties) const
+    {
+        std::array<int, 3> lo, hi;
+        double limit;
+        if (!tie_box(sub_m, form, rel_tol, lo, hi, limit))
+        {
+            ties.push_back({0, 0, 0});
+            return;
+        }
+        for (int a = lo[0]; a <= hi[0]; ++a)
+            for (int b = lo[1]; b <= hi[1]; ++b)
+                for (int c = lo[2]; c <= hi[2]; ++c)
+                    if (form(sub_m[0] + a * n[0], sub_m[1] + b * n[1], sub_m[2] + c * n[2]) <= limit)
+                        ties.push_back({a, b, c});
     }
 };
 
@@ -246,11 +430,15 @@ struct AliasSearch
         n_components = min_form_alias_detail::components(n, g, masks);
         for (int i = 0; i < n_components; ++i)
         {
+            AliasComponent& component = components[i];
             const int mask = masks[i];
-            components[i] = {mask, {mask & 1 ? n[0] : 1, mask & 2 ? n[1] : 1, mask & 4 ? n[2] : 1},
-                             {mask & 1 ? g.g11 : 0.0, mask & 2 ? g.g22 : 0.0, mask & 4 ? g.g33 : 0.0,
-                              (mask & 3) == 3 ? g.g12 : 0.0, (mask & 5) == 5 ? g.g13 : 0.0,
-                              (mask & 6) == 6 ? g.g23 : 0.0}};
+            component.mask = mask;
+            component.n = {mask & 1 ? n[0] : 1, mask & 2 ? n[1] : 1, mask & 4 ? n[2] : 1};
+            component.g = {mask & 1 ? g.g11 : 0.0, mask & 2 ? g.g22 : 0.0, mask & 4 ? g.g33 : 0.0,
+                           (mask & 3) == 3 ? g.g12 : 0.0, (mask & 5) == 5 ? g.g13 : 0.0,
+                           (mask & 6) == 6 ? g.g23 : 0.0};
+            component.box = min_form_alias_detail::box_metric(component.n, component.g);
+            component.unique_below = min_form_alias_detail::unique_alias_bound(component.n, component.g, component.box);
         }
     }
 };
@@ -266,16 +454,17 @@ struct AliasSearch
 template <typename Form>
 inline void min_form_alias_rep(std::array<int, 3>& m, const AliasSearch& search, Form&& form)
 {
-    if (search.n_components <= 1)
+    if (search.n_components == 1)
     {
-        min_form_alias_detail::component_min_alias(m, search.n, search.g, form);
+        const AliasComponent& component = search.components[0];
+        min_form_alias_detail::component_min_alias(m, search.n, component.box, form, component.unique_below);
         return;
     }
     for (int i = 0; i < search.n_components; ++i)
     {
         const AliasComponent& component = search.components[i];
         std::array<int, 3> sub_m = component.part(m);
-        min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form);
+        min_form_alias_detail::component_min_alias(sub_m, component.n, component.box, form, component.unique_below);
         for (int d = 0; d < 3; ++d)
             if (component.mask & (1 << d))
                 m[d] = sub_m[d];
@@ -303,17 +492,18 @@ inline int for_each_min_form_alias(
     const std::array<int, 3>& n = search.n;
     if (search.n_components > 1)
     {
+        // The product of the components' boxes; only components with candidates besides m are tested
         std::array<int, 3> lo{0, 0, 0}, hi{0, 0, 0};
         std::array<double, 3> limits{};
+        std::array<int, 3> searched_masks{};
+        int n_searched = 0;
         for (int i = 0; i < search.n_components; ++i)
         {
             const AliasComponent& component = search.components[i];
-            std::array<int, 3> sub_m = component.part(m), sub_lo, sub_hi;
-            min_form_alias_detail::search_box(
-                sub_m, component.n, component.g, form(sub_m[0], sub_m[1], sub_m[2]), sub_lo, sub_hi);
-            min_form_alias_detail::component_min_alias(sub_m, component.n, component.g, form);
-            const double best = form(sub_m[0], sub_m[1], sub_m[2]);
-            limits[i] = best + rel_tol * best;
+            std::array<int, 3> sub_lo, sub_hi;
+            if (!component.tie_box(component.part(m), form, rel_tol, sub_lo, sub_hi, limits[n_searched]))
+                continue;   // the part of m on this component is its only tie
+            searched_masks[n_searched++] = component.mask;
             for (int d = 0; d < 3; ++d)
                 if (component.mask & (1 << d))
                 {
@@ -328,9 +518,9 @@ inline int for_each_min_form_alias(
                 {
                     const int t1 = m[0] + a * n[0], t2 = m[1] + b * n[1], t3 = m[2] + c * n[2];
                     bool tied = true;
-                    for (int i = 0; i < search.n_components && tied; ++i)
+                    for (int i = 0; i < n_searched && tied; ++i)
                     {
-                        const int mask = search.components[i].mask;
+                        const int mask = searched_masks[i];
                         tied = form(mask & 1 ? t1 : 0, mask & 2 ? t2 : 0, mask & 4 ? t3 : 0) <= limits[i];
                     }
                     if (tied)
@@ -342,8 +532,13 @@ inline int for_each_min_form_alias(
         return count;
     }
     const double f_center = form(m[0], m[1], m[2]);
+    if (search.n_components == 0 || f_center < search.components[0].unique_below)
+    {
+        visit(m[0], m[1], m[2]);
+        return 1;
+    }
     std::array<int, 3> lo, hi;
-    min_form_alias_detail::search_box(m, n, search.g, f_center, lo, hi);
+    min_form_alias_detail::search_box(m, n, search.components[0].box, f_center, lo, hi);
 
     double best = f_center;
     for (int a = lo[0]; a <= hi[0]; ++a)
@@ -388,7 +583,8 @@ inline int for_each_min_form_alias(
  * `shape` is n or, for the r2c half spectrum, n with its last axis of more
  * than one point cut to n/2 + 1; the modes have centered indices. Cells
  * without coupled axes keep the centered representative, which is minimal
- * there. `form` is the caller's expression, as for min_form_alias_rep.
+ * there. `form` is the caller's expression, as for min_form_alias_rep. On a
+ * grid of several components each component's modes are searched once.
  */
 template <typename Form, typename Visit>
 inline void for_each_mode_min_alias(
@@ -396,16 +592,44 @@ inline void for_each_mode_min_alias(
     Form&& form, Visit&& visit)
 {
     const AliasSearch search(n, g);
-    long long index = 0;
-    for (int i = 0; i < shape[0]; ++i)
-        for (int j = 0; j < shape[1]; ++j)
-            for (int k = 0; k < shape[2]; ++k)
-            {
-                std::array<int, 3> u = {centered_index(i, n[0]), centered_index(j, n[1]), centered_index(k, n[2])};
-                if (search.coupled)
-                    min_form_alias_rep(u, search, form);
-                visit(index++, u);
-            }
+    if (!search.coupled)
+    {
+        for_each_centered_mode(n, shape, visit);
+        return;
+    }
+    if (search.n_components < 2)
+    {
+        for_each_centered_mode(n, shape, [&](long long index, std::array<int, 3> u) {
+            min_form_alias_rep(u, search, form);
+            visit(index, u);
+        });
+        return;
+    }
+    // The least alias of every mode of each component, combined per mode as in min_form_alias_rep
+    // (two components: three would need three mutually uncoupled axes)
+    std::array<std::vector<std::array<int, 3>>, 2> least;
+    std::array<std::array<long long, 3>, 2> strides;
+    for (int i = 0; i < 2; ++i)
+    {
+        const AliasComponent& component = search.components[i];
+        component.for_each_mode(shape, [&](std::array<int, 3> sub_m) {
+            min_form_alias_detail::component_min_alias(sub_m, component.n, component.box, form, component.unique_below);
+            least[i].push_back(sub_m);
+        });
+        strides[i] = component.mode_strides(shape);
+    }
+    for_each_centered_mode(n, shape, [&](long long index, const std::array<int, 3>& m) {
+        std::array<int, 3> u = m;
+        for (int i = 0; i < 2; ++i)
+        {
+            const AliasComponent& component = search.components[i];
+            const std::array<int, 3>& sub_u = least[i][mode_position(m, n, strides[i])];
+            for (int d = 0; d < 3; ++d)
+                if (component.mask & (1 << d))
+                    u[d] = sub_u[d];
+        }
+        visit(index, u);
+    });
 }
 
 /**
@@ -421,31 +645,98 @@ inline void for_each_mode_min_alias(
 inline std::array<double, 6> tied_alias_moments(const std::array<int, 3>& m, const AliasSearch& search, double scale)
 {
     const std::array<int, 3>& n = search.n;
-    const IndexMetric& g = search.g;
-    std::array<double, 6> sum{};
-    auto add = [&](int a, int b, int c) {
-        const double v1 = scale * (g.g11 * a + g.g12 * b + g.g13 * c);
-        const double v2 = scale * (g.g12 * a + g.g22 * b + g.g23 * c);
-        const double v3 = scale * (g.g13 * a + g.g23 * b + g.g33 * c);
-        sum[0] += v1 * v1; sum[1] += v2 * v2; sum[2] += v3 * v3;
-        sum[3] += v1 * v2; sum[4] += v1 * v3; sum[5] += v2 * v3;
-    };
-    int count = 0;
+    min_form_alias_detail::MomentSum moments{search.g, scale};
     if (search.coupled)
     {
-        count = for_each_min_form_alias(m, search, IndexForm{g}, 1e-10, add);
+        for_each_min_form_alias(m, search, IndexForm{search.g}, min_form_alias_detail::tie_tolerance,
+                                [&](int a, int b, int c) { moments.add(a, b, c); });
     }
     else
     {
         const int s[3] = {n[0] > 1 && 2 * m[0] == n[0], n[1] > 1 && 2 * m[1] == n[1], n[2] > 1 && 2 * m[2] == n[2]};
         for (int a = 0; a <= s[0]; ++a)
             for (int b = 0; b <= s[1]; ++b)
-                for (int c = 0; c <= s[2]; ++c, ++count)
-                    add(m[0] - a * n[0], m[1] - b * n[1], m[2] - c * n[2]);
+                for (int c = 0; c <= s[2]; ++c)
+                    moments.add(m[0] - a * n[0], m[1] - b * n[1], m[2] - c * n[2]);
     }
-    for (double& value : sum)
-        value /= count;
-    return sum;
+    return moments.mean();
+}
+
+/**
+ * @brief tied_alias_moments of every mode of a periodic grid of n points:
+ *        visit(index, m, moments) in the row-major order of `shape` (see
+ *        for_each_mode_min_alias), m the centered mode.
+ *
+ * On a grid of several components the aliases of m tied for the least form are
+ * the combinations of the ties of its parts, so each component's modes are
+ * searched once. The combinations are visited in the (a, b, c) order of
+ * for_each_min_form_alias, which gives the same sums to the bit.
+ */
+template <typename Visit>
+inline void for_each_mode_tied_moments(
+    const std::array<int, 3>& n, const std::array<int, 3>& shape, const IndexMetric& g, double scale, Visit&& visit)
+{
+    const AliasSearch search(n, g);
+    if (!search.coupled || search.n_components < 2)
+    {
+        for_each_centered_mode(n, shape, [&](long long index, const std::array<int, 3>& m) {
+            visit(index, m, tied_alias_moments(m, search, scale));
+        });
+        return;
+    }
+    // A coupled grid has two components here (three would need three mutually uncoupled
+    // axes). The tied period shifts of every mode of each component: those of its mode s
+    // are shifts[i][first[i][s]] to shifts[i][first[i][s + 1] - 1].
+    const IndexForm form{g};
+    std::array<std::vector<std::array<int, 3>>, 2> shifts;
+    std::array<std::vector<long long>, 2> first;
+    std::array<std::array<long long, 3>, 2> strides;
+    for (int i = 0; i < 2; ++i)
+    {
+        const AliasComponent& component = search.components[i];
+        first[i].push_back(0);
+        component.for_each_mode(shape, [&](const std::array<int, 3>& sub_m) {
+            component.append_ties(sub_m, form, min_form_alias_detail::tie_tolerance, shifts[i]);
+            first[i].push_back(static_cast<long long>(shifts[i].size()));
+        });
+        strides[i] = component.mode_strides(shape);
+    }
+    // The combinations of the ties of the two components, visited in the (a, b, c) order of
+    // for_each_min_form_alias: nested loops, the first component outside. When the second
+    // component lies between the axes of the first ({x, z} and {y}, the only such pair), the
+    // ties of {x, z} with the same shift a form the inner loop instead.
+    const bool interleaved = search.components[0].mask == 5 && search.components[1].mask == 2;
+    for_each_centered_mode(n, shape, [&](long long index, const std::array<int, 3>& m) {
+        const long long s0 = mode_position(m, n, strides[0]);
+        const long long s1 = mode_position(m, n, strides[1]);
+        const long long end0 = first[0][s0 + 1], end1 = first[1][s1 + 1];
+        min_form_alias_detail::MomentSum moments{g, scale};
+        if (end0 == first[0][s0] + 1 && end1 == first[1][s1] + 1)
+        {
+            // One alias of least form (most modes)
+            const std::array<int, 3>& t0 = shifts[0][first[0][s0]];
+            const std::array<int, 3>& t1 = shifts[1][first[1][s1]];
+            moments.add(m[0] + (t0[0] + t1[0]) * n[0], m[1] + (t0[1] + t1[1]) * n[1], m[2] + (t0[2] + t1[2]) * n[2]);
+            visit(index, m, moments.sum);
+            return;
+        }
+        for (long long j0 = first[0][s0]; j0 < end0;)
+        {
+            long long run_end = j0 + 1;
+            while (interleaved && run_end < end0 && shifts[0][run_end][0] == shifts[0][j0][0])
+                ++run_end;
+            for (long long j1 = first[1][s1]; j1 < end1; ++j1)
+                for (long long j = j0; j < run_end; ++j)
+                {
+                    const std::array<int, 3>& t0 = shifts[0][j];
+                    const std::array<int, 3>& t1 = shifts[1][j1];
+                    moments.add(m[0] + (t0[0] + t1[0]) * n[0], m[1] + (t0[1] + t1[1]) * n[1],
+                                m[2] + (t0[2] + t1[2]) * n[2]);
+                }
+            j0 = run_end;
+        }
+        visit(index, m, moments.mean());
+    });
 }
 
 /**
@@ -470,20 +761,14 @@ inline void alias_k_squared(
 inline void alias_moments(
     const std::array<int, 3>& n, const std::array<int, 3>& shape, const IndexMetric& g, int dim, double* moments)
 {
-    const AliasSearch search(n, g);
     const long long n_modes = static_cast<long long>(shape[0]) * shape[1] * shape[2];
-    long long index = 0;
-    for (int i = 0; i < shape[0]; ++i)
-        for (int j = 0; j < shape[1]; ++j)
-            for (int k = 0; k < shape[2]; ++k, ++index)
-            {
-                const std::array<double, 6> v = tied_alias_moments(
-                    {centered_index(i, n[0]), centered_index(j, n[1]), centered_index(k, n[2])}, search, 1.0);
-                const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
-                for (int a = 0; a < dim; ++a)
-                    for (int b = 0; b < dim; ++b)
-                        moments[(a * dim + b) * n_modes + index] = product[a][b];
-            }
+    for_each_mode_tied_moments(n, shape, g, 1.0,
+        [&](long long index, const std::array<int, 3>&, const std::array<double, 6>& v) {
+            const double product[3][3] = {{v[0], v[3], v[4]}, {v[3], v[1], v[5]}, {v[4], v[5], v[2]}};
+            for (int a = 0; a < dim; ++a)
+                for (int b = 0; b < dim; ++b)
+                    moments[(a * dim + b) * n_modes + index] = product[a][b];
+        });
 }
 
 #endif  // MINIMAL_FORM_ALIAS_H_

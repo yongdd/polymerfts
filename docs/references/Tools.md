@@ -101,7 +101,7 @@ jupyter notebook plot_wtmd_statistics.ipynb
 cd /path/to/simulation
 cp /path/to/polymerfts/scripts/analysis/plot_wtmd_chib_AB.ipynb .
 jupyter notebook plot_wtmd_chib_AB.ipynb
-# Edit chin (simulation χN), dchiN (shift), and data_dir in the notebook
+# Edit chin, type_pair, langevin_step, data_dir, dchiN and polymerfts_dir in the notebook
 ```
 
 **χN Reweighting Analysis:**
@@ -112,22 +112,26 @@ The `plot_wtmd_chib_AB.ipynb` notebook computes free energy at different χN val
 F(\Psi; \chi N + \delta\chi N) = F(\Psi; \chi N) + \frac{\partial F}{\partial \chi N} \cdot \frac{\delta\chi N}{z_\infty}
 ```
 
-where $`z_\infty`$ is the renormalization factor from the discrete chain model.
+where $`z_\infty`$ is the renormalization factor of $`\chi = z_\infty \chi_b`$, which depends on the grid, the box, $`\bar{N}`$, the chain model, $`N`$, $`\zeta N`$ and the smearing ([Section 3](#3-χn-renormalization)). The notebook computes it with `renormalization.py` from the settings of the simulation, which it reads from a `fields_*.mat` file of the same run in `data_dir` (`read_simulation`); it refuses oblique boxes, chains of unequal segment lengths and a fields file whose `nx`, `lx` or `nbar` differ from those of the statistics file.
 
 **Parameters in reweighting notebook:**
-- `chin`: Simulation χN value
+- `chin`: the effective χN of the simulation, $`z_\infty \chi_b N`$
+- `type_pair`: the two monomer names of that χN, e.g. `("A", "B")`
 - `dchiN`: χN shift for reweighting (set to 0 for no shift)
-- `z_inf`: Renormalization factor (default: 0.7691138 for discrete chain)
-- `langevin_step`: Step number for statistics file
+- `langevin_step` and `data_dir`: the statistics file; `data_dir` also holds the `fields_*.mat` files of the run
+- `polymerfts_dir`: the source tree with `scripts/analysis/renormalization.py`
 
 **Input files:** `wtmd_statistics_XXXXXX.mat` containing:
 - `psi_range`: Order parameter values
 - `u`: Bias potential U(Ψ)
 - `up`: Bias potential derivative U'(Ψ)
 - `I0`: Histogram of visited states
-- `dH_psi_A_B`: Free energy derivative ∂F/∂χN
+- `dH_psi_A_B`: Free energy derivative ∂F/∂χN of the pair (`dH_psi_` and the sorted names of `type_pair`)
+- `nx`, `lx`, `nbar`: grid, box and $`\bar{N}`$ of the simulation
 - `dT`: Temperature factor
 - `dpsi`: Order parameter bin width
+
+and a `fields_XXXXXX.mat` file of the same run, whose settings give $`z_\infty`$.
 
 **Reference:**
 - T. M. Beardsley and M. W. Matsen, "Well-tempered metadynamics applied to field-theoretic simulations of diblock copolymer melts," *J. Chem. Phys.* **2022**, 157, 114902

@@ -43,7 +43,6 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
 {
     this->cb = cb;
     this->molecules = molecules;
-    this->chain_model = molecules->get_model_name();
     this->fft_backend_ = backend;
 
     // Check if all BCs are periodic
@@ -99,17 +98,16 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
                                + std::to_string(dim_) + ".");
     }
 
-    // Create Pseudo object
+    // The Fourier-space tables of every distinct contour step, one boundary condition per
+    // dimension; update_laplacian_operator() computes them for the cell
+    molecules->finalize_contour_length_mapping();
+    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        ds_values_[ds_idx] = mapping.get_ds_from_index(ds_idx);
     std::vector<BoundaryCondition> bc_per_dim;
     for (int d = 0; d < dim_; ++d)
         bc_per_dim.push_back(bc_vec[2 * d]);
-
-    pseudo = std::make_unique<Pseudo<T>>(
-        molecules->get_bond_lengths(),
-        bc_per_dim,
-        cb->get_nx(), cb->get_dx(),
-        cb->get_recip_metric(),
-        cb->get_recip_vec());
+    pseudo = std::make_unique<Pseudo<T>>(molecules->get_bond_lengths(), bc_per_dim, cb->get_nx(), ds_values_);
 }
 
 //------------------------------------------------------------------------------
@@ -408,29 +406,36 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 {
     try
     {
-        // Extract one BC per dimension
-        auto bc_vec = this->cb->get_boundary_conditions();
-        std::vector<BoundaryCondition> bc_per_dim;
-        for (int d = 0; d < dim_; ++d)
-            bc_per_dim.push_back(bc_vec[2 * d]);
-
-        pseudo->update(
-            bc_per_dim,
-            this->molecules->get_bond_lengths(),
-            this->cb->get_dx(),
-            this->cb->get_recip_metric(),
-            this->cb->get_recip_vec());
-
+        // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when the
+        // full-grid path uses them; otherwise prepare_stress() computes them for the
+        // cell in use if the off-diagonal flag turns the stress to the full grid
+        pseudo_current_ = false;
         if constexpr (std::is_same_v<T, double>)
         {
             if (use_crysfft())
                 update_crysfft_tables();
         }
+        if (full_grid_path())
+            update_pseudo();
     }
     catch (std::exception& exc)
     {
         throw_without_line_number(exc.what());
     }
+}
+
+template <typename T>
+void CpuSolverPseudoBase<T>::update_pseudo()
+{
+    pseudo->update(cb->get_dx(), cb->get_recip_metric());
+    pseudo_current_ = true;
+}
+
+template <typename T>
+bool CpuSolverPseudoBase<T>::full_grid_path() const
+{
+    // The stress fast path implies the CrysFFT propagator steps
+    return !crysfft_stress_fast_path();
 }
 
 //------------------------------------------------------------------------------
@@ -478,6 +483,11 @@ std::vector<std::pair<int, double>> CpuSolverPseudoBase<T>::crysfft_stress_keys(
 template <typename T>
 void CpuSolverPseudoBase<T>::prepare_stress()
 {
+    // The Pseudo tables of the cell when the off-diagonal flag has turned the stress
+    // to the full grid since the last cell change (see full_grid_path())
+    if (full_grid_path() && !pseudo_current_)
+        update_pseudo();
+
     // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
     if constexpr (std::is_same_v<T, double>)
     {
@@ -497,7 +507,7 @@ void CpuSolverPseudoBase<T>::prepare_stress()
         {
             for (const bool half : {false, true})
             {
-                const bool include_bond_factor = (get_stress_boltz_bond(monomer_type, half) != nullptr);
+                const bool include_bond_factor = stress_has_bond_factor();
                 if (half && !include_bond_factor)
                     continue;   // continuous chains: one multiplier per axis group
                 for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
@@ -515,12 +525,12 @@ void CpuSolverPseudoBase<T>::prepare_stress()
 
 template <typename T>
 bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
-    const T* q_1, const T* q_2, double bond_length_sq, const double* boltz_bond, std::vector<T>& stress)
+    const T* q_1, const T* q_2, double bond_length_sq, std::vector<T>& stress)
 {
     // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
     if constexpr (!std::is_same_v<T, double>)
     {
-        (void)q_1; (void)q_2; (void)bond_length_sq; (void)boltz_bond; (void)stress;
+        (void)q_1; (void)q_2; (void)bond_length_sq; (void)stress;
         return false;
     }
     else
@@ -534,21 +544,18 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         const auto& orbit_counts = space_group_->get_orbit_counts();
 
         WorkArrays& work = work_arrays();
-        std::vector<double>& phys_q1 = work.phys_1;
-        std::vector<double>& phys_q2 = work.phys_2;
-        std::vector<double>& phys_tmp = work.phys_3;
+        std::vector<double>& phys_q2 = work.phys_1;
+        std::vector<double>& phys_tmp = work.phys_2;
         std::vector<double>& reduced_tmp = work.reduced;
-        if (static_cast<int>(phys_q1.size()) != M_phys)
+        if (static_cast<int>(phys_q2.size()) != M_phys)
         {
-            phys_q1.resize(M_phys);
             phys_q2.resize(M_phys);
             phys_tmp.resize(M_phys);
         }
         if (static_cast<int>(reduced_tmp.size()) != M_reduced)
             reduced_tmp.resize(M_reduced);
 
-        // Reduced -> physical grid
-        fill_crysfft_from_reduced(q_1, phys_q1.data());
+        // Reduced -> physical grid (q_1 is summed in the reduced basis)
         fill_crysfft_from_reduced(q_2, phys_q2.data());
 
         // sums[d] = Σ_r n_orbit(r) q1(r) [F⁻¹ k_d² ĝ F q2](r) over the reduced basis, one
@@ -556,7 +563,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         // the axes of the group (see crysfft_stress_axis_groups), built by prepare_stress()
         // with the bond factor for discrete chains
         double sums[3] = {0.0, 0.0, 0.0};
-        for (const auto& key : crysfft_stress_keys(bond_length_sq, boltz_bond != nullptr))
+        for (const auto& key : crysfft_stress_keys(bond_length_sq, stress_has_bond_factor()))
         {
             const int axes = key.first;
             const auto multiplier = crysfft_multipliers_.find(key);
@@ -576,7 +583,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
 
         // The CrysFFT multipliers are Cartesian k_d² = (2πm_d/L_d)², while the
         // standard path accumulates deformation-vector components v_d² = k_d²/L_d²
-        // (see Pseudo::update_weighted_fourier_basis_periodic). Divide by L_d²
+        // (see fill_periodic_stress_basis in Pseudo.cpp). Divide by L_d²
         // so both paths return the same V_dd.
         const std::vector<double> lx = cb->get_lx();
         for (int d = 0; d < 3; ++d)
@@ -665,23 +672,20 @@ void CpuSolverPseudoBase<T>::accumulate_stress_periodic(
 template <typename T>
 void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
     const double* qk_1, const double* qk_2, double bond_length_sq,
-    const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const
+    const double* boltz_bond, std::vector<T>& stress) const
 {
     const int DIM = dim_;
     const int M_COMPLEX = pseudo->get_total_complex_grid();
     const double* kk_xx = pseudo->get_fourier_basis_x();
     const double* kk_yy = pseudo->get_fourier_basis_y();
     const double* kk_zz = pseudo->get_fourier_basis_z();
-    const double* kk_xy = pseudo->get_fourier_basis_xy();
-    const double* kk_xz = pseudo->get_fourier_basis_xz();
-    const double* kk_yz = pseudo->get_fourier_basis_yz();
 
     // Real coefficients from DCT/DST; for complex fields those of the real and
     // imaginary parts as complex pairs, whose product needs no conjugate (the
     // basis functions are real). The per-mode Parseval weights (2 for
     // interior modes, 1 for the DCT m=0 / DST k=n special modes, composed
     // across dimensions) are folded into the fourier_basis tables by
-    // Pseudo::update_weighted_fourier_basis_mixed, mirroring the periodic
+    // Pseudo::update_nonperiodic, mirroring the periodic
     // path, so no flat factor is applied here.
     const std::complex<double>* qk_1_complex = reinterpret_cast<const std::complex<double>*>(qk_1);
     const std::complex<double>* qk_2_complex = reinterpret_cast<const std::complex<double>*>(qk_2);
@@ -694,49 +698,15 @@ void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
             return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[i];
     };
 
-    if (DIM == 3)
+    // V₁₁, V₂₂, V₃₃ of the box axes; the cross terms are zero, since walls need an orthogonal cell
+    for (int i = 0; i < M_COMPLEX; ++i)
     {
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_xx[i];  // V₁₁
-            stress[1] += coeff * kk_yy[i];  // V₂₂
-            stress[2] += coeff * kk_zz[i];  // V₃₃
-        }
-        // Cross terms are zero for non-periodic BC (orthogonal grids only)
-        if (!is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                stress[3] += coeff * kk_xy[i];  // V₁₂ (→ dH/dγ)
-                stress[4] += coeff * kk_xz[i];  // V₁₃ (→ dH/dβ)
-                stress[5] += coeff * kk_yz[i];  // V₂₃ (→ dH/dα)
-            }
-        }
-    }
-    else if (DIM == 2)
-    {
-        // The 2D grid is mapped to the y-z axes internally (tnx = {1, nx[0], nx[1]}),
-        // so the stress data live in fourier_basis_y and fourier_basis_z
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_yy[i];  // V₁₁
-            stress[1] += coeff * kk_zz[i];  // V₂₂
-        }
-        // V₁₂ only for non-orthogonal boxes (the mixed-BC tables are zero anyway)
-        if (!is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-                stress[2] += kernel(i) * kk_yz[i];
-        }
-    }
-    else if (DIM == 1)
-    {
-        // The 1D grid is mapped to the z axis internally (tnx = {1, 1, nx[0]})
-        for (int i = 0; i < M_COMPLEX; ++i)
-            stress[0] += kernel(i) * kk_zz[i];
+        const T coeff = kernel(i);
+        stress[0] += coeff * kk_xx[i];
+        if (DIM >= 2)
+            stress[1] += coeff * kk_yy[i];
+        if (DIM == 3)
+            stress[2] += coeff * kk_zz[i];
     }
 }
 
@@ -752,7 +722,7 @@ const double* CpuSolverPseudoBase<T>::get_stress_boltz_bond(
  *
  * Uses v⊗v dyad product components stored in fourier_basis arrays, where
  * v = 2π g⁻¹ m is the deformation vector (units 1/L², NOT the Cartesian
- * wavevector — see Pseudo::update_weighted_fourier_basis_periodic):
+ * wavevector — see fill_periodic_stress_basis in Pseudo.cpp):
  * - fourier_basis_x = v₁², fourier_basis_y = v₂², fourier_basis_z = v₃²
  * - fourier_basis_xy = v₁v₂, fourier_basis_xz = v₁v₃, fourier_basis_yz = v₂v₃
  *
@@ -775,16 +745,19 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
 
         std::vector<T> stress(N_STRESS, 0.0);
 
+        // CrysFFT fast path (reduced grid, no full-grid FFT and no Pseudo tables)
+        if (compute_stress_crysfft(q_1, q_2, bond_length_sq, stress))
+            return stress;
+
         // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains)
         const double* _boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
 
-        // CrysFFT fast path (reduced grid, no full-grid FFT)
-        if (compute_stress_crysfft(q_1, q_2, bond_length_sq, _boltz_bond, stress))
-            return stress;
-
         const int coeff_size = complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
-        std::vector<double> qk_1(coeff_size);
-        std::vector<double> qk_2(coeff_size);
+        WorkArrays& work = work_arrays();
+        std::vector<double>& qk_1 = work.k_1;
+        std::vector<double>& qk_2 = work.k_2;
+        qk_1.resize(coeff_size);
+        qk_2.resize(coeff_size);
 
         // ============================================================================
         // PERFORMANCE-CRITICAL: Orthogonal box optimization
@@ -810,8 +783,8 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // so no shared scratch space may be used here.
         T* q_1_full = q_1;
         T* q_2_full = q_2;
-        std::vector<T>& q_full_1_local = work_arrays().pair_1;
-        std::vector<T>& q_full_2_local = work_arrays().pair_2;
+        std::vector<T>& q_full_1_local = work.pair_1;
+        std::vector<T>& q_full_2_local = work.pair_2;
         if (space_group_ != nullptr)
         {
             const int M_full = cb->get_total_grid();
@@ -844,7 +817,7 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         if (is_periodic_)
             accumulate_stress_periodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
         else
-            accumulate_stress_nonperiodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
+            accumulate_stress_nonperiodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, stress);
 
         return stress;
     }

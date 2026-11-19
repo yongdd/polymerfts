@@ -73,7 +73,6 @@ solver = PropagatorSolver(
     bc=["periodic"]*4,
     chain_model="continuous",
     numerical_method="rqm4",
-    platform="cpu-fftw",
     reduce_memory=False
 )
 
@@ -131,7 +130,7 @@ The potential field affects chain statistics through:
 
 - Python 3.11+
 - NumPy, Matplotlib
-- `polymerfts` installed (`make install` from build directory)
+- `polymerfts` installed from a wheel (see [Installation](../docs/getting-started/Installation.md))
 - Jupyter notebook or JupyterLab
 
 ## Environment Setup
@@ -160,6 +159,9 @@ jupyter lab
 cd tutorials
 jupyter notebook
 ```
+
+`ctest --test-dir build -R TestTutorials` runs the code cells of every notebook against the
+build, with at most 5 Langevin steps in each L-FTS run.
 
 ## Additional Resources
 

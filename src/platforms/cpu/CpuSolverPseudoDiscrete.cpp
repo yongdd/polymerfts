@@ -48,32 +48,17 @@ CpuSolverPseudoDiscrete<T>::CpuSolverPseudoDiscrete(ComputationBox<T>* cb, Molec
 
         const int M = cb->get_total_grid();
 
-        // Ensure ContourLengthMapping is finalized before using it
-        molecules->finalize_contour_length_mapping();
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // Create exp_dw vectors for each ds_index and monomer type
-        // Also register local_ds values with Pseudo for boltz_bond computation
+        // Create exp_dw vectors for each ds_index and monomer type (init_shared()
+        // finalized the ContourLengthMapping)
+        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
         for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
         {
-            double local_ds = mapping.get_ds_from_index(ds_idx);
-            this->pseudo->add_ds_value(ds_idx, local_ds);
-            this->register_ds_value(ds_idx, local_ds);
-
             for (const auto& item : molecules->get_bond_lengths())
             {
                 std::string monomer_type = item.first;
                 this->exp_dw[ds_idx][monomer_type].resize(M);
             }
         }
-
-        // Finalize ds values to allocate boltz_bond arrays
-        // (update_laplacian_operator will compute the actual values)
-        this->pseudo->finalize_ds_values();
-        this->update_laplacian_operator();
     }
     catch (std::exception& exc)
     {
@@ -174,13 +159,12 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
 
         // Get Boltzmann factors for the correct ds_index
         const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
 
         // Determine input/output pointers based on space group
         T* fft_in = q_in;
         T* fft_out = q_out;
 
-        // Thread-local buffers for expand/reduce (called from OpenMP parallel regions);
+        // Work arrays of this thread for expand/reduce (called from OpenMP parallel regions);
         // the CrysFFT path reads and writes the reduced basis directly
         std::vector<T>& q_full_in_local = work.q_full_in;
         std::vector<T>& q_full_out_local = work.q_full_out;
@@ -215,13 +199,10 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
         else
         {
             // Forward transform -> multiply by bond function ĝ(k) -> Backward transform
+            // -> exp(-w*ds) in real space
+            const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
             this->transform_forward(fft_in, k_q_in.data());
-            this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond, M_COMPLEX);
-            this->transform_backward(k_q_in.data(), fft_out);
-
-            // Evaluate exp(-w*ds) in real space
-            for (int i = 0; i < M_full; ++i)
-                fft_out[i] *= _exp_dw[i];
+            this->transform_backward(k_q_in.data(), _boltz_bond, fft_out, _exp_dw);
 
             // Reduce full grid → reduced basis
             if (this->space_group_ != nullptr)
@@ -270,14 +251,11 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         if (!crysfft_path)
             k_q_in.resize(coeff_size);
 
-        // Discrete chains always use ds_index=0 (global ds)
-        const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
-
         // Determine input/output pointers based on space group
         T* fft_in = q_in;
         T* fft_out = q_out;
 
-        // Thread-local buffers for expand/reduce (called from OpenMP parallel regions);
+        // Work arrays of this thread for expand/reduce (called from OpenMP parallel regions);
         // the CrysFFT path reads and writes the reduced basis directly
         std::vector<T>& q_full_in_local = work.q_full_in;
         std::vector<T>& q_full_out_local = work.q_full_out;
@@ -312,9 +290,10 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         else
         {
             // Forward transform -> multiply by half-bond function ĝ^(1/2)(k) -> Backward transform
+            // (discrete chains always use ds_index=0, the global ds)
+            const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
             this->transform_forward(fft_in, k_q_in.data());
-            this->multiply_fourier_coeffs(k_q_in.data(), _boltz_bond_half, M_COMPLEX);
-            this->transform_backward(k_q_in.data(), fft_out);
+            this->transform_backward(k_q_in.data(), _boltz_bond_half, fft_out, nullptr);
 
             // Reduce full grid → reduced basis
             if (this->space_group_ != nullptr)

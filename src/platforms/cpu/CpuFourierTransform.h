@@ -4,7 +4,8 @@
  *
  * The fields of a call are transformed concurrently (OpenMP over fields, the
  * transforms themselves single-threaded as in the propagator solvers) and the
- * multipliers are applied with OpenMP over wavevectors.
+ * multipliers are applied with OpenMP over wavevectors. One thread uses a
+ * transform object at a time: backward() and apply() work in its member arrays.
  *
  * A box that mixes periodic and wall axes runs MakhoulTransform with periodic
  * axes: one real FFT of the grid, the DFT along the periodic axes and the
@@ -20,6 +21,7 @@
 #include <memory>
 #include <vector>
 
+#include "AlignedScratch.h"
 #include "FFT.h"
 #include "FourierTransform.h"
 #include "MakhoulTransform.h"
@@ -53,12 +55,20 @@ protected:
     void apply_impl(const std::vector<FourierTerm<T>>& terms, int n_out, T* out) override;
     void forward_impl(const T* fields, int n_fields, double* coefficients) override;
     void backward_impl(const double* coefficients, int n_fields, T* fields) override;
+    /// The coefficients copied into coefficients_out_, made Hermitian there and transformed
+    /// from that copy, which the transform may overwrite (FFTW's complex-to-real transform runs on it)
+    void backward_hermitian_impl(const double* coefficients, int n_fields, T* fields) override;
 
 private:
     std::unique_ptr<FFT<T>> fft_;                     ///< periodic or wall boxes
     std::unique_ptr<MakhoulTransform> mixed_fft_;     ///< boxes that mix periodic and wall axes
-    std::vector<double> coefficients_in_;    ///< coefficients of the inputs of a term
-    std::vector<double> coefficients_out_;   ///< accumulated output coefficients
+    // From 64-byte boundaries, as the scratch of the transforms, which then run on them
+    AlignedScratch coefficients_in_;    ///< coefficients of the inputs of a term
+    AlignedScratch coefficients_out_;   ///< accumulated output coefficients; the copy of backward()
+
+    /// The inverse transforms of n_fields fields, OpenMP over fields; with give_up the
+    /// transforms may overwrite the coefficients (FFT<T>::backward_with_factors() without factors)
+    void backward_fields(double* coefficients, int n_fields, T* fields, bool give_up);
 };
 
 #endif

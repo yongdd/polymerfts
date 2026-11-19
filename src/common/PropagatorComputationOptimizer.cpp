@@ -43,7 +43,6 @@
 #include "Molecules.h"
 #include "Polymer.h"
 #include "Exception.h"
-#include "ValidationUtils.h"
 
 /**
  * @brief Compare propagator keys for ordered storage.
@@ -428,7 +427,7 @@ void PropagatorComputationOptimizer::substitute_right_keys(
  */
 void PropagatorComputationOptimizer::update_computation_propagator_map(
     std::map<std::string, ComputationEdge, ComparePropagatorKey>& computation_propagators,
-    std::string new_key, int new_n_segment, bool is_junction_end)
+    const std::string& new_key, int new_n_segment, bool is_junction_end)
 {
     if (computation_propagators.find(new_key) == computation_propagators.end())
     {
@@ -577,10 +576,12 @@ std::map<std::string, ComputationEdge, ComparePropagatorKey>& PropagatorComputat
 }
 
 /** @brief Get computation propagator by key. */
-ComputationEdge& PropagatorComputationOptimizer::get_computation_propagator(std::string key)
+ComputationEdge& PropagatorComputationOptimizer::get_computation_propagator(const std::string& key)
 {
-    validation::require_string_key(computation_propagators, key, "computation_propagators");
-    return computation_propagators.at(key);
+    auto it = computation_propagators.find(key);
+    if (it == computation_propagators.end())
+        throw_with_line_number("Key '" + key + "' not found in computation_propagators");
+    return it->second;
 }
 
 /** @brief Get all computation blocks. */
@@ -590,12 +591,13 @@ std::map<std::tuple<int, std::string, std::string>, ComputationBlock>& Propagato
 }
 
 /** @brief Get computation block by (polymer_id, left_key, right_key). */
-ComputationBlock& PropagatorComputationOptimizer::get_computation_block(std::tuple<int, std::string, std::string> key)
+ComputationBlock& PropagatorComputationOptimizer::get_computation_block(const std::tuple<int, std::string, std::string>& key)
 {
-    validation::require_key(computation_blocks, key,
-        "computation_blocks for (" + std::to_string(std::get<0>(key)) + ", " +
-        std::get<1>(key) + ", " + std::get<2>(key) + ")");
-    return computation_blocks.at(key);
+    auto it = computation_blocks.find(key);
+    if (it == computation_blocks.end())
+        throw_with_line_number("Key not found in computation_blocks for (" + std::to_string(std::get<0>(key)) + ", "
+            + std::get<1>(key) + ", " + std::get<2>(key) + ")");
+    return it->second;
 }
 
 /**
@@ -678,12 +680,10 @@ void PropagatorComputationOptimizer::display_blocks() const
 }
 
 /**
- * @brief Print only the summary statistics (no detailed propagator/block info).
- *
- * Shows total computational steps before and after optimization,
- * and the efficiency gain percentage.
+ * @brief Steps to compute the propagators: both directions of every block of every
+ *        polymer (without the optimization), and the computation propagators (with it).
  */
-void PropagatorComputationOptimizer::display_statistics() const
+std::pair<int, int> PropagatorComputationOptimizer::count_steps() const
 {
     int total_mde_steps_without_reduction = 0;
     int reduced_mde_steps = 0;
@@ -705,6 +705,18 @@ void PropagatorComputationOptimizer::display_statistics() const
                 reduced_mde_steps++;
         }
     }
+    return {total_mde_steps_without_reduction, reduced_mde_steps};
+}
+
+/**
+ * @brief Print only the summary statistics (no detailed propagator/block info).
+ *
+ * Shows total computational steps before and after optimization,
+ * and the efficiency gain percentage.
+ */
+void PropagatorComputationOptimizer::display_statistics() const
+{
+    const auto [total_mde_steps_without_reduction, reduced_mde_steps] = count_steps();
 
     if (this->model_name == "continuous")
         std::cout << "Propagator solver: total MDE steps = " << total_mde_steps_without_reduction;
@@ -730,28 +742,13 @@ void PropagatorComputationOptimizer::display_statistics() const
 void PropagatorComputationOptimizer::display_propagators() const
 {
     // Print propagators
-    int total_mde_steps_without_reduction = 0;
-    int reduced_mde_steps = 0;
+    const auto [total_mde_steps_without_reduction, reduced_mde_steps] = count_steps();
 
     std::cout << "--------------- Propagators ---------------" << std::endl;
     std::cout << "Key:\n\theight, aggregated, max_n_segment, # dependencies, junction_ends" << std::endl;
 
-    for(const auto& item : total_segment_numbers)
-    {
-        total_mde_steps_without_reduction += 2*item;
-    }
-
     for(const auto& item : computation_propagators)
     {
-        if (this->model_name == "continuous")
-            reduced_mde_steps += item.second.max_n_segment;
-        else if (this->model_name == "discrete")
-        {
-            reduced_mde_steps += item.second.max_n_segment-1;
-            reduced_mde_steps += item.second.junction_ends.size();
-            if (item.second.deps.size() > 0)
-                reduced_mde_steps++;
-        }
         const int MAX_PRINT_LENGTH = 500;
 
         if (item.first.size() <= MAX_PRINT_LENGTH)
@@ -786,7 +783,7 @@ void PropagatorComputationOptimizer::display_propagators() const
     if (this->model_name == "continuous")
         std::cout << "Total number of modified diffusion equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;    
     else if (this->model_name == "discrete")
-        std::cout << "(Total number of integral equation steps (time complexity to compute propagators: " << total_mde_steps_without_reduction << std::endl;    
+        std::cout << "Total number of integral equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;
     std::cout << "Total number of steps after optimizing computation : " << reduced_mde_steps << std::endl;
 
     double percent = 0.0;
@@ -794,41 +791,4 @@ void PropagatorComputationOptimizer::display_propagators() const
         percent = 100*(1.0 - static_cast<double>(reduced_mde_steps)/static_cast<double>(total_mde_steps_without_reduction));
     percent = std::round(percent*100)/100; //rounding
     std::cout << "Computational cost reduction (higher is better) : " << percent << " %" << std::endl;
-}
-
-/**
- * @brief Print sub-propagators with dependency information.
- *
- * Alternative display format showing propagator dependencies
- * in a compact format.
- */
-void PropagatorComputationOptimizer::display_sub_propagators() const
-{
-    // Print sub propagators
-    int total_segments = 0;
-    std::cout << "--------- Propagators ---------" << std::endl;
-    std::cout << "Key:\n\taggregated, max_n_segment, height, deps," << std::endl;
-    
-    for(const auto& item : computation_propagators)
-    {
-        total_segments += item.second.max_n_segment;
-
-        std::cout << item.first;
-        std::cout << ":\n\t ";
-        if (item.first.find('[') == std::string::npos)
-            std::cout << "X, ";
-        else
-            std::cout << "O, ";
-        std::cout << item.second.max_n_segment << ", " << item.second.height;
-
-        // Use already-converted deps (n_segment) from computation_propagators
-        // rather than parsing from key (which contains length_index)
-        for(size_t i=0; i<item.second.deps.size(); i++)
-        {
-            std::cout << ", "  << std::get<0>(item.second.deps[i]) << ":" << std::get<1>(item.second.deps[i]);
-        }
-        std::cout << std::endl;
-    }
-    std::cout << "Total number of modified diffusion equation (or integral equation for discrete chain model) steps to compute propagators: " << total_segments << std::endl;
-    std::cout << "------------------------------------" << std::endl;
 }

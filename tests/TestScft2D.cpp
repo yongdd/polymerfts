@@ -68,7 +68,7 @@ int main()
         double chi_n = 25.0;
         std::vector<int> nx = {49, 63};
         std::vector<double> lx = {4.0,3.0};
-        std::string chain_model = "Continuous";  // choose among [Continuous, Discrete]
+        std::string chain_model = "Continuous";  // with "rqm4" below; discrete chains take "ps" or "rs"
         double ds = 1.0/49;
 
         int am_n_var = 2*nx[0]*nx[1];  // A and B

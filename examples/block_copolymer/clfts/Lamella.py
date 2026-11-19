@@ -1,7 +1,6 @@
 import os
 import time
 import numpy as np
-from scipy.io import savemat, loadmat
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -10,7 +9,6 @@ os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 from polymerfts import CLFTS
 
 f = 0.5        # A-fraction of major BCP chain, f
-eps = 1.0      # a_A/a_B, conformational asymmetry
 
 params = {
     #---------------- Simulation parameters -----------------------------
@@ -38,7 +36,7 @@ params = {
     "langevin":{                # Langevin Dynamics
         "max_step":100000,      # Langevin steps for simulation
         "dt":1.0,               # Langevin step interval, delta tau*N_Ref
-        "nbar":10000,           # Invariant polymerization index, nbar of N_Ref
+        "nbar":100000,          # Invariant polymerization index, nbar of N_Ref
     },
 
     "recording":{                       # Recording Simulation Data
@@ -54,7 +52,7 @@ params = {
 
     # Dynamical stabilization for complex Langevin (Willis & Matsen, J. Chem. Phys. 161, 244903 (2024))
     # Adds iαds·Im[W-] to exchange field forces to prevent hot spots.
-    # Values used by Willis & Matsen (larger values bias the statistics):
+    # Values used by Willis & Matsen (larger values bias the statistics; see DYNAMICAL_STABILIZATION.md):
     #   N̄ ~ 10^6 - 10^7: αds = 0.001
     #   N̄ ~ 10^5:        αds = 0.01 - 0.02
     #   N̄ ~ 10^4:        no reliable value without smearing
@@ -89,13 +87,10 @@ simulation = CLFTS(params=params, random_seed=random_seed)
 print("Generating initial fields with lamellar pattern...")
 nx = params["nx"]
 lx = params["lx"]
-n_grid = np.prod(nx)
 
-# Create coordinate grid
+# The x coordinate of every grid point
 x = np.linspace(0, lx[0], nx[0], endpoint=False)
-y = np.linspace(0, lx[1], nx[1], endpoint=False)
-z = np.linspace(0, lx[2], nx[2], endpoint=False)
-X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+X = np.broadcast_to(x[:, None, None], nx)
 
 # Lamellar pattern along x-direction (2 periods)
 period = lx[0] / 2
@@ -117,8 +112,8 @@ print(f"Total elapsed time: {time.time() - time_start:.2f} seconds")
 # Recording first a few iteration results for reference (with random_seed=12345):
 # ---------- Run ----------
 # step    mass_error                     partition_function                    Hamiltonian                           error_levels
-#        1 -5.607E-02-3.487E-05j  [ 1.159075E+00+2.318895E-17j ] +2.797237765E+00+3.489285278E-03j  [ 3.312E-02 6.970E-03 ]
-#        2 -5.554E-02-1.464E-04j  [ 1.077628E+00+3.969140E-03j ] +2.825749336E+00+1.097152071E-02j  [ 4.751E-02 8.743E-02 ]
-#        3 -5.502E-02-2.245E-04j  [ 9.700087E-01+1.467895E-02j ] +2.886240260E+00+7.348049641E-03j  [ 5.811E-02 1.630E-01 ]
-#        4 -5.450E-02-2.013E-04j  [ 8.884174E-01+2.135688E-02j ] +2.929704074E+00-3.856581906E-03j  [ 6.514E-02 1.926E-01 ]
-#        5 -5.398E-02-1.703E-04j  [ 8.207961E-01+1.784909E-02j ] +2.965189810E+00-4.652779305E-03j  [ 7.149E-02 2.128E-01 ]
+#        1 -5.607E-02+4.509E-05j  [ 1.087938E+00-5.210271E-03j ] +2.914224319E+00+2.773502852E-04j  [ 1.175E-01 5.728E-02 ]
+#        2 -5.554E-02+1.048E-04j  [ 1.018392E+00-1.131253E-02j ] +3.135786403E+00+6.138570392E-04j  [ 2.432E-01 1.122E-01 ]
+#        3 -5.502E-02+9.233E-06j  [ 9.515502E-01-1.116498E-03j ] +3.310695708E+00+2.276839029E-04j  [ 3.054E-01 1.398E-01 ]
+#        4 -5.450E-02-6.128E-05j  [ 8.884446E-01+5.342290E-03j ] +3.448652090E+00-5.902737852E-05j  [ 3.445E-01 1.577E-01 ]
+#        5 -5.398E-02-2.020E-05j  [ 8.305739E-01+1.582543E-03j ] +3.554988323E+00-1.302794469E-04j  [ 3.698E-01 1.693E-01 ]

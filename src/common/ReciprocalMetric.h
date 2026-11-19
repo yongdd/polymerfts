@@ -20,8 +20,8 @@ struct CellGeometry
 {
     double volume;                       ///< V = a·(b×c)
     std::array<double, 9> lattice_vec;   ///< [a_x, a_y, a_z, b_x, b_y, b_z, c_x, c_y, c_z]
-    std::array<double, 9> recip_vec;     ///< [a*|b*|c*] (without 2π): a* = (b×c)/V, b* = (c×a)/V, c* = (a×b)/V
-    std::array<double, 6> recip_metric;  ///< G* = (a*·a*, a*·b*, a*·c*, b*·b*, b*·c*, c*·c*)
+    std::array<double, 6> recip_metric;  ///< G* = (a*·a*, a*·b*, a*·c*, b*·b*, b*·c*, c*·c*) of the
+                                         ///< reciprocal vectors (without 2π) a* = (b×c)/V, b* = (c×a)/V, c* = (a×b)/V
 };
 
 /**
@@ -93,7 +93,6 @@ inline CellGeometry cell_geometry(const std::array<double, 6>& cell_para)
     const double c_star_x = ab_x / volume;
     const double c_star_y = ab_y / volume;
     const double c_star_z = ab_z / volume;
-    geometry.recip_vec = {a_star_x, a_star_y, a_star_z, b_star_x, b_star_y, b_star_z, c_star_x, c_star_y, c_star_z};
 
     // Reciprocal metric G*_ij = e*_i · e*_j
     geometry.recip_metric = {

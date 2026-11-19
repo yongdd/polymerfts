@@ -7,7 +7,9 @@ completion, random copolymers, no modification of the user's dictionary,
 and ValidationError for invalid input. The top-level keys: a key given as None
 is absent, the options of other methods are ignored with one warning at the
 caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
-and a key that no method reads is refused.
+an option of an earlier release (stress_interval) is ignored with one warning,
+and a key that no method reads is refused, as is a key that a section of the
+method does not take.
 """
 
 import sys
@@ -93,7 +95,7 @@ def check_none_keys():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         given = {**scft_parameters(), **absent, "max_iter": None, "tolerance": None, "stress_scale": None,
-                 "stress_interval": None, "crystal_system": None, "space_group": None, "axis_ordering": None,
+                 "crystal_system": None, "space_group": None, "axis_ordering": None,
                  "langevin": None, "wtmd": None, "dynamic_stabilization": None}
         params = validate_scft_params(given)
         given["platform"] = cpu_platform()
@@ -109,9 +111,8 @@ def check_none_keys():
     if set(params) != set(scft_parameters()) - {"platform"}:
         print(f"FAILED: the keys given as None stay in the SCFT input: {sorted(params)}")
         ok = False
-    expected = (2000, 1e-8, 1, 1, 0.0, 100.0)
-    actual = (scft.max_iter, scft.tolerance, scft.cell.stress_scale, scft.cell.stress_interval, clfts.alpha_ds,
-              clfts.zeta_n)
+    expected = (2000, 1e-8, 1, 0.0, 100.0)
+    actual = (scft.max_iter, scft.tolerance, scft.cell.stress_scale, clfts.alpha_ds, clfts.zeta_n)
     if actual != expected or lfts.zeta_n is not None or not lfts.prop_solver.aggregate_propagator_computation:
         print(f"FAILED: the defaults of options given as None: {actual}, L-FTS zeta_n {lfts.zeta_n}")
         ok = False
@@ -134,7 +135,7 @@ def check_ignored_keys():
     refuse axis_ordering, which would reorder the shared nx, lx, bc and angles."""
     ok = True
     invalid = {SCFT: {"langevin": "x", "saddle": 3, "wtmd": {"ell": -1}, "dynamic_stabilization": "fast"},
-               LFTS: {"optimizer": 3, "space_group": "Im-3m", "stress_interval": "fast", "dynamic_stabilization": -1},
+               LFTS: {"optimizer": 3, "space_group": "Im-3m", "stress_scale": "fast", "dynamic_stabilization": -1},
                CLFTS: {"saddle": "x", "compressor": {"name": "foo"}, "wtmd": {"ell": -1}, "relax_cell": "yes"}}
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         with warnings.catch_warnings(record=True) as caught:
@@ -160,9 +161,6 @@ def check_ignored_keys():
 
 
 def main():
-    if cpu_platform() is None:
-        print("SKIP: no CPU platform in this build")
-        return 77  # ctest SKIP_RETURN_CODE
     ok = True
 
     from polymerfts.utils.validation import parse_chi_n
@@ -251,7 +249,6 @@ def main():
     checks = {
         "max_iter": calc.max_iter == 2000,
         "tolerance": calc.tolerance == 1e-8,
-        "stress_interval": calc.cell.stress_interval == 1,
         "stress_scale": calc.cell.stress_scale == 1,
         "zeta_n": calc.zeta_n is None,
         "space_group": calc.sg is None,
@@ -269,19 +266,18 @@ def main():
 
     # ---- explicit options reach the solver
     params = scft_parameters()
-    params.update({"max_iter": 10, "tolerance": 1e-5, "stress_interval": "adaptive", "stress_scale": 2.0,
+    params.update({"max_iter": 10, "tolerance": 1e-5, "stress_scale": 2.0,
                    "zeta_n": 100.0, "numerical_method": "rk2",
                    "crystal_system": "Cubic", "relax_cell": True})
     calc = build(SCFT, params)
-    if not (calc.max_iter == 10 and calc.tolerance == 1e-5 and calc.cell.stress_interval == "adaptive"
+    if not (calc.max_iter == 10 and calc.tolerance == 1e-5
             and calc.cell.stress_scale == 2.0 and calc.zeta_n == 100.0
             and calc.prop_solver.numerical_method == "rk2"
             and calc.cell.lx_reduced_indices == [0] and calc.cell.lx_full_indices == [0, 0, 0]):
         print("FAILED: SCFT explicit options")
         ok = False
 
-    # ---- chi N completion and sorted monomer types (through LFTS: a missing pair makes
-    #      the 3x3 chi matrix singular, which incompressible SCFT rejects)
+    # ---- chi N completion and sorted monomer types (through LFTS)
     params = lfts_params()
     params["segment_lengths"] = {"C": 1.0, "A": 1.0, "B": 1.0}
     params["chi_n"] = {"B,A": 15.0, "A,C": 5.0}
@@ -610,7 +606,7 @@ def main():
         params = lfts_params(); params[key] = 0.05
         ok &= expect_ignored(LFTS, params, f"LFTS with the CL-FTS option '{key}'", "dynamic_stabilization")
     scft_options = {"relax_cell": True, "crystal_system": "Cubic", "optimizer": scft_parameters()["optimizer"],
-                    "stress_scale": 0.5, "stress_interval": 2, "max_iter": 10, "tolerance": 1e-6,
+                    "stress_scale": 0.5, "max_iter": 10, "tolerance": 1e-6,
                     "space_group": {"symbol": "Im-3m"}}
     for cls, params in ((LFTS, lfts_params()), (CLFTS, clfts_params())):
         for key, value in scft_options.items():
@@ -623,6 +619,33 @@ def main():
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         ok &= expect_error(cls, {**params, "relax_cel": False}, f"{cls.__name__} with a misspelled key",
                            "does not take a 'relax_cel' parameter: did you mean 'relax_cell'?")
+    # So is a key that a section of the method does not take, which would leave its option at the default
+    # (the deep-langevin-fts names l and dT of WTMD among them); the sections of another method are ignored
+    # with what they hold
+    sections = {"langevin": lfts_params()["langevin"], "recording": lfts_params()["recording"],
+                "saddle": lfts_params()["saddle"], "compressor": lfts_params()["compressor"], "wtmd": {"ell": 4},
+                "smearing": {"type": "gaussian", "a_int": 0.1}, "optimizer": scft_parameters()["optimizer"],
+                "space_group": {"symbol": "Im-3m"}}
+    for cls, params, names in ((SCFT, scft_parameters(), ("optimizer", "space_group", "smearing")),
+                               (LFTS, lfts_params(), ("langevin", "recording", "saddle", "compressor", "wtmd",
+                                                      "smearing")),
+                               (CLFTS, clfts_params(), ("langevin", "recording", "smearing"))):
+        for section in names:
+            ok &= expect_error(cls, {**params, section: {**sections[section], "unknown_key": 1}},
+                               f"{cls.__name__} with an unknown key in '{section}'",
+                               f"'{section}' has unknown keys: ['unknown_key']")
+    for cls, params, section, key, message in (
+            (LFTS, lfts_params(), "langevin", "integrater", "(did you mean 'integrator'?); it takes dt, integrator, "
+                                                            "max_step, nbar"),
+            (CLFTS, clfts_params(), "recording", "pressur", "did you mean 'pressure'?"),
+            (LFTS, lfts_params(), "saddle", "max_retry", "did you mean 'max_retries'?"),
+            (SCFT, scft_parameters(), "optimizer", "max_hst", "did you mean 'max_hist'?"),
+            (LFTS, lfts_params(), "wtmd", "l", "'wtmd' has unknown keys: ['l']"),
+            (LFTS, lfts_params(), "wtmd", "dT", "'wtmd' has unknown keys: ['dT']")):
+        ok &= expect_error(cls, {**params, section: {**sections[section], key: 2}},
+                           f"{cls.__name__} with '{section}.{key}'", message)
+    ok &= expect_ignored(CLFTS, {**clfts_params(), "saddle": {"unknown_key": 1}},
+                         "CLFTS with an unknown key in the L-FTS section 'saddle'", "saddle (L-FTS")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
@@ -656,9 +679,14 @@ def main():
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")
     params = clfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
-    for value in (0, -1, 1.5, "fast"):
-        params = scft_parameters(); params["stress_interval"] = value
-        ok &= expect_error(SCFT, params, f"stress_interval {value!r}")
+    # The retired stress_interval: every method ignores it, whatever its value, with one warning
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            build(cls, {**params, "stress_interval": "fast"})
+        if [str(w.message).split(":")[0] for w in caught] != ["'stress_interval' is ignored"]:
+            print(f"FAILED: {cls.__name__} with stress_interval warned {[str(w.message) for w in caught]}")
+            ok = False
     ok &= check_none_keys()
     ok &= check_ignored_keys()
 

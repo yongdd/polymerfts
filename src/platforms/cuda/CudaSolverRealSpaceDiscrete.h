@@ -53,7 +53,7 @@ private:
     const int* d_reduced_basis_indices_ = nullptr;   ///< reduced -> full index (lent by the backend)
     const int* d_full_to_reduced_map_ = nullptr;     ///< full -> reduced index (lent by the backend)
     int n_basis_ = 0;                                ///< points of the propagators
-    cudaStream_t streams[MAX_STREAMS][2];
+    cudaStream_t streams[MAX_STREAMS];
 
     std::map<int, std::map<std::string, DeviceKernels>> d_bond;   ///< full bonds per ds index and monomer type
     std::map<std::string, DeviceKernels> d_bond_half;             ///< half bonds per monomer type
@@ -82,19 +82,20 @@ private:
 public:
     /// space_group (or nullptr) with the backend's device maps reduced -> full and full -> reduced index
     CudaSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules, int n_streams,
-                                cudaStream_t streams[MAX_STREAMS][2], SpaceGroup* space_group,
+                                cudaStream_t streams[MAX_STREAMS], SpaceGroup* space_group,
                                 const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
     ~CudaSolverRealSpaceDiscrete() override = default;
 
     void update_laplacian_operator() override;
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
     void advance_propagator(const int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out,
                             std::string monomer_type, double* d_q_mask, int ds_index) override;
     void advance_propagator_half_bond_step(const int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out,
                                            std::string monomer_type) override;
     void prepare_stress() override;
-    void compute_single_segment_stress(const int STREAM, CuDeviceData<T>* d_q_pair, CuDeviceData<T>* d_segment_stress,
-                                       std::string monomer_type, bool is_half_bond_length) override;
+    void compute_single_segment_stress(const int STREAM, CuDeviceData<T>* d_q_1, CuDeviceData<T>* d_q_2,
+                                       CuDeviceData<T>* d_segment_stress, std::string monomer_type,
+                                       bool is_half_bond_length) override;
 };
 
 #endif

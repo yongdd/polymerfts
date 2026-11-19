@@ -10,7 +10,6 @@
  * - integral_device(): Volume-weighted sum on GPU
  * - inner_product_device(): <f,g> = ∫ f(r)g(r) dv
  * - absolute_inner_product_device(): ∫ |f(r)g(r)/d(r)| dv
- * - zero_mean_device(): Remove mean from field
  *
  * **CUB Reductions:**
  *
@@ -34,7 +33,6 @@
 
 #include <iostream>
 #include <complex>
-#include <numeric>
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
@@ -291,59 +289,6 @@ double CudaComputationBox<T>::absolute_inner_product_device(
     CUDA_CHECK_LAUNCH();
     const double sum = std::real(reduce_sum_to_host(N));
     return reduced ? sum * this->dv_base_ : sum;
-}
-//-----------------------------------------------------------
-template <typename T>
-T CudaComputationBox<T>::multi_inner_product_device(int n_comp, const CuDeviceData<T>* d_g, const CuDeviceData<T>* d_h)
-{
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    T sum{0.0};
-
-    // Reduced basis mode: components of n_basis points, weights = orbit counts times the mask
-    const bool reduced = this->space_group_ != nullptr;
-    const int N = reduced ? this->n_basis_ : this->total_grid;
-    const double* d_weight = reduced ? d_basis_weights_.get() : d_dv.get();
-
-    ker_mutiple_multi<<<N_BLOCKS, N_THREADS>>>(n_comp, d_sum, d_g, d_h, 1.0, N);
-    CUDA_CHECK_LAUNCH();
-    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_weight, 1.0, N);
-    CUDA_CHECK_LAUNCH();
-    sum = reduce_sum_to_host(N);
-    if (reduced)
-        return sum * static_cast<T>(this->dv_base_);
-    return sum;
-}
-//-----------------------------------------------------------
-template <typename T>
-void CudaComputationBox<T>::zero_mean_device(CuDeviceData<T>* d_g)
-{
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-
-    // The mean over the accessible volume, as in ComputationBox::zero_mean: Σ dv g / V_accessible;
-    // in reduced basis mode Σ weight g / Σ weight (total_grid without a mask)
-    const bool reduced = this->space_group_ != nullptr;
-    const bool masked = !this->mask_full_.empty();
-    const int N = reduced ? this->n_basis_ : this->total_grid;
-    const double* d_weight = reduced ? d_basis_weights_.get() : d_dv.get();
-    double norm = reduced ? static_cast<double>(this->total_grid) : this->volume;
-    if (masked && reduced)
-        norm = std::accumulate(this->basis_weights_.begin(), this->basis_weights_.end(), 0.0);
-    else if (masked)
-        norm = this->accessible_volume;
-
-    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_weight, 1.0, N);
-    CUDA_CHECK_LAUNCH();
-
-    const T shift = -reduce_sum_to_host(N)/norm;
-    CuDeviceData<T> d_shift;
-    if constexpr (std::is_same<T, double>::value)
-        d_shift = shift;
-    else
-        d_shift = stdToCuDoubleComplex(shift);
-    ker_linear_scaling<<<N_BLOCKS, N_THREADS>>>(d_g, d_g, 1.0, d_shift, N);
-    CUDA_CHECK_LAUNCH();
 }
 
 // Explicit template instantiation

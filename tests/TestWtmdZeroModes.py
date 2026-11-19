@@ -34,7 +34,7 @@ def zero_modes(fourier=None):
     nx = [4, 4, 4]
     n_grid = int(np.prod(nx))
     for ell in (1, 1.5, 2, 4):
-        wtmd = quiet(WTMD, nx, [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], l=ell, fourier=fourier)
+        wtmd = quiet(WTMD, {"ell": ell}, nx, [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], fourier=fourier)
         fields = np.stack([np.ones(n_grid), np.zeros(n_grid)])
         modes = fourier.forward(fields[0]) if fourier is not None else np.fft.rfftn(np.reshape(fields[0], nx))
         assert np.any(modes == 0), ell
@@ -59,7 +59,7 @@ def zero_modes(fourier=None):
 
 
 if __name__ == "__main__":
-    for construct in (lambda: WTMD([4, 4, 4], [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0], l=0.5),
+    for construct in (lambda: WTMD({"ell": 0.5}, [4, 4, 4], [2.0] * 3, 10000, np.array([-15.0, 0.0]), [0]),
                       lambda: validate_lfts_params(parameters("unused", 0.5))):
         try:
             quiet(construct)

@@ -119,23 +119,22 @@ void MklRealFFT::backward(std::complex<double>* modes, double* samples) const
 //------------------------------------------------------------------------------
 template <typename T, int DIM>
 MklFFT<T, DIM>::MklFFT(std::array<int, DIM> nx)
-    : nx_(nx)
 {
-    total_grid_ = 1;
+    int total_grid = 1;
     for (int d = 0; d < DIM; ++d)
-        total_grid_ *= nx_[d];
+        total_grid *= nx[d];
 
     // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
     if constexpr (std::is_same<T, double>::value)
-        total_complex_grid_ = total_grid_ / nx_[DIM - 1] * (nx_[DIM - 1] / 2 + 1);
+        this->set_sizes(total_grid, total_grid / nx[DIM - 1] * (nx[DIM - 1] / 2 + 1), true);
     else
-        total_complex_grid_ = total_grid_;
+        this->set_sizes(total_grid, total_grid, true);
 
     try
     {
         // The backward transform includes the 1/N of the FFT<T> interface
-        create_descriptors(std::vector<int>(nx_.begin(), nx_.end()), std::is_same<T, double>::value,
-                           1.0 / static_cast<double>(total_grid_), hand_forward_, hand_backward_);
+        create_descriptors(std::vector<int>(nx.begin(), nx.end()), std::is_same<T, double>::value,
+                           1.0 / static_cast<double>(total_grid), hand_forward_, hand_backward_);
     }
     catch (std::exception& exc)
     {
@@ -166,30 +165,20 @@ void MklFFT<T, DIM>::release()
 }
 
 //------------------------------------------------------------------------------
-// FFT<T> interface: complex coefficients, or the same as interleaved doubles
+// FFT<T> interface: the complex coefficients as interleaved doubles
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void MklFFT<T, DIM>::forward(T *rdata, std::complex<double> *cdata)
-{
-    mkl_dfti_check(DftiComputeForward(hand_forward_, rdata, cdata), "DftiComputeForward (periodic)");
-}
-
-template <typename T, int DIM>
-void MklFFT<T, DIM>::backward(std::complex<double> *cdata, T *rdata)
-{
-    mkl_dfti_check(DftiComputeBackward(hand_backward_, cdata, rdata), "DftiComputeBackward (periodic)");
-}
-
 template <typename T, int DIM>
 void MklFFT<T, DIM>::forward(T *rdata, double *cdata)
 {
-    forward(rdata, reinterpret_cast<std::complex<double>*>(cdata));
+    mkl_dfti_check(DftiComputeForward(hand_forward_, rdata, reinterpret_cast<std::complex<double>*>(cdata)),
+                   "DftiComputeForward (periodic)");
 }
 
 template <typename T, int DIM>
 void MklFFT<T, DIM>::backward(double *cdata, T *rdata)
 {
-    backward(reinterpret_cast<std::complex<double>*>(cdata), rdata);
+    mkl_dfti_check(DftiComputeBackward(hand_backward_, reinterpret_cast<std::complex<double>*>(cdata), rdata),
+                   "DftiComputeBackward (periodic)");
 }
 
 // Explicit template instantiations

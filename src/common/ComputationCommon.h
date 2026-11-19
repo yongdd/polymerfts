@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -161,13 +162,25 @@ private:
     /// Free the concentrations, the fields and the backend (also on a failed construction).
     void release();
 
+    /**
+     * @brief The block concentrations of one monomer type and their weights, for sum_to_host().
+     *
+     * The blocks with segments of polymer p (of every polymer when p is -1), weighted
+     * by concentration_norm() or, with a fugacity, by fugacity · ds · n_repeated. Without a
+     * fugacity an absent species adds nothing, also when its unused propagators are not
+     * finite; an occupied one whose Q overflows keeps its non-finite density.
+     */
+    void collect_block_concentrations(int p, const std::string& monomer_type, std::optional<double> fugacity,
+                                      std::vector<BackendArray<T>*>& arrays, std::vector<T>& weights) const;
+
 public:
     virtual ~ComputationCommon();
 
     void update_laplacian_operator() override;
     void set_force_off_diagonal_stress(bool force) override;
-    void compute_statistics(std::map<std::string, const T*> w_input,
-                            std::map<std::string, const T*> q_init = {}) override;
+
+    /// The two computations in turn; the reduced-memory classes do both in one walk.
+    void compute_concentrations_and_stress() override;
 
     T get_total_partition(int polymer) override;
     T get_solvent_partition(int s) override;

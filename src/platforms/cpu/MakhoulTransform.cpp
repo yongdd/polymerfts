@@ -7,8 +7,8 @@
 
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <numbers>
+#include "AlignedScratch.h"
 #include "Exception.h"
 #include "MakhoulTransform.h"
 
@@ -78,6 +78,17 @@ void separate_modes(Mode* modes, int n, int count, const Mode* w)
         for (int i = 0; i < count; ++i)
             middle[i] *= std::numbers::sqrt2;
     }
+}
+
+/// Coefficient j of a line x (values STRIDE doubles apart), times its factor kx[j] when K_FACTOR:
+/// the product of a separate loop before the transform
+template <int STRIDE, bool K_FACTOR>
+inline double coefficient_value(const double* x, const double* kx, int j)
+{
+    if constexpr (K_FACTOR)
+        return x[STRIDE * j] * kx[j];
+    else
+        return x[STRIDE * j];
 }
 
 /// x = value, or x += i * value for the imaginary part of a complex field
@@ -165,17 +176,10 @@ void MakhoulTransform::check_coefficients(bool complex_coefficients) const
 //------------------------------------------------------------------------------
 std::pair<double*, std::complex<double>*> MakhoulTransform::thread_buffers() const
 {
-    // One array per thread. The samples and the modes start on 64-byte boundaries,
+    // One pair per thread. The samples and the modes start on 64-byte boundaries,
     // so a library that picks its code by alignment runs the same code on every thread.
-    constexpr std::size_t line = 64 / sizeof(double);
-    const std::size_t samples = (static_cast<std::size_t>(total_grid_) + line - 1) / line * line;
-    const std::size_t size = samples + 2 * static_cast<std::size_t>(total_modes_) + line;
-    thread_local std::vector<double> scratch;
-    if (scratch.size() < size)
-        scratch.resize(size);
-    const auto address = reinterpret_cast<std::uintptr_t>(scratch.data());
-    double* base = scratch.data() + (64 - address % 64) % 64 / sizeof(double);
-    return {base, reinterpret_cast<std::complex<double>*>(base + samples)};
+    thread_local AlignedScratch samples, modes;
+    return {samples.get(total_grid_), reinterpret_cast<Mode*>(modes.get(2 * static_cast<std::size_t>(total_modes_)))};
 }
 
 //------------------------------------------------------------------------------
@@ -204,8 +208,8 @@ void MakhoulTransform::reorder(const double* in, double* samples, double scale) 
     }
 }
 
-template <int STRIDE>
-void MakhoulTransform::restore(const double* samples, double* out, double scale) const
+template <int STRIDE, bool R_FACTOR>
+void MakhoulTransform::restore(const double* samples, double* out, const double* r_factor, double scale) const
 {
     const int n0 = nx_[0];
     const int n1 = nx_[1];
@@ -218,10 +222,21 @@ void MakhoulTransform::restore(const double* samples, double* out, double scale)
     {
         for (int i1 = 0; i1 < n1; ++i1)
         {
-            double* x = out + static_cast<std::ptrdiff_t>(STRIDE) * (sample_[0][i0] * n1 + sample_[1][i1]) * n2;
+            const std::ptrdiff_t line = static_cast<std::ptrdiff_t>(sample_[0][i0] * n1 + sample_[1][i1]) * n2;
+            double* x = out + STRIDE * line;
             const double line_scale = scale * sign_[0][i0] * sign_[1][i1];
-            for (int i2 = 0; i2 < n2; ++i2)
-                x[STRIDE * sample[i2]] = line_scale * sign[i2] * v[i2];
+            if constexpr (R_FACTOR)
+            {
+                // The product of a separate loop after the transform
+                const double* r = r_factor + line;
+                for (int i2 = 0; i2 < n2; ++i2)
+                    x[STRIDE * sample[i2]] = line_scale * sign[i2] * v[i2] * r[sample[i2]];
+            }
+            else
+            {
+                for (int i2 = 0; i2 < n2; ++i2)
+                    x[STRIDE * sample[i2]] = line_scale * sign[i2] * v[i2];
+            }
             v += n2;
         }
     }
@@ -289,39 +304,54 @@ void MakhoulTransform::forward_part(const double* in, double* out, double scale)
 //------------------------------------------------------------------------------
 // REDFT01 / RODFT01 of one real field, its values STRIDE doubles apart
 //------------------------------------------------------------------------------
-template <int STRIDE>
-void MakhoulTransform::backward_part(const double* in, double* out, double scale) const
+template <int STRIDE, bool K_FACTOR>
+void MakhoulTransform::read_coefficients(const double* in, const double* k_factor, Mode* modes) const
 {
     const int n0 = nx_[0];
     const int n1 = nx_[1];
     const int n2 = nx_[2];
     const int* coefficient = coefficient_[2].data();
     const Mode* w = w_[2].data();
-    auto [samples, modes] = thread_buffers();
 
     for (int k0 = 0; k0 < n0; ++k0)
     {
         for (int k1 = 0; k1 < n1; ++k1)
         {
             Mode* y = modes + (k0 * n1 + k1) * half_;
-            const double* x = in + static_cast<std::ptrdiff_t>(STRIDE) * (coefficient_[0][k0] * n1 + coefficient_[1][k1]) * n2;
-            y[0] = x[STRIDE * coefficient[0]];
+            const std::ptrdiff_t line = static_cast<std::ptrdiff_t>(coefficient_[0][k0] * n1 + coefficient_[1][k1]) * n2;
+            const double* x = in + STRIDE * line;
+            const double* kx = K_FACTOR ? k_factor + line : nullptr;
+            y[0] = coefficient_value<STRIDE, K_FACTOR>(x, kx, coefficient[0]);
             for (int k = 1; 2 * k < n2; ++k)
             {
                 // W^-k (X_k - i X_{n-k})
-                const double a = x[STRIDE * coefficient[k]];
-                const double b = x[STRIDE * coefficient[n2 - k]];
+                const double a = coefficient_value<STRIDE, K_FACTOR>(x, kx, coefficient[k]);
+                const double b = coefficient_value<STRIDE, K_FACTOR>(x, kx, coefficient[n2 - k]);
                 y[k] = Mode(a * w[k].real() - b * w[k].imag(), -a * w[k].imag() - b * w[k].real());
             }
             if (n2 % 2 == 0)
-                y[n2 / 2] = std::numbers::sqrt2 * x[STRIDE * coefficient[n2 / 2]];
+                y[n2 / 2] = std::numbers::sqrt2 * coefficient_value<STRIDE, K_FACTOR>(x, kx, coefficient[n2 / 2]);
         }
     }
+}
+
+template <int STRIDE>
+void MakhoulTransform::backward_part(const double* in, const double* k_factor, double* out,
+                                     const double* r_factor, double scale) const
+{
+    auto [samples, modes] = thread_buffers();
+    if (k_factor == nullptr)
+        read_coefficients<STRIDE, false>(in, nullptr, modes);
+    else
+        read_coefficients<STRIDE, true>(in, k_factor, modes);
 
     separate_leading_axes(modes);
     // Unnormalized, as REDFT01 and RODFT01
     fft_->backward(modes, samples);
-    restore<STRIDE>(samples, out, scale);
+    if (r_factor == nullptr)
+        restore<STRIDE, false>(samples, out, nullptr, scale);
+    else
+        restore<STRIDE, true>(samples, out, r_factor, scale);
 }
 
 //------------------------------------------------------------------------------
@@ -426,7 +456,7 @@ void MakhoulTransform::backward_complex_part(const Mode* in, double* out, double
 
     separate_leading_axes(modes);
     fft_->backward(modes, samples);
-    restore<STRIDE>(samples, out, scale);
+    restore<STRIDE, false>(samples, out, nullptr, scale);
 }
 
 //------------------------------------------------------------------------------
@@ -450,16 +480,32 @@ void MakhoulTransform::forward(const std::complex<double>* in, double* out, doub
 
 void MakhoulTransform::backward(const double* in, double* out, double scale) const
 {
-    check_coefficients(false);
-    backward_part<1>(in, out, scale);
+    backward_with_factors(in, nullptr, out, nullptr, scale);
 }
 
 void MakhoulTransform::backward(const double* in, std::complex<double>* out, double scale) const
 {
+    backward_with_factors(in, nullptr, out, nullptr, scale);
+}
+
+void MakhoulTransform::backward_with_factors(const double* in, const double* k_factor, double* out,
+                                             const double* r_factor, double scale) const
+{
+    check_coefficients(false);
+    backward_part<1>(in, k_factor, out, r_factor, scale);
+}
+
+void MakhoulTransform::backward_with_factors(const double* in, const double* k_factor, std::complex<double>* out,
+                                             const std::complex<double>* r_factor, double scale) const
+{
     check_coefficients(false);
     double* parts = reinterpret_cast<double*>(out);
-    backward_part<2>(in, parts, scale);
-    backward_part<2>(in + 1, parts + 1, scale);
+    backward_part<2>(in, k_factor, parts, nullptr, scale);
+    backward_part<2>(in + 1, k_factor, parts + 1, nullptr, scale);
+    // A complex factor mixes the two parts
+    if (r_factor != nullptr)
+        for (int i = 0; i < total_grid_; ++i)
+            out[i] *= r_factor[i];
 }
 
 //------------------------------------------------------------------------------

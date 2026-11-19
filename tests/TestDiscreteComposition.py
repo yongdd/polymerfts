@@ -147,11 +147,11 @@ def check_counterions(platform, directory):
         assert sim.error_level < sim.tolerance
         es = sim.electrostatics
         phi_smeared = sim.smearing.apply_to_dict(sim.phi)
-        charge = es.charge_density(phi_smeared, sim.psi)
+        charge = es.charge_density(phi_smeared)
         # Include k=0 explicitly: the reported error projects out that mode in
         # an unscreened canonical system and previously hid incorrect counterions.
         full_residual = charge - es._fourier.backward(
-            es.screened_k_sq * es._fourier.forward(sim.psi)) / es.coupling
+            es.screened_k_sq * es._fourier.forward(es.psi)) / es.coupling
         np.testing.assert_allclose(full_residual, 0.0, rtol=0, atol=2e-12)
         np.testing.assert_allclose(np.mean(charge), 0.0, rtol=0, atol=2e-13)
         np.testing.assert_allclose([np.mean(sim.phi[m]) for m in "AB"], expected_phi, rtol=0, atol=2e-13)

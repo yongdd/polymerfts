@@ -32,9 +32,8 @@
  * // ... fill vec1 ...
  * buffer.insert(vec1);  // Copies vec1 into buffer
  *
- * // Access elements (0 = oldest, n_items-1 = newest)
- * double* oldest = buffer[0];
- * double* newest = buffer[buffer.n_items - 1];
+ * // Access arrays (0 = newest; after k < 5 inserts, k-1 = oldest)
+ * double* newest = buffer.get_array(0);
  *
  * // Access single element
  * double value = buffer.get(2, 500);  // element 500 of vector 2
@@ -61,8 +60,8 @@
  *
  * **Indexing:**
  *
- * - get_array(0) or operator[](0) returns the oldest stored array
- * - get_array(n_items-1) returns the newest stored array
+ * - get_array(0) returns the newest stored array
+ * - get_array(n_items-1) returns the oldest stored array
  * - Indices are mapped internally to handle wrap-around
  *
  * **Memory Management:**
@@ -132,7 +131,7 @@ public:
     /**
      * @brief Get pointer to stored array by logical index.
      *
-     * @param n Logical index (0 = oldest, n_items-1 = newest)
+     * @param n Logical index (0 = newest, n_items-1 = oldest)
      * @return Pointer to the stored array
      *
      * @note Returns pointer to internal storage; do not free or reallocate.
@@ -140,23 +139,15 @@ public:
     T* get_array(int n);
 
     /**
-     * @brief Array subscript operator (same as get_array).
-     *
-     * @param n Logical index (0 = oldest, n_items-1 = newest)
-     * @return Pointer to the stored array
-     */
-    T* operator[] (int n);
-
-    /**
      * @brief Get single element from stored array.
      *
-     * @param n Logical array index (0 = oldest)
+     * @param n Logical array index (0 = newest)
      * @param m Element index within array (0 to width-1)
      * @return Value at position m in array n
      *
      * @example
      * @code
-     * double val = buffer.get(2, 100);  // Element 100 of 3rd oldest array
+     * double val = buffer.get(2, 100);  // Element 100 of the 3rd newest array
      * @endcode
      */
     T get(int n, int m);

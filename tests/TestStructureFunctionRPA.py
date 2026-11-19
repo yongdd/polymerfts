@@ -36,7 +36,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import _core, LFTS, CLFTS
+from polymerfts import LFTS, CLFTS
+from cuda_part import cpu_platform
+
+LFTS.draw_architectures = CLFTS.draw_architectures = False   # no polymer_<id>.png of the runs
 
 CHI_N, F, NX, LX, NBAR, STEPS = 6.0, 0.5, 32, 4.0, 1e6, 20000
 N_MODES = 8
@@ -53,11 +56,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def debye(f, x):
@@ -92,7 +90,7 @@ def params(work_dir, dt):
             "platform": cpu_platform(), "langevin": {"nbar": NBAR, "dt": dt, "max_step": STEPS},
             "recording": {"dir": work_dir, "checkpoint_interval": STEPS, "sample_interval": 1,
                           "statistics_save_interval": STEPS},
-            "verbose_level": 1}
+            "verbose_level": 0}
 
 
 def compare(name, data, suffix, reference):

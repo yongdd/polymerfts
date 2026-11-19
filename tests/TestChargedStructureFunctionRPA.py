@@ -72,7 +72,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import _core, CLFTS
+from polymerfts import CLFTS
+from cuda_part import cpu_platform
 
 CHI_N, ZETA_N, N, N_A, NX, LX, NBAR, STEPS = 6.0, 100.0, 20, 10, 32, 4.0, 1e6, 30000
 BLOCKS, ERRORS = 30, 2.0   # blocks of the statistics; tolerances must exceed ERRORS standard errors
@@ -136,11 +137,6 @@ def strong_screening(s_charge, coupling):
     return s_charge * coupling / k_sq > 0.5
 
 
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
-
-
 def rpa(coupling):
     """S/(rho0 N) of the pairs AA, BB, AB, CC, BC and of the smeared charge density (key "charge")."""
     types, z = ["A", "B", "C"], np.array([Z_A, 0.0, -1.0])
@@ -177,7 +173,7 @@ def params(work_dir):
             "platform": cpu_platform(), "langevin": {"nbar": NBAR, "dt": 1.0, "max_step": STEPS},
             "recording": {"dir": work_dir, "checkpoint_interval": STEPS, "sample_interval": 1,
                           "statistics_save_interval": STEPS // BLOCKS},
-            "verbose_level": 1}
+            "verbose_level": 0}
 
 
 def rpa_polyampholyte(coupling):
@@ -212,7 +208,7 @@ def params_polyampholyte(work_dir):
             "platform": cpu_platform(), "langevin": {"nbar": NBAR, "dt": 1.0, "max_step": STEPS},
             "recording": {"dir": work_dir, "checkpoint_interval": STEPS, "sample_interval": 1,
                           "statistics_save_interval": STEPS // BLOCKS},
-            "verbose_level": 1}
+            "verbose_level": 0}
 
 
 def shells(s):
@@ -231,6 +227,7 @@ def run(make_params, seed):
         p = make_params(work)
         with contextlib.redirect_stdout(io.StringIO()):
             sim = CLFTS(p, random_seed=seed)
+            sim.draw_architectures = False
             sim.run(initial_fields={t: np.zeros(NX * NX) for t in p["segment_lengths"]})
         files = sorted(glob.glob(os.path.join(work, "structure_function_*.mat")))
         assert len(files) == BLOCKS, files

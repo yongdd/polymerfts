@@ -267,23 +267,14 @@ void CudaCrysFFTRecursive3m::diffusion(
     double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
 {
     use_stream(stream);
-    const size_t bytes = sizeof(double) * M_physical_;
 
     // The out-of-place D2Z keeps d_q_in, and the Z2D reads only d_step2_, so an
     // out-of-place call preserves its input without a copy; d_q_out may alias d_q_in.
-    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex. An input
-    // at an odd offset into a larger array (the second propagator of a stress pair of an
-    // odd basis size) is not: it is copied to d_step2_, free until the kernel below writes
-    // it, and transformed there. The outputs (work buffers and propagators) are aligned.
-    if (!cufft_aligned(d_q_out))
-        throw_with_line_number("CudaCrysFFTRecursive3m: the output must be aligned to a cufftDoubleComplex.");
-    double* d_src = d_q_in;
-    if (!cufft_aligned(d_q_in))
-    {
-        d_src = reinterpret_cast<double*>(d_step2_.get());
-        CUDA_CHECK(cudaMemcpyAsync(d_src, d_q_in, bytes, cudaMemcpyDeviceToDevice, stream_));
-    }
-    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_src, d_step1_));
+    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex, as
+    // the work buffers and propagators are.
+    if (!cufft_aligned(d_q_in) || !cufft_aligned(d_q_out))
+        throw_with_line_number("CudaCrysFFTRecursive3m: the input and output must be aligned to a cufftDoubleComplex.");
+    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_q_in, d_step1_));
 
     const int threads = 256;
     const int blocks = grid_blocks(M_complex_, threads);

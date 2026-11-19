@@ -52,11 +52,10 @@ def parameters(name, charged, c_salt):
 
         "smearing": {"type": "gaussian", "a_int": a},
 
-        "langevin": {"dt": 1.0, "nbar": 1.6e5, "max_step": 1, # max_step: set by the cycles
-                     "integrator": "etd"},                    # Exact linear response of the homogeneous state
+        "langevin": {"dt": 1.0, "nbar": 1.6e5,      # the cycles set max_step
+                     "integrator": "etd"},          # Exact linear response of the homogeneous state
 
-        "recording": {"dir": f"data_coacervate_{name}", "checkpoint_interval": 1, "sample_interval": 2,
-                      "statistics_save_interval": 1},         # intervals: set by the cycles
+        "recording": {"dir": f"data_coacervate_{name}", "sample_interval": 2},   # the cycles set the other intervals
 
         "gibbs_ensemble": {
             # Starting compositions; the totals stay fixed

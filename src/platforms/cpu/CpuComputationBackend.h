@@ -75,7 +75,7 @@ public:
     void load_checkpoint(int stream, BackendArray<T>* dst, CheckpointArray<T>* src) override;
 
     void update_laplacian_operator() override;
-    void update_dw(std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, BackendArray<T>*>& w) override;
     void set_force_off_diagonal_stress(bool force) override;
     void advance_propagator(int stream, BackendArray<T>* q_in, BackendArray<T>* q_out,
                             const std::string& monomer_type, int ds_index) override;
@@ -102,7 +102,7 @@ public:
     double absolute_inner_product(BackendArray<T>* a, BackendArray<T>* b,
                                   BackendArray<T>* divisor = nullptr) override;
     void add_segment_products(int stream, BackendArray<T>* phi, const std::vector<SegmentPair<T>>& pairs) override;
-    void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) override;
+    void divide_by_boltzmann_factor(int stream, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor) override;
     void prepare_stress() override;
     std::array<T, 6> block_stress(int stream, const std::vector<SegmentPair<T>>& pairs,
                                   const std::string& monomer_type) override;

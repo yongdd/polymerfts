@@ -350,10 +350,6 @@ std::map<int, std::vector<int>>& Polymer::get_adjacent_nodes()
 {
     return adjacent_nodes;
 }
-std::map<std::pair<int, int>, int>& Polymer::get_block_indexes()
-{
-    return edge_to_block_index;
-}
 void Polymer::set_propagator_key(const std::string code, const int v, const int u)
 {
     edge_to_propagator_key[std::make_pair(v, u)] = code;
@@ -362,11 +358,6 @@ std::string Polymer::get_propagator_key(const int v, const int u) const {
     validation::require_key(edge_to_propagator_key, std::make_pair(v,u),
         "edge_to_propagator_key for (" + std::to_string(v) + ", " + std::to_string(u) + ")");
     return edge_to_propagator_key.at(std::make_pair(v,u));
-}
-
-std::map<int, std::string>& Polymer::get_chain_end_to_q_init()
-{
-    return chain_end_to_q_init;
 }
 
 /**
@@ -454,10 +445,8 @@ static void print_tree(
         const int child = stack.back().children[stack.back().next++];
         const bool child_is_last = stack.back().next == stack.back().children.size();
 
-        auto edge_it = edge_to_idx.find(std::make_pair(node, child));
-        if (edge_it == edge_to_idx.end())
-            edge_it = edge_to_idx.find(std::make_pair(child, node));
-        const std::string edge_label = format_edge(all_blocks[edge_it->second]);
+        // edge_to_block_index holds both directions of every block
+        const std::string edge_label = format_edge(all_blocks[edge_to_idx.at(std::make_pair(node, child))]);
 
         std::string prefix;
         if (indent)
@@ -545,13 +534,8 @@ void Polymer::print_architecture_diagram() const
                 break;
             }
 
-            // Get block info
-            auto edge_it = edge_to_block_index.find(std::make_pair(current, next));
-            if (edge_it == edge_to_block_index.end())
-            {
-                edge_it = edge_to_block_index.find(std::make_pair(next, current));
-            }
-            const Block& block = blocks[edge_it->second];
+            // Get block info (edge_to_block_index holds both directions of every block)
+            const Block& block = blocks[edge_to_block_index.at(std::make_pair(current, next))];
 
             std::cout << "--" << format_edge(block) << "--(" << next << ")";
             visited.insert(next);

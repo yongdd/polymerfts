@@ -1,11 +1,14 @@
 /**
  * @file Pseudo.cpp
- * @brief Unified implementation of pseudo-spectral method utilities.
+ * @brief The Fourier-space tables of the pseudo-spectral solvers for one cell.
  *
  * Supports all boundary conditions and non-orthogonal crystal systems:
  * - PERIODIC: FFT with recip_metric for non-orthogonal lattices
  * - REFLECTING (DCT): k = π*n/L, n = 0, 1, ..., N-1
  * - ABSORBING (DST): k = π*(n+1)/L, n = 0, 1, ..., N-1
+ *
+ * The axes of 1D and 2D boxes are padded to three at the end (padded_grid), which
+ * keeps the row-major index of every mode.
  *
  * @see Pseudo.h for class documentation
  */
@@ -27,50 +30,19 @@ template <typename T>
 Pseudo<T>::Pseudo(
     std::map<std::string, double> bond_lengths,
     std::vector<BoundaryCondition> bc,
-    std::vector<int> nx, std::vector<double> dx,
-    std::array<double, 6> recip_metric,
-    std::array<double, 9> recip_vec)
+    std::vector<int> nx,
+    std::map<int, double> ds_values)
+    : bond_lengths(std::move(bond_lengths)), bc(std::move(bc)), nx(std::move(nx)), ds_values(std::move(ds_values))
 {
-    try
-    {
-        this->bond_lengths = bond_lengths;
-        this->bc = bc;
-        this->nx = nx;
-        this->dx = dx;
-        this->ds = 0.0;  // Not used; ds values come from add_ds_value()
-        this->recip_metric_ = recip_metric;
-        this->recip_vec_ = recip_vec;
+    int total_grid = 1;
+    for (int n : this->nx)
+        total_grid *= n;
+    total_complex_grid = complex_grid_size(total_grid, this->nx.back(), is_all_periodic());
 
-        // Compute total grid
-        total_grid = 1;
-        for (size_t d = 0; d < nx.size(); ++d)
-            total_grid *= nx[d];
-
-        update_total_complex_grid();
-        const int M_COMPLEX = get_total_complex_grid();
-
-        // Don't allocate Boltzmann factors here; use add_ds_value() instead
-
-        // Fourier basis arrays: diagonal terms, then the cross-terms for
-        // non-orthogonal systems (only used for periodic BC)
-        for (std::vector<double>* basis : {&fourier_basis_x, &fourier_basis_y, &fourier_basis_z,
-                                           &fourier_basis_xy, &fourier_basis_xz, &fourier_basis_yz})
-            basis->resize(M_COMPLEX);
-
-        // Negative frequency mapping only for complex fields with periodic BC
-        if constexpr (std::is_same<T, std::complex<double>>::value)
-        {
-            if (is_all_periodic())
-                negative_k_idx.resize(M_COMPLEX);
-        }
-
-        update_weighted_fourier_basis();
-        update_negative_frequency_mapping();
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // The Boltzmann tables of every contour step and monomer type follow at the first update()
+    for (const auto& [ds_idx, local_ds] : this->ds_values)
+        if (ds_idx < 0)
+            throw_with_line_number("ds_index must be >= 0, got " + std::to_string(ds_idx));
 }
 
 //------------------------------------------------------------------------------
@@ -97,18 +69,18 @@ bool Pseudo<T>::is_all_periodic() const
 // Getters
 //------------------------------------------------------------------------------
 template <typename T>
-int Pseudo<T>::get_total_complex_grid()
+int Pseudo<T>::get_total_complex_grid() const
 {
     return total_complex_grid;
 }
 
 template <typename T>
-double* Pseudo<T>::get_boltz_bond(std::string monomer_type, int ds_index)
+double* Pseudo<T>::get_boltz_bond(const std::string& monomer_type, int ds_index)
 {
     // Called from the propagator threads: find(), not operator[] (which may insert)
     auto ds_entry = boltz_bond.find(ds_index);
     if (ds_entry == boltz_bond.end())
-        throw_with_line_number("ds_index " + std::to_string(ds_index) + " not found in boltz_bond. Call add_ds_value() and finalize_ds_values() first.");
+        throw_with_line_number("ds_index " + std::to_string(ds_index) + " has no Boltzmann bond table (none before the first update()).");
     auto entry = ds_entry->second.find(monomer_type);
     if (entry == ds_entry->second.end())
         throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in boltz_bond[" + std::to_string(ds_index) + "].");
@@ -116,12 +88,12 @@ double* Pseudo<T>::get_boltz_bond(std::string monomer_type, int ds_index)
 }
 
 template <typename T>
-double* Pseudo<T>::get_boltz_bond_half(std::string monomer_type, int ds_index)
+double* Pseudo<T>::get_boltz_bond_half(const std::string& monomer_type, int ds_index)
 {
     // Called from the propagator threads: find(), not operator[] (which may insert)
     auto ds_entry = boltz_bond_half.find(ds_index);
     if (ds_entry == boltz_bond_half.end())
-        throw_with_line_number("ds_index " + std::to_string(ds_index) + " not found in boltz_bond_half. Call add_ds_value() and finalize_ds_values() first.");
+        throw_with_line_number("ds_index " + std::to_string(ds_index) + " has no Boltzmann bond table (none before the first update()).");
     auto entry = ds_entry->second.find(monomer_type);
     if (entry == ds_entry->second.end())
         throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in boltz_bond_half[" + std::to_string(ds_index) + "].");
@@ -171,7 +143,7 @@ const int* Pseudo<T>::get_negative_frequency_mapping()
 }
 
 //------------------------------------------------------------------------------
-// Update total complex grid size
+// Size of the spectrum
 //------------------------------------------------------------------------------
 template <typename T>
 int Pseudo<T>::complex_grid_size(int n_grid, int n_last, bool all_periodic)
@@ -185,39 +157,51 @@ int Pseudo<T>::complex_grid_size(int n_grid, int n_last, bool all_periodic)
     return n_grid;   // c2c FFT (complex fields), or DCT/DST coefficients (non-periodic BC)
 }
 
-template <typename T>
-void Pseudo<T>::update_total_complex_grid()
-{
-    total_complex_grid = complex_grid_size(total_grid, nx.back(), is_all_periodic());
-}
-
 //------------------------------------------------------------------------------
-// Update Boltzmann factors
+// The tables of a cell
 //------------------------------------------------------------------------------
 template <typename T>
-void Pseudo<T>::update_boltz_bond()
+void Pseudo<T>::update(const std::vector<double>& dx, const std::array<double, 6>& recip_metric,
+                       bool with_stress_basis)
 {
-    try
-    {
-        if (is_all_periodic())
-        {
-            // Periodic BC: use recip_metric for non-orthogonal systems
-            update_boltz_bond_periodic();
-        }
+    // The stress basis while it is computed, of the box axes: v_d² of each axis and, for
+    // periodic BC (walls need an orthogonal cell), v_a v_b of each pair of axes
+    const int DIM = nx.size();
+    const int n_pairs = is_all_periodic() ? DIM * (DIM - 1) / 2 : 0;
+    auto keep_if = [&](std::vector<double>& table, bool used) {
+        if (used)
+            table.resize(total_complex_grid);
         else
-        {
-            // Non-periodic BC: use mixed BC formula
-            update_boltz_bond_mixed();
-        }
-    }
-    catch (std::exception& exc)
+            std::vector<double>().swap(table);
+    };
+    std::vector<double>* diagonal[3] = {&fourier_basis_x, &fourier_basis_y, &fourier_basis_z};
+    std::vector<double>* pairs[3] = {&fourier_basis_xy, &fourier_basis_xz, &fourier_basis_yz};
+    for (int i = 0; i < 3; ++i)
     {
-        throw_without_line_number(exc.what());
+        keep_if(*diagonal[i], with_stress_basis && i < DIM);
+        keep_if(*pairs[i], with_stress_basis && i < n_pairs);
     }
+    if (with_stress_basis)
+        update_negative_frequency_mapping();
+    else
+        std::vector<int>().swap(negative_k_idx);
+
+    // The Boltzmann tables of every contour step and monomer type
+    for (const auto& [ds_idx, local_ds] : ds_values)
+        for (const auto& [monomer_type, bond_length] : bond_lengths)
+        {
+            boltz_bond[ds_idx][monomer_type].resize(total_complex_grid);
+            boltz_bond_half[ds_idx][monomer_type].resize(total_complex_grid);
+        }
+
+    if (is_all_periodic())
+        update_periodic(recip_metric, with_stress_basis);
+    else
+        update_nonperiodic(dx, with_stress_basis);
 }
 
 //------------------------------------------------------------------------------
-// Update Boltzmann factors for periodic BC (with recip_metric support)
+// Periodic BC (with recip_metric support)
 //------------------------------------------------------------------------------
 // Oblique cells use the alias representative of least reciprocal-metric form
 // (first-Brillouin-zone representative; see MinimalFormAlias.h). The
@@ -234,305 +218,266 @@ void Pseudo<T>::update_boltz_bond()
 // nonzero off-diagonal metric take this path (keeping orthogonal results
 // bit-exact).
 
-// (A duplicated free-function implementation of the periodic Boltzmann
-// table builder used to live here; it had no callers and risked drifting
-// from the live member implementation, so it was removed.)
-
-template <typename T>
-void Pseudo<T>::update_boltz_bond_periodic()
-{
-    // Recompute for every registered ds value (writing a hard-coded index
-    // would default-insert a nullptr entry when that index was never
-    // registered via add_ds_value()).
-    for (const auto& ds_pair : ds_values)
-        update_boltz_bond_periodic_for_ds_index(ds_pair.first);
-}
-
-//------------------------------------------------------------------------------
-// Update Boltzmann factors for mixed BC
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update_boltz_bond_mixed()
-{
-    // Recompute for every registered ds value (see update_boltz_bond_periodic).
-    for (const auto& ds_pair : ds_values)
-        update_boltz_bond_mixed_for_ds_index(ds_pair.first);
-}
-
-//------------------------------------------------------------------------------
-// Update weighted Fourier basis for stress calculation
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update_weighted_fourier_basis()
-{
-    if (is_all_periodic())
-        update_weighted_fourier_basis_periodic();
-    else
-        update_weighted_fourier_basis_mixed();
-}
-
-//------------------------------------------------------------------------------
-// Update Fourier basis for periodic BC using v⊗v dyad product
-//------------------------------------------------------------------------------
+namespace {
 /**
- * @brief Compute v⊗v dyad product components for stress calculation.
+ * @brief The periodic stress basis: v⊗v of the deformation vector v = 2π g⁻¹ m of each
+ *        mode m, times the weight of the mode in the sum over the spectrum.
  *
- * Uses the deformation vector: v = 2π g⁻¹ m
- * where g⁻¹ is the inverse metric tensor (recip_metric_) and m is Miller index.
- *
- * The deformation vector components are:
+ * `tables` holds the table of each component of v⊗v (x, y, z, xy, xz, yz; null for the
+ * components a box does not keep):
  *   v₁ = 2π (G₁₁m₁ + G₁₂m₂ + G₁₃m₃)
  *   v₂ = 2π (G₁₂m₁ + G₂₂m₂ + G₂₃m₃)
  *   v₃ = 2π (G₁₃m₁ + G₂₃m₂ + G₃₃m₃)
- *
- * Stores:
- * - fourier_basis_x = v₁²  (V₁₁)
- * - fourier_basis_y = v₂²  (V₂₂)
- * - fourier_basis_z = v₃²  (V₃₃)
- * - fourier_basis_xy = v₁ × v₂  (V₁₂)
- * - fourier_basis_xz = v₁ × v₃  (V₁₃)
- * - fourier_basis_yz = v₂ × v₃  (V₂₃)
+ * The modes are those of `shape` (the r2c half spectrum for real fields, whose
+ * interior modes along the last box axis stand for a conjugate pair: weight 2).
  *
  * @see docs/theory/StressTensor.md for derivation
  */
 template <typename T>
-void update_weighted_fourier_basis_periodic_impl(
-    double* fourier_basis_x, double* fourier_basis_y, double* fourier_basis_z,
-    double* fourier_basis_xy, double* fourier_basis_xz, double* fourier_basis_yz,
-    const std::vector<int>& nx,
-    const std::array<double, 6>& recip_metric_)
+void fill_periodic_stress_basis(
+    const std::array<double*, 6>& tables, const std::array<int, 3>& grid,
+    const std::array<int, 3>& shape, const IndexMetric& G, int last_axis)
 {
-    const double PI = std::numbers::pi;
-    const double TWO_PI = 2.0 * PI;
-    const int DIM = nx.size();
+    const double TWO_PI = 2.0 * std::numbers::pi;
+    auto store = [&](long long idx, const std::array<int, 3>& m, const std::array<double, 6>& vv) {
+        double weight = 1.0;
+        if constexpr (std::is_same<T, double>::value)
+            weight = (m[last_axis] != 0 && 2 * m[last_axis] != grid[last_axis]) ? 2.0 : 1.0;
+        for (int c = 0; c < 6; ++c)
+            if (tables[c] != nullptr)
+                tables[c][idx] = weight * vv[c];
+    };
 
-    // Pad to 3D
-    std::vector<int> tnx(3, 1);
-    if (DIM == 3) {
-        tnx = {nx[0], nx[1], nx[2]};
-    } else if (DIM == 2) {
-        tnx = {1, nx[0], nx[1]};
-    } else {
-        tnx = {1, 1, nx[0]};
+    // The Boltzmann factor depends only on the minimum of the form over the aliases
+    // m + N t, but v⊗v differs between representatives that tie for the minimum: the
+    // Brillouin-zone boundary of an oblique cell (e.g. 2 m1 + m2 = N in a hexagonal
+    // cell) and the Nyquist planes (m = N/2 and -N/2) of any cell. The products are
+    // averaged over the tied representatives (tied_alias_moments), which keeps the
+    // stress invariant under the point group (sigma_a = sigma_b in a hexagonal cell);
+    // for two tied representatives the average is the central difference of the minimum.
+    if (index_metric_has_coupling(G))
+    {
+        for_each_mode_tied_moments(grid, shape, G, TWO_PI, store);
+        return;
     }
 
-    // Inverse metric tensor g⁻¹ and grid in Miller order, unused axes last
-    const IndexMetric G = index_metric_of(recip_metric_, DIM);
-    const std::array<int, 3> grid = padded_grid(nx);
-    // Oblique cells need the group-invariant (minimal-form) alias representative,
-    // consistent with the diffusion Boltzmann factors; see MinimalFormAlias.h.
-    const AliasSearch search(grid, G);
-    const bool oblique = search.coupled;
-    // Deformation vector v = 2π g⁻¹ m of Miller indices m
+    // Orthogonal cells keep the componentwise representative for the diagonal terms
+    // (bit-identical); only their cross terms on the Nyquist planes are averaged.
     auto deformation = [&](int m1, int m2, int m3, double& v1, double& v2, double& v3) {
         v1 = TWO_PI * (G.g11 * m1 + G.g12 * m2 + G.g13 * m3);
         v2 = TWO_PI * (G.g12 * m1 + G.g22 * m2 + G.g23 * m3);
         v3 = TWO_PI * (G.g13 * m1 + G.g23 * m2 + G.g33 * m3);
     };
-
-    // v⊗v of one mode (x, y, z, xy, xz, yz). The Boltzmann factor depends only on
-    // the minimum of the form over the aliases m + N t, but v⊗v differs between
-    // representatives that tie for the minimum: the Brillouin-zone boundary of an
-    // oblique cell (e.g. 2 m1 + m2 = N in a hexagonal cell) and the Nyquist planes
-    // (m = N/2 and -N/2) of any cell. The products are averaged over the tied
-    // representatives (tied_alias_moments), which keeps the stress invariant under
-    // the point group (sigma_a = sigma_b in a hexagonal cell); for two tied
-    // representatives the average is the central difference of the minimum.
-    // Orthogonal cells keep the componentwise representative for the diagonal
-    // terms (bit-identical); only their cross terms on the Nyquist planes are averaged.
-    auto mode_basis = [&](int i_s, int j_s, int k_s, double* vv) {
-        const std::array<int, 3> m = DIM == 3 ? std::array<int, 3>{i_s, j_s, k_s}
-                                   : DIM == 2 ? std::array<int, 3>{j_s, k_s, 0} : std::array<int, 3>{k_s, 0, 0};
-        if (oblique)
-        {
-            const std::array<double, 6> tied = tied_alias_moments(m, search, TWO_PI);
-            std::copy(tied.begin(), tied.end(), vv);
-            return;
-        }
-
+    for_each_centered_mode(grid, shape, [&](long long idx, const std::array<int, 3>& m) {
         double v1, v2, v3;
         deformation(m[0], m[1], m[2], v1, v2, v3);
-        vv[0] = v1 * v1; vv[1] = v2 * v2; vv[2] = v3 * v3;
-        vv[3] = v1 * v2; vv[4] = v1 * v3; vv[5] = v2 * v3;
+        std::array<double, 6> vv = {v1 * v1, v2 * v2, v3 * v3, v1 * v2, v1 * v3, v2 * v3};
 
         // Nyquist components (index N/2 of an even N) and their aliases -N/2
         const bool na = (grid[0] > 1 && 2 * m[0] == grid[0]);
         const bool nb = (grid[1] > 1 && 2 * m[1] == grid[1]);
         const bool nc = (grid[2] > 1 && 2 * m[2] == grid[2]);
-        if (!(na || nb || nc))
-            return;
-        double cross[3] = {0.0, 0.0, 0.0};
-        int n_tied = 0;
-        for (int a = 0; a <= (na ? 1 : 0); ++a)
-            for (int b = 0; b <= (nb ? 1 : 0); ++b)
-                for (int c = 0; c <= (nc ? 1 : 0); ++c)
-                {
-                    deformation(m[0] - a * grid[0], m[1] - b * grid[1], m[2] - c * grid[2], v1, v2, v3);
-                    cross[0] += v1 * v2; cross[1] += v1 * v3; cross[2] += v2 * v3;
-                    ++n_tied;
-                }
-        vv[3] = cross[0] / n_tied; vv[4] = cross[1] / n_tied; vv[5] = cross[2] / n_tied;
-    };
-
-    double vv[6];
-    for (int i = 0; i < tnx[0]; i++)
-    {
-        int i_signed = (i > tnx[0]/2) ? i - tnx[0] : i;
-
-        for (int j = 0; j < tnx[1]; j++)
+        if (na || nb || nc)
         {
-            int j_signed = (j > tnx[1]/2) ? j - tnx[1] : j;
-
-            if constexpr (std::is_same<T, double>::value)
-            {
-                for (int k = 0; k < tnx[2]/2+1; k++)
-                {
-                    int idx = i * tnx[1]*(tnx[2]/2+1) + j*(tnx[2]/2+1) + k;
-                    mode_basis(i_signed, j_signed, k, vv);
-
-                    // Weight factor of 2 for interior k modes (r2c symmetry)
-                    const double weight = (k != 0 && 2*k != tnx[2]) ? 2.0 : 1.0;
-                    fourier_basis_x[idx] = weight * vv[0];
-                    fourier_basis_y[idx] = weight * vv[1];
-                    fourier_basis_z[idx] = weight * vv[2];
-                    fourier_basis_xy[idx] = weight * vv[3];
-                    fourier_basis_xz[idx] = weight * vv[4];
-                    fourier_basis_yz[idx] = weight * vv[5];
-                }
-            }
-            else
-            {
-                for (int k = 0; k < tnx[2]; k++)
-                {
-                    int k_signed = (k > tnx[2]/2) ? k - tnx[2] : k;
-                    int idx = i * tnx[1]*tnx[2] + j*tnx[2] + k;
-                    mode_basis(i_signed, j_signed, k_signed, vv);
-
-                    fourier_basis_x[idx] = vv[0];
-                    fourier_basis_y[idx] = vv[1];
-                    fourier_basis_z[idx] = vv[2];
-                    fourier_basis_xy[idx] = vv[3];
-                    fourier_basis_xz[idx] = vv[4];
-                    fourier_basis_yz[idx] = vv[5];
-                }
-            }
+            double cross[3] = {0.0, 0.0, 0.0};
+            int n_tied = 0;
+            for (int a = 0; a <= (na ? 1 : 0); ++a)
+                for (int b = 0; b <= (nb ? 1 : 0); ++b)
+                    for (int c = 0; c <= (nc ? 1 : 0); ++c)
+                    {
+                        deformation(m[0] - a * grid[0], m[1] - b * grid[1], m[2] - c * grid[2], v1, v2, v3);
+                        cross[0] += v1 * v2; cross[1] += v1 * v3; cross[2] += v2 * v3;
+                        ++n_tied;
+                    }
+            vv[3] = cross[0] / n_tied; vv[4] = cross[1] / n_tied; vv[5] = cross[2] / n_tied;
         }
-    }
+        store(idx, m, vv);
+    });
 }
+}  // namespace
 
 template <typename T>
-void Pseudo<T>::update_weighted_fourier_basis_periodic()
-{
-    update_weighted_fourier_basis_periodic_impl<T>(
-        fourier_basis_x.data(), fourier_basis_y.data(), fourier_basis_z.data(),
-        fourier_basis_xy.data(), fourier_basis_xz.data(), fourier_basis_yz.data(),
-        nx, recip_metric_);
-}
-
-//------------------------------------------------------------------------------
-// Update Fourier basis for mixed BC (no cross-terms)
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update_weighted_fourier_basis_mixed()
+void Pseudo<T>::update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis)
 {
     const double PI = std::numbers::pi;
     const int DIM = nx.size();
 
-    // Expand to 3D
-    std::vector<int> tnx(3, 1);
-    std::vector<double> tdx(3, 1.0);
-    std::vector<BoundaryCondition> tbc(3, BoundaryCondition::PERIODIC);
+    // The modes of the spectrum: the r2c half spectrum for real fields
+    std::vector<int> shape = nx;
+    if constexpr (std::is_same<T, double>::value)
+        shape.back() = shape.back() / 2 + 1;
+    const std::array<int, 3> grid = padded_grid(nx), modes = padded_grid(shape);
+    const IndexMetric G = index_metric_of(recip_metric, DIM);
 
-    for (int d = 0; d < DIM; ++d)
+    if (with_stress_basis)
     {
-        tnx[3 - DIM + d] = nx[d];
-        tdx[3 - DIM + d] = dx[d];
-        tbc[3 - DIM + d] = bc[d];
+        // The tables update() keeps
+        std::vector<double>* basis[6] = {&fourier_basis_x, &fourier_basis_y, &fourier_basis_z,
+                                         &fourier_basis_xy, &fourier_basis_xz, &fourier_basis_yz};
+        std::array<double*, 6> tables{};
+        for (int c = 0; c < 6; ++c)
+            tables[c] = basis[c]->empty() ? nullptr : basis[c]->data();
+        fill_periodic_stress_basis<T>(tables, grid, modes, G, DIM - 1);
     }
 
-    // Compute deformation vector factors v² (units 1/L⁴), consistent with the
-    // periodic-BC path where v = 2π g⁻¹ m and g⁻¹ = 1/L² for orthogonal boxes:
-    //   Periodic:      k = 2πm/L → v² = k²/L² = (2πm)²/L⁴
-    //   Reflecting:    k = πm/L  → v² = k²/L² = (πm)²/L⁴
-    //   Absorbing:     k = π(m+1)/L, same scaling
-    double xfactor[3];
-    for (int d = 0; d < 3; ++d)
+    if (ds_values.empty())
+        return;
+
+    // f = mᵀ G m of the alias of least form (first-Brillouin-zone representative;
+    // see MinimalFormAlias.h), |k|² = 4π² f, in the layout of the Boltzmann
+    // factors. One search serves every contour step and monomer type.
+    const IndexForm form{G};
+    std::vector<double> forms(total_complex_grid);
+    for_each_mode_min_alias(grid, modes, G, form,
+        [&](long long idx, const std::array<int, 3>& u) { forms[idx] = form(u[0], u[1], u[2]); });
+
+    for (const auto& [ds_idx, local_ds] : ds_values)
     {
-        double L = tnx[d] * tdx[d];
-        if (tbc[d] == BoundaryCondition::PERIODIC)
-            xfactor[d] = std::pow(2 * PI, 2) / (L * L * L * L);
-        else
-            xfactor[d] = PI * PI / (L * L * L * L);
-    }
-
-    // Per-mode Parseval weight, folded into the basis tables (mirroring the
-    // periodic path, which folds the r2c conjugate-pair factor 2 into the
-    // tables). With the textbook DCT-II/DST-II coefficients F(m) = Σ_j f_j φ_m(x_j)
-    // used by the FFT<T> real interface, the discrete Parseval relation per
-    // dimension is Σ_j f_j g_j = (1/n) Σ_m w(m) F(m) G(m) with
-    //   DCT-II (reflecting): w = 1 for m = 0,      w = 2 otherwise
-    //   DST-II (absorbing):  w = 1 for k = m+1 = n, w = 2 otherwise
-    // (the special basis functions cos(0) and sin(πn x/L) have squared norm n
-    // on the cell-centered grid instead of n/2). Composed dimensions multiply
-    // their weights; padded singleton dimensions (n = 1, periodic, m = 0)
-    // contribute weight 1.
-    auto mode_weight = [&](int d, int m) -> double {
-        if (tbc[d] == BoundaryCondition::PERIODIC)
-            return 1.0;  // only padded n=1 dims reach here (mixed BC rejected)
-        if (tbc[d] == BoundaryCondition::REFLECTING)
-            return (m == 0) ? 1.0 : 2.0;
-        return (m == tnx[d] - 1) ? 1.0 : 2.0;  // absorbing: k = m+1 = n
-    };
-
-    for (int i = 0; i < tnx[0]; ++i)
-    {
-        int ki;
-        if (tbc[0] == BoundaryCondition::PERIODIC)
-            ki = (i > tnx[0]/2) ? tnx[0] - i : i;
-        else if (tbc[0] == BoundaryCondition::REFLECTING)
-            ki = i;
-        else
-            ki = i + 1;
-        const double wi = mode_weight(0, i);
-
-        for (int j = 0; j < tnx[1]; ++j)
+        for (const auto& [monomer_type, bond_length] : bond_lengths)
         {
-            int kj;
-            if (tbc[1] == BoundaryCondition::PERIODIC)
-                kj = (j > tnx[1]/2) ? tnx[1] - j : j;
-            else if (tbc[1] == BoundaryCondition::REFLECTING)
-                kj = j;
-            else
-                kj = j + 1;
-            const double wij = wi * mode_weight(1, j);
-
-            for (int k = 0; k < tnx[2]; ++k)
+            double bond_length_sq = bond_length * bond_length;
+            double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
+            double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
+            double prefactor = -bond_length_sq * 4.0 * PI * PI * local_ds / 6.0;
+            for (size_t idx = 0; idx < forms.size(); ++idx)
             {
-                int kk;
-                if (tbc[2] == BoundaryCondition::PERIODIC)
-                    kk = (k > tnx[2]/2) ? tnx[2] - k : k;
-                else if (tbc[2] == BoundaryCondition::REFLECTING)
-                    kk = k;
-                else
-                    kk = k + 1;
-                const double w = wij * mode_weight(2, k);
-
-                int idx = i * tnx[1] * tnx[2] + j * tnx[2] + k;
-
-                fourier_basis_x[idx] = w * ki * ki * xfactor[0];
-                fourier_basis_y[idx] = w * kj * kj * xfactor[1];
-                fourier_basis_z[idx] = w * kk * kk * xfactor[2];
-                // Cross-terms are zero for non-periodic BC
-                fourier_basis_xy[idx] = 0.0;
-                fourier_basis_xz[idx] = 0.0;
-                fourier_basis_yz[idx] = 0.0;
+                const double mag_q2 = prefactor * forms[idx];
+                _boltz_bond[idx] = std::exp(mag_q2);
+                _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
             }
         }
     }
 }
 
 //------------------------------------------------------------------------------
-// Update negative frequency mapping (only for periodic BC with complex fields)
+// Reflecting and absorbing BC (orthogonal cells, no cross terms)
+//------------------------------------------------------------------------------
+template <typename T>
+void Pseudo<T>::update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis)
+{
+    const double PI = std::numbers::pi;
+    const int DIM = nx.size();
+
+    // The box axes, padded at the end to three (a padded axis has one point and the
+    // wavenumber index 0)
+    const std::array<int, 3> tnx = padded_grid(nx);
+    std::array<double, 3> tdx = {1.0, 1.0, 1.0};
+    std::array<BoundaryCondition, 3> tbc = {BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC,
+                                            BoundaryCondition::PERIODIC};
+    for (int d = 0; d < DIM; ++d)
+    {
+        tdx[d] = dx[d];
+        tbc[d] = bc[d];
+    }
+
+    // Wavenumber index of each mode of each axis: k = π·index/L
+    std::array<std::vector<int>, 3> k_index;
+    for (int d = 0; d < 3; ++d)
+        for (int i = 0; i < tnx[d]; ++i)
+        {
+            if (tbc[d] == BoundaryCondition::PERIODIC)
+                k_index[d].push_back((i > tnx[d]/2) ? tnx[d] - i : i);   // padded axes only
+            else if (tbc[d] == BoundaryCondition::REFLECTING)
+                k_index[d].push_back(i);
+            else  // ABSORBING
+                k_index[d].push_back(i + 1);
+        }
+
+    if (with_stress_basis)
+    {
+        // Deformation vector factors v² (units 1/L⁴), consistent with the
+        // periodic-BC path where v = 2π g⁻¹ m and g⁻¹ = 1/L² for orthogonal boxes:
+        //   Periodic:      k = 2πm/L → v² = k²/L² = (2πm)²/L⁴
+        //   Reflecting:    k = πm/L  → v² = k²/L² = (πm)²/L⁴
+        //   Absorbing:     k = π(m+1)/L, same scaling
+        double xfactor[3];
+        for (int d = 0; d < 3; ++d)
+        {
+            double L = tnx[d] * tdx[d];
+            if (tbc[d] == BoundaryCondition::PERIODIC)
+                xfactor[d] = std::pow(2 * PI, 2) / (L * L * L * L);
+            else
+                xfactor[d] = PI * PI / (L * L * L * L);
+        }
+
+        // Per-mode Parseval weight, folded into the basis tables (mirroring the
+        // periodic path, which folds the r2c conjugate-pair factor 2 into the
+        // tables). With the textbook DCT-II/DST-II coefficients F(m) = Σ_j f_j φ_m(x_j)
+        // used by the FFT<T> real interface, the discrete Parseval relation per
+        // dimension is Σ_j f_j g_j = (1/n) Σ_m w(m) F(m) G(m) with
+        //   DCT-II (reflecting): w = 1 for m = 0,      w = 2 otherwise
+        //   DST-II (absorbing):  w = 1 for k = m+1 = n, w = 2 otherwise
+        // (the special basis functions cos(0) and sin(πn x/L) have squared norm n
+        // on the cell-centered grid instead of n/2). Composed dimensions multiply
+        // their weights; padded singleton dimensions (n = 1, periodic, m = 0)
+        // contribute weight 1.
+        auto mode_weight = [&](int d, int m) -> double {
+            if (tbc[d] == BoundaryCondition::PERIODIC)
+                return 1.0;  // only padded n=1 dims reach here (mixed BC rejected)
+            if (tbc[d] == BoundaryCondition::REFLECTING)
+                return (m == 0) ? 1.0 : 2.0;
+            return (m == tnx[d] - 1) ? 1.0 : 2.0;  // absorbing: k = m+1 = n
+        };
+
+        // The tables of the box axes (update())
+        double* basis[3] = {fourier_basis_x.data(), fourier_basis_y.data(), fourier_basis_z.data()};
+        for (int i = 0; i < tnx[0]; ++i)
+        {
+            const double wi = mode_weight(0, i);
+            for (int j = 0; j < tnx[1]; ++j)
+            {
+                const double wij = wi * mode_weight(1, j);
+                for (int k = 0; k < tnx[2]; ++k)
+                {
+                    const int kd[3] = {k_index[0][i], k_index[1][j], k_index[2][k]};
+                    const double w = wij * mode_weight(2, k);
+                    const int idx = i * tnx[1] * tnx[2] + j * tnx[2] + k;
+                    for (int d = 0; d < DIM; ++d)
+                        basis[d][idx] = w * kd[d] * kd[d] * xfactor[d];
+                }
+            }
+        }
+    }
+
+    for (const auto& [ds_idx, local_ds] : ds_values)
+    {
+        for (const auto& [monomer_type, bond_length] : bond_lengths)
+        {
+            double bond_length_sq = bond_length * bond_length;
+            double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
+            double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
+
+            // Prefactors of the axes
+            std::array<double, 3> xfactor;
+            for (int d = 0; d < 3; ++d)
+            {
+                double L = tnx[d] * tdx[d];
+                double k_scale = (tbc[d] == BoundaryCondition::PERIODIC) ? 2*PI/L : PI/L;
+                xfactor[d] = -bond_length_sq * k_scale * k_scale * local_ds / 6.0;
+            }
+
+            for (int i = 0; i < tnx[0]; ++i)
+            {
+                const int ki = k_index[0][i];
+                for (int j = 0; j < tnx[1]; ++j)
+                {
+                    const int kj = k_index[1][j];
+                    for (int k = 0; k < tnx[2]; ++k)
+                    {
+                        const int kk = k_index[2][k];
+                        const int idx = i*tnx[1]*tnx[2] + j*tnx[2] + k;
+                        double mag_q2 = ki*ki*xfactor[0] + kj*kj*xfactor[1] + kk*kk*xfactor[2];
+                        _boltz_bond[idx] = std::exp(mag_q2);
+                        _boltz_bond_half[idx] = std::exp(mag_q2/2.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+//------------------------------------------------------------------------------
+// Negative frequency mapping (only for periodic BC with complex fields)
 //------------------------------------------------------------------------------
 template <typename T>
 void Pseudo<T>::update_negative_frequency_mapping() {}
@@ -540,216 +485,23 @@ void Pseudo<T>::update_negative_frequency_mapping() {}
 template <>
 void Pseudo<std::complex<double>>::update_negative_frequency_mapping()
 {
-    if (!is_all_periodic() || negative_k_idx.empty())
+    // A map of the grid, made once
+    if (!is_all_periodic() || !negative_k_idx.empty())
         return;
+    negative_k_idx.resize(total_complex_grid);
 
-    const int DIM = nx.size();
-    std::vector<int> tnx(3, 1);
-
-    if (DIM == 3)
-        tnx = {nx[0], nx[1], nx[2]};
-    else if (DIM == 2)
-        tnx = {1, nx[0], nx[1]};
-    else if (DIM == 1)
-        tnx = {1, 1, nx[0]};
-
-    for (int i = 0; i < tnx[0]; i++)
+    const std::array<int, 3> n = padded_grid(nx);
+    int idx = 0;
+    for (int i = 0; i < n[0]; i++)
     {
-        int itemp = (i == 0) ? 0 : tnx[0] - i;
-        for (int j = 0; j < tnx[1]; j++)
+        const int i_neg = (i == 0) ? 0 : n[0] - i;
+        for (int j = 0; j < n[1]; j++)
         {
-            int jtemp = (j == 0) ? 0 : tnx[1] - j;
-            for (int k = 0; k < tnx[2]; k++)
+            const int j_neg = (j == 0) ? 0 : n[1] - j;
+            for (int k = 0; k < n[2]; k++)
             {
-                int ktemp = (k == 0) ? 0 : tnx[2] - k;
-
-                int idx = i * tnx[1] * tnx[2] + j * tnx[2] + k;
-                int idx_minus = itemp * tnx[1] * tnx[2] + jtemp * tnx[2] + ktemp;
-
-                negative_k_idx[idx] = idx_minus;
-            }
-        }
-    }
-}
-
-//------------------------------------------------------------------------------
-// Update all arrays
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update(
-    std::vector<BoundaryCondition> bc,
-    std::map<std::string, double> bond_lengths,
-    std::vector<double> dx,
-    std::array<double, 6> recip_metric,
-    std::array<double, 9> recip_vec)
-{
-    this->bond_lengths = bond_lengths;
-    this->bc = bc;
-    this->dx = dx;
-    this->recip_metric_ = recip_metric;
-    this->recip_vec_ = recip_vec;
-
-    update_total_complex_grid();
-    update_weighted_fourier_basis();
-
-    // Recompute Boltzmann factors for all registered ds values
-    for (const auto& ds_pair : ds_values)
-    {
-        int ds_idx = ds_pair.first;
-        if (is_all_periodic())
-            update_boltz_bond_periodic_for_ds_index(ds_idx);
-        else
-            update_boltz_bond_mixed_for_ds_index(ds_idx);
-    }
-}
-
-//------------------------------------------------------------------------------
-// Add ds value for pre-computation
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::add_ds_value(int ds_index, double ds_value)
-{
-    if (ds_index < 0)
-        throw_with_line_number("ds_index must be >= 0, got " + std::to_string(ds_index));
-
-    // Store the ds value
-    ds_values[ds_index] = ds_value;
-
-    // Allocate arrays for this ds_index if not already present
-    if (!boltz_bond.contains(ds_index))
-    {
-        const int M_COMPLEX = get_total_complex_grid();
-        for (const auto& item : bond_lengths)
-        {
-            std::string monomer_type = item.first;
-            boltz_bond[ds_index][monomer_type].resize(M_COMPLEX);
-            boltz_bond_half[ds_index][monomer_type].resize(M_COMPLEX);
-        }
-    }
-}
-
-//------------------------------------------------------------------------------
-// Finalize ds values and compute Boltzmann factors
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::finalize_ds_values()
-{
-    // Compute Boltzmann factors for all ds_index values
-    for (const auto& ds_pair : ds_values)
-    {
-        int ds_idx = ds_pair.first;
-        double local_ds = ds_pair.second;
-
-        // Temporarily set ds to local_ds, compute boltz_bond, then restore
-        double saved_ds = this->ds;
-        this->ds = local_ds;
-
-        if (is_all_periodic())
-        {
-            update_boltz_bond_periodic_for_ds_index(ds_idx);
-        }
-        else
-        {
-            update_boltz_bond_mixed_for_ds_index(ds_idx);
-        }
-
-        this->ds = saved_ds;
-    }
-}
-
-//------------------------------------------------------------------------------
-// Update Boltzmann factors for a specific ds_index (periodic BC)
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update_boltz_bond_periodic_for_ds_index(int ds_idx)
-{
-    const double PI = std::numbers::pi;
-    double local_ds = ds_values[ds_idx];
-
-    // f = mᵀ G m of the alias of least form (first-Brillouin-zone representative;
-    // see MinimalFormAlias.h), |k|² = 4π² f, in the layout of the Boltzmann
-    // factors: the r2c half spectrum for real fields
-    std::vector<int> shape = nx;
-    if constexpr (std::is_same<T, double>::value)
-        shape.back() = shape.back() / 2 + 1;
-    const IndexForm form{index_metric_of(recip_metric_, static_cast<int>(nx.size()))};
-    std::vector<double> forms(get_total_complex_grid());
-    for_each_mode_min_alias(padded_grid(nx), padded_grid(shape), form.g, form,
-        [&](long long idx, const std::array<int, 3>& u) { forms[idx] = form(u[0], u[1], u[2]); });
-
-    for (const auto& [monomer_type, bond_length] : bond_lengths)
-    {
-        double bond_length_sq = bond_length * bond_length;
-        double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
-        double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
-        double prefactor = -bond_length_sq * 4.0 * PI * PI * local_ds / 6.0;
-        for (size_t idx = 0; idx < forms.size(); ++idx)
-        {
-            const double mag_q2 = prefactor * forms[idx];
-            _boltz_bond[idx] = std::exp(mag_q2);
-            _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
-        }
-    }
-}
-
-//------------------------------------------------------------------------------
-// Update Boltzmann factors for a specific ds_index (mixed BC)
-//------------------------------------------------------------------------------
-template <typename T>
-void Pseudo<T>::update_boltz_bond_mixed_for_ds_index(int ds_idx)
-{
-    const double PI = std::numbers::pi;
-    const int DIM = nx.size();
-    double local_ds = ds_values[ds_idx];
-
-    // Expand to 3D
-    std::array<int, 3> tnx = {1, 1, 1};
-    std::array<double, 3> tdx = {1.0, 1.0, 1.0};
-    std::array<BoundaryCondition, 3> tbc = {BoundaryCondition::PERIODIC,
-                                             BoundaryCondition::PERIODIC,
-                                             BoundaryCondition::PERIODIC};
-    for (int d = 0; d < DIM; ++d) {
-        tnx[3 - DIM + d] = nx[d];
-        tdx[3 - DIM + d] = dx[d];
-        tbc[3 - DIM + d] = bc[d];
-    }
-
-    // Wavenumber index based on BC
-    auto get_ki = [](int idx, int N, BoundaryCondition bc_type) {
-        if (bc_type == BoundaryCondition::PERIODIC)
-            return (idx > N/2) ? N - idx : idx;
-        else if (bc_type == BoundaryCondition::REFLECTING)
-            return idx;
-        else  // ABSORBING
-            return idx + 1;
-    };
-
-    for (const auto& [monomer_type, bond_length] : bond_lengths)
-    {
-        double bond_length_sq = bond_length * bond_length;
-        double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
-        double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
-
-        // Compute prefactors based on BC
-        std::array<double, 3> xfactor;
-        for (int d = 0; d < 3; ++d) {
-            double L = tnx[d] * tdx[d];
-            double k_scale = (tbc[d] == BoundaryCondition::PERIODIC) ? 2*PI/L : PI/L;
-            xfactor[d] = -bond_length_sq * k_scale * k_scale * local_ds / 6.0;
-        }
-
-        for (int i = 0; i < tnx[0]; ++i) {
-            int ki = get_ki(i, tnx[0], tbc[0]);
-            for (int j = 0; j < tnx[1]; ++j) {
-                int kj = get_ki(j, tnx[1], tbc[1]);
-                for (int k = 0; k < tnx[2]; ++k) {
-                    int kk = get_ki(k, tnx[2], tbc[2]);
-                    int idx = i*tnx[1]*tnx[2] + j*tnx[2] + k;
-
-                    double mag_q2 = ki*ki*xfactor[0] + kj*kj*xfactor[1] + kk*kk*xfactor[2];
-                    _boltz_bond[idx] = std::exp(mag_q2);
-                    _boltz_bond_half[idx] = std::exp(mag_q2/2.0);
-                }
+                const int k_neg = (k == 0) ? 0 : n[2] - k;
+                negative_k_idx[idx++] = (i_neg * n[1] + j_neg) * n[2] + k_neg;
             }
         }
     }

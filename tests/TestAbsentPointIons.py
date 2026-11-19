@@ -150,15 +150,16 @@ def mean_field_underflow(root, platform):
     psi = np.full(4, 1000.0)   # finite real potential with exp(-psi) = Q = 0 in double precision, ln Q = -1000
     with warnings.catch_warnings(), np.errstate(divide="raise", invalid="raise", over="raise", under="ignore"):
         warnings.simplefilter("error", RuntimeWarning)
-        densities, log_partitions = es.ion_densities(psi)
+        es.psi = control.psi = psi
+        densities, log_partitions = es.ion_densities()
         np.testing.assert_allclose(log_partitions, [-1000.0], rtol=0, atol=1e-12)
         np.testing.assert_array_equal(densities[0], np.zeros(4))
-        np.testing.assert_array_equal(es.ion_chemical_potentials(psi), [-np.inf])
-        np.testing.assert_array_equal(es.ion_number_densities(psi), [0.0])
-        np.testing.assert_array_equal(es.charge_density({"A": np.ones(4)}, psi), np.zeros(4))
-        assert np.isfinite(es.free_energy(psi)) and es.free_energy(psi) == control.free_energy(psi)
+        np.testing.assert_array_equal(es.ion_chemical_potentials(), [-np.inf])
+        np.testing.assert_array_equal(es.ion_number_densities(), [0.0])
+        np.testing.assert_array_equal(es.charge_density({"A": np.ones(4)}), np.zeros(4))
+        assert np.isfinite(es.free_energy()) and es.free_energy() == control.free_energy()
         k_sq = absent.smearing.k_sq
-        args = (psi, absent.smearing.coefficients, k_sq, {0: -k_sq})
+        args = ({0: -k_sq},)
         np.testing.assert_array_equal(es.stress(*args), control.stress(*args))
 
 

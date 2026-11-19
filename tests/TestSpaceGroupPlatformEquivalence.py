@@ -32,7 +32,10 @@ full-grid computation with the identical symmetrized field:
      SG-on vs SG-off on each platform with the tolerances of item 1.
   6. The real-space method cn-adi2 (continuous chains, orthogonal cells):
      SG-on vs SG-off on each platform and CPU-SG vs CUDA-SG, with the
-     tolerances of item 1 (no stress).
+     tolerances of item 1 (no stress). Its diblock has blocks of 0.35 and
+     0.65, which are not multiples of ds: the two blocks take different
+     contour steps, so the solver computes a table for each step, and the
+     one that stages the expanded field must come last.
 
 Both space-group basis modes are covered:
   - "physical" basis (m3 -> pmmm auto-enable for orthogonal cells, z-mirror
@@ -222,9 +225,10 @@ def make_mask(nx, lx, sg_full):
 
 def run_propagator_solver(platform, chain_model, nx, lx, sg, w_full, w_reduced,
                           use_sg, reduce_memory=False, angles=None,
-                          numerical_method="rqm4", with_stress=True):
-    """Unmasked run through the public PropagatorSolver interface.
-    Returns Q, expanded full-grid phi, check_total_partition, stress[0:3]."""
+                          numerical_method="rqm4", with_stress=True, block_lengths=(0.5, 0.5)):
+    """Unmasked run of an AB diblock (blocks of block_lengths) through the public
+    PropagatorSolver interface. Returns Q, expanded full-grid phi, check_total_partition,
+    stress[0:3]."""
     solver = PropagatorSolver(
         nx=nx, lx=lx, ds=DS,
         bond_lengths=dict(BOND_LENGTHS),
@@ -236,7 +240,7 @@ def run_propagator_solver(platform, chain_model, nx, lx, sg, w_full, w_reduced,
         angles=angles,
         space_group=sg if use_sg else None,
     )
-    solver.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
+    solver.add_polymer(1.0, [["A", block_lengths[0], 0, 1], ["B", block_lengths[1], 1, 2]])
     w_in = w_reduced if use_sg else w_full
     solver.compute_propagators({"A": w_in["A"], "B": w_in["B"]})
     Q = solver.get_partition_function(0)
@@ -437,17 +441,20 @@ def main():
                                  with_stress=False)
 
                 # ---- real-space CN-ADI2 with SG (orthogonal cells only):
-                # ---- SG-on vs SG-off per platform, then CPU vs CUDA ----
+                # ---- SG-on vs SG-off per platform, then CPU vs CUDA; the
+                # ---- blocks of 0.35 and 0.65 take different contour steps ----
                 if chain_model == "continuous" and angles is None:
                     cnadi = {}
                     for platform in platforms:
                         tag = f"{case_name}/{mode}/cn-adi2/{platform}"
                         control = run_propagator_solver(
                             platform, chain_model, nx, lx, sg, w_full, w_reduced,
-                            use_sg=False, numerical_method="cn-adi2", with_stress=False)
+                            use_sg=False, numerical_method="cn-adi2", with_stress=False,
+                            block_lengths=(0.35, 0.65))
                         sg_run = run_propagator_solver(
                             platform, chain_model, nx, lx, sg, w_full, w_reduced,
-                            use_sg=True, numerical_method="cn-adi2", with_stress=False)
+                            use_sg=True, numerical_method="cn-adi2", with_stress=False,
+                            block_lengths=(0.35, 0.65))
                         cnadi[platform] = sg_run
                         check(control["chk"], f"{tag}: SG-off check_total_partition()")
                         check(sg_run["chk"], f"{tag}: SG-on check_total_partition()")

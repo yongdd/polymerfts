@@ -24,6 +24,24 @@
 #include "MakhoulTransform.h"
 
 /**
+ * @brief Whether FFTW's new-array execute functions may run a plan on the array p.
+ *
+ * They take arrays of the alignment of the planning arrays, which come from
+ * fftw_malloc, for which fftw_alignment_of() is 0. The scratch of the transforms
+ * (AlignedScratch) starts on a 64-byte boundary and has that alignment as well.
+ */
+inline bool has_fftw_plan_alignment(const void* p)
+{
+    return fftw_alignment_of(static_cast<double*>(const_cast<void*>(p))) == 0;
+}
+
+/// Deleter of a planning array of fftw_malloc held by a std::unique_ptr
+struct FftwFree
+{
+    void operator()(void* p) const { fftw_free(p); }
+};
+
+/**
  * @class FftwRealFFT
  * @brief FFTW's unnormalized real FFT of a grid, the FFT under MakhoulTransform.
  *
@@ -67,11 +85,13 @@ public:
  * functions when FFTW allows it: the array has the alignment of the planning
  * arrays (fftw_alignment_of() is 0) and the input and output do not overlap.
  * Otherwise, as for a packed field after an odd number of grid points, the
- * array goes through thread-local scratch that starts on a 64-byte boundary,
- * which has that alignment too. The input of the complex-to-real transform
- * always goes through the scratch, since that transform overwrites it. The
- * same plan thus always runs on arrays of one alignment class, and the result
- * does not depend on where the caller's arrays lie.
+ * array goes through thread-local scratch that starts on a 64-byte boundary
+ * (AlignedScratch), which has that alignment too; a call takes scratch only for
+ * the arrays it copies. The input of the complex-to-real transform
+ * goes through the scratch, since that transform overwrites it, unless the
+ * caller gives it up (backward_with_factors(cdata, nullptr, rdata, r_factor)). The same plan
+ * thus always runs on arrays of one alignment class, and the result does not
+ * depend on where the caller's arrays lie.
  *
  * **Normalization:**
  *
@@ -95,8 +115,14 @@ private:
     /// Forward transform: modes = FFT of field (half spectrum for a real field)
     void periodic_forward(const T* field, std::complex<double>* modes) const;
 
-    /// Backward transform with the 1/N normalization: field = IFFT of modes
-    void periodic_backward(const std::complex<double>* modes, T* field) const;
+    /**
+     * @brief Backward transform with the 1/N normalization: field = r_factor · IFFT of (k_factor · modes).
+     *
+     * k_factor and r_factor may be nullptr. A k_factor is applied while the modes are copied
+     * into the scratch; the modes themselves are overwritten only when keep_modes is false.
+     */
+    void periodic_backward(std::complex<double>* modes, const double* k_factor, T* field, const T* r_factor,
+                           bool keep_modes) const;
 
     /// Initialize the FFTW plans.
     void initPeriodicFFT();
@@ -113,34 +139,6 @@ public:
     ~FftwFFT();
 
     /**
-     * @brief Get total complex grid size: Nx × Ny × (Nz/2+1) for a real field,
-     *        Nx × Ny × Nz for a complex field.
-     */
-    int get_total_complex_grid() const { return total_complex_grid_; }
-
-    /**
-     * @brief Get total real grid size.
-     * @return Total grid size
-     */
-    int get_total_grid() const { return total_grid_; }
-
-    /**
-     * @brief Perform forward FFT (complex output interface).
-     *
-     * @param rdata Input: real array
-     * @param cdata Output: complex array
-     */
-    void forward(T *rdata, std::complex<double> *cdata) override;
-
-    /**
-     * @brief Perform backward FFT (complex input interface).
-     *
-     * @param cdata Input: complex array
-     * @param rdata Output: real array
-     */
-    void backward(std::complex<double> *cdata, T *rdata) override;
-
-    /**
      * @brief Perform forward FFT (real coefficient interface).
      *
      * @param rdata Input: real array of size total_grid
@@ -155,6 +153,15 @@ public:
      * @param rdata Output: real array
      */
     void backward(double *cdata, T *rdata) override;
+
+    /**
+     * @brief rdata = r_factor · backward(k_factor · cdata) (see FFT<T>).
+     *
+     * A k_factor is multiplied into the scratch, and the 1/N and r_factor are
+     * applied in one pass; without a k_factor the complex-to-real transform
+     * runs on cdata when FFTW can, overwriting it.
+     */
+    void backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor) override;
 };
 
 #endif

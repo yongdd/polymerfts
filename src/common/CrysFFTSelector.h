@@ -25,7 +25,6 @@ struct CrysFFTSelection
     std::array<double, 9> m3_translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     bool can_oblique_z = false;
     int oblique_z_shift = 0;
-    double oblique_z_translation = 0.0;
 };
 
 /// Grid feasibility of the recursive 3m CrysFFT, and therefore of the m3
@@ -79,12 +78,6 @@ inline bool crysfft_recursive_3m_feasible(
         // translations keeps the fold, its twiddles, and psi consistent.
         std::vector<std::array<double, 3>> centerings;
         sg->get_pure_translations(centerings);
-        auto wrap01 = [](double v) {
-            v -= std::floor(v);
-            if (v < 0.0)
-                v += 1.0;
-            return v;
-        };
         for (size_t cz = 0; cz < centerings.size() && !fold_ok; ++cz)
         for (size_t cy = 0; cy < centerings.size() && !fold_ok; ++cy)
         for (size_t cx = 0; cx < centerings.size() && !fold_ok; ++cx)
@@ -120,7 +113,6 @@ inline CrysFFTSelection select_crysfft_mode(
         return selection;
 
     const bool even_grid = (nx[0] % 2 == 0 && nx[1] % 2 == 0 && nx[2] % 2 == 0);
-    const bool even_z = (nx[2] % 2 == 0);
 
     std::array<double, 9> trans_part = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     const bool recursive_ok = crysfft_recursive_3m_feasible(
@@ -139,31 +131,13 @@ inline CrysFFTSelection select_crysfft_mode(
     selection.can_pmmm = has_pmmm;
 
     // Z-mirror (ObliqueZ): allow even for non-orthogonal cells when z-axis is orthogonal
-    if (even_z && z_axis_orthogonal)
+    if (z_axis_orthogonal)
     {
-        double tz = 0.0;
-        const bool has_z_mirror = sg->get_z_mirror_translation(tz);
-        if (has_z_mirror)
+        const int z_shift = sg->z_mirror_half_grid_shift();
+        if (z_shift >= 0)
         {
-            double t = tz;
-            const double tol = 1e-8;
-            if (std::fabs(t - 1.0) < tol)
-                t = 0.0;
-            if (std::fabs(t) < tol)
-            {
-                selection.can_oblique_z = true;
-                selection.oblique_z_translation = t;
-                selection.oblique_z_shift = 0;
-            }
-            else if (std::fabs(t - 0.5) < tol)
-            {
-                if ((nx[2] % 4) == 0)
-                {
-                    selection.can_oblique_z = true;
-                    selection.oblique_z_translation = t;
-                    selection.oblique_z_shift = nx[2] / 4;
-                }
-            }
+            selection.can_oblique_z = true;
+            selection.oblique_z_shift = z_shift;
         }
     }
 

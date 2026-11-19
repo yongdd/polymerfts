@@ -149,12 +149,14 @@ def bare_segment_ratio(chain_model, nx, lx, nbar, n_segments=None, zeta_n=None, 
 
 
 def read_simulation(path):
-    """Settings of a polymerfts fields_*.mat file."""
+    """Settings of a polymerfts fields_*.mat file; refuses oblique boxes and unequal segment lengths."""
     data = _MAT['decode_mat_fields'](loadmat(path, simplify_cells=True))
     params = data.get("initial_params", {})
     angles = params.get("angles", [90.0, 90.0, 90.0])
     if any(abs(float(angle) - 90.0) > 1e-12 for angle in np.atleast_1d(angles)):
         raise ValueError("The renormalization is implemented for orthogonal boxes only")
+    if len({float(length) for length in params.get("segment_lengths", {}).values()}) > 1:
+        raise ValueError("Only conformationally symmetric chains (equal segment_lengths) are supported")
     zeta_n = data.get("zeta_n", params.get("zeta_n"))
     nbar = data.get("nbar", params.get("langevin", {}).get("nbar"))
     ds = data.get("ds", params.get("ds"))
@@ -203,8 +205,6 @@ def main(argv=None):
         if missing:
             raise ValueError("Give a fields file or --" + ", --".join(m.replace("_", "-") for m in missing))
         lengths = {float(v) for v in s["segment_lengths"].values()}
-        if len(lengths) > 1:
-            raise ValueError("Only conformationally symmetric chains (equal segment_lengths) are supported")
 
         settings = (s["chain_model"], s["nx"], s["lx"], s["nbar"], s["n_segments"], s["zeta_n"],
                     s["smearing"], args.quadrature)

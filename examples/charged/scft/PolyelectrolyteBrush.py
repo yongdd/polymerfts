@@ -115,7 +115,7 @@ for c_salt in salts:
 
     height = np.sum(x * result.phi["A"]) / np.sum(result.phi["A"])
     # Ion profiles c_s(x), in ions per segment of the reference density
-    (na, cl), _ = calculation.electrostatics.ion_densities(psi)
+    (na, cl), _ = calculation.electrostatics.ion_densities()    # of the final psi
     # Potential difference between the grafting wall and the far wall, per unit charge in units of kT
     potential = (psi[0] - psi[-1]) / n_segments
     rows.append((c_salt, na[-1], cl[-1], height, potential, result.converged))

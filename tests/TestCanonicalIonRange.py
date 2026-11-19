@@ -70,10 +70,11 @@ def uniform_operators(root, platform):
                                       "mix_min": 0.1, "mix_init": 0.1})
         mean = quiet(SCFT, mean_params)
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            density, log_partition = mean.electrostatics.ion_densities(psi)
+            mean.electrostatics.psi = psi
+            density, log_partition = mean.electrostatics.ion_densities()
             np.testing.assert_allclose(density[0], 1.0, rtol=0, atol=2e-14)
             np.testing.assert_allclose(log_partition[0], -shift, rtol=0, atol=2e-12)
-            np.testing.assert_allclose(mean.electrostatics.free_energy(psi), expected_energy - 1.0,
+            np.testing.assert_allclose(mean.electrostatics.free_energy(), expected_energy - 1.0,
                                        rtol=0, atol=2e-10)
 
 

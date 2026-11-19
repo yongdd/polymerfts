@@ -30,6 +30,7 @@ What the tests and validation runs check for each example, with the compared num
 | `scft/Star9ArmsGyroid.py` | 9-arm star polymer gyroid |
 | `scft/StarNonIntegerArms1D.py` | A<sub>n</sub>B<sub>n</sub> star with a real arm number n (block multiplicity) |
 | `scft/BottleBrushLamella3D.py` | Bottle-brush copolymer |
+| `scft/seeds.py` | Initial fields of common phases for the SCFT examples: lamellae, wells at sphere positions, the gyroid level set, a cylinder in an oblique cell, converged solutions resampled periodically to another grid |
 | `scft/phase_diagram/` | Phase diagrams by continuation and boundary root finding (AB diblock, ABA triblock; GPU) |
 | `scft/crystal_systems/` | Box relaxation in hexagonal, oblique, monoclinic and triclinic cells; free energy against the cell angle |
 | `lfts/Lamella.py` | Lamellar phase with fluctuations (discrete chains) |

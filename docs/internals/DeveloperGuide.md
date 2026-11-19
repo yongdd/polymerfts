@@ -30,16 +30,16 @@ Python (src/python)
         │   _core module (src/pybind11)
 ════════╪══════════════════════════════════════════════════════════════════════
 C++     ▼
-  PlatformSelector ──► AbstractFactory<T> = MklFactory | FftwFactory | CudaFactory
+  PlatformSelector ──► AbstractFactory<T> = CpuFactory | CudaFactory
         │ creates
-        ├── ComputationBox<T>          CpuComputationBox | CudaComputationBox
+        ├── ComputationBox<T>          itself (CPU) | CudaComputationBox
         ├── Molecules, PropagatorComputationOptimizer
         ├── PropagatorComputation<T>   ComputationContinuous | ComputationDiscrete
         │      │                       | ComputationReduceMemoryContinuous | ...Discrete
         │      └── owns ComputationBackend<T> = CpuComputationBackend | CudaComputationBackend
         │             └── owns the solver: CpuSolver<T> | CudaSolver<T>
         │                    └── owns the transforms: FFT/DCT/DST, CrysFFT, Pseudo tables
-        └── AndersonMixing<T>          CpuAndersonMixing | CudaAndersonMixing[ReduceMemory]
+        └── AndersonMixing<T>          CpuAndersonMixing | CudaAndersonMixing
 ```
 
 The computation classes are written once (`src/common/Computation*.cpp`) and decide **what** is computed and in **which order**. Everything that touches grid data goes through `ComputationBackend`, so the CPU and CUDA code differ only below that line.
@@ -73,12 +73,12 @@ SCFT.run (src/python/scft/scft.py)
 │   │   synchronize
 │   └─ Q = inner_product(q, q†) / V
 ├─ compute_concentrations, per block: set_zero, add_segment_products (Simpson pairs); then solvents (the getters
-│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: normalize_concentration)
+│     apply the ensemble normalization; discrete chains also divide each block by e^{-w ds}: divide_by_boltzmann_factor)
 ├─ compute_stress, per block: block_stress (segment pairs) → solver segment stress; sum the blocks; lattice derivatives
 └─ AndersonMixing.calculate_new_fields(w, w_out - w)
 ```
 
-Reduce-memory mode runs the same steps one propagator at a time, keeping q only at checkpoints and recomputing the other segments when a sum needs them; the results are the same bit for bit.
+Reduce-memory mode runs the same steps one propagator at a time, keeping q only at checkpoints and recomputing the other segments when a sum needs them; the results are the same bit for bit. `compute_concentrations_and_stress()` gives the concentrations and the stress of an iteration with cell relaxation from one recomputation instead of two.
 
 ---
 
@@ -104,16 +104,12 @@ AbstractFactory<T>                    [Abstract Base]
 ├── display_info()                    [pure virtual]
 └── create_backend()                  [pure virtual, protected]
         │
-        ├── FftwFactory<T>             [CPU - FFTW transforms]
-        │   └── Creates: CpuComputationBox, CpuAndersonMixing,
-        │                CpuComputationBackend (FFTW)
-        │
-        ├── MklFactory<T>              [CPU - MKL transforms]
-        │   └── Creates: CpuComputationBox, CpuAndersonMixing,
-        │                CpuComputationBackend (MKL)
+        ├── CpuFactory<T>(FFTBackend)  [CPU - FFTW or MKL transforms]
+        │   └── Creates: ComputationBox, CpuAndersonMixing,
+        │                CpuComputationBackend (FFTW or MKL)
         │
         └── CudaFactory<T>            [GPU]
-            └── Creates: CudaComputationBox, CudaAndersonMixing[ReduceMemory],
+            └── Creates: CudaComputationBox, CudaAndersonMixing (pinned history with reduce_memory),
                          CudaComputationBackend
 ```
 
@@ -132,8 +128,8 @@ The classes each platform provides (the computation classes above them are share
 | Role | CPU | CUDA |
 |------|-----|------|
 | Backend | `CpuComputationBackend` | `CudaComputationBackend` |
-| Factory | `MklFactory`, `FftwFactory` | `CudaFactory` |
-| Computation box | `CpuComputationBox` | `CudaComputationBox` |
+| Factory | `CpuFactory` (FFTW or MKL) | `CudaFactory` |
+| Computation box | `ComputationBox` | `CudaComputationBox` |
 | Solver interface | `CpuSolver<T>` | `CudaSolver<T>` |
 | Pseudo-spectral base | `CpuSolverPseudoBase<T>` | `CudaSolverPseudoBase<T>` |
 | Continuous, RQM4 | `CpuSolverPseudoRQM4` | `CudaSolverPseudoRQM4` |
@@ -144,7 +140,7 @@ The classes each platform provides (the computation classes above them are share
 | Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
-| Field update | `CpuAndersonMixing` | `CudaAndersonMixing`, `CudaAndersonMixingReduceMemory` |
+| Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
 
 ### Platform Selection
 
@@ -195,7 +191,7 @@ alive with `py::keep_alive`.
 Manages spatial discretization, boundary conditions, and grid operations.
 
 ```
-ComputationBox<T>                     [Base Class]
+ComputationBox<T>                     [CPU memory; the CPU platforms use it directly]
 ├── Members:
 │   ├── nx[3]           - grid points per dimension
 │   ├── lx[3]           - box lengths
@@ -211,8 +207,6 @@ ComputationBox<T>                     [Base Class]
 │   ├── set_lx(lx)               - update box lengths [virtual]
 │   ├── set_lattice_parameters() - update with angles [virtual]
 │   └── set_space_group(sg)      - reduced basis on/off [virtual]
-        │
-        ├── CpuComputationBox<T>      [CPU Memory]
         │
         └── CudaComputationBox<T>     [GPU Memory]
 ```
@@ -244,6 +238,7 @@ PropagatorComputation<T>                      [Abstract Base]
 ├── compute_propagators(w, q_init)            [pure virtual]
 ├── compute_concentrations()                  [pure virtual]
 ├── compute_stress()                          [pure virtual]
+├── compute_concentrations_and_stress()       [pure virtual]
 ├── get_total_partition(polymer)              [pure virtual]
 ├── get_chain_propagator(p, v, u, n)          [pure virtual]
 ├── get_total_concentration(monomer)          [pure virtual]
@@ -268,8 +263,8 @@ ComputationBackend<T>                         [Abstract Base, grid operations]
 
 All of these live in `src/common/` except the two backends.
 `AbstractFactory::create_propagator_computation()` creates the computation with
-the backend that the platform factory (`MklFactory`, `FftwFactory`,
-`CudaFactory`) supplies; the Python layer and the C++ tests (through
+the backend that the platform factory (`CpuFactory`, `CudaFactory`)
+supplies; the Python layer and the C++ tests (through
 `tests/TestComputationFactory.h`) obtain every computation from a factory.
 
 **What has been computed.** The base class records whether the propagators,
@@ -279,7 +274,8 @@ computation sets its own when it completes. The getters throw instead of
 returning values of other fields or another box: `get_total_partition()`,
 `get_chain_propagator()`, `compute_concentrations()`, `compute_stress()` and
 `compute_partition_errors()` need the propagators, the concentration getters
-also `compute_concentrations()`, `get_stress()` also `compute_stress()`. A new
+also `compute_concentrations()`, `get_stress()` also `compute_stress()`
+(`compute_concentrations_and_stress()` sets both). A new
 computation class sets the flags at the end of its `compute_*` methods and
 calls the `require_*` checks first in its getters. `compute_partition_errors()`
 returns the forward/backward error of every polymer and prints nothing;
@@ -293,10 +289,14 @@ a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 each propagator (free end, grafting point, junction product, aggregated sum),
 which segment pairs enter the concentration and stress integrals and with
 which weights, and the normalization. Their loops read top to bottom in the
-order the work happens. Every operation on grid data goes through
+order the work happens. The constructors resolve each job of the schedule once
+(its propagator storage or checkpoints, contour step and junction sources), so
+`compute_propagators()` looks up no propagator keys, which grow with the size of a polymer.
+Every operation on grid data goes through
 `ComputationBackend` (`src/common/ComputationBackend.h`): advance a
-propagator, build a junction, accumulate segment products, normalize a block,
-sum the stress of a list of segment pairs, inner products, checkpoints.
+propagator, build a junction, accumulate segment products, divide a discrete
+block by its bead factor, sum the stress of a list of segment pairs, inner
+products, checkpoints.
 
 **Rules for the backend interface.**
 
@@ -381,7 +381,8 @@ CpuSolver<T>                                  [Abstract Base]
             └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
-The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base;
+The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base, whose
+`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver;
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the
 three pseudo-spectral solvers share -- it uses the computation box and the backend's streams,
 and owns the `Pseudo` helper, the stress reduction workspace, the space-group work buffers
@@ -389,12 +390,13 @@ and the CrysFFT fast path --
 and implements `update_laplacian_operator()` and the shared `update_dw_impl()`. Every CUDA
 solver takes the space group and the backend's index maps in its constructor. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
-constructor argument) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
+constructor argument; the plans of a stream share one work area) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
-(as `CpuSolverPseudoBase` does on the CPU): the derived classes only lend their
-work buffers through `stress_scratch()`, and the discrete solver overrides
+(as `CpuSolverPseudoBase` does on the CPU) and owns the spectral scratch that the
+propagator steps and the stress share (`d_qk_` for periodic boundaries, `d_rk_1_`/`d_rk_2_`
+for walls); the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
 tables exist only for a path that uses them (`provide_work()` with the derived solvers'
@@ -403,7 +405,7 @@ again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
 Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them.
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
-their work buffers, `update_dw()`/`advance_propagator()` and the stress scratch they lend;
+their real-space work buffers and `update_dw()`/`advance_propagator()`;
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
 bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
@@ -418,10 +420,9 @@ algorithmic difference or a real-only feature and is commented as such.
 
 ```
 FFT<T>                                        [Abstract Base]
-├── forward(T* real, double* spectral)        [pure virtual]
+├── forward(T* real, double* spectral)        [pure virtual; complex coefficients as interleaved doubles]
 ├── backward(double* spectral, T* real)       [pure virtual]
-├── forward(T* real, complex* spectral)       [pure virtual, periodic only]
-└── backward(complex* spectral, T* real)      [pure virtual, periodic only]
+└── backward_with_factors(...)                [k_factor · coefficients, r_factor · field]
         │
         ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
@@ -465,8 +466,10 @@ coefficients have the layout of `FFT<T>`, and `get_k_squared()` gives |k|² in i
 current box with the alias convention of `Pseudo`; `_core.minimal_alias_k_squared(nx, lx, angles)`
 and `_core.minimal_alias_moments(nx, lx, angles)` give the same |k|² and tied-alias moments on
 every mode of a periodic grid of any cell (`alias_k_squared` and `alias_moments` of
-`MinimalFormAlias.h`, which `FourierTransform` uses too), for the smearing (whose cell follows
-SCFT box relaxation) and WTMD. For real fields the multipliers and the
+`MinimalFormAlias.h`, which `FourierTransform` uses too), for a smearing without a transform
+of real fields and WTMD. With real fields in a periodic box the smearing of a simulation takes
+|k|², the alias moments and the coefficients of its stress from `PropagatorSolver.fourier`, on
+the half spectrum (its cell follows SCFT box relaxation). For real fields the multipliers and the
 coefficients given to `backward` are made Hermitian on the planes of the half spectrum that
 hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT would read
 other values differently; on the device every field starts an even number of doubles from
@@ -498,11 +501,9 @@ AndersonMixing<T>                             [Abstract Base]
         ├── CpuAndersonMixing<T>              [CPU Implementation]
         │   └── Uses CircularBuffer for history
         │
-        ├── CudaAndersonMixing<T>             [GPU, Standard]
-        │   └── Uses CudaCircularBuffer (device memory)
-        │
-        └── CudaAndersonMixingReduceMemory<T> [GPU, Memory-saving]
-            └── Uses PinnedCircularBuffer (host memory)
+        └── CudaAndersonMixing<T>             [GPU]
+            └── Uses CudaCircularBuffer (device memory, or pinned host
+                memory in memory-saving mode)
 ```
 
 ### 3.6 Molecules and Polymer
@@ -653,12 +654,12 @@ When adding new computational features, you must implement them for both platfor
 | WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
 | Electrostatics of the FTS methods: ψ, the ions and their checkpoint state | `src/python/theory/electrostatics.py` (`sim.electrostatics`) |
 | Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
-| Cell relaxation of SCFT: the stress, how often it is computed (`stress_interval`) and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
+| Cell relaxation of SCFT: the stress and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
 | Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), and the top-level keys each method reads | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -670,7 +671,7 @@ Who owns whom:
 
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
 - A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
-- A backend owns its solver, and on CUDA the streams, events and scratch buffers.
+- A backend owns its solver, and on CUDA the streams and scratch buffers.
 - A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
 Allocations are owned by objects that release them, so destructors and constructors
@@ -685,7 +686,9 @@ that throw need no cleanup code:
   the caller's file, line and function (`std::source_location`);
 - cuFFT plans: `CufftPlan` (`CudaCommon.h`; move-only, `create(cufftPlanMany, ...)` destroys a plan
   it holds, counts the new one and returns the cuFFT result, `reset()`, `empty()`, and an implicit
-  conversion that lends the handle to `cufftExec*` and `cufftSetStream`);
+  conversion that lends the handle to `cufftExec*` and `cufftSetStream`;
+  `create_without_work_area(bytes, cufftMakePlanMany, ...)` makes a plan without a work area of its
+  own, so that the plans of one stream, which never run at the same time, share one);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
   `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
 
@@ -698,10 +701,9 @@ the allocators of the propagator handles and the reduce-memory checkpoints, whic
 computation classes free in one place; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
-`release_cufft_plan()`. CUDA streams and events are destroyed explicitly where their order
+`release_cufft_plan()`. CUDA streams are destroyed explicitly where their order
 matters (the solver before the streams it runs on); they are created through
-`count_cuda_stream(...)` and `count_cuda_event(...)` and destroyed with
-`release_cuda_stream()` and `release_cuda_event()`. These helpers keep live counts
+`count_cuda_stream(...)` and destroyed with `release_cuda_stream()`. These helpers keep live counts
 (`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
@@ -715,14 +717,14 @@ counts of the live device and pinned allocations (`CudaDeviceMemory::counters()`
 `CudaPinnedMemory::counters()`); `cuda_buffer_fail_countdown()` is a test hook that makes
 the N-th following counted allocation throw. `cudaFree` and `cudaFreeHost` go through
 `ignore_release_error()`, which does not throw, clears the error a failed release leaves in
-the per-thread slot and counts it in `cuda_release_failures()` (the plan, stream and event
+the per-thread slot and counts it in `cuda_release_failures()` (the plan and stream
 release helpers count their failures there too; cuFFT has its own runtime and leaves
 nothing in the slot). `tests/TestCudaDeviceBuffer.cu` uses all of them: every kind of CUDA
 object (all solvers, the CrysFFT engines, non-periodic transforms, complex fields, the
 Anderson mixers), built with 4 streams, must return every counter (allocations, plans,
-streams, events) to its start when destroyed without a failed release, and a sweep with 2
+streams) to its start when destroyed without a failed release, and a sweep with 2
 streams fails each counted allocation of each construction in turn and requires the same
-after every failure (failures of cuFFT plan, stream and event creation are not injected).
+after every failure (failures of cuFFT plan and stream creation are not injected).
 The test also lets a small construction run out of device memory for real, by holding the
 rest of the free memory in a ballast buffer for a moment, so it runs serially; when the
 memory cannot be held it reports a ctest skip. Freeing a buffer by hand does not compile
@@ -755,6 +757,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 - Use C++20 features where appropriate
 - Follow existing naming conventions
 - Document public APIs
+- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`). A catch block
+  that frees resources rethrows with `throw_without_line_number(exc.what())`: an `Exception`
+  passes through unchanged, so its message names one location, and another exception
+  (`std::out_of_range`, ...) becomes an `Exception` there, which Python sees as `RuntimeError`.
+  The bindings convert the exceptions of the calls they wrap in the same way.
 - CUDA error checks follow the CUDA C++ Best Practices Guide (2.3): wrap every call that returns
   an error code (`CUDA_CHECK(...)` for runtime and CUB calls, `CUFFT_CHECK(...)` for
   cuFFT) and follow every kernel launch with `CUDA_CHECK_LAUNCH();`. The check
@@ -762,8 +769,8 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  hold cuFFT plans in `CufftPlan`, and destroy streams and events with the counting `release_*`
-  helpers.
+  hold cuFFT plans in `CufftPlan`, and destroy streams with the counting `release_cuda_stream()`
+  helper.
 
 ### Python
 

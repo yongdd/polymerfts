@@ -12,44 +12,37 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
-#include <vector>
+#include <numbers>
 
 #include "MklCrysFFTObliqueZ.h"
+#include "AlignedScratch.h"
 #include "MklDftiLayout.h"
 #include "MklStatusCheck.h"
 #include "Exception.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 namespace
 {
 /// Work arrays of the z DCT steps, one set per thread and shared by every
-/// instance on that thread. Each array grows to its own requirement: two
-/// grids with the same Nx*Ny*Nz but a different Nz need the same real size and
-/// different spectrum sizes.
+/// instance on that thread, each from a 64-byte boundary (AlignedScratch). Each
+/// array grows to its own requirement: two grids with the same Nx*Ny*Nz but a
+/// different Nz need the same real size and different spectrum sizes.
 struct ZWork
 {
-    std::vector<double> z_reordered;              ///< reordered columns, at least howmany * N
-    std::vector<std::complex<double>> z_freq;     ///< their spectra, at least howmany * (N/2 + 1)
+    double* z_reordered;              ///< reordered columns, at least howmany * N
+    std::complex<double>* z_freq;     ///< their spectra, at least howmany * (N/2 + 1)
 };
-thread_local ZWork z_work;
+thread_local AlignedScratch z_reordered_scratch, z_freq_scratch;
 
-ZWork& z_work_for(size_t n_reordered, size_t n_freq)
+ZWork z_work_for(size_t n_reordered, size_t n_freq)
 {
-    if (z_work.z_reordered.size() < n_reordered)
-        z_work.z_reordered.resize(n_reordered);
-    if (z_work.z_freq.size() < n_freq)
-        z_work.z_freq.resize(n_freq);
-    return z_work;
+    return {z_reordered_scratch.get(n_reordered),
+            reinterpret_cast<std::complex<double>*>(z_freq_scratch.get(2 * n_freq))};
 }
 }  // namespace
 
 std::array<size_t, 2> MklCrysFFTObliqueZ::thread_z_work_sizes()
 {
-    return {z_work.z_reordered.size(), z_work.z_freq.size()};
+    return {z_reordered_scratch.size(), z_freq_scratch.size() / 2};
 }
 
 //------------------------------------------------------------------------------
@@ -154,7 +147,7 @@ void MklCrysFFTObliqueZ::initFFTPlans()
     const double inv_2N = 1.0 / (2.0 * static_cast<double>(N));
     for (int k = 0; k <= N / 2; ++k)
     {
-        const double theta = M_PI * static_cast<double>(k) * inv_2N;
+        const double theta = std::numbers::pi * static_cast<double>(k) * inv_2N;
         dct_cos_[k] = std::cos(theta);
         dct_sin_[k] = std::sin(theta);
     }
@@ -172,12 +165,12 @@ void MklCrysFFTObliqueZ::applyDCT2ForwardZ(const double* in, double* out) const
     const int howmany = nx_logical_[0] * nx_logical_[1];
     const int freq_stride = N / 2 + 1;
 
-    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
+    const ZWork buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
 
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
         const double* x = in + static_cast<size_t>(ixy) * N;
-        double* v = buffers.z_reordered.data() + static_cast<size_t>(ixy) * N;
+        double* v = buffers.z_reordered + static_cast<size_t>(ixy) * N;
         for (int j = 0; 2 * j < N; ++j)
             v[j] = x[2 * j];
         for (int j = 0; 2 * j + 1 < N; ++j)
@@ -185,11 +178,11 @@ void MklCrysFFTObliqueZ::applyDCT2ForwardZ(const double* in, double* out) const
     }
 
     // Batched FFT along z
-    mkl_dfti_check(DftiComputeForward(plan_dct_forward_z_, buffers.z_reordered.data(), buffers.z_freq.data()), "DftiComputeForward (z DCT-II)");
+    mkl_dfti_check(DftiComputeForward(plan_dct_forward_z_, buffers.z_reordered, buffers.z_freq), "DftiComputeForward (z DCT-II)");
 
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const std::complex<double>* V = buffers.z_freq.data() + static_cast<size_t>(ixy) * freq_stride;
+        const std::complex<double>* V = buffers.z_freq + static_cast<size_t>(ixy) * freq_stride;
         double* X = out + static_cast<size_t>(ixy) * N;
         X[0] = V[0].real();
         for (int k = 1; k <= N / 2; ++k)
@@ -211,12 +204,12 @@ void MklCrysFFTObliqueZ::applyDCT3BackwardZ(const double* in, double* out) const
     const int howmany = nx_logical_[0] * nx_logical_[1];
     const int freq_stride = N / 2 + 1;
 
-    ZWork& buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
+    const ZWork buffers = z_work_for(static_cast<size_t>(howmany) * N, static_cast<size_t>(howmany) * freq_stride);
 
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
         const double* X = in + static_cast<size_t>(ixy) * N;
-        std::complex<double>* V = buffers.z_freq.data() + static_cast<size_t>(ixy) * freq_stride;
+        std::complex<double>* V = buffers.z_freq + static_cast<size_t>(ixy) * freq_stride;
         V[0] = X[0];
         for (int k = 1; k <= N / 2; ++k)
         {
@@ -226,11 +219,11 @@ void MklCrysFFTObliqueZ::applyDCT3BackwardZ(const double* in, double* out) const
     }
 
     // Batched backward FFT along z
-    mkl_dfti_check(DftiComputeBackward(plan_dct_backward_z_, buffers.z_freq.data(), buffers.z_reordered.data()), "DftiComputeBackward (z DCT-III)");
+    mkl_dfti_check(DftiComputeBackward(plan_dct_backward_z_, buffers.z_freq, buffers.z_reordered), "DftiComputeBackward (z DCT-III)");
 
     for (int ixy = 0; ixy < howmany; ++ixy)
     {
-        const double* v = buffers.z_reordered.data() + static_cast<size_t>(ixy) * N;
+        const double* v = buffers.z_reordered + static_cast<size_t>(ixy) * N;
         double* x = out + static_cast<size_t>(ixy) * N;
         for (int j = 0; 2 * j < N; ++j)
             x[2 * j] = v[j];
@@ -249,27 +242,12 @@ void MklCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q
     const int n_real = nx_logical_[0] * nx_logical_[1];
     const int n_complex = nx_logical_[0] * (nx_logical_[1] / 2 + 1);
 
-    struct ThreadBuffers
-    {
-        std::unique_ptr<double[]> columns;   // [Nx][Ny][N]
-        std::unique_ptr<double[]> planes;    // [N][Nx][Ny]
-        std::unique_ptr<std::complex<double>[]> complex;   // [N][Nx][Ny/2 + 1]
-        int size_real = 0;
-        int size_complex = 0;
-    };
-    thread_local ThreadBuffers buffers;
-    if (buffers.size_real != M_physical_ || buffers.size_complex != M_complex_)
-    {
-        buffers.size_real = buffers.size_complex = 0;
-        buffers.columns = std::make_unique<double[]>(M_physical_);
-        buffers.planes = std::make_unique<double[]>(M_physical_);
-        buffers.complex = std::make_unique<std::complex<double>[]>(M_complex_);
-        buffers.size_real = M_physical_;
-        buffers.size_complex = M_complex_;
-    }
-    double* columns = buffers.columns.get();
-    double* planes = buffers.planes.get();
-    std::complex<double>* complex = buffers.complex.get();
+    // Work arrays of this thread, from 64-byte boundaries (AlignedScratch)
+    thread_local AlignedScratch columns_scratch, planes_scratch, complex_scratch;
+    double* columns = columns_scratch.get(M_physical_);   // [Nx][Ny][N]
+    double* planes = planes_scratch.get(M_physical_);     // [N][Nx][Ny]
+    std::complex<double>* complex = reinterpret_cast<std::complex<double>*>(
+        complex_scratch.get(2 * static_cast<size_t>(M_complex_)));   // [N][Nx][Ny/2 + 1]
 
     // Step 1: DCT-II along Z
     applyDCT2ForwardZ(q_in, columns);

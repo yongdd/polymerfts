@@ -124,7 +124,7 @@ def preset_settings(name):
         # Parameter defaults from examples/block_copolymer/clfts/Lamella.py.
         values.update(mode="CL-FTS", nx="32, 32, 32", lx="4.21, 4.21, 4.21",
                       ds="1/90", chain_model="discrete", chi_n="12.0",
-                      max_step="100000", dt="1.0", amplitude="2.0",
+                      max_step="100000", dt="1.0", nbar="100000", amplitude="2.0",
                       dynamic_stabilization="0.01")
     return values
 
@@ -375,7 +375,7 @@ def build_script(values):
         if max(mixing["mix_min"], mixing["mix_init"]) > 1:
             raise ValueError("Mixing rates must be in (0, 1].")
     if mode == "SCFT":
-        params.update(relax_cell=bool(values["relax_cell"]), stress_interval=1,
+        params.update(relax_cell=bool(values["relax_cell"]),
                       optimizer=mixing, max_iter=num("max_iter", integer=True),
                       tolerance=num("tolerance"))
         # Box relaxation needs the stress, which cn-adi2 does not compute
@@ -456,7 +456,7 @@ def build_script(values):
                 key = "w_" + monomer
             """)
         field_code += indent(read_field + dedent('''\
-            if field.size != math.prod(params["nx"]) or not np.all(np.isfinite(field)):
+            if field.size != np.prod(params["nx"]) or not np.all(np.isfinite(field)):
                 raise ValueError(f"{key} must contain one finite value per grid point.")
             initial_fields[monomer] = field.reshape(params["nx"])
             '''), "    ")
@@ -511,7 +511,6 @@ def build_script(values):
         f'os.environ["OMP_NUM_THREADS"] = {str(threads)!r}\n'
         'os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"\n'
         'os.environ.setdefault("OMP_STACKSIZE", "1G")\n\n'
-        'import math\n'
         'from pathlib import Path\n\n'
         'import numpy as np\n'
         f'from polymerfts import {module}\n\n\n'

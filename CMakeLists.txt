@@ -290,7 +290,6 @@ TARGET_LINK_LIBRARIES(common ${SPGLIB_LIBRARIES} ${LAPACKE_LIBRARY})
 # definitions, so these objects are the same for both backends (the transform
 # backend is chosen at run time via FFTBackend); compile them once.
 SET(POLYMERFTS_CPU_COMMON_SOURCES
-    src/platforms/cpu/CpuComputationBox.cpp
     src/platforms/cpu/CpuSolverPseudoBase.cpp
     src/platforms/cpu/CpuSolverPseudoRQM4.cpp
     src/platforms/cpu/CpuSolverPseudoRK2.cpp
@@ -301,6 +300,7 @@ SET(POLYMERFTS_CPU_COMMON_SOURCES
     src/platforms/cpu/CpuAndersonMixing.cpp
     src/platforms/cpu/CpuFourierTransform.cpp
     src/platforms/cpu/MakhoulTransform.cpp
+    src/platforms/cpu/CpuFactory.cpp
 )
 
 # ---- FFTW3 ----
@@ -378,7 +378,6 @@ IF(BUILD_CPU_FFTW_LIB)
         src/platforms/cpu/FftwFFT.cpp
         src/platforms/cpu/FftwCrysFFTRecursive3m.cpp
         src/platforms/cpu/FftwCrysFFTObliqueZ.cpp
-        src/platforms/cpu/FftwFactory.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     # PUBLIC so consumers (tests, _core) inherit FFTW transitively and no
@@ -391,7 +390,6 @@ IF(BUILD_CPU_MKL_LIB)
         src/platforms/cpu/MklRealTransform.cpp
         src/platforms/cpu/MklCrysFFTRecursive3m.cpp
         src/platforms/cpu/MklCrysFFTObliqueZ.cpp
-        src/platforms/cpu/MklFactory.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     TARGET_LINK_LIBRARIES(cpu-mkl ${MKL_LIBRARIES})
@@ -623,8 +621,8 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaCrysFFT.cu
         src/platforms/cuda/CudaCrysFFTRecursive3m.cu
         src/platforms/cuda/CudaCrysFFTObliqueZ.cu
-        src/platforms/cuda/CudaCrysFFTStress.cu
         src/platforms/cuda/CudaRealTransform.cu
+        src/platforms/cuda/CudaSolver.cu
         src/platforms/cuda/CudaSolverPseudoBase.cu
         src/platforms/cuda/CudaSolverPseudoRQM4.cu
         src/platforms/cuda/CudaSolverPseudoRK2.cu
@@ -633,9 +631,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaSolverRealSpaceDiscrete.cu
         src/platforms/cuda/CudaComputationBackend.cu
         src/platforms/cuda/CudaCircularBuffer.cu
-        src/platforms/cuda/PinnedCircularBuffer.cu
         src/platforms/cuda/CudaAndersonMixing.cu
-        src/platforms/cuda/CudaAndersonMixingReduceMemory.cu
         src/platforms/cuda/CudaMakhoulTransform.cu
         src/platforms/cuda/CudaFourierTransform.cu
         src/platforms/cuda/CudaFactory.cu

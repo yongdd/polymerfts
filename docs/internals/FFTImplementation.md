@@ -343,16 +343,19 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 - `CrysFFTPmmm`: Pmmm DCT through `MakhoulTransform` over the real FFT of the selected library (`createRealFFT()` in `FFTFactory.h`)
 - `CpuFourierTransform`: the transforms of `PropagatorSolver.fourier`; boxes that mix periodic axes and walls run `MakhoulTransform` with periodic axes (Section 2.5)
 
-`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm`, or the recursive 3m or ObliqueZ engine of the library of the selected platform (`cpu-mkl` or `cpu-fftw`). The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
+`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm`, or the recursive 3m or ObliqueZ engine of the library of the selected platform (`cpu-mkl` or `cpu-fftw`). The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch (`AlignedScratch`, 64-byte aligned: MKL may pick its code by alignment, and FFTW runs its plans only on arrays of the alignment of the planning arrays). The engines run their transforms on the caller's fields: MKL out of place, FFTW when the fields have the alignment of the planning arrays, and otherwise on a copy. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
 
 **Threading**: FFTW/MKL multithreading is disabled; concurrency is handled at the solver level (OpenMP over propagators). Thread-local buffers are used to avoid race conditions.
 
-**Arrays of the periodic FFTW transforms**: `FftwFFT` plans on `fftw_malloc` arrays, which it frees after planning, and runs its plans on the caller's arrays through FFTW's new-array execute functions when these have the alignment of the planning arrays (`fftw_alignment_of()` is 0) and the input and output do not overlap. An array 8 bytes off, such as a packed field after an odd number of grid points, goes through thread-local scratch that starts on a 64-byte boundary, and so does the input of the complex-to-real transform, which FFTW overwrites. The same plan thus runs on one alignment class, and the result does not depend on where the caller's arrays lie (`TestCpuFFTAddressIndependence`).
+**Arrays of the periodic FFTW transforms**: `FftwFFT` plans on `fftw_malloc` arrays, which it frees after planning, and runs its plans on the caller's arrays through FFTW's new-array execute functions when these have the alignment of the planning arrays (`fftw_alignment_of()` is 0) and the input and output do not overlap. An array 8 bytes off, such as a packed field after an odd number of grid points, goes through thread-local scratch that starts on a 64-byte boundary, and so does the input of the complex-to-real transform, which FFTW overwrites, unless the caller gives it up; a call takes scratch only for the arrays it copies. The same plan thus runs on one alignment class, and the result does not depend on where the caller's arrays lie (`TestCpuFFTAddressIndependence`).
+
+**Backward transform with factors**: a propagator step multiplies the coefficients by the bond factor before the backward transform and the field by the Boltzmann factor after it. `FFT<T>::backward_with_factors(cdata, k_factor, rdata, r_factor)` takes both factors: `FftwFFT` multiplies the coefficients into its scratch while copying them and applies the 1/N and `r_factor` in one pass; `MakhoulFFT` multiplies the coefficients as `MakhoulTransform` reads them and a real field as it restores the grid order (a complex field takes its complex `r_factor` afterwards), and `CrysFFTPmmm` applies its multiplier the same way; `MklFFT` multiplies in place around its transform. The products are those of separate loops, so the result does not change. The call may overwrite the coefficients; without `k_factor`, `FftwFFT` then runs its complex-to-real transform on them when it can. `CpuFourierTransform` uses this for the coefficients it owns: the sums of `apply()` and the copy that `backward()` makes Hermitian (`make_hermitian()`), so a real periodic field takes one copy of its coefficients.
 
 ### 7.2 CUDA
 
-- `CudaFFT<T, DIM>`: Standard FFT using cuFFT
-- `CudaRealTransform1D/2D/3D`: DCT/DST using FCT/FST algorithms
+- `CudaFFT<T, DIM>`: cuFFT for periodic boxes (complex coefficients) and the DCT/DST of
+  wall boxes through `CudaRealTransform` (real coefficients)
+- `CudaRealTransform1D/2D/3D`: DCT/DST using FCT/FST algorithms, with tables of the twiddle factors
 - `CudaCrysFFT`: Pmmm DCT via CudaRealTransform
 - `CudaMakhoulTransform`: the DFT along periodic axes and the cosine or sine series along walls through one cuFFT of the grid, with reordering and combining kernels (Section 2.5); `CudaFourierTransform` uses it for boxes that mix periodic axes and walls
 - `CudaCrysFFTRecursive3m`: Recursive 3m on GPU with stream-aware diffusion
@@ -386,17 +389,14 @@ the current cell, which `update_laplacian_operator()` does only while the full-g
 in use. The propagator steps of the
 CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
 values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
-full-grid stress and hold these as well.
-
-**Backward Compatibility:**
-
-```cpp
-// Legacy class names (still supported)
-typedef CudaRealTransform1D CudaDCT;
-typedef CudaRealTransform1D CudaDST;
-typedef CudaRealTransform2D CudaDCT2D;
-typedef CudaRealTransform3D CudaDCT3D;
-```
+full-grid stress and hold these as well. On the full grid each stream has the forward and
+backward cuFFT plans of the batch sizes its solver runs (one field; RQM4 also two for its
+half-step pair), and these plans share one work area, since they run one after another
+on their stream. The `CudaPseudo` tables hold the Boltzmann bond
+factors only for full-grid propagator steps or the discrete-chain stress (not for the
+ObliqueZ steps of continuous chains), and the stress basis from the first
+`prepare_stress()` on. The CPU solvers likewise compute their `Pseudo` tables for a new
+cell only while a full-grid path uses them.
 
 ### 7.3 API Reference
 
@@ -420,7 +420,6 @@ public:
                         CudaTransformType type_z);
 
     void execute(double* d_data);
-    double get_normalization() const;
 };
 ```
 
@@ -523,9 +522,9 @@ The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 
 A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine and 1.2-2.0x with ObliqueZ).
 
-Stress: on a cubic cell the group gains 1.8-2.1x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.3x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.4-0.5x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
+Stress (`compute_stress` after the propagators and concentrations, median of nine calls with CUDA): on a cubic cell the group gains 2.6x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.6x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.55x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
 
-Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 2.6x with CUDA, 4.7x with MKL, 4.6x with FFTW.
+Whole SCFT iterations of the Gyroid example on 64³ with stress at every iteration, Ia-3d on the m3 basis against no group, 4 streams or threads: 3.0x with CUDA (0.113 against 0.038 s per iteration), 4.7x with MKL, 4.6x with FFTW.
 
 ### 8.6 Boxes that Mix Periodic Axes and Walls
 

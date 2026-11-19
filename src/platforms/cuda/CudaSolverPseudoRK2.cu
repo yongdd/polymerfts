@@ -40,13 +40,13 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
     ComputationBox<T>* cb,
     Molecules *molecules,
     int n_streams,
-    cudaStream_t streams[MAX_STREAMS][2],
+    cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group,
     const int* d_reduced_basis_indices,
     const int* d_full_to_reduced_map)
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
-                              space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/2,
-                              /*q_full_in_factor=*/1, /*with_exp_dw_half=*/false,
+                              space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/1,
+                              /*with_exp_dw_half=*/false,
                               /*complex_requires_periodic=*/true)
 {
     try{
@@ -63,33 +63,21 @@ template <typename T>
 CudaSolverPseudoRK2<T>::~CudaSolverPseudoRK2() = default;
 
 template <typename T>
-void CudaSolverPseudoRK2<T>::allocate_work(int, bool full_grid)
+void CudaSolverPseudoRK2<T>::allocate_work(int, bool)
 {
-    // The CrysFFT steps need no buffer of their own; the full-grid path uses these
-    if (!full_grid)
+    // The full-grid steps (the CrysFFT steps need no buffer of their own)
+    if (use_crysfft_)
         return;
     const int M = cb->get_total_grid();
-    const int M_COMPLEX = this->total_complex_grid();
     for(int i=0; i<n_streams; i++)
-    {
-        // Workspaces: advance_propagator() uses the first half of each, the
-        // stress computation both halves as the contiguous propagator pair
-        provide(d_q_work[i], 2*static_cast<size_t>(M));
-        provide(d_qk_work[i], 2*static_cast<size_t>(M_COMPLEX));
-        if (!is_periodic_)
-        {
-            // Real coefficient buffers for the DCT/DST path
-            provide(d_rk_in_1[i], M_COMPLEX);
-            provide(d_rk_in_2[i], M_COMPLEX);
-        }
-    }
+        provide(d_q_work[i], M);
 }
 
 template <typename T>
-void CudaSolverPseudoRK2<T>::update_dw(std::string device, std::map<std::string, const T*> w_input)
+void CudaSolverPseudoRK2<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
     // exp(-w ds/2): the half-step factor applied on both sides of the diffusion step
-    this->update_dw_impl(device, w_input, false, 0.5, 0.0);
+    this->update_dw_impl(d_w, false, 0.5, 0.0);
 }
 
 // Advance propagator using RK2 (single full step)
@@ -139,25 +127,25 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             // ============================================================
 
             // Step 1: Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 d_q_work[STREAM], fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Execute a forward FFT
-            fft_forward(STREAM, d_q_work[STREAM], d_qk_work[STREAM], 1);
+            fft_forward(STREAM, d_q_work[STREAM], d_qk_[STREAM], 1);
             CUDA_CHECK_LAUNCH();
 
             // Step 3: Multiply exp(-k^2 ds/6) in fourier space
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
-                d_qk_work[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
+            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+                d_qk_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // Step 4: Execute a backward FFT
-            fft_backward(STREAM, d_qk_work[STREAM], fft_out, 1);
+            fft_backward(STREAM, d_qk_[STREAM], fft_out, 1);
             CUDA_CHECK_LAUNCH();
 
             // Step 5: Evaluate exp(-w*ds/2) in real space and normalize
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
             CUDA_CHECK_LAUNCH();
         }
@@ -171,21 +159,21 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             T* d_q_step = reinterpret_cast<T*>(d_q_work[STREAM].get());
 
             // Step 1: Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_work[STREAM], fft_in, _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_work[STREAM], fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Forward transform (DCT/DST)
-            fft_[STREAM]->forward_stream(d_q_step, d_rk_in_1[STREAM], streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(d_q_step, d_rk_1_[STREAM], streams[STREAM]);
 
             // Step 3: Multiply by Boltzmann factor (real coefficients)
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_rk_in_1[STREAM], d_rk_in_1[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // Step 4: Backward transform (inverse DCT/DST) - normalization included
-            fft_[STREAM]->backward_stream(d_rk_in_1[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM][0]);
+            fft_[STREAM]->backward_stream(d_rk_1_[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM]);
 
             // Step 5: Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(fft_out, fft_out, _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
         }
 
@@ -196,12 +184,6 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
     {
         throw_without_line_number(exc.what());
     }
-}
-
-template <typename T>
-typename CudaSolverPseudoBase<T>::StressScratch CudaSolverPseudoRK2<T>::stress_scratch(int STREAM)
-{
-    return {d_q_work[STREAM], d_qk_work[STREAM], d_rk_in_1[STREAM], d_rk_in_2[STREAM]};
 }
 
 // Explicit template instantiation

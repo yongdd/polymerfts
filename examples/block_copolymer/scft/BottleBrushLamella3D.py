@@ -1,6 +1,5 @@
 import os
 import numpy as np
-from scipy.io import savemat
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -66,8 +65,7 @@ params = {
     "aggregate_propagator_computation":True,   # Aggregate multiple propagators when solving diffusion equations for speedup. 
                                                # To obtain concentration of each block, disable this option.
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)       # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
     "chain_model":"discrete",     # "discrete" or "continuous" chain model
     "ds":1/100,                   # Contour step interval, which is equal to 1/N_Ref.
 
@@ -105,24 +103,13 @@ for i in range(0,params["nx"][2]):
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
 calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")
 
-# Recording first a few iteration results for debugging and refactoring (continuous)
-    #        1    3.723E-14  [ 2.3883180E+02  ]    -0.128443788   3.9037374E-01  lx=[  7.8000000, 7.8000000, 7.8000000 ]
-    #        2    2.068E-14  [ 2.5075609E+02  ]    -0.128650579   3.8300192E-01  lx=[  7.8000000, 7.8000000, 7.7997507 ]
-    #        3    3.543E-14  [ 2.6315939E+02  ]    -0.128850351   3.7570003E-01  lx=[  7.8000000, 7.8000000, 7.7995011 ]
-    #        4    1.826E-14  [ 2.7604953E+02  ]    -0.129043309   3.6846905E-01  lx=[  7.8000000, 7.8000000, 7.7992511 ]
-    #        5   -5.485E-14  [ 2.8943349E+02  ]    -0.129229631   3.6130987E-01  lx=[  7.8000000, 7.8000000, 7.7990009 ]
-
-# Recording first a few iteration results for debugging and refactoring (discrete)
+# Recording first a few iteration results for debugging and refactoring
     #        1   -5.877E-16  [ 2.3885234E+02  ]    -0.128451018   3.9039788E-01  lx=[  7.8000000, 7.8000000, 7.8000000 ]
     #        2    2.477E-14  [ 2.5077874E+02  ]    -0.128657839   3.8302551E-01  lx=[  7.8000000, 7.8000000, 7.7997507 ]
     #        3    8.531E-15  [ 2.6318429E+02  ]    -0.128857639   3.7572307E-01  lx=[  7.8000000, 7.8000000, 7.7995011 ]

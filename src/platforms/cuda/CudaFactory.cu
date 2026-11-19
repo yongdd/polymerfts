@@ -42,7 +42,6 @@
 #include "CudaComputationBox.h"
 #include "CudaComputationBackend.h"
 #include "CudaAndersonMixing.h"
-#include "CudaAndersonMixingReduceMemory.h"
 #include "CudaFourierTransform.h"
 #include "CudaFactory.h"
 
@@ -82,16 +81,9 @@ std::unique_ptr<AndersonMixing<T>> CudaFactory<T>::create_anderson_mixing(
     int n_var, int max_hist, double start_error,
     double mix_min, double mix_init)
 {
-    if(this->reduce_memory)
-    {
-        return std::make_unique<CudaAndersonMixingReduceMemory<T>>(
-            n_var, max_hist, start_error, mix_min, mix_init);
-    }
-    else
-    {
-        return std::make_unique<CudaAndersonMixing<T>>(
-            n_var, max_hist, start_error, mix_min, mix_init);
-    }
+    // Memory-saving mode keeps the history in pinned host memory
+    return std::make_unique<CudaAndersonMixing<T>>(
+        n_var, max_hist, start_error, mix_min, mix_init, this->reduce_memory);
 }
 template <typename T>
 std::unique_ptr<FourierTransform<T>> CudaFactory<T>::create_fourier_transform(

@@ -64,7 +64,8 @@
  * @brief Multi-dimensional cosine and sine transforms in FFTW's conventions,
  *        with DFTs along periodic axes.
  *
- * Execution is thread-safe; the scratch arrays are thread-local.
+ * Execution is thread-safe; the scratch arrays are thread-local and start on
+ * 64-byte boundaries (AlignedScratch).
  */
 class MakhoulTransform
 {
@@ -109,16 +110,22 @@ private:
 
     /// Reordered and scaled samples of one real field whose values are STRIDE doubles apart.
     template <int STRIDE> void reorder(const double* in, double* samples, double scale) const;
-    /// Inverse of reorder().
-    template <int STRIDE> void restore(const double* samples, double* out, double scale) const;
+    /// Inverse of reorder(), times r_factor (one value per grid point) when R_FACTOR.
+    template <int STRIDE, bool R_FACTOR> void restore(const double* samples, double* out, const double* r_factor, double scale) const;
     /// Cosine or sine transform of the wall axes among the leading two (the forward combine).
     void combine_leading_axes(Mode* modes) const;
     /// Twice the inverse of combine_leading_axes().
     void separate_leading_axes(Mode* modes) const;
 
-    /// The transforms of one real field, real coefficients (walls only).
+    /// The coefficients of one real field (walls only), times k_factor when K_FACTOR, into the modes
+    /// of the real FFT: the first step of backward_part().
+    template <int STRIDE, bool K_FACTOR> void read_coefficients(const double* in, const double* k_factor, Mode* modes) const;
+    /// The transforms of one real field, real coefficients (walls only); the backward transform
+    /// multiplies the coefficients by k_factor and the result by r_factor as it reads and writes
+    /// them, unless they are nullptr.
     template <int STRIDE> void forward_part(const double* in, double* out, double scale) const;
-    template <int STRIDE> void backward_part(const double* in, double* out, double scale) const;
+    template <int STRIDE> void backward_part(const double* in, const double* k_factor, double* out,
+                                             const double* r_factor, double scale) const;
 
     /// The forward transform of one real field into complex coefficients (periodic axes), stored,
     /// or added times i for the imaginary part of a complex field.
@@ -152,6 +159,19 @@ public:
 
     /// The backward transform of the (re, im) pairs of in into the real and imaginary parts of out (in may be out).
     void backward(const double* in, std::complex<double>* out, double scale) const;
+
+    /**
+     * @brief out = r_factor · backward(k_factor · in): one factor per coefficient (a (re, im) pair of a
+     *        complex field) and one per grid point, either nullptr (in may be out).
+     *
+     * The coefficients are multiplied as they are read and a real field as it is written, which
+     * saves the two passes of separate loops around backward() and gives their values bit for bit;
+     * a complex field is multiplied by its r_factor afterwards.
+     */
+    void backward_with_factors(const double* in, const double* k_factor, double* out, const double* r_factor,
+                               double scale) const;
+    void backward_with_factors(const double* in, const double* k_factor, std::complex<double>* out,
+                               const std::complex<double>* r_factor, double scale) const;
 
     // ---- Periodic axes and walls: complex coefficients, in and out distinct ----
 

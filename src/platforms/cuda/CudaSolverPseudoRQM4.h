@@ -14,9 +14,8 @@
  *
  * **Stream Organization:**
  *
- * For each stream index, two CUDA streams are used:
- * - streams[STREAM][0]: Kernel execution
- * - streams[STREAM][1]: Memory transfers (async)
+ * Each stream index has one CUDA stream (streams[STREAM]), on which the
+ * kernels and transforms of its propagators run.
  *
  * **cuFFT Plans:**
  *
@@ -75,10 +74,10 @@ class CudaCrysFFTBase;  // Forward declaration
  * **Memory per Stream:**
  *
  * - d_q_step_1_one, d_q_step_2_one: Full step workspace (the reduced basis on the CrysFFT path)
- * - d_q_step_1_two: Half step workspace (2*M; also lent as the propagator pair of the stress)
- * - d_qk_in_2_one, d_qk_in_1_two: Fourier space buffers
+ * - d_q_step_1_two: the full step and the first half step side by side for the batched
+ *   cuFFT (2*M; full-grid steps with periodic BC)
  *
- * All but the first two belong to the full-grid path (see allocate_work()).
+ * The spectra go to the base's scratch (d_qk_ or d_rk_1_/d_rk_2_), which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
@@ -95,6 +94,7 @@ private:
     using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
     using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
+    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
 
     /// @name Workspace Arrays (per stream)
     /// @{
@@ -102,19 +102,6 @@ private:
     CudaDeviceBuffer<CuDeviceData<T>> d_q_step_2_one[MAX_STREAMS];      ///< Full step workspace 2
     CudaDeviceBuffer<CuDeviceData<T>> d_q_step_1_two[MAX_STREAMS];      ///< Half step workspace 1
     /// @}
-
-    /// @name Fourier Space Buffers (periodic BC - complex coefficients)
-    /// @{
-    CudaDeviceBuffer<cuDoubleComplex> d_qk_in_2_one[MAX_STREAMS];
-    CudaDeviceBuffer<cuDoubleComplex> d_qk_in_1_two[MAX_STREAMS];
-    /// @}
-
-    /// @name Spectral Space Buffers (non-periodic BC - real coefficients)
-    /// @{
-    CudaDeviceBuffer<double> d_rk_in_1_one[MAX_STREAMS];    ///< Real coefficients buffer 1
-    CudaDeviceBuffer<double> d_rk_in_2_one[MAX_STREAMS];    ///< Real coefficients buffer 2
-    /// @}
-
 
 public:
     /**
@@ -128,7 +115,7 @@ public:
      * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
-    CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                             SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
@@ -136,10 +123,9 @@ public:
 
     /**
      * @brief Update Boltzmann factors.
-     * @param device  "gpu" or "cpu" for w_input location
-     * @param w_input Potential fields
+     * @param d_w Potential fields (device)
      */
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
 
     /**
      * @brief Advance propagator by one step using RQM4.
@@ -160,8 +146,6 @@ public:
     void advance_propagator_half_bond_step(
         const int, CuDeviceData<T> *, CuDeviceData<T> *, std::string) override {};
 
-    /// Scratch buffers lent to CudaSolverPseudoBase::compute_single_segment_stress()
-    typename Base::StressScratch stress_scratch(int STREAM) override;
     void allocate_work(int n_field, bool full_grid) override;
     /// CrysFFT steps of a block: a full step and two half steps
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override

@@ -1,7 +1,8 @@
 """Checks and inputs shared by the Python tests of simulation runs.
 
 quiet() calls a function without what it prints, and silenced() discards what a with block
-prints. python_platform() picks the one platform that runs a test of a fix made in Python.
+prints. python_platform() picks the one platform that runs a test of a fix made in Python
+(cpu_platform() of cuda_part).
 compare_files() compares a file that two runs wrote key by key. exact_restart() checks that a
 run continued from the checkpoint of a shorter run ends where the uninterrupted run ends, bit for
 bit on the same backend. expect_error() expects an exception. The inputs that several tests run:
@@ -10,6 +11,10 @@ saddle search fails at chosen calls), compressible_parameters() (a 4-point diblo
 and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
 with the saddle and compressor entries, of CL-FTS (cls=CLFTS), which would ignore them with a
 warning, or the system part for SCFT (cls=SCFT), which would ignore the Langevin options (input_of).
+
+The L-FTS and CL-FTS runs of a test that imports this module draw no chain architectures
+(polymer_<id>.png): matplotlib takes about 0.1 s per run, more than a short run itself. A test of
+the drawings sets draw_architectures = True on its simulation.
 """
 
 import contextlib
@@ -19,8 +24,10 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 
-from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
-from cuda_part import cuda_part_missing
+from polymerfts import SCFT, LFTS, CLFTS
+from cuda_part import cpu_platform
+
+LFTS.draw_architectures = CLFTS.draw_architectures = False
 
 
 @contextlib.contextmanager
@@ -36,21 +43,8 @@ def quiet(function, *args, **kwargs):
         return function(*args, **kwargs)
 
 
-def python_platform():
-    """The one platform that runs a test of a fix made in Python: the first CPU platform of
-    the build, else CUDA. Without a platform the test ends: it fails (exit 1) in a build with
-    the CUDA backend but no visible device (cuda_part_missing), else it is skipped (exit 77)."""
-    platforms = PlatformSelector.avail_platforms()
-    if not platforms:
-        raise SystemExit(int(cuda_part_missing()) or 77)
-    return next((name for name in platforms if name.startswith("cpu")), platforms[0])
-
-
-def cpu_platform():
-    """cpu-mkl if the build has it, else the first CPU platform, else None."""
-    avail = PlatformSelector.avail_platforms()
-    cpu = [p for p in avail if p.startswith("cpu")]
-    return "cpu-mkl" if "cpu-mkl" in avail else (cpu[0] if cpu else None)
+# The one platform that runs a test of a fix made in Python
+python_platform = cpu_platform
 
 
 def expect_error(call, kind):
@@ -133,14 +127,14 @@ def input_of(cls, params):
 
 def diblock_parameters(directory, steps=4, cls=LFTS):
     """An AB diblock melt in 1D (16 points), continuous chains, for L-FTS (the compressor and
-    saddle entries), CL-FTS (cls=CLFTS) or SCFT (cls=SCFT, without the Langevin options), on the first
-    CPU platform, recording into directory."""
+    saddle entries), CL-FTS (cls=CLFTS) or SCFT (cls=SCFT, without the Langevin options), on
+    cpu_platform(), recording into directory."""
     return input_of(cls, {
         "nx": [16], "lx": [3.0], "ds": 0.05, "chain_model": "continuous",
         "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 15.0},
         "polymers": [{"volume_fraction": 1.0, "blocks": [
             {"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}],
-        "platform": next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu")),
+        "platform": cpu_platform(),
         "langevin": {"nbar": 10000, "dt": 1.0, "max_step": steps},
         "compressor": {"name": "am", "max_hist": 20, "start_error": 0.5, "mix_min": 0.01, "mix_init": 0.01},
         "saddle": {"max_iter": 200, "tolerance": 1e-6},

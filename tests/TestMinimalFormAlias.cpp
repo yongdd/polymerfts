@@ -10,13 +10,21 @@
  * representative must equal the one of the former one-period window, so that
  * results do not change there. The case that motivated the exact search, 4x32
  * points on a 120-degree cell with equal lengths, must defeat that window.
+ * Near-tie cells, whose shortest period lies off the axes and whose even grids
+ * hold modes tied exactly with an alias, check the early exit of the search
+ * against the brute force, with the form summed in another order by the caller.
+ * On cells of two components (an axis orthogonal to the other two) the loops
+ * over every mode, which search each component's modes once, must give the
+ * per-mode least aliases and tied-alias moments to the bit.
  */
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <random>
+#include <vector>
 
 #include "MinimalFormAlias.h"
 
@@ -28,6 +36,18 @@ struct Form
     double operator()(double a, double b, double c) const
     {
         return g.g11 * a * a + g.g22 * b * b + g.g33 * c * c + 2.0 * (g.g12 * a * b + g.g13 * a * c + g.g23 * b * c);
+    }
+};
+
+// The same form summed in another order, as a caller may evaluate it (the ObliqueZ
+// engines do): its rounding differs from IndexForm's, with which the search computes
+// its bound
+struct SwappedForm
+{
+    IndexMetric g;
+    double operator()(double a, double b, double c) const
+    {
+        return 2.0 * (g.g23 * b * c + g.g13 * a * c + g.g12 * a * b) + g.g33 * c * c + g.g22 * b * b + g.g11 * a * a;
     }
 };
 
@@ -77,12 +97,15 @@ std::array<int, 3> one_period_rep(std::array<int, 3> m, const std::array<int, 3>
 
 struct Stats
 {
-    long modes = 0, wrong_min = 0, odd = 0, wrong_ties = 0, window_differs = 0, window_misses = 0;
+    long modes = 0, wrong_min = 0, odd = 0, wrong_ties = 0, window_differs = 0, window_misses = 0, tied = 0;
 };
 
+// The search with the caller's form LibForm against a brute-force window
+template <typename LibForm = Form>
 void check_grid(const std::array<int, 3>& n, const IndexMetric& g, bool expect_window, Stats& s)
 {
     const Form form{g};
+    const LibForm lib_form{g};
     const int W = 16;   // brute-force window in periods
     for (int i = 0; i < n[0]; ++i)
         for (int j = 0; j < n[1]; ++j)
@@ -103,16 +126,17 @@ void check_grid(const std::array<int, 3>& n, const IndexMetric& g, bool expect_w
                                 ++brute_ties;
 
                 std::array<int, 3> rep = m;
-                min_form_alias_rep(rep, n, g, form);
+                min_form_alias_rep(rep, n, g, lib_form);
                 const double f = form(rep[0], rep[1], rep[2]);
                 std::array<int, 3> rep_neg = {centered((n[0] - i) % n[0], n[0]), centered((n[1] - j) % n[1], n[1]),
                                               centered((n[2] - k) % n[2], n[2])};
-                min_form_alias_rep(rep_neg, n, g, form);
+                min_form_alias_rep(rep_neg, n, g, lib_form);
                 const double f_neg = form(rep_neg[0], rep_neg[1], rep_neg[2]);
-                const int ties = for_each_min_form_alias(m, n, g, form, 1e-10, [](int, int, int) {});
+                const int ties = for_each_min_form_alias(m, n, g, lib_form, 1e-10, [](int, int, int) {});
                 const std::array<int, 3> window = one_period_rep(m, n, form);
 
                 ++s.modes;
+                s.tied += (brute_ties > 1);
                 s.wrong_min += (std::abs(f - brute) > 1e-12 * std::max(brute, 1e-300));
                 s.odd += (std::abs(f - f_neg) > 1e-12 * std::max(f, 1e-300));
                 s.wrong_ties += (ties != brute_ties);
@@ -165,6 +189,70 @@ bool check_separable_thin_cells()
     ok &= reciprocal_axes_coupled(1e200, 1e-200, 0.5);
     ok &= !reciprocal_axes_coupled(1e200, 1e-200, 6e-17);
     std::printf("separable thin cells: %s\n", ok ? "passed" : "FAILED");
+    return ok;
+}
+
+// The loops over every mode of a grid of two components (cells with an axis
+// orthogonal to the other two) search each component's modes once and combine
+// them per mode. They must give the per-mode results of min_form_alias_rep and
+// tied_alias_moments to the bit, on the full grid and on the r2c half spectrum,
+// also when the components interleave ({x, z} and {y}: the ties are visited in
+// (a, b, c) order).
+bool check_component_grid_loops()
+{
+    const double deg = 3.14159265358979323846 / 180.0;
+    struct Cell
+    {
+        std::array<int, 3> n;
+        double a, b, c, alpha, beta, gamma;
+        const char* name;
+    };
+    const Cell cells[] = {
+        {{24, 24, 20}, 4.0, 4.0, 3.0, 90, 90, 120, "hexagonal: {x, y} and {z}"},
+        {{17, 17, 15}, 4.0, 4.0, 3.0, 90, 90, 120, "odd hexagonal"},
+        {{30, 26, 20}, 3.0, 3.1, 2.0, 90, 90, 100, "monoclinic, unique axis c"},
+        {{30, 26, 20}, 3.0, 3.1, 2.0, 90, 105, 90, "monoclinic, unique axis b: {x, z} and {y}"},
+        {{16, 32, 8}, 4.0, 4.0, 4.0, 90, 120, 90, "anisotropic spacing: {x, z} and {y}"},
+        {{20, 26, 30}, 2.0, 3.1, 3.0, 100, 90, 90, "alpha != 90: {x} and {y, z}"},
+        {{32, 32, 16}, 4.0, 4.0, 0.3, 90, 90, 120, "thin z"},
+    };
+    bool ok = true;
+    for (const Cell& cell : cells)
+    {
+        const std::array<int, 3>& n = cell.n;
+        const IndexMetric g = metric_of(cell.a, cell.b, cell.c, cell.alpha * deg, cell.beta * deg, cell.gamma * deg);
+        const AliasSearch search(n, g);
+        const Form form{g};
+        long long modes = 0, wrong_rep = 0, wrong_moments = 0, tied = 0;
+        for (const std::array<int, 3>& shape : {n, std::array<int, 3>{n[0], n[1], n[2] / 2 + 1}})
+        {
+            std::vector<std::array<int, 3>> reps;
+            for_each_mode_min_alias(n, shape, g, form,
+                [&](long long, const std::array<int, 3>& u) { reps.push_back(u); });
+            std::vector<std::array<double, 6>> moments;
+            for_each_mode_tied_moments(n, shape, g, 2.5,
+                [&](long long, const std::array<int, 3>&, const std::array<double, 6>& v) { moments.push_back(v); });
+            long long index = 0;
+            for (int i = 0; i < shape[0]; ++i)
+                for (int j = 0; j < shape[1]; ++j)
+                    for (int k = 0; k < shape[2]; ++k, ++index)
+                    {
+                        const std::array<int, 3> m = {centered(i, n[0]), centered(j, n[1]), centered(k, n[2])};
+                        std::array<int, 3> rep = m;
+                        min_form_alias_rep(rep, search, form);
+                        const std::array<double, 6> v = tied_alias_moments(m, search, 2.5);
+                        ++modes;
+                        tied += for_each_min_form_alias(m, search, IndexForm{g}, 1e-10, [](int, int, int) {}) > 1;
+                        wrong_rep += (reps[index] != rep);
+                        wrong_moments += std::memcmp(moments[index].data(), v.data(), sizeof(v)) != 0;
+                    }
+        }
+        const bool cell_ok = search.coupled && search.n_components == 2 && tied > 0 && wrong_rep == 0
+                             && wrong_moments == 0;
+        std::printf("grid loops, %s: %lld modes (%lld tied), least alias differs %lld, moments differ %lld%s\n",
+                    cell.name, modes, tied, wrong_rep, wrong_moments, cell_ok ? "" : "  FAILED");
+        ok &= cell_ok;
+    }
     return ok;
 }
 
@@ -221,7 +309,32 @@ int main()
                 "f(m) != f(-m) %ld\n", aniso.window_misses, aniso.modes, aniso.wrong_min, aniso.odd);
     ok &= (aniso.window_misses > 0 && aniso.wrong_min == 0 && aniso.odd == 0);
 
+    // 4) Near-tie cells for the early exit of the search (a mode with 4 f(m) below
+    //    lambda_1^2, the least form of a period, by a margin, is its own unique least
+    //    alias). Angles far from 90 degrees put the shortest period N t off the axes, so
+    //    a bound from the axis periods alone would exceed lambda_1, and even grids hold the
+    //    modes m = N t / 2, tied exactly with m - N t. The caller's form sums in another
+    //    order than the search's bound (SwappedForm), so their roundings differ at these ties.
+    Stats near_tie;
+    for (const double gam : {35.0, 45.0, 55.0, 125.0, 135.0, 145.0})
+        for (const double b_len : {2.0, 2.3, 1.7, 2.9, 1.3, 3.7})
+        {
+            IndexMetric g_plane = metric_of(2.0, b_len, 1.0, 90 * deg, 90 * deg, gam * deg);
+            g_plane.g33 = g_plane.g13 = g_plane.g23 = 0.0;
+            check_grid<SwappedForm>({12, 12, 1}, g_plane, false, near_tie);
+            check_grid<SwappedForm>({16, 14, 1}, g_plane, false, near_tie);
+            check_grid<SwappedForm>({8, 18, 1}, g_plane, false, near_tie);
+            if (b_len == 2.0 || b_len == 2.3)
+                check_grid<SwappedForm>({10, 10, 6}, metric_of(2.0, b_len, 1.7, 80 * deg, 100 * deg, gam * deg),
+                                        false, near_tie);
+        }
+    std::printf("near-tie cells: %ld modes (%ld tied), least form wrong %ld, f(m) != f(-m) %ld, "
+                "tie count wrong %ld\n", near_tie.modes, near_tie.tied, near_tie.wrong_min, near_tie.odd,
+                near_tie.wrong_ties);
+    ok &= (near_tie.tied > 0 && near_tie.wrong_min == 0 && near_tie.odd == 0 && near_tie.wrong_ties == 0);
+
     ok &= check_separable_thin_cells();
+    ok &= check_component_grid_loops();
 
     std::printf(ok ? "\nAll passed!\n" : "\nFAILED!\n");
     return ok ? 0 : 1;

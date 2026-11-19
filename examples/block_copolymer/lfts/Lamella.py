@@ -1,8 +1,5 @@
 import os
-import time
-import numpy as np
-from scipy.io import savemat, loadmat
-from scipy.ndimage import gaussian_filter
+from scipy.io import loadmat
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -11,7 +8,6 @@ os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 from polymerfts import lfts
 
 f = 0.4        # A-fraction of major BCP chain, f
-eps = 1.0       # a_A/a_B, conformational asymmetry
 
 params = {
     #---------------- Simulation parameters -----------------------------
@@ -72,7 +68,6 @@ params = {
 # Set random seed
 # If you want to obtain different results for each execution, set random_seed=None
 random_seed = 12345
-np.random.seed(random_seed)
 
 # Set initial fields
 input_data = loadmat("LamellaInput.mat", squeeze_me=True)
@@ -81,9 +76,6 @@ w_B = input_data["w_B"]
 
 # Initialize simulation
 simulation = lfts.LFTS(params=params, random_seed=random_seed)
-
-# Set a timer
-time_start = time.time()
 
 # # Continue simulation with recorded field configurations and random state.
 # simulation.continue_run(file_name="fields_010000.mat")

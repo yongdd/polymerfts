@@ -5,12 +5,15 @@ This document provides a complete reference for all simulation parameters.
 `SCFT`, `LFTS` and `CLFTS` read the keys of their own sections and the shared ones (system, chains,
 numerical method, platform, memory, smearing; `electrostatics` in SCFT and CL-FTS). One input can serve all
 three at its top level: a method ignores the options of the others, such as `relax_cell` in L-FTS or
-`langevin` in SCFT, with one warning that lists them (options nested in a section are checked by the
-method that reads the section). Two keys would change the system rather than add an option, and raise
+`langevin` in SCFT, with one warning that lists them (a section of another method is ignored with its
+content). Two keys would change the system rather than add an option, and raise
 `ValidationError`: `electrostatics` in L-FTS, which has no electrostatic potential and would simulate a
 neutral system, and `axis_ordering` in L-FTS and CL-FTS, which would read the shared `nx`, `lx`, `bc` and
 `angles` in another order than SCFT ([Axis Ordering](#axis-ordering)). A top-level key that no method
-reads, such as a misspelled key, raises `ValidationError` naming the key and the closest valid one.
+reads, such as a misspelled key, raises `ValidationError` naming the key and the closest valid one. So
+does a key that a section the method reads does not take (in `langevin`, `recording`, `saddle`,
+`compressor`, `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics` and `gibbs_ensemble`): its
+error also lists the keys of the section, which the tables below give.
 
 A top-level key given the value `None` (`null` or `~` in YAML) is the same as an absent key: the method
 uses its default, or reports a required key as missing. A keyword override of `from_file` given as `None`
@@ -227,6 +230,8 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 - 2D/3D simulations → `"cuda"` if available, else CPU
 - Inputs that the CUDA pseudo-spectral solvers do not run stay on the CPU: an odd grid size, or more than 6142 points, along an absorbing direction in 2D/3D, and complex fields of continuous chains with non-periodic boundaries. With `"platform": "cuda"` these inputs raise an error
 
+**Threads.** The number of propagators computed at the same time is `OMP_NUM_THREADS` (CPU threads, or at most 4 CUDA streams). `import polymerfts` sets `OMP_NUM_THREADS=1` and `OMP_STACKSIZE=1G` when they are not set; set other values in the shell or before the import ([Installation](../getting-started/Installation.md#threads)).
+
 ---
 
 ## SCFT Parameters
@@ -261,9 +266,8 @@ All keys are **required**: omitting one, a name other than `"am"`, a `max_hist` 
 | `tolerance` | float | Stop when the self-consistency error (plus the norm of the stress along the relaxed lattice parameters when the box relaxes) is below this value | `1e-8` |
 | `relax_cell` | bool | Relax the box lengths (and, for monoclinic/triclinic/oblique systems, the angles) together with the fields | Required |
 | `stress_scale` | float | Scaling of the stress entries in the optimizer vector | `1` |
-| `stress_interval` | int or `"adaptive"` | Compute the stress every N iterations; `"adaptive"` uses 1, 2 or 4 as the error drops below 1e-2 and 1e-4 | `1` |
 
-Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
+Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). The stress is computed in every iteration, together with the concentrations. Each iteration changes every box length by at most 10 % and every angle by at most 5°.
 
 ### Crystal System
 
@@ -376,7 +380,7 @@ This applies to SCFT result files as well as FTS output. Ordinary nested names a
 
 See [Numerical Validation](../validation/NumericalValidation.md) for regression coverage, provenance and statistical validation jobs. Both `LFTS` and `CLFTS` accept keyword arguments `integrator=` and `callbacks=`; see [Extensions](../internals/Extensions.md) for their contracts and a runnable example.
 
-With WTMD, a run starts from the bias and statistics that `sim.wtmd` holds: those of WTMD construction, those an earlier run of the object left, or a bias set on `sim.wtmd` before the run. A fresh `run()` starting at step 1 drops the samples that an earlier run left pending (they are not yet in a hill) and keeps the bias and statistics. `continue_run()` restores the bias, statistics and pending samples from the checkpoint; a manual run starting after step 1 keeps them all. A fresh run does not reset the random-number stream; for an independent run, construct a new simulation.
+With WTMD, a run starts from the bias and statistics that `sim.wtmd` holds: those of WTMD construction, those an earlier run of the object left, or a bias set on `sim.wtmd` before the run. Its arrays `u`, `up` and `I1` (a dict of the monomer pairs) hold $`U`$, $`U'`$ and $`I_1`$ divided by $`C V`$ (`sim.wtmd.CV`, $`\sqrt{\bar{N}}`$ times the volume), while the statistics files (`u`, `up`, `I1_<pair>`) and the checkpoints (`wtmd_u`, `wtmd_up`, `wtmd_I1_<pair>`) store them times $`C V`$, as deep-langevin-fts does; `I0` is the same in both. Divide a bias read from such a file by `sim.wtmd.CV` before setting it. A fresh `run()` starting at step 1 drops the samples that an earlier run left pending (they are not yet in a hill) and keeps the bias and statistics. `continue_run()` restores the bias, statistics and pending samples from the checkpoint; a manual run starting after step 1 keeps them all. A fresh run does not reset the random-number stream; for an independent run, construct a new simulation.
 
 ### Compressor
 
@@ -500,7 +504,7 @@ params["electrostatics"] = {"charges": {"P": 1.0, "M": -1.0}, "coupling": 1e5}
 
 ### Gibbs Ensemble
 
-`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it from an input that may differ only in `gibbs_ensemble.cycles` and in the options of other methods, which CL-FTS ignores. Both return `summary()`, the averages of the second half of the cycles.
+`GibbsEnsemble(params, random_seed=None)` runs two CL-FTS boxes that exchange chains, point ions and volume toward coexisting phases ([theory](../theory/ComplexLangevinSimulation.md#8-gibbs-ensemble)). `params` is a CL-FTS input with the section `gibbs_ensemble`; the volume fractions of `polymers` are not used, `lx` is the cell of both boxes, which stays fixed, and `langevin.max_step` and the recording intervals other than `sample_interval` are set by the cycles and may be left out. The boxes write into `recording.dir`/`box0` and `box1`, and `gibbs_history.json` holds every cycle. `run(initial_fields=None, initial_psi=None)` (one dict for both boxes or a list of two) starts from the boxes of the input and replaces an earlier `gibbs_history.json`; `continue_run()` continues it from an input that may differ only in `gibbs_ensemble.cycles`, in the options of other methods, which CL-FTS ignores, in the keys that the cycles set (the volume fractions of `polymers`, `langevin.max_step`, `recording.dir`, `recording.pressure` and the recording intervals other than `sample_interval`) and in `verbose_level`, `platform`, `reduce_memory` and `aggregate_propagator_computation`, which change how the boxes are computed, not their model; a history written by an earlier version continues only with the input that wrote it. Both return `summary()`, the averages of the second half of the cycles.
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -572,7 +576,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 ### Box Optimization
 
-`relax_cell`, `stress_scale`, `stress_interval` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
+`relax_cell`, `stress_scale` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
 **Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"` (on CUDA, `"rqm4"` and `"rk2"` take no complex fields with walls, which `"auto"` runs on the CPU); `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
@@ -631,6 +635,9 @@ even when their values are equal.
 | `recording.recording_period` | `recording.checkpoint_interval` |
 | `recording.sf_computing_period` | `recording.sample_interval` |
 | `recording.sf_recording_period` | `recording.statistics_save_interval` |
+
+Every method ignores `stress_interval`, an option of earlier releases, with one
+warning: SCFT computes the stress in every iteration of the box relaxation.
 
 Version-1 and version-2 checkpoints written with earlier names can be resumed
 using current parameter names. The stored settings hash is verified before

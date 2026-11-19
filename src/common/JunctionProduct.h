@@ -145,7 +145,8 @@ struct Real
             else
                 current *= pow(source, power);
 #else
-            current *= std::pow(source, power);
+            // pow(x, 1) = x exactly: the power of a single branch skips the call
+            current *= (power == 1.0) ? source : std::pow(source, power);
 #endif
             return;
         }

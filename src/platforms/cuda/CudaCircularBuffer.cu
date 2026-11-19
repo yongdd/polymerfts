@@ -1,30 +1,8 @@
 /**
  * @file CudaCircularBuffer.cu
- * @brief CUDA implementation of circular buffer for device memory.
+ * @brief Ring buffer of arrays in GPU device memory or in pinned host memory.
  *
- * Provides a fixed-size circular buffer storing arrays in GPU device memory.
- * Used for Anderson mixing history storage where only the most recent entries
- * are needed.
- *
- * **Memory Layout:**
- *
- * - d_elems: Array of device pointers, each pointing to an array of width T
- * - Uses cudaMalloc for device memory allocation
- * - Circular indexing avoids memory reallocation
- *
- * **Operations:**
- *
- * - insert(): Add new array, overwriting oldest if full
- * - get_array(): Retrieve array by relative index (0 = most recent)
- * - reset(): Clear buffer state without deallocating memory
- *
- * **Template Instantiations:**
- *
- * - CudaCircularBuffer<double>: Real field history
- * - CudaCircularBuffer<std::complex<double>>: Complex field history
- *
- * @see AndersonMixing for usage in field iteration
- * @see CircularBuffer for CPU equivalent
+ * See CudaCircularBuffer.h.
  */
 
 #include <algorithm>
@@ -33,22 +11,32 @@
 #include "CudaCircularBuffer.h"
 
 template<typename T>
-CudaCircularBuffer<T>::CudaCircularBuffer(int length, int width)
+CudaCircularBuffer<T>::CudaCircularBuffer(int length, int width, bool on_host)
 {
     this->length = length;
     this->width = width;
     this->start = 0;
     this->n_items = 0;
 
-    d_elems.resize(length);
-    for(int i=0; i<length; i++)
+    if (on_host)
     {
-        d_elems[i].allocate(width);
-        CUDA_CHECK(cudaMemset(d_elems[i], 0, sizeof(T)*width));
+        host_elems.resize(length);
+        for (auto& elem : host_elems)
+        {
+            elem.allocate(width);
+            std::fill_n(elem.get(), width, CuDeviceData<T>{});
+        }
+    }
+    else
+    {
+        device_elems.resize(length);
+        for (auto& elem : device_elems)
+        {
+            elem.allocate(width);
+            CUDA_CHECK(cudaMemset(elem, 0, sizeof(T)*width));
+        }
     }
 }
-template<typename T>
-CudaCircularBuffer<T>::~CudaCircularBuffer() = default;
 template<typename T>
 void CudaCircularBuffer<T>::reset()
 {
@@ -56,19 +44,19 @@ void CudaCircularBuffer<T>::reset()
     n_items = 0;
 }
 template<typename T>
-void CudaCircularBuffer<T>::insert(CuDeviceData<T>* d_new_arr)
+void CudaCircularBuffer<T>::insert(const CuDeviceData<T>* new_arr)
 {
     int i = (start+n_items)%length;
-    CUDA_CHECK(cudaMemcpy(d_elems[i], d_new_arr, sizeof(T)*width, cudaMemcpyDeviceToDevice));
+    // The direction follows from the addresses (device or host memory on either side)
+    CUDA_CHECK(cudaMemcpy(slot(i), new_arr, sizeof(T)*width, cudaMemcpyDefault));
     if (n_items == length)
         start = (start+1)%length;
-    n_items = min(n_items+1, length);
+    n_items = std::min(n_items+1, length);
 }
 template<typename T>
 CuDeviceData<T>* CudaCircularBuffer<T>::get_array(int n)
 {
-    int i = (start+n_items-n-1+length)%length;
-    return d_elems[i].get();
+    return slot((start+n_items-n-1+length)%length);
 }
 
 // Explicit template instantiation

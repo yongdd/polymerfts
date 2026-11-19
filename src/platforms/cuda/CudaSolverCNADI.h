@@ -238,7 +238,7 @@ private:
 
     int n_streams;               ///< Number of parallel streams
 
-    cudaStream_t streams[MAX_STREAMS][2];  ///< CUDA streams [kernel, memcpy]
+    cudaStream_t streams[MAX_STREAMS];  ///< CUDA stream per stream index
 
     /// @name Space group support (reduced basis)
     /// @{
@@ -350,7 +350,7 @@ public:
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
     CudaSolverCNADI(ComputationBox<double>* cb, Molecules *molecules,
-        int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+        int n_streams, cudaStream_t streams[MAX_STREAMS],
         SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees GPU resources.
@@ -360,7 +360,7 @@ public:
     void update_laplacian_operator() override;
 
     /// Update Boltzmann factors from potential fields.
-    void update_dw(std::string device, std::map<std::string, const double*> w_input) override;
+    void update_dw(const std::map<std::string, const double*>& d_w) override;
 
     /**
      * @brief Advance propagator by one contour step.
@@ -387,14 +387,15 @@ public:
      * @brief Compute stress contribution from one segment.
      *
      * @param STREAM            Stream index
-     * @param d_q_pair          Propagator product (device)
+     * @param d_q_1             Forward propagator (device)
+     * @param d_q_2             Backward propagator (device)
      * @param d_segment_stress  Output stress (device)
      * @param monomer_type      Monomer type
      * @param is_half_bond_length Ignored for CN-ADI
      */
     void compute_single_segment_stress(
         const int STREAM,
-        double *d_q_pair, double *d_segment_stress,
+        double *d_q_1, double *d_q_2, double *d_segment_stress,
         std::string monomer_type, bool is_half_bond_length) override;
 };
 #endif

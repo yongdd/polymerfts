@@ -288,7 +288,7 @@ Each direction requires solving a tridiagonal (or cyclic tridiagonal for periodi
 - Supports periodic, reflecting, and absorbing boundaries
 - CUDA parallelizes across systems, solving thousands of tridiagonal systems simultaneously
 
-The matrices do not change from step to step, because the field is split off, so the CUDA solver computes the Thomas factors of each axis once (with the Sherman-Morrison vector of periodic axes), and a solve is two sweeps over them. Each thread solves one line; the lines along the contiguous axis are first copied, a warp of them per block, into shared memory, so that their reads and writes coalesce like those of the other axes.
+The matrices do not change from step to step, because the field is split off, so both solvers compute the Thomas factors of each axis once (with the Sherman-Morrison vector of periodic axes), and a solve is two sweeps over them. On CUDA each thread solves one line; the lines along the contiguous axis are first copied, a warp of them per block, into shared memory, so that their reads and writes coalesce like those of the other axes. The CPU solver solves the lines of a plane together, with the lines innermost: it forms the right-hand side of a plane spanned by the sweep axis and the contiguous axis (for the contiguous axis itself, by it and the axis before it, stored transposed) and sweeps over all its lines at once.
 
 ### 4.3 RS (Real-Space Bond Convolution)
 

@@ -13,19 +13,11 @@
 #include <cstdint>
 #include <algorithm>
 #include <stdexcept>
-#include <tuple>
-#include <utility>
+#include "AlignedScratch.h"
 #include "FftwFFT.h"
 
 namespace
 {
-/// FFTW's new-array execute functions take arrays of the alignment of the planning
-/// arrays; those came from fftw_malloc, for which fftw_alignment_of() is 0.
-bool has_plan_alignment(const void* p)
-{
-    return fftw_alignment_of(static_cast<double*>(const_cast<void*>(p))) == 0;
-}
-
 bool overlap(const void* a, std::size_t a_bytes, const void* b, std::size_t b_bytes)
 {
     const auto x = reinterpret_cast<std::uintptr_t>(a);
@@ -33,20 +25,10 @@ bool overlap(const void* a, std::size_t a_bytes, const void* b, std::size_t b_by
     return x < y + b_bytes && y < x + a_bytes;
 }
 
-/// Thread-local scratch for a field and its modes of the periodic transforms, each
-/// from a 64-byte boundary, which has the alignment of fftw_malloc as well
-std::pair<double*, double*> thread_scratch(std::size_t field_doubles, std::size_t mode_doubles)
-{
-    constexpr std::size_t line = 64 / sizeof(double);
-    const std::size_t field = (field_doubles + line - 1) / line * line;
-    const std::size_t size = field + mode_doubles + line;
-    thread_local std::vector<double> scratch;
-    if (scratch.size() < size)
-        scratch.resize(size);
-    const auto address = reinterpret_cast<std::uintptr_t>(scratch.data());
-    double* base = scratch.data() + (64 - address % 64) % 64 / sizeof(double);
-    return {base, base + field};
-}
+/// Thread-local scratch of the periodic transforms for a field and for its modes, each
+/// taken only by a call that copies that array (see the class description)
+thread_local AlignedScratch field_scratch;
+thread_local AlignedScratch modes_scratch;
 }  // namespace
 
 //------------------------------------------------------------------------------
@@ -222,20 +204,17 @@ void FftwFFT<T, DIM>::periodic_forward(const T* field, std::complex<double>* mod
 
     // The forward plans keep their input: it is copied only when FFTW cannot run
     // on it or when it overlaps the output
-    const bool field_direct = has_plan_alignment(field) && !overlap(field, field_bytes, modes, modes_bytes);
-    const bool modes_direct = has_plan_alignment(modes);
-    double* field_scratch = nullptr;
-    double* modes_scratch = nullptr;
-    if (!field_direct || !modes_direct)
-        std::tie(field_scratch, modes_scratch) = thread_scratch(doubles_per_point * total_grid_, 2 * static_cast<std::size_t>(total_complex_grid_));
+    const bool field_direct = has_fftw_plan_alignment(field) && !overlap(field, field_bytes, modes, modes_bytes);
+    const bool modes_direct = has_fftw_plan_alignment(modes);
 
     T* in = const_cast<T*>(field);
     if (!field_direct)
     {
-        in = reinterpret_cast<T*>(field_scratch);
+        in = reinterpret_cast<T*>(field_scratch.get(doubles_per_point * total_grid_));
         std::copy_n(field, total_grid_, in);
     }
-    std::complex<double>* out = modes_direct ? modes : reinterpret_cast<std::complex<double>*>(modes_scratch);
+    std::complex<double>* out = modes_direct ? modes
+        : reinterpret_cast<std::complex<double>*>(modes_scratch.get(2 * static_cast<std::size_t>(total_complex_grid_)));
 
     if constexpr (std::is_same<T, double>::value)
         fftw_execute_dft_r2c(plan_forward_, in, reinterpret_cast<fftw_complex*>(out));
@@ -247,7 +226,8 @@ void FftwFFT<T, DIM>::periodic_forward(const T* field, std::complex<double>* mod
 }
 
 template <typename T, int DIM>
-void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* field) const
+void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const double* k_factor, T* field,
+                                        const T* r_factor, bool keep_modes) const
 {
     constexpr bool real_field = std::is_same<T, double>::value;
     constexpr std::size_t doubles_per_point = sizeof(T) / sizeof(double);
@@ -255,48 +235,42 @@ void FftwFFT<T, DIM>::periodic_backward(const std::complex<double>* modes, T* fi
     const std::size_t modes_bytes = sizeof(std::complex<double>) * total_complex_grid_;
     const double scale = 1.0 / static_cast<double>(total_grid_);
 
-    // The complex-to-real transform overwrites its input, which therefore always
-    // goes through the scratch; the complex-to-complex transform keeps its input
-    const bool modes_direct = !real_field && has_plan_alignment(modes) && !overlap(modes, modes_bytes, field, field_bytes);
-    const bool field_direct = has_plan_alignment(field);
-    double* field_scratch = nullptr;
-    double* modes_scratch = nullptr;
-    if (!modes_direct || !field_direct)
-        std::tie(field_scratch, modes_scratch) = thread_scratch(doubles_per_point * total_grid_, 2 * static_cast<std::size_t>(total_complex_grid_));
+    // The complex-to-real transform overwrites its input, which therefore goes through
+    // the scratch unless the caller gives it up; the complex-to-complex transform keeps
+    // its input. A k_factor is multiplied into the scratch.
+    const bool may_run_on_modes = (!real_field || !keep_modes) && k_factor == nullptr;
+    const bool modes_direct = may_run_on_modes && has_fftw_plan_alignment(modes) && !overlap(modes, modes_bytes, field, field_bytes);
+    const bool field_direct = has_fftw_plan_alignment(field);
 
-    std::complex<double>* in = const_cast<std::complex<double>*>(modes);
+    std::complex<double>* in = modes;
     if (!modes_direct)
     {
-        in = reinterpret_cast<std::complex<double>*>(modes_scratch);
-        std::copy_n(modes, total_complex_grid_, in);
+        in = reinterpret_cast<std::complex<double>*>(modes_scratch.get(2 * static_cast<std::size_t>(total_complex_grid_)));
+        if (k_factor != nullptr)
+            for (int i = 0; i < total_complex_grid_; ++i)
+                in[i] = modes[i] * k_factor[i];
+        else
+            std::copy_n(modes, total_complex_grid_, in);
     }
-    T* out = field_direct ? field : reinterpret_cast<T*>(field_scratch);
+    T* out = field_direct ? field : reinterpret_cast<T*>(field_scratch.get(doubles_per_point * total_grid_));
 
     if constexpr (real_field)
         fftw_execute_dft_c2r(plan_backward_, reinterpret_cast<fftw_complex*>(in), out);
     else
         fftw_execute_dft(plan_backward_, reinterpret_cast<fftw_complex*>(in), reinterpret_cast<fftw_complex*>(out));
 
-    // The 1/N of the FFT<T> interface (in place when FFTW wrote into the field)
-    for (int i = 0; i < total_grid_; ++i)
-        field[i] = out[i] * scale;
+    // The 1/N of the FFT<T> interface and r_factor (in place when FFTW wrote into the field)
+    if (r_factor != nullptr)
+        for (int i = 0; i < total_grid_; ++i)
+            field[i] = out[i] * scale * r_factor[i];
+    else
+        for (int i = 0; i < total_grid_; ++i)
+            field[i] = out[i] * scale;
 }
 
 //------------------------------------------------------------------------------
-// FFT<T> interface: complex coefficients, or the same as interleaved doubles
+// FFT<T> interface: the complex coefficients as interleaved doubles
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::forward(T *rdata, std::complex<double> *cdata)
-{
-    periodic_forward(rdata, cdata);
-}
-
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::backward(std::complex<double> *cdata, T *rdata)
-{
-    periodic_backward(cdata, rdata);
-}
-
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
 {
@@ -306,7 +280,13 @@ void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
 template <typename T, int DIM>
 void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
 {
-    periodic_backward(reinterpret_cast<const std::complex<double>*>(cdata), rdata);
+    periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), nullptr, rdata, nullptr, true);
+}
+
+template <typename T, int DIM>
+void FftwFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
+{
+    periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), k_factor, rdata, r_factor, false);
 }
 
 // Explicit template instantiations

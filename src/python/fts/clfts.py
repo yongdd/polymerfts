@@ -49,10 +49,6 @@ from ..utils.checkpoint import (
     restore_extensions,
 )
 
-# OpenMP environment variables
-os.environ.setdefault("OMP_NUM_THREADS", "1")  # respect user override
-os.environ.setdefault("OMP_STACKSIZE", "1G")
-
 
 class CLFTS:
     """Complex Langevin field-theoretic simulation.
@@ -87,6 +83,10 @@ class CLFTS:
     >>> sim = CLFTS(params)
     >>> sim.run(initial_fields={"A": w_A, "B": w_B})
     """
+
+    # run() draws the chain architectures into the recording directory unless this is False (on the
+    # object, or on the class for every simulation built afterwards)
+    draw_architectures = True
 
     @classmethod
     def from_file(cls, path, random_seed=None, *, integrator=None, callbacks=None, **overrides):
@@ -201,9 +201,6 @@ class CLFTS:
         initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks)
         self._prepare_integrator()
         self.run_status = {"status": "initialized", "last_completed_step": 0}
-        # run() draws the chain architectures into the recording directory; a driver that runs the
-        # same chains again (gibbs_ensemble.py) sets this to False after the first run
-        self.draw_architectures = True
         # The state of the integrator and the callbacks after the setup, which a fresh run restores: a
         # stateful integrator may hold the response that _prepare_integrator gave it
         self._initial_extension_state = extension_state(self)
@@ -334,7 +331,7 @@ class CLFTS:
             raise NumericalError("Non-finite intermediate CLFTS force", self.mpt.to_monomer_fields_dict(fields[:M]))
         return force
 
-    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):
+    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux, record):
         """Save CL-FTS simulation checkpoint data to MATLAB file.
 
         Parameters
@@ -349,9 +346,13 @@ class CLFTS:
             Current Langevin step number.
         normal_noise_prev : numpy.ndarray
             Previous noise array for Leimkuhler-Matthews integration.
+        w_aux : numpy.ndarray
+            The auxiliary fields of w.
+        record : RunRecord
+            The measurements of the run since its last statistics file.
         """
         # Make dictionary for data
-        mdic = fields_data(self, w, langevin_step, normal_noise_prev, w_aux)
+        mdic = fields_data(self, w_aux, langevin_step, normal_noise_prev, record)
         mdic["zeta_n"] = self.zeta_n
 
         # Add w fields to the dictionary (complex values)
@@ -581,7 +582,7 @@ class CLFTS:
                 if self.thermodynamics.record_number_densities:
                     record.add("number_density_history", self.thermodynamics.number_densities(total_partitions))
                 if self.thermodynamics.record_pressure:
-                    record.add("pressure_history", self.thermodynamics.pressure_virial(w_aux, phi))
+                    record.add("pressure_history", self.thermodynamics.pressure_virial(w_aux, phi, h_deriv, charge_density))
                 self.structure_functions.add(w_aux, phi, record.sums)
 
             # Statistics files: H and dH/dχN, then S(k) and the mean concentrations
@@ -601,11 +602,11 @@ class CLFTS:
 
             # Save simulation data
             if langevin_step % self.recording["checkpoint_interval"] == 0:
-                self._recording_state = record
                 w = self.mpt.to_monomer_fields(w_aux)
                 self.save_simulation_data(
                     path=os.path.join(self.recording["dir"], "fields_%06d.mat" % langevin_step),
-                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux
+                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux,
+                    record=record
                 )
 
         # Estimate execution time

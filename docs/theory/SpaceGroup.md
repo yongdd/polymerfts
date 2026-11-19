@@ -274,11 +274,10 @@ translation requires the grid to be divisible by 4).
 | `to_reduced_basis(fields)` | Convert full fields to the active reduced basis: the irreducible orbits, or the physical sub-grid once a physical basis is enabled |
 | `from_reduced_basis(reduced)` | Reconstruct full fields from the active reduced basis |
 | `symmetrize(fields)` | Average full-grid fields over the full space-group orbits, whichever basis is active |
-| `symmetrize_reduced_basis(reduced)` | Average a reduced-basis field in place over the full space-group orbits (a physical basis can hold several representatives of one orbit) |
 | `reduced_to_irreducible(reduced)` | Map a reduced-basis (physical sub-grid) field to the irreducible-orbit representation |
-| `irreducible_to_reduced(irreducible)` | Map an irreducible-orbit field back to the reduced (physical) basis |
+| `irreducible_to_reduced(irreducible)` | Map an irreducible-orbit field back to the reduced (physical) basis; after `reduced_to_irreducible`, the reduced-basis field averaged over the full space-group orbits (a physical basis can hold several representatives of one orbit) |
 
-The conversions accept one field (1-D) or several (`(n_fields, n_in)`) and keep that layout: a 1-D input gives a 1-D output, a 2-D input an `(n_fields, n_out)` array; `symmetrize` returns the shape of its input and `symmetrize_reduced_basis` works in place (C-contiguous float64 array).
+The conversions accept one field (1-D) or several (`(n_fields, n_in)`) and keep that layout: a 1-D input gives a 1-D output, a 2-D input an `(n_fields, n_out)` array; `symmetrize` returns the shape of its input.
 
 `PropagatorSolver.integral`, `mean`, `inner_product`, `multi_inner_product` and
 `zero_mean` take fields in the active reduced basis by default, matching

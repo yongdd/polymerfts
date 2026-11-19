@@ -1,9 +1,5 @@
 import os
 import sys
-import numpy as np
-import json
-import scipy.io
-from scipy.ndimage import gaussian_filter
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -11,23 +7,25 @@ os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
 
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
+
 # Major Simulation params
 f = 0.4       # A-fraction of major BCP chain, f
 
-# Open and read the JSON file
-input_data = scipy.io.loadmat("SD.mat", squeeze_me=True)
-print(input_data["nx"])
-print(input_data["lx"])
+# Initial fields and cell: a converged single diamond (SD.mat), interpolated to the grid nx
+nx = [48, 48, 48]
+seed = seeds.from_file("SD.mat", nx)
 
 params = {
-    "nx":[48,48,48],            # Simulation grid numbers
-    "lx":input_data["lx"],      # Simulation box size as a_Ref * N_Ref^(1/2) unit,
+    "nx":nx,                    # Simulation grid numbers
+    "lx":seed["lx"],            # Simulation box size as a_Ref * N_Ref^(1/2) unit,
                                 # where "a_Ref" is reference statistical segment length
                                 # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)          # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
     "chain_model":"continuous",      # "discrete" or "continuous" chain model
     "ds":1/100,                      # Contour step interval, which is equal to 1/N_Ref.
 
@@ -63,29 +61,18 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-w_A = input_data["w_A"]
-w_B = input_data["w_B"]
-
-# Interpolate input data on params["nx"], if necessary
-w_A = scipy.ndimage.zoom(np.reshape(w_A, input_data["nx"]), params["nx"]/input_data["nx"])
-w_B = scipy.ndimage.zoom(np.reshape(w_B, input_data["nx"]), params["nx"]/input_data["nx"])
-
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("SD.json")
 
 # Recording first a few iteration results for debugging and refactoring
-#        1    9.816E-16  [ 4.4333124E+00  ]    -0.200042528   2.2760344E-02  lx=[  2.5748822, 2.5748822, 2.5748822 ]
-#        2    1.158E-15  [ 4.4483620E+00  ]    -0.199546774   2.1167593E-02  lx=[  2.5745912, 2.5745912, 2.5745912 ]
-#        3    1.175E-15  [ 4.4625226E+00  ]    -0.199063246   1.9679688E-02  lx=[  2.5743199, 2.5743199, 2.5743199 ]
-#        4   -1.099E-15  [ 4.4758242E+00  ]    -0.198594343   1.8295310E-02  lx=[  2.5740682, 2.5740682, 2.5740682 ]
-#        5    3.332E-15  [ 4.4882987E+00  ]    -0.198142212   1.7012003E-02  lx=[  2.5738357, 2.5738357, 2.5738357 ]
+#        1    6.415E-15  [ 4.4570194E+00  ]    -0.200266460   2.0852423E-02  lx=[  2.5748822, 2.5748822, 2.5748822 ]
+#        2   -2.582E-15  [ 4.4712041E+00  ]    -0.199743841   1.9356685E-02  lx=[  2.5746150, 2.5746150, 2.5746150 ]
+#        3   -1.367E-14  [ 4.4845256E+00  ]    -0.199233780   1.7955758E-02  lx=[  2.5743657, 2.5743657, 2.5743657 ]
+#        4   -2.025E-15  [ 4.4970116E+00  ]    -0.198738755   1.6650586E-02  lx=[  2.5741341, 2.5741341, 2.5741341 ]
+#        5   -7.950E-15  [ 4.5086922E+00  ]    -0.198261007   1.5440848E-02  lx=[  2.5739201, 2.5739201, 2.5739201 ]

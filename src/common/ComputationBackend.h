@@ -129,8 +129,8 @@ public:
     /// Recompute the diffusion (or bond) operator after the box changed.
     virtual void update_laplacian_operator() = 0;
 
-    /// Recompute the Boltzmann factors from the host fields w_input.
-    virtual void update_dw(std::map<std::string, const T*> w_input) = 0;
+    /// Recompute the Boltzmann factors from the fields w (the backend arrays set_fields filled).
+    virtual void update_dw(const std::map<std::string, BackendArray<T>*>& w) = 0;
 
     virtual void set_force_off_diagonal_stress(bool force) = 0;
 
@@ -201,10 +201,11 @@ public:
                                       const std::vector<SegmentPair<T>>& pairs) = 0;
 
     /**
-     * @brief Normalize a block concentration: phi = norm * phi / divisor.
-     * @param divisor Field to divide by before the normalization, or nullptr.
+     * @brief Discrete chains: phi = phi / exp(-w ds), the bead factor that both
+     *        propagators of a segment product carry; zero where the mask is zero.
+     * @param boltzmann_factor exp(-w ds) of the block's monomer type (boltzmann_factor())
      */
-    virtual void normalize_concentration(int stream, BackendArray<T>* phi, T norm, BackendArray<T>* divisor) = 0;
+    virtual void divide_by_boltzmann_factor(int stream, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor) = 0;
 
     /**
      * @brief Build what block_stress() needs before the blocks run in parallel

@@ -27,7 +27,7 @@
  *       reference statistical segment length and N_Ref is the reference
  *       polymerization index.
  *
- * @see CpuComputationBox, CudaComputationBox for platform-specific implementations
+ * @see CudaComputationBox for the device versions of the CUDA platform
  *
  * @example
  * @code
@@ -81,9 +81,11 @@ inline bool angle_is_fixed_at(double degrees, double radians)
  * @enum BoundaryCondition
  * @brief Types of boundary conditions supported by the simulation.
  *
- * Different solvers support different boundary conditions:
- * - Pseudo-spectral method: Only PERIODIC is supported
- * - Real-space method: All three types are supported
+ * One condition per face; a periodic face needs a periodic opposite face, and walls
+ * need an orthogonal cell. The pseudo-spectral methods take the same condition on
+ * both faces of a direction and every direction periodic (FFT) or none (DCT/DST:
+ * reflecting and absorbing directions may coexist); the real-space methods
+ * (cn-adi2, rs) also mix periodic and non-periodic directions.
  */
 enum class BoundaryCondition
 {
@@ -120,8 +122,8 @@ enum class BoundaryCondition
  * - Length unit: a_Ref * N_Ref^(1/2)
  * - Volume unit: (a_Ref * N_Ref^(1/2))^dim
  *
- * @note This is a base class. Use CpuComputationBox or CudaComputationBox
- *       for actual computations.
+ * @note The CPU platforms use this class directly; CudaComputationBox adds the
+ *       device versions of its operations.
  */
 template <typename T>
 class ComputationBox
@@ -163,17 +165,6 @@ protected:
      * - c = (c_x, c_y, c_z) computed from angles
      */
     std::array<double, 9> lattice_vec_;
-
-    /**
-     * @brief 3x3 reciprocal lattice vector matrix in column-major order.
-     *
-     * Stores [a*|b*|c*] where:
-     * - a* = (b × c) / V
-     * - b* = (c × a) / V
-     * - c* = (a × b) / V
-     * and V = a · (b × c) is the cell volume.
-     */
-    std::array<double, 9> recip_vec_;
 
     /**
      * @brief Symmetric reciprocal metric tensor (6 components).
@@ -474,12 +465,6 @@ public:
      * @return Array [a_x, a_y, a_z, b_x, b_y, b_z, c_x, c_y, c_z] (column-major)
      */
     const std::array<double, 9>& get_lattice_vec() const;
-
-    /**
-     * @brief Get reciprocal lattice vectors (3x3 matrix).
-     * @return Array [a*_x, a*_y, a*_z, b*_x, b*_y, b*_z, c*_x, c*_y, c*_z] (column-major)
-     */
-    const std::array<double, 9>& get_recip_vec() const;
 
     /**
      * @brief Get reciprocal metric tensor.

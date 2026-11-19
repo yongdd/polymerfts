@@ -2,8 +2,8 @@
  * The result of a CPU transform must not depend on where the caller's arrays
  * lie in memory. The full- and reduced-memory computations hand different
  * arrays to the same transform (stored propagators against recomputed ones,
- * and the stress transforms write into arrays allocated per call), and they
- * must agree bit for bit on the same backend.
+ * and the work arrays of whichever thread runs a propagator or stress term),
+ * and they must agree bit for bit on the same backend.
  *
  * The periodic transforms run on the caller's arrays: MklFFT passes them to
  * DftiCompute, and MKL may pick a code path by their alignment; FftwFFT runs its
@@ -18,13 +18,26 @@
  * Each periodic transform runs from and into arrays placed 0, 16, 32 and 48
  * bytes after a 64-byte boundary (the placements of heap arrays), and for FFTW
  * also 8, 24, 40 and 56 bytes after it, for real and complex fields on even and
- * odd grids, through the real-coefficient and the complex-coefficient interface.
+ * odd grids.
  * Every placement must give the values of the first one, and the input must stay
  * unchanged. A failure prints which placements of the input (rows) and the
  * output (columns) give which result. FftwFFT must also give these values when
  * its input and output overlap. MKL runs one thread inside each transform, as
- * MklFactory sets it for the solvers. A build without either library skips its
+ * CpuFactory sets it for the solvers. A build without either library skips its
  * part, and a build without both skips the test.
+ *
+ * The backward transform with factors, backward_with_factors(cdata, k_factor,
+ * rdata, r_factor), may overwrite its input: at every placement it must give the
+ * values of separate loops around backward() bit for bit, and without factors
+ * (the caller gives the coefficients up, and FFTW may run on them) the values
+ * of backward().
+ *
+ * The CrysFFT engines (recursive 3m and ObliqueZ of either library) run their
+ * transforms on the caller's fields as well, MKL always and FFTW when the
+ * fields have the alignment of the planning arrays; their per-thread scratch
+ * starts on a 64-byte boundary. Their diffusion, and the stress multiplier of
+ * the 3m engines, must give one result for every placement, keep the input
+ * and give it in place too.
  ******************************************************************************/
 
 #include <algorithm>
@@ -40,12 +53,20 @@
 #include <utility>
 #include <vector>
 
+#include <memory>
+#include <numbers>
+
 #include "ComputationBox.h"
+#include "CpuCrysFFT.h"
 #ifdef USE_CPU_MKL
 #include "MklFFT.h"
+#include "MklCrysFFTRecursive3m.h"
+#include "MklCrysFFTObliqueZ.h"
 #endif
 #ifdef USE_CPU_FFTW
 #include "FftwFFT.h"
+#include "FftwCrysFFTRecursive3m.h"
+#include "FftwCrysFFTObliqueZ.h"
 #endif
 
 #if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
@@ -226,12 +247,6 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
         [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); }), fftw);
     ok &= report(label + " backward", run_placements(offsets, coeff, n_field,
         [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); }), fftw);
-    ok &= report(label + " forward, complex interface", run_placements(offsets, field, n_coeff,
-        [&](double* in, double* out)
-        { fft.forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }), fftw);
-    ok &= report(label + " backward, complex interface", run_placements(offsets, coeff, n_field,
-        [&](double* in, double* out)
-        { fft.backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }), fftw);
     if (fftw)
     {
         ok &= report_in_place(label + " forward", field, coeff,
@@ -239,6 +254,102 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
         ok &= report_in_place(label + " backward", coeff, back,
             [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); });
     }
+
+    // The backward transform with a factor per coefficient and one per grid point: the values of
+    // separate loops around backward(); without factors, those of backward()
+    const int n_k = n_coeff / 2;
+    std::vector<double> k_factor(n_k), r_factor(n_field);
+    for (int i = 0; i < n_k; i++)
+        k_factor[i] = std::exp(-0.37 * (i % 11));
+    for (double& v : r_factor)
+        v = std::exp(0.1 * normal(rng));
+    std::vector<double> separate = coeff, expected(n_field);
+    std::complex<double>* separate_modes = reinterpret_cast<std::complex<double>*>(separate.data());
+    for (int i = 0; i < n_k; i++)
+        separate_modes[i] *= k_factor[i];
+    fft.backward(separate.data(), reinterpret_cast<T*>(expected.data()));
+    T* expected_field = reinterpret_cast<T*>(expected.data());
+    const T* r_field = reinterpret_cast<const T*>(r_factor.data());
+    for (int i = 0; i < n_grid; i++)
+        expected_field[i] *= r_field[i];
+    auto equals = [](const std::vector<double>& a, const double* b) {
+        for (size_t k = 0; k < a.size(); k++)
+            if (a[k] != b[k])
+                return false;
+        return true;
+    };
+    bool fused_ok = true;
+    const Placements fused = run_placements(offsets, coeff, n_field, [&](double* in, double* out) {
+        fft.backward_with_factors(in, k_factor.data(), reinterpret_cast<T*>(out), r_field);
+        fused_ok = fused_ok && equals(expected, out);
+    });
+    ok &= report(label + " backward with factors", fused, false);
+    std::cout << (fused_ok ? "    [PASS] " : "    [FAIL] ") << label
+              << " backward with factors: the values of separate loops" << std::endl;
+    ok &= fused_ok;
+    bool given_up_ok = true;
+    const Placements given_up = run_placements(offsets, coeff, n_field, [&](double* in, double* out) {
+        fft.backward_with_factors(in, nullptr, reinterpret_cast<T*>(out), nullptr);
+        given_up_ok = given_up_ok && equals(back, out);
+    });
+    ok &= report(label + " backward, coefficients given up", given_up, false);
+    std::cout << (given_up_ok ? "    [PASS] " : "    [FAIL] ") << label
+              << " backward, coefficients given up: the values of backward()" << std::endl;
+    ok &= given_up_ok;
+    return ok;
+}
+
+// A CrysFFT engine on its physical grid: diffusion, and the stress multiplier when it has one
+bool check_crysfft(const std::string& label, const CpuCrysFFT& engine, const std::array<double, 6>& cell, bool fftw)
+{
+    const std::vector<int> offsets = fftw ? std::vector<int>{0, 8, 16, 24, 32, 40, 48, 56}
+                                          : std::vector<int>{0, 16, 32, 48};
+    const int M = engine.get_M_physical();
+    std::mt19937 rng(4321 + M);
+    std::normal_distribution<double> normal(0.0, 5.0);
+    std::vector<double> field(M);
+    for (double& v : field)
+        v = normal(rng);
+
+    std::vector<double> boltzmann, multiplier;
+    engine.build_boltzmann(boltzmann, cell, 0.011);
+    std::vector<double> diffused(M);
+    engine.diffusion(field.data(), diffused.data(), boltzmann);
+
+    bool ok = report(label + " diffusion", run_placements(offsets, field, M,
+        [&](double* in, double* out) { engine.diffusion(in, out, boltzmann); }), true);
+    // In place: FFTW also 8 bytes off (the copy); MKL at the address of a heap array
+    std::vector<double> in_place = field;
+    engine.diffusion(in_place.data(), in_place.data(), boltzmann);
+    bool in_place_ok = in_place == diffused;
+    if (fftw)
+        in_place_ok &= report_in_place(label + " diffusion", field, diffused,
+            [&](double* in, double* out) { engine.diffusion(in, out, boltzmann); });
+    else
+        std::cout << (in_place_ok ? "    [PASS] " : "    [FAIL] ") << label << " diffusion: in place" << std::endl;
+    ok &= in_place_ok;
+    if (engine.has_multipliers())
+    {
+        engine.build_multiplier(multiplier, cell, 3, 0.011);
+        ok &= report(label + " stress multiplier", run_placements(offsets, field, M,
+            [&](double* in, double* out) { engine.apply_multiplier(in, out, multiplier); }), true);
+    }
+    return ok;
+}
+
+// The engines of one library on the grids of TestCpuCrysFFTTables, with an odd physical grid for 3m
+template <typename Recursive3m, typename ObliqueZ>
+bool check_crysfft_engines(const std::string& library)
+{
+    const double right = std::numbers::pi / 2.0;
+    const std::array<double, 6> orthorhombic = {2.0, 1.7, 1.5, right, right, right};
+    const std::array<double, 6> hexagonal = {4.0, 4.0, 3.0, right, right, 2.0 * std::numbers::pi / 3.0};
+    const bool fftw = library == "fftw";
+    bool ok = true;
+    ok &= check_crysfft(library + " 3m 16x12x8", Recursive3m({16, 12, 8}), orthorhombic, fftw);
+    ok &= check_crysfft(library + " 3m 10x10x10", Recursive3m({10, 10, 10}), orthorhombic, fftw);
+    ok &= check_crysfft(library + " ObliqueZ 12x12x8", ObliqueZ({12, 12, 8}), hexagonal, fftw);
+    ok &= check_crysfft(library + " ObliqueZ 9x9x6", ObliqueZ({9, 9, 6}), hexagonal, fftw);
     return ok;
 }
 
@@ -272,17 +383,21 @@ int main()
     {
         bool ok = true;
 #ifdef USE_CPU_MKL
-        mkl_set_num_threads(1);  // As MklFactory does: no threading inside a transform
+        mkl_set_num_threads(1);  // As CpuFactory does: no threading inside a transform
         std::cout << "Periodic MKL transforms from and into arrays 0, 16, 32 and 48 bytes after a 64-byte boundary"
                   << std::endl;
         ok &= check_type<MklFFT, double>("mkl");
         ok &= check_type<MklFFT, std::complex<double>>("mkl");
+        std::cout << "MKL CrysFFT engines from and into the same placements" << std::endl;
+        ok &= check_crysfft_engines<MklCrysFFTRecursive3m, MklCrysFFTObliqueZ>("mkl");
 #endif
 #ifdef USE_CPU_FFTW
         std::cout << "Periodic FFTW transforms from and into arrays 0, 8, ..., 56 bytes after a 64-byte boundary"
                   << std::endl;
         ok &= check_type<FftwFFT, double>("fftw");
         ok &= check_type<FftwFFT, std::complex<double>>("fftw");
+        std::cout << "FFTW CrysFFT engines from and into the same placements" << std::endl;
+        ok &= check_crysfft_engines<FftwCrysFFTRecursive3m, FftwCrysFFTObliqueZ>("fftw");
 #endif
         std::cout << (ok ? "All placements give the same result" : "Some placements give different results")
                   << std::endl;

@@ -53,13 +53,7 @@
 #include "PropagatorComputationOptimizer.h"
 #include "TestComputationFactory.h"
 
-#ifdef USE_CPU_FFTW
-#include "CpuComputationBox.h"
-#endif
-
-#ifdef USE_CPU_MKL
-#include "CpuComputationBox.h"
-#endif
+#include "ComputationBox.h"
 
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
@@ -357,13 +351,13 @@ int main()
             std::vector<double> lx = {4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
                 all_passed = false;
             #endif
@@ -385,13 +379,13 @@ int main()
             std::vector<double> lx = {4.0, 4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
                 all_passed = false;
             #endif
@@ -413,13 +407,13 @@ int main()
             std::vector<double> lx = {4.0, 4.0, 4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_physical_test<CpuComputationBox>(
+            if (!run_physical_test<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
                 all_passed = false;
             #endif
@@ -452,13 +446,13 @@ int main()
             std::vector<double> lx = {4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
                 all_passed = false;
             #endif
@@ -480,13 +474,13 @@ int main()
             std::vector<double> lx = {4.0, 4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
                 all_passed = false;
             #endif
@@ -508,13 +502,13 @@ int main()
             std::vector<double> lx = {4.0, 4.0, 4.0};
 
             #ifdef USE_CPU_FFTW
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
                 all_passed = false;
             #endif
 
             #ifdef USE_CPU_MKL
-            if (!run_comparison<CpuComputationBox>(
+            if (!run_comparison<ComputationBox>(
                     "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
                 all_passed = false;
             #endif

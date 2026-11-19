@@ -53,12 +53,7 @@
 #include "Molecules.h"
 #include "Polymer.h"
 #include "TestComputationFactory.h"
-#ifdef USE_CPU_FFTW
-#include "CpuComputationBox.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "CpuComputationBox.h"
-#endif
+#include "ComputationBox.h"
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
 #include <cuda_runtime.h>
@@ -174,13 +169,13 @@ int main()
 
         #ifdef USE_CPU_FFTW
         solver_name_list.push_back("cpu-fftw");
-        cb_list.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list.push_back(make_propagator_computation<double>("cpu-fftw", false, cb_list.back(), molecules, propagator_computation_optimizer, "rqm4"));
         #endif
 
         #ifdef USE_CPU_MKL
         solver_name_list.push_back("cpu-mkl");
-        cb_list.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list.push_back(make_propagator_computation<double>("cpu-mkl", false, cb_list.back(), molecules, propagator_computation_optimizer, "rqm4"));
         #endif
 
@@ -350,13 +345,13 @@ int main()
 
         #ifdef USE_CPU_FFTW
         solver_name_list_star.push_back("cpu-fftw");
-        cb_list_star.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_star.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_star.push_back(make_propagator_computation<double>("cpu-fftw", false, cb_list_star.back(), molecules_star, optimizer_star, "rqm4"));
         #endif
 
         #ifdef USE_CPU_MKL
         solver_name_list_star.push_back("cpu-mkl");
-        cb_list_star.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_star.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_star.push_back(make_propagator_computation<double>("cpu-mkl", false, cb_list_star.back(), molecules_star, optimizer_star, "rqm4"));
         #endif
 
@@ -536,13 +531,13 @@ int main()
 
         #ifdef USE_CPU_FFTW
         solver_name_list_homo.push_back("cpu-fftw");
-        cb_list_homo.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_homo.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_homo.push_back(make_propagator_computation<double>("cpu-fftw", false, cb_list_homo.back(), molecules_homo, optimizer_homo, "rqm4"));
         #endif
 
         #ifdef USE_CPU_MKL
         solver_name_list_homo.push_back("cpu-mkl");
-        cb_list_homo.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_homo.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_homo.push_back(make_propagator_computation<double>("cpu-mkl", false, cb_list_homo.back(), molecules_homo, optimizer_homo, "rqm4"));
         #endif
 
@@ -739,10 +734,10 @@ int main()
         solver_name_list_brush.push_back("cpu-fftw, aggregated");
         solver_name_list_brush.push_back("cpu-fftw, reduce_memory");
         solver_name_list_brush.push_back("cpu-fftw, reduce_memory, aggregated");
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-fftw", false, cb_list_brush.end()[-4], molecules_brush, optimizer_brush, "rqm4"));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-fftw", false, cb_list_brush.end()[-3], molecules_brush, optimizer_brush_agg, "rqm4"));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-fftw", true, cb_list_brush.end()[-2], molecules_brush, optimizer_brush, "rqm4"));
@@ -754,10 +749,10 @@ int main()
         solver_name_list_brush.push_back("cpu-mkl, aggregated");
         solver_name_list_brush.push_back("cpu-mkl, reduce_memory");
         solver_name_list_brush.push_back("cpu-mkl, reduce_memory, aggregated");
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
-        cb_list_brush.push_back(new CpuComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
+        cb_list_brush.push_back(new ComputationBox<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-mkl", false, cb_list_brush.end()[-4], molecules_brush, optimizer_brush, "rqm4"));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-mkl", false, cb_list_brush.end()[-3], molecules_brush, optimizer_brush_agg, "rqm4"));
         solver_list_brush.push_back(make_propagator_computation<double>("cpu-mkl", true, cb_list_brush.end()[-2], molecules_brush, optimizer_brush, "rqm4"));

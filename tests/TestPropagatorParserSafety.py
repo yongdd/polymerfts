@@ -7,8 +7,8 @@ import sys
 CHILD = r'''
 from polymerfts import PropagatorComputationOptimizer as Optimizer
 
-# Include errors after a semicolon: finding the format must not stop validation.
-bad = (")", "]A+0", "(A1))B+0", "(A1]B+0", "[A1)B+0", "(A1B+0",
+# Unbalanced brackets and labels anywhere in the key, also after other characters
+bad =(")", "]A+0", "(A1))B+0", "(A1]B+0", "[A1)B+0", "(A1B+0",
        "[A+0;1))B+0", "[A+0;1", "[A+0;1]B+0]", "{G1", "}A+0",
        "({G1}A1", "({G1A1)B+0")
 for key in bad:
@@ -24,7 +24,7 @@ good = {
     "(A1)B+0": [("A", 1, 1.0)],
     "(A1B2:2.5)C+0": [("A", 1, 1.0), ("B", 2, 2.5)],
     "({G12}A1B2)C+0": [("{G12}A", 1, 1.0), ("B", 2, 1.0)],
-    "[{G12}A+0;1:2.5,B+1;2]C+0": [("{G12}A+0", 1, 2.5), ("B+1", 2, 1.0)],
+    "[{G12}A1:2.5,B2]C+0": [("{G12}A", 1, 2.5), ("B", 2, 1.0)],
     "((A1B2)C3D4)E+0": [("(A1B2)C", 3, 1.0), ("D", 4, 1.0)],
 }
 for key, expected in good.items():

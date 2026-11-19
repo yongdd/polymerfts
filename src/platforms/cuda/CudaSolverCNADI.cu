@@ -55,7 +55,7 @@ CudaSolverCNADI::CudaSolverCNADI(
     ComputationBox<double>* cb,
     Molecules *molecules,
     int n_streams,
-    cudaStream_t streams[MAX_STREAMS][2],
+    cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group,
     const int* d_reduced_basis_indices,
     const int* d_full_to_reduced_map)
@@ -97,8 +97,7 @@ CudaSolverCNADI::CudaSolverCNADI(
         // Copy streams
         for(int i=0; i<n_streams; i++)
         {
-            this->streams[i][0] = streams[i][0];
-            this->streams[i][1] = streams[i][1];
+            this->streams[i] = streams[i];
         }
 
         // Ensure ContourLengthMapping is finalized
@@ -312,70 +311,14 @@ void CudaSolverCNADI::update_laplacian_operator()
         throw_without_line_number(exc.what());
     }
 }
-void CudaSolverCNADI::update_dw(std::string device, std::map<std::string, const double*> w_input)
+void CudaSolverCNADI::update_dw(const std::map<std::string, const double*>& d_w)
 {
     try{
         if (!cb->is_orthogonal())
             throw_with_line_number("CN-ADI requires an orthogonal computation box.");
-
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-
-        const int M = this->cb->get_total_grid();
-        const bool use_reduced_basis = (space_group_ != nullptr);
-
-        if (device != "gpu" && device != "cpu")
-            throw_with_line_number("Invalid device \"" + device + "\".");
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        for(const auto& item: w_input)
-        {
-            const std::string& monomer_type = item.first;
-            const double *w = item.second;
-
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                if (d_exp_dw[ds_idx].find(monomer_type) == d_exp_dw[ds_idx].end())
-                    throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
-            }
-
-            // The full-grid field on the device: the input itself, or a copy in the
-            // table of the last ds, which is computed last (in place)
-            double* d_stage = d_exp_dw.at(n_unique_ds - 1).at(monomer_type);
-            const double* d_w = w;
-            if (use_reduced_basis && device == "gpu")
-            {
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, w, d_full_to_reduced_map_, M);
-                CUDA_CHECK_LAUNCH();
-                d_w = d_stage;
-            }
-            else if (device == "cpu")
-            {
-                const double* w_full = w;
-                std::vector<double> w_full_host;
-                if (use_reduced_basis)
-                {
-                    w_full_host.resize(M);
-                    space_group_->from_reduced_basis(w, w_full_host.data(), 1);
-                    w_full = w_full_host.data();
-                }
-                CUDA_CHECK(cudaMemcpyAsync(d_stage, w_full, sizeof(double)*M, cudaMemcpyHostToDevice));
-                d_w = d_stage;
-            }
-
-            // d_exp_dw = exp(-w*local_ds/2) for each unique ds value
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                const double local_ds = mapping.get_ds_from_index(ds_idx);
-                ker_exp<<<N_BLOCKS, N_THREADS>>>(
-                    d_exp_dw.at(ds_idx).at(monomer_type).get(), d_w, 1.0, -0.50*local_ds, M);
-                CUDA_CHECK_LAUNCH();
-            }
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // exp(-w ds/2) on the full grid, on both sides of the implicit step
+        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(), cb->get_total_grid(),
+                             space_group_ != nullptr ? d_full_to_reduced_map_ : nullptr, false, 0.5, 0.0);
     }
     catch(std::exception& exc)
     {
@@ -401,7 +344,7 @@ void CudaSolverCNADI::advance_propagator(
 
         if (use_reduced_basis)
         {
-            ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 d_q_full_in_[STREAM], d_q_in, d_full_to_reduced_map_, M);
             CUDA_CHECK_LAUNCH();
             d_q_in_full = d_q_full_in_[STREAM];
@@ -412,7 +355,7 @@ void CudaSolverCNADI::advance_propagator(
         double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
 
         // Apply exp(-w*local_ds/2) at start
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_out_full, d_q_in_full, _d_exp_dw, 1.0, M);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_out_full, d_q_in_full, _d_exp_dw, 1.0, M);
         CUDA_CHECK_LAUNCH();
 
         // Diffusion with full-step coefficients
@@ -427,12 +370,12 @@ void CudaSolverCNADI::advance_propagator(
                 d_q_out_full, d_q_out_full, monomer_type, ds_index);
 
         // Apply exp(-w*local_ds/2) at end
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_out_full, d_q_out_full, _d_exp_dw, 1.0, M);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_out_full, d_q_out_full, _d_exp_dw, 1.0, M);
         CUDA_CHECK_LAUNCH();
 
         if (use_reduced_basis)
         {
-            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 d_q_out, d_q_out_full, d_reduced_basis_indices_, n_basis_);
             CUDA_CHECK_LAUNCH();
         }
@@ -440,7 +383,7 @@ void CudaSolverCNADI::advance_propagator(
         // Multiply mask (stored in the reduced basis when a space group is set)
         if (d_q_mask != nullptr)
         {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
                 d_q_out, d_q_out, d_q_mask, 1.0, use_reduced_basis ? n_basis_ : M);
             CUDA_CHECK_LAUNCH();
         }
@@ -476,7 +419,7 @@ void CudaSolverCNADI::advance_propagator_3d(
         double *_d_zh = d_zh.at(ds_index).at(monomer_type);
 
         // Calculate q_star
-        compute_crank_3d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_3d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[0], bc[1], bc[2], bc[3], bc[4], bc[5], 
             _d_xl, _d_xd, _d_xh, nx[0],
             _d_yl, _d_yd, _d_yh, nx[1],
@@ -487,7 +430,7 @@ void CudaSolverCNADI::advance_propagator_3d(
         solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_yz, nx[1]*nx[2], nx[1]*nx[2], nx[0]);
 
         // Calculate q_dstar
-        compute_crank_3d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_3d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[2], bc[3], 
             _d_yl, _d_yd, _d_yh, nx[1], nx[2],
             d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
@@ -496,7 +439,7 @@ void CudaSolverCNADI::advance_propagator_3d(
         solve_lines(STREAM, factors[1], d_temp[STREAM], d_q_dstar[STREAM], d_offset_xz, nx[0]*nx[2], nx[2], nx[1]);
 
         // Calculate q^(n+1)
-        compute_crank_3d_step_3<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_3d_step_3<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[4], bc[5], 
             _d_zl, _d_zd, _d_zh, nx[1], nx[2],
             d_temp[STREAM], d_q_dstar[STREAM], d_q_in, M);
@@ -531,19 +474,17 @@ void CudaSolverCNADI::advance_propagator_2d(
         double *_d_yh = d_yh.at(ds_index).at(monomer_type);
 
         // Calculate q_star
-        compute_crank_2d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_2d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[0], bc[1], bc[2], bc[3],
             _d_xl, _d_xd, _d_xh, nx[0],
             _d_yl, _d_yd, _d_yh, nx[1],
             d_temp[STREAM], d_q_in, M);
         CUDA_CHECK_LAUNCH();
 
-        // CUDA_CHECK(cudaMemcpy(d_q_out, d_q_star, sizeof(double)*M, cudaMemcpyDeviceToDevice));
-
         solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_y, nx[1], nx[1], nx[0]);
 
         // Calculate q_dstar
-        compute_crank_2d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_2d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[2], bc[3],
             _d_yl, _d_yd, _d_yh, nx[1],
             d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
@@ -573,7 +514,7 @@ void CudaSolverCNADI::advance_propagator_1d(
         double *_d_xh = d_xh.at(ds_index).at(monomer_type);
         const auto& factors = d_factors.at(ds_index).at(monomer_type);
 
-        compute_crank_1d<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        compute_crank_1d<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[0], bc[1],
             _d_xl, _d_xd, _d_xh,
             d_q_star[STREAM], d_q_in, nx[0]);
@@ -595,7 +536,7 @@ void CudaSolverCNADI::solve_lines(
     // and lines too long for the shared memory are solved one per thread in place
     const int pitch = (M % 2 == 1) ? M : M + 1;
     const int rows = std::min(32, max_lines_shmem_ / (pitch * static_cast<int>(sizeof(double))));
-    cudaStream_t stream = streams[STREAM][0];
+    cudaStream_t stream = streams[STREAM];
     if (INTERVAL == 1 && rows >= 1)
     {
         const size_t shmem = static_cast<size_t>(rows) * pitch * sizeof(double);
@@ -617,7 +558,7 @@ void CudaSolverCNADI::solve_lines(
 }
 void CudaSolverCNADI::compute_single_segment_stress(
     [[maybe_unused]] const int STREAM,
-    [[maybe_unused]] double *d_q_pair, [[maybe_unused]] double *d_segment_stress,
+    [[maybe_unused]] double *d_q_1, [[maybe_unused]] double *d_q_2, [[maybe_unused]] double *d_segment_stress,
     [[maybe_unused]] std::string monomer_type, [[maybe_unused]] bool is_half_bond_length)
 {
     try

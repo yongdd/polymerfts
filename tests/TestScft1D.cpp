@@ -18,6 +18,7 @@
 #include <string>
 #include <array>
 #include <chrono>
+#include <optional>
 
 #include "Exception.h"
 #include "ComputationBox.h"
@@ -68,7 +69,7 @@ int main()
         double chi_n = 25.0;
         std::vector<int> nx = {263};
         std::vector<double> lx = {4.0};
-        std::string chain_model = "Continuous";  // choose among [Continuous, Discrete]
+        std::string chain_model = "Continuous";  // with "rqm4" below; discrete chains take "ps" or "rs"
         double ds = 1.0/50;
 
         int am_n_var = 2*nx[0];  // A and B
@@ -88,6 +89,12 @@ int main()
         // Choose platform
         std::vector<std::string> avail_platforms = PlatformSelector::avail_platforms();
         for(std::string platform : avail_platforms){
+            // CUDA runs four streams whatever OMP_NUM_THREADS is: the two propagators of
+            // the diblock run at once, and the transforms of 263 points need a cuFFT work
+            // area, which each stream must have for itself
+            std::optional<ScopedStreams> streams;
+            if (platform == "cuda")
+                streams.emplace("4");
             std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
             factory->display_info();
 

@@ -17,7 +17,6 @@
 #include "CudaFFT.h"
 #include "CudaTypeDispatch.h"
 #include "CudaCrysFFT.h"
-#include "CudaCrysFFTStress.h"
 #include "CudaCrysFFTRecursive3m.h"
 #include "CudaCrysFFTObliqueZ.h"
 #include "CrysFFTSelector.h"
@@ -154,6 +153,34 @@ void launch_stress_dyads(TD* out, TD* partial, const TD* integrand, const Stress
     }
 }
 
+// CrysFFT stress fast path: d_stress[g] holds the sum of axis group g (see
+// crysfft_stress_axis_groups; masks 1: x, 2: y, 4: z); every axis of a group gets the
+// group sum divided by the group size, times its scale b²·M_full/L_d² (single thread)
+__global__ void ker_crysfft_stress_finalize(
+    double* d_stress, int n_groups, int mask0, int mask1, int mask2, double s0, double s1, double s2)
+{
+    if (blockIdx.x != 0 || threadIdx.x != 0)
+        return;
+
+    const int masks[3] = {mask0, mask1, mask2};
+    double group_sum[3] = {0.0, 0.0, 0.0};
+    for (int g = 0; g < n_groups; ++g)
+        group_sum[g] = d_stress[g];
+
+    double v[3] = {0.0, 0.0, 0.0};
+    for (int g = 0; g < n_groups; ++g)
+    {
+        const int n_axes = ((masks[g] & 1) != 0) + ((masks[g] & 2) != 0) + ((masks[g] & 4) != 0);
+        for (int d = 0; d < 3; ++d)
+            if (masks[g] & (1 << d))
+                v[d] = group_sum[g] / n_axes;
+    }
+
+    d_stress[0] = v[0] * s0;
+    d_stress[1] = v[1] * s1;
+    d_stress[2] = v[2] * s2;
+}
+
 }  // namespace
 
 template <typename T>
@@ -161,12 +188,11 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     ComputationBox<T>* cb,
     Molecules *molecules,
     int n_streams,
-    cudaStream_t streams[MAX_STREAMS][2],
+    cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group,
     const int* d_reduced_basis_indices,
     const int* d_full_to_reduced_map,
     int max_fft_batch,
-    int q_full_in_factor,
     bool with_exp_dw_half,
     bool complex_requires_periodic)
 {
@@ -174,13 +200,11 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     this->molecules = molecules;
     this->n_streams = n_streams;
     this->dim_ = cb->get_dim();
-    this->q_full_in_factor_ = q_full_in_factor;
     this->max_fft_batch_ = max_fft_batch;
 
     for(int i=0; i<n_streams; i++)
     {
-        this->streams[i][0] = streams[i][0];
-        this->streams[i][1] = streams[i][1];
+        this->streams[i] = streams[i];
     }
     // The device buffers, cuFFT plans and transform objects are owning members,
     // released automatically (also when a constructor throws)
@@ -256,7 +280,9 @@ void CudaSolverPseudoBase<T>::init_fft()
     // failed part way can be repeated
     if (is_periodic_)
     {
-        // One plan per stream and batch size; cufftPlanMany reads dim_ entries of total_grid
+        // Forward and backward plans of each batch size up to max_fft_batch_ per stream;
+        // they run one after another on their stream and share one work area.
+        // cufftMakePlanMany reads dim_ entries of total_grid
         const int NRANK = dim_;
         int total_grid[3] = {0, 0, 0};
         for (int d = 0; d < dim_; ++d)
@@ -264,18 +290,33 @@ void CudaSolverPseudoBase<T>::init_fft()
 
         for (int i = 0; i < n_streams; i++)
         {
+            // The plans of a stream are moved in last, once all of them are ready
+            if (!plan_for_[i][0].empty())
+                continue;
+            CufftPlan forward[2], backward[2];
+            size_t work_bytes = 0;
             for (int b = 0; b < max_fft_batch_; b++)
             {
-                if (plan_for_[i][b].empty())
+                CUFFT_CHECK(forward[b].create_without_work_area(work_bytes, cufftMakePlanMany, NRANK, total_grid,
+                    nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::forward, b + 1));
+                CUFFT_CHECK(backward[b].create_without_work_area(work_bytes, cufftMakePlanMany, NRANK, total_grid,
+                    nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::backward, b + 1));
+            }
+            if (work_bytes > 0)
+                provide(d_fft_work_[i], (work_bytes + sizeof(double) - 1) / sizeof(double));
+            for (int b = 0; b < max_fft_batch_; b++)
+            {
+                for (CufftPlan* plan : {&forward[b], &backward[b]})
                 {
-                    CUFFT_CHECK(plan_for_[i][b].create(cufftPlanMany, NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::forward,  b + 1));
-                    CUFFT_CHECK(cufftSetStream(plan_for_[i][b], streams[i][0]));
+                    if (work_bytes > 0)
+                        CUFFT_CHECK(cufftSetWorkArea(*plan, d_fft_work_[i].get()));
+                    CUFFT_CHECK(cufftSetStream(*plan, streams[i]));
                 }
-                if (plan_bak_[i][b].empty())
-                {
-                    CUFFT_CHECK(plan_bak_[i][b].create(cufftPlanMany, NRANK, total_grid, nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::backward, b + 1));
-                    CUFFT_CHECK(cufftSetStream(plan_bak_[i][b], streams[i][0]));
-                }
+            }
+            for (int b = 0; b < max_fft_batch_; b++)
+            {
+                plan_for_[i][b] = std::move(forward[b]);
+                plan_bak_[i][b] = std::move(backward[b]);
             }
         }
     }
@@ -336,7 +377,7 @@ CuDeviceData<T>* CudaSolverPseudoBase<T>::expand_to_full_grid(int STREAM, CuDevi
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             d_q_full_in_[STREAM], d_q_in, d_full_to_reduced_map_, cb->get_total_grid());
         CUDA_CHECK_LAUNCH();
         return d_q_full_in_[STREAM];
@@ -357,7 +398,7 @@ void CudaSolverPseudoBase<T>::store_full_grid(
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
+        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             d_q_out, d_full, d_reduced_basis_indices_, n_basis_);
         CUDA_CHECK_LAUNCH();
     }
@@ -373,7 +414,7 @@ void CudaSolverPseudoBase<T>::multiply_mask(int STREAM, CuDeviceData<T>* d_q, co
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     const int n = (space_group_ != nullptr) ? n_basis_ : cb->get_total_grid();
-    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q, d_q, d_q_mask, 1.0, n);
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q, d_q, d_q_mask, 1.0, n);
     CUDA_CHECK_LAUNCH();
 }
 
@@ -385,7 +426,7 @@ void CudaSolverPseudoBase<T>::crysfft_diffuse(
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
     const int M_phys = crysfft_physical_size_;
-    const cudaStream_t stream = streams[STREAM][0];
+    const cudaStream_t stream = streams[STREAM];
     CudaCrysFFTBase* crysfft = crysfft_[STREAM].get();
     const auto boltz_it = crysfft_boltz_.find(coeff);
     if (boltz_it == crysfft_boltz_.end())
@@ -554,9 +595,9 @@ void CudaSolverPseudoBase<T>::update_crysfft_tables()
     CUDA_CHECK(cudaDeviceSynchronize());
     const std::array<double, 6> cell = crysfft_cell();
     for (auto& [coeff, table] : crysfft_boltz_)
-        crysfft_[0]->build_boltzmann(table, cell, coeff, streams[0][0]);
+        crysfft_[0]->build_boltzmann(table, cell, coeff, streams[0]);
     for (auto& [key, table] : crysfft_multipliers_)
-        crysfft_[0]->build_multiplier(table, cell, key.first, key.second, streams[0][0]);
+        crysfft_[0]->build_multiplier(table, cell, key.first, key.second, streams[0]);
 }
 
 template <typename T>
@@ -589,31 +630,27 @@ void CudaSolverPseudoBase<T>::update_laplacian_operator()
 template <typename T>
 void CudaSolverPseudoBase<T>::update_pseudo()
 {
-    // Fourier basis arrays and Boltzmann bond factors of the current box, for every
-    // distinct contour step. Face BCs squeezed to one per dimension (both faces match).
-    const auto bc_faces = cb->get_boundary_conditions();
-    std::vector<BoundaryCondition> bc_dim;
-    for (int d = 0; d < dim_; ++d)
-        bc_dim.push_back(bc_faces[2 * d]);
-    if (pseudo)
+    if (!pseudo)
     {
-        pseudo->update(bc_dim, molecules->get_bond_lengths(), cb->get_dx(),
-                       cb->get_recip_metric(), cb->get_recip_vec());
+        // The first full-grid use. The Boltzmann bond factors of every distinct contour
+        // step when the full-grid propagator steps or the discrete stress use them (the
+        // CrysFFT steps of continuous chains do not); face BCs squeezed to one per
+        // dimension (both faces match).
+        const auto bc_faces = cb->get_boundary_conditions();
+        std::vector<BoundaryCondition> bc_dim;
+        for (int d = 0; d < dim_; ++d)
+            bc_dim.push_back(bc_faces[2 * d]);
+        std::map<int, double> ds_values;
+        if (!use_crysfft_ || stress_has_bond_factor())
+        {
+            const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+            for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+                ds_values[ds_idx] = mapping.get_ds_from_index(ds_idx);
+        }
+        pseudo = std::make_unique<CudaPseudo<T>>(molecules->get_bond_lengths(), bc_dim, cb->get_nx(), ds_values);
     }
-    else
-    {
-        // The first full-grid use: the constructor and finalize_ds_values() compute the
-        // tables of the current cell (as update() would), and upload() copies them
-        auto created = std::make_unique<CudaPseudo<T>>(
-            molecules->get_bond_lengths(), bc_dim, cb->get_nx(), cb->get_dx(),
-            cb->get_recip_metric(), cb->get_recip_vec());
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            created->add_ds_value(ds_idx, mapping.get_ds_from_index(ds_idx));
-        created->finalize_ds_values();
-        pseudo = std::move(created);
-        pseudo->upload();
-    }
+    // The stress basis once a stress is computed (prepare_stress())
+    pseudo->update(cb->get_dx(), cb->get_recip_metric(), stress_basis_);
     pseudo_current_ = true;
 }
 
@@ -637,7 +674,7 @@ void CudaSolverPseudoBase<T>::provide_work()
     // Values of a field in the propagator steps: the reduced basis on the CrysFFT path
     const int n_field = use_crysfft_ ? n_basis_ : M;
 
-    // exp(-w ds) per contour step and monomer type (update_dw_impl() stages a
+    // exp(-w ds) per contour step and monomer type (compute_exp_dw() stages a
     // reduced-basis field expanded to the full grid in one of them)
     for (auto* tables : {&this->d_exp_dw, &this->d_exp_dw_half})
         for (auto& [ds_idx, by_type] : *tables)
@@ -654,11 +691,25 @@ void CudaSolverPseudoBase<T>::provide_work()
         {
             provide(d_q_multi[i], M_COMPLEX);
             provide(d_stress_partial_[i], 6*STRESS_MAX_BLOCKS);
-            if constexpr (std::is_same<T, std::complex<double>>::value)
-                provide(d_qk_conj_[i], M_COMPLEX);
+            // The spectral scratch of the steps and the stress: the spectra of two fields
+            // (periodic BC; complex fields gather q2(-k) for the stress apart), or the DCT/DST
+            // coefficients of two fields, of the real and imaginary parts interleaved for
+            // complex fields
+            if (is_periodic_)
+            {
+                provide(d_qk_[i], 2*static_cast<size_t>(M_COMPLEX));
+                if constexpr (std::is_same<T, std::complex<double>>::value)
+                    provide(d_qk_conj_[i], M_COMPLEX);
+            }
+            else
+            {
+                const size_t rk_size = (sizeof(T) / sizeof(double)) * static_cast<size_t>(M_COMPLEX);
+                provide(d_rk_1_[i], rk_size);
+                provide(d_rk_2_[i], rk_size);
+            }
             if (space_group_ != nullptr)
             {
-                provide(d_q_full_in_[i], static_cast<size_t>(M) * q_full_in_factor_);
+                provide(d_q_full_in_[i], M);
                 provide(d_q_full_out_[i], M);
             }
         }
@@ -670,88 +721,22 @@ void CudaSolverPseudoBase<T>::provide_work()
 
 template <typename T>
 void CudaSolverPseudoBase<T>::update_dw_impl(
-    const std::string& device, const std::map<std::string, const T*>& w_input,
+    const std::map<std::string, const CuDeviceData<T>*>& d_w,
     bool with_half, double factor, double factor_half)
 {
     try{
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = cb->get_total_grid();
-
-        const bool use_reduced_basis = (space_group_ != nullptr);
-        const int M_use = use_crysfft_ ? n_basis_ : M;
-
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        const int n_unique_ds = mapping.get_n_unique_ds();
-
-        if (device != "gpu" && device != "cpu")
-            throw_with_line_number("Invalid device \"" + device + "\".");
         // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
         if constexpr (!std::is_same_v<T, double>)
         {
-            if (use_reduced_basis)
+            if (space_group_ != nullptr)
                 throw_with_line_number("Space group reduced basis is only supported for real fields.");
         }
-
-        for(const auto& item: w_input)
-        {
-            const std::string& monomer_type = item.first;
-            const T *w = item.second;
-
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                if (this->d_exp_dw[ds_idx].find(monomer_type) == this->d_exp_dw[ds_idx].end())
-                    throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
-            }
-
-            // The field on the device (M_use values): the input itself, or a copy in
-            // the table written last below, which is then computed in place
-            CuDeviceData<T>* d_stage = (with_half ? this->d_exp_dw_half : this->d_exp_dw)
-                                       .at(n_unique_ds - 1).at(monomer_type).get();
-            const CuDeviceData<T>* d_w = reinterpret_cast<const CuDeviceData<T>*>(w);
-            if (use_reduced_basis && !use_crysfft_)
-            {
-                // [real-only feature] (complex fields were rejected above)
-                if constexpr (std::is_same_v<T, double>)
-                {
-                    // Expand reduced basis -> full grid
-                    if (device == "gpu")
-                    {
-                        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, w, d_full_to_reduced_map_, M);
-                        CUDA_CHECK_LAUNCH();
-                    }
-                    else
-                    {
-                        std::vector<double> w_full_host(M);
-                        space_group_->from_reduced_basis(w, w_full_host.data(), 1);
-                        CUDA_CHECK(cudaMemcpyAsync(d_stage, w_full_host.data(), sizeof(double)*M, cudaMemcpyHostToDevice));
-                    }
-                    d_w = d_stage;
-                }
-            }
-            else if (device == "cpu")
-            {
-                CUDA_CHECK(cudaMemcpyAsync(d_stage, w, sizeof(T)*M_use, cudaMemcpyHostToDevice));
-                d_w = d_stage;
-            }
-
-            // d_exp_dw = exp(-w * local_ds * factor); d_exp_dw_half = exp(-w * local_ds * factor_half)
-            for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-            {
-                const double local_ds = mapping.get_ds_from_index(ds_idx);
-                ker_exp<<<N_BLOCKS, N_THREADS>>>(this->d_exp_dw.at(ds_idx).at(monomer_type).get(),
-                                                 d_w, 1.0, -factor*local_ds, M_use);
-                CUDA_CHECK_LAUNCH();
-                if (with_half)
-                {
-                    ker_exp<<<N_BLOCKS, N_THREADS>>>(this->d_exp_dw_half.at(ds_idx).at(monomer_type).get(),
-                                                     d_w, 1.0, -factor_half*local_ds, M_use);
-                    CUDA_CHECK_LAUNCH();
-                }
-            }
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // The tables of the steps: the reduced basis on the CrysFFT path, otherwise the full
+        // grid, into which the full-grid path of a space group expands the fields
+        const bool expand = space_group_ != nullptr && !use_crysfft_;
+        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(),
+                             use_crysfft_ ? n_basis_ : cb->get_total_grid(),
+                             expand ? d_full_to_reduced_map_ : nullptr, with_half, factor, factor_half);
     }
     catch(std::exception& exc)
     {
@@ -801,41 +786,71 @@ std::vector<std::pair<int, double>> CudaSolverPseudoBase<T>::crysfft_stress_keys
 }
 
 template <typename T>
-CudaCrysFFTStressArgs CudaSolverPseudoBase<T>::crysfft_stress_args(int STREAM, double bond_length_sq, bool include_bond_factor)
+void CudaSolverPseudoBase<T>::crysfft_segment_stress(
+    int STREAM, double bond_length_sq, const double* d_q_1, const double* d_q_2, double* d_segment_stress)
 {
-    const std::vector<double> lx_vec = this->cb->get_lx();
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    const cudaStream_t stream = streams[STREAM];
+    CudaCrysFFTBase* crysfft = crysfft_[STREAM].get();
+    double* d_reduced = d_stress_sum[STREAM];
 
-    CudaCrysFFTStressArgs args{};
-    args.crysfft = crysfft_[STREAM].get();
-    const std::vector<std::pair<int, double>> keys = crysfft_stress_keys(bond_length_sq, include_bond_factor);
+    // q2 on the physical grid, once for all axis groups: an out-of-place apply_multiplier
+    // preserves its input (the Pmmm engine copies it to the output buffer before its
+    // in-place DCTs, the recursive 3m engine's out-of-place D2Z only reads it)
+    const double* d_q2_phys = d_q_2;
+    if (!crysfft_identity_map_)
+    {
+        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+            d_crysfft_in_[STREAM], d_q_2, d_crysfft_phys_to_reduced_, crysfft_physical_size_);
+        CUDA_CHECK_LAUNCH();
+        d_q2_phys = d_crysfft_in_[STREAM];
+    }
+
+    // d_segment_stress[g] = Σ_r n_orbit(r) q1(r) [F⁻¹ m_g F q2](r) over the reduced basis, with
+    // the multiplier m_g of axis group g built by prepare_stress()
+    const std::vector<std::pair<int, double>> keys = crysfft_stress_keys(bond_length_sq, stress_has_bond_factor());
+    int masks[3] = {0, 0, 0};
     for (size_t g = 0; g < keys.size(); ++g)
     {
-        const auto it = crysfft_multipliers_.find(keys[g]);
-        if (it == crysfft_multipliers_.end())
+        const auto multiplier = crysfft_multipliers_.find(keys[g]);
+        if (multiplier == crysfft_multipliers_.end())
             throw_with_line_number("The CrysFFT stress multipliers of b^2 = " + std::to_string(bond_length_sq) +
                 " were not built (see prepare_stress()).");
-        args.multipliers[g] = &it->second;
+        masks[g] = keys[g].first;
+        crysfft->apply_multiplier(const_cast<double*>(d_q2_phys), d_crysfft_out_[STREAM], multiplier->second, stream);
+
+        // Back to the reduced basis
+        const double* d_tmp_reduced = d_crysfft_out_[STREAM];
+        if (!crysfft_identity_map_)
+        {
+            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_reduced, d_crysfft_out_[STREAM], d_crysfft_reduced_to_phys_, n_basis_);
+            CUDA_CHECK_LAUNCH();
+            d_tmp_reduced = d_reduced;
+        }
+
+        // Orbit-weighted sum with q1
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_reduced, d_tmp_reduced, d_q_1, 1.0, n_basis_);
+        CUDA_CHECK_LAUNCH();
+        ker_multi_weight<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_reduced, d_reduced, d_crysfft_orbit_counts_, n_basis_);
+        CUDA_CHECK_LAUNCH();
+        size_t bytes = temp_storage_bytes[STREAM];
+        CUDA_CHECK(cuda_reduce_sum(d_temp_storage[STREAM].get(), bytes, d_reduced, &d_segment_stress[g], n_basis_, stream));
+        CUDA_CHECK_LAUNCH();
     }
-    args.identity_map = crysfft_identity_map_;
-    args.M_phys = crysfft_physical_size_;
-    args.n_basis = n_basis_;
-    args.M_full = this->cb->get_total_grid();
-    args.d_phys_to_reduced = d_crysfft_phys_to_reduced_;
-    args.d_reduced_to_phys = d_crysfft_reduced_to_phys_;
-    args.d_orbit_counts = d_crysfft_orbit_counts_;
-    args.d_phys_work = d_crysfft_in_[STREAM];
-    args.d_phys_out = d_crysfft_out_[STREAM];
-    if constexpr (std::is_same_v<T, double>)
-        args.d_reduce_buf = d_stress_sum[STREAM];
-    args.d_cub_temp = d_temp_storage[STREAM];
-    args.cub_temp_bytes = temp_storage_bytes[STREAM];
-    args.space_group = space_group_;
-    args.lx[0] = lx_vec[0];
-    args.lx[1] = lx_vec[1];
-    args.lx[2] = lx_vec[2];
-    args.bond_length_sq = bond_length_sq;
-    args.stream = streams[STREAM][0];
-    return args;
+
+    // The multipliers are Cartesian k_d² = (2πm_d/L_d)², while the full-grid path accumulates
+    // deformation-vector components v_d² = k_d²/L_d²: divide each sum by L_d² so both paths
+    // return the same V_dd, and scale by b²·M_full (FFT normalization convention)
+    const std::vector<double> lx = cb->get_lx();
+    const int M_full = cb->get_total_grid();
+    const double s0 = bond_length_sq * M_full / (lx[0] * lx[0]);
+    const double s1 = bond_length_sq * M_full / (lx[1] * lx[1]);
+    const double s2 = bond_length_sq * M_full / (lx[2] * lx[2]);
+    ker_crysfft_stress_finalize<<<1, 1, 0, stream>>>(
+        d_segment_stress, static_cast<int>(keys.size()), masks[0], masks[1], masks[2], s0, s1, s2);
+    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
@@ -844,7 +859,13 @@ void CudaSolverPseudoBase<T>::prepare_stress()
     try
     {
         // The full-grid work when the force-off-diagonal flag has turned the stress to the
-        // full grid since the last call (see full_grid_path()), and its Pseudo tables of the cell
+        // full grid since the last call (see full_grid_path()), and its Pseudo tables of the
+        // cell, with the stress basis from the first stress on
+        if (!stress_basis_)
+        {
+            stress_basis_ = true;
+            pseudo_current_ = false;
+        }
         provide_work();
 
         // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
@@ -857,10 +878,9 @@ void CudaSolverPseudoBase<T>::prepare_stress()
             for (int i = 0; i < n_streams; i++)
             {
                 provide(d_stress_sum[i], n_basis_);
-                provide(d_stress_sum_out[i], 1);
-                // the first call only queries the size of the CUB scratch
+                // the first call only queries the size of the CUB scratch (it touches no array)
                 size_t bytes = 0;
-                CUDA_CHECK(cuda_reduce_sum(nullptr, bytes, d_stress_sum[i].get(), d_stress_sum_out[i].get(), n_basis_, streams[i][0]));
+                CUDA_CHECK(cuda_reduce_sum(nullptr, bytes, d_stress_sum[i].get(), static_cast<double*>(nullptr), n_basis_, streams[i]));
                 provide(d_temp_storage[i], bytes);
                 temp_storage_bytes[i] = bytes;
             }
@@ -886,7 +906,7 @@ void CudaSolverPseudoBase<T>::prepare_stress()
                         if (crysfft_multipliers_.contains(key))
                             continue;
                         CudaDeviceBuffer<double> table;
-                        crysfft_[0]->build_multiplier(table, cell, key.first, key.second, streams[0][0]);
+                        crysfft_[0]->build_multiplier(table, cell, key.first, key.second, streams[0]);
                         crysfft_multipliers_.emplace(key, std::move(table));
                     }
                 }
@@ -912,7 +932,7 @@ const double* CudaSolverPseudoBase<T>::get_stress_boltz_bond(
 template <typename T>
 void CudaSolverPseudoBase<T>::compute_single_segment_stress(
     const int STREAM,
-    CuDeviceData<T> *d_q_pair, CuDeviceData<T> *d_segment_stress,
+    CuDeviceData<T> *d_q_1, CuDeviceData<T> *d_q_2, CuDeviceData<T> *d_segment_stress,
     std::string monomer_type, bool is_half_bond_length)
 {
     try{
@@ -920,7 +940,6 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
         const int DIM = this->cb->get_dim();
-        const int M = this->cb->get_total_grid();
         const int M_COMPLEX = this->total_complex_grid();
 
         const double bond_length_sq = stress_bond_length_sq(monomer_type, is_half_bond_length);
@@ -941,10 +960,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             // cross terms — instead of silently returning zeros for them.
             if (crysfft_stress_fast_path())
             {
-                // discrete chains carry the bond factor
-                const CudaCrysFFTStressArgs args = crysfft_stress_args(STREAM, bond_length_sq, stress_has_bond_factor());
-                cuda_crysfft_compute_single_segment_stress(
-                    args, d_q_pair, &d_q_pair[n_basis_], d_segment_stress);
+                crysfft_segment_stress(STREAM, bond_length_sq, d_q_1, d_q_2, d_segment_stress);
                 return;
             }
         }
@@ -963,50 +979,29 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         const double* _d_fourier_basis_yz = pseudo->get_fourier_basis_yz();
         const int* _d_negative_k_idx = pseudo->get_negative_frequency_mapping();
 
-        const StressScratch scratch = stress_scratch(STREAM);
-
-        // Space group without CrysFFT fast path: the propagator pair arrives in
-        // the reduced basis (packed at stride n_basis_). Expand both propagators
-        // to the full grid into a contiguous 2*M buffer for the batched FFT.
-        CuDeviceData<T>* d_q_pair_full = d_q_pair;
-        if (space_group_ != nullptr)
-        {
-            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-            if constexpr (std::is_same_v<T, double>)
-            {
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
-                    scratch.pair_full, d_q_pair, d_full_to_reduced_map_, M);
-                CUDA_CHECK_LAUNCH();
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
-                    &scratch.pair_full[M], &d_q_pair[n_basis_], d_full_to_reduced_map_, M);
-                CUDA_CHECK_LAUNCH();
-                d_q_pair_full = scratch.pair_full;
-            }
-            else
-            {
-                throw_with_line_number("Space group reduced basis is only supported for real fields.");
-            }
-        }
-
+        // The transforms take the full grid: with a space group (no CrysFFT fast path)
+        // each propagator is expanded from the reduced basis into d_q_full_in_, which
+        // its transform reads before the next expansion (both run on this stream)
         if (is_periodic_)
         {
-            // Periodic BC: batched forward FFT of both propagators
-            fft_forward(STREAM, d_q_pair_full, scratch.qk_pair, 2);
-            CUDA_CHECK_LAUNCH();
+            // Periodic BC: forward FFT of both propagators
+            cuDoubleComplex* qk_1 = d_qk_[STREAM].get();
+            cuDoubleComplex* qk_2 = qk_1 + M_COMPLEX;
+            fft_forward(STREAM, this->expand_to_full_grid(STREAM, d_q_1), qk_1);
+            fft_forward(STREAM, this->expand_to_full_grid(STREAM, d_q_2), qk_2);
 
             // [type-specific algorithm] Real fields store the Hermitian half-spectrum, so the
             // conjugate product is formed directly; complex fields need the -k index map.
             // Multiply two propagators in the fourier spaces
             if constexpr (std::is_same<T, double>::value)
-                ker_multi_complex_conjugate<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_multi[STREAM], &scratch.qk_pair[0], &scratch.qk_pair[M_COMPLEX], M_COMPLEX);
+                ker_multi_complex_conjugate<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_multi[STREAM], qk_1, qk_2, M_COMPLEX);
             else
             {
                 // Gather q2(-k) into a separate buffer: an in-place gather through the
                 // k -> -k map (an involution) would race.
-                ker_copy_data_with_idx<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_qk_conj_[STREAM], &scratch.qk_pair[M_COMPLEX], _d_negative_k_idx, M_COMPLEX);
+                ker_copy_data_with_idx<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk_conj_[STREAM], qk_2, _d_negative_k_idx, M_COMPLEX);
                 CUDA_CHECK_LAUNCH();
-                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_multi[STREAM], &scratch.qk_pair[0], d_qk_conj_[STREAM], 1.0, M_COMPLEX);
-                CUDA_CHECK_LAUNCH();
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_multi[STREAM], qk_1, d_qk_conj_[STREAM], 1.0, M_COMPLEX);
             }
             CUDA_CHECK_LAUNCH();
         }
@@ -1015,12 +1010,14 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             // Non-periodic BC: use CudaFFT (DCT/DST). The coefficients are real for real
             // fields; for complex fields those of the real and imaginary parts come as
             // complex pairs, whose product needs no conjugate (the basis functions are real).
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(d_q_pair_full), scratch.rk_1, streams[STREAM][0]);
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(&d_q_pair_full[M]), scratch.rk_2, streams[STREAM][0]);
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(this->expand_to_full_grid(STREAM, d_q_1)),
+                                         d_rk_1_[STREAM], streams[STREAM]);
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(this->expand_to_full_grid(STREAM, d_q_2)),
+                                         d_rk_2_[STREAM], streams[STREAM]);
 
             // Multiply the coefficients
             // Per-mode Parseval weights (2 interior / 1 special modes) are folded
-            // into the fourier_basis tables by Pseudo::update_weighted_fourier_basis_mixed.
+            // into the fourier_basis tables by Pseudo::update_nonperiodic.
             // CudaFFT's real-coefficient forward is 2x the textbook DCT-II/DST-II
             // convention per transformed dimension (CudaRealTransform matches FFTW's
             // unnormalized REDFT10/RODFT10, while the CPU MakhoulFFT scales by 0.5);
@@ -1029,11 +1026,11 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             // [type-specific algorithm] DCT/DST coefficients are real for real fields and interleaved complex pairs for complex fields.
             const double dct_scale = std::pow(0.25, DIM);
             if constexpr (std::is_same<T, double>::value)
-                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_multi[STREAM], scratch.rk_1, scratch.rk_2, dct_scale, M_COMPLEX);
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_multi[STREAM], d_rk_1_[STREAM], d_rk_2_[STREAM], dct_scale, M_COMPLEX);
             else
-                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(
-                    d_q_multi[STREAM], reinterpret_cast<const cuDoubleComplex*>(scratch.rk_1),
-                    reinterpret_cast<const cuDoubleComplex*>(scratch.rk_2), dct_scale, M_COMPLEX);
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+                    d_q_multi[STREAM], reinterpret_cast<const cuDoubleComplex*>(d_rk_1_[STREAM].get()),
+                    reinterpret_cast<const cuDoubleComplex*>(d_rk_2_[STREAM].get()), dct_scale, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
         }
 
@@ -1041,7 +1038,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         // halved for half-bond steps) into the integrand
         if (_d_boltz_bond != nullptr)
         {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM][0]>>>(d_q_multi[STREAM], d_q_multi[STREAM], _d_boltz_bond, bond_length_sq, M_COMPLEX);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_multi[STREAM], d_q_multi[STREAM], _d_boltz_bond, bond_length_sq, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
         }
 
@@ -1052,25 +1049,13 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         // lattice-parameter derivatives in compute_stress().
         // No cross-term corrections needed.
 
-        // ============================================================================
-        // PERFORMANCE-CRITICAL: Orthogonal box optimization
-        // ============================================================================
-        // For orthogonal boxes (all angles = 90°), the cross-term sums (V₁₂, V₁₃, V₂₃)
-        // are not computed: angle optimization is inactive for orthogonal crystal
-        // systems, so those slots are never consumed. This optimization
-        // reduces the number of GPU kernel calls from 6 to 3 for 3D boxes,
-        // providing ~10% speedup when relax_cell=True.
-        //
-        // DO NOT REMOVE THIS OPTIMIZATION without benchmarking! We have experienced
-        // performance regressions before when this check was accidentally removed.
-        // See git history for commit 6d1dc54 which caused a regression by always
-        // computing all 6 components.
-        //
-        // Explicit opt-in: force_off_diagonal_stress_ (set when angle optimization
-        // is active) disables the skip so that angle derivatives are available
-        // even when the box is at exactly 90° angles. The skip remains the default.
-        // ============================================================================
-        const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
+        // For orthogonal boxes (all angles = 90°) the cross-term sums (V₁₂, V₁₃, V₂₃) are
+        // not computed: angle optimization is inactive for orthogonal crystal systems, so
+        // those slots are never read, and the one pass over k below reads three basis
+        // tables instead of six. force_off_diagonal_stress_ (set when angle optimization
+        // is active) computes them also at exactly 90°, so that the angle derivatives are
+        // available. Walls need an orthogonal cell: the non-periodic tables have no cross terms.
+        const bool is_orthogonal = (this->cb->is_orthogonal() && !this->force_off_diagonal_stress_) || !is_periodic_;
 
         // Dyad components V_c = Σ_k integrand(k)·basis_c(k)·basis_factor, written to
         // d_segment_stress[0..n_comp-1]
@@ -1093,25 +1078,19 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         }
         if ( DIM == 2 )
         {
-            // For non-periodic BC, 2D grid is mapped to y-z axes internally (tnx = {1, nx[0], nx[1]})
-            // so stress data is stored in fourier_basis_y and fourier_basis_z
-            add_component(is_periodic_ ? _d_fourier_basis_x : _d_fourier_basis_y);   // V₁₁
-            add_component(is_periodic_ ? _d_fourier_basis_y : _d_fourier_basis_z);   // V₂₂
+            add_component(_d_fourier_basis_x);   // V₁₁
+            add_component(_d_fourier_basis_y);   // V₂₂
 
             // V₁₂: only compute for non-orthogonal boxes
             if (!is_orthogonal)
-                add_component(is_periodic_ ? _d_fourier_basis_xy : _d_fourier_basis_yz);
+                add_component(_d_fourier_basis_xy);
         }
         if ( DIM == 1 )
-        {
-            // For non-periodic BC, 1D grid is mapped to z-axis internally (tnx = {1, 1, nx[0]})
-            // so stress data is stored in fourier_basis_z
-            add_component(is_periodic_ ? _d_fourier_basis_x : _d_fourier_basis_z);
-        }
+            add_component(_d_fourier_basis_x);
 
         // One pass over k for all components, then the block partials in block order
         launch_stress_dyads(d_segment_stress, d_stress_partial_[STREAM].get(), d_q_multi[STREAM].get(), bases, n_comp,
-                            basis_factor, M_COMPLEX, streams[STREAM][0]);
+                            basis_factor, M_COMPLEX, streams[STREAM]);
         CUDA_CHECK_LAUNCH();
     }
     catch(std::exception& exc)

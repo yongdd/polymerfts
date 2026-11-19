@@ -192,7 +192,7 @@ class ThermodynamicOperators:
             value += es.pressure(dim, n_chains)
         return value
 
-    def pressure_virial(self, w_aux, phi):
+    def pressure_virial(self, w_aux, phi, h_deriv=None, charge_density=None):
         """Virial form of the osmotic pressure operator: pressure() plus terms of zero average.
 
         Every auxiliary field Ω_i whose Gaussian integral pressure() normalizes obeys the
@@ -207,16 +207,22 @@ class ThermodynamicOperators:
         The identities hold for exact CL sampling of H; an O(δτ) bias of the integrator or the
         stabilization term of dynamical stabilization, which is not part of H, can make the added
         terms average to a small non-zero value.
+
+        The run loop passes what it holds of the same state: h_deriv, δH/δw of all fields
+        (compute_func_deriv with the smeared concentrations), and the charge density
+        (Electrostatics.charge_density); they are computed here if omitted.
         """
         M, es = len(self.monomer_types), self.electrostatics
         n_chains = np.sqrt(self.sim.langevin["nbar"]) * self.prop_solver.get_volume()   # C V/R₀³
         value = self.pressure(w_aux, phi)
-        phi_smeared = self.smearing.apply_to_dict(phi)
-        deriv = self.mpt.compute_func_deriv(w_aux, phi_smeared, range(M))
+        if h_deriv is None:
+            h_deriv = self.mpt.compute_func_deriv(w_aux, self.smearing.apply_to_dict(phi), range(M))
         for i in self.mpt.aux_fields_real_idx:
-            value += 0.5 * (np.mean(w_aux[i] * deriv[i]) - self.prop_solver.n_grid / n_chains)
+            value += 0.5 * (np.mean(w_aux[i] * h_deriv[i]) - self.prop_solver.n_grid / n_chains)
         for i in self.mpt.aux_fields_imag_idx:
-            value += 0.5 * (-np.mean(w_aux[i] * deriv[i]) - self.prop_solver.n_grid / n_chains)
+            value += 0.5 * (-np.mean(w_aux[i] * h_deriv[i]) - self.prop_solver.n_grid / n_chains)
         if es is not None:
-            value += es.pressure_virial_correction(es.charge_density(phi_smeared), self.prop_solver.dim, n_chains)
+            if charge_density is None:
+                charge_density = es.charge_density(self.smearing.apply_to_dict(phi))
+            value += es.pressure_virial_correction(charge_density, self.prop_solver.dim, n_chains)
         return value

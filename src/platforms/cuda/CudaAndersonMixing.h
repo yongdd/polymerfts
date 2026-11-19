@@ -3,21 +3,20 @@
  * @brief GPU implementation of Anderson Mixing algorithm.
  *
  * This header provides CudaAndersonMixing, the GPU-specific implementation
- * of Anderson Mixing for accelerating SCFT convergence. All field history
- * and computations are performed on the GPU.
+ * of Anderson Mixing for accelerating SCFT convergence. The field updates
+ * and inner products run on the GPU.
  *
- * **GPU Optimizations:**
+ * **History:**
  *
- * - Field history stored in GPU device memory (CudaCircularBuffer)
- * - Dot products computed via CUB parallel reduction
+ * The field and residual histories (max_hist + 1 arrays of n_var values each)
+ * are kept in GPU device memory, or in memory-saving mode in pinned host
+ * memory: each entry is then copied to the device when it is used, which
+ * trades GPU memory for PCIe transfers. Both give the same new fields, bit for bit.
  *
- * **Memory Usage:**
- *
- * GPU memory: max_hist × n_var × sizeof(T) × 2 (for w_hist and w_deriv_hist)
- * For large grids, this can be significant.
+ * - Device history: 2 (max_hist + 1) + 4 arrays of n_var values on the GPU
+ * - Pinned history: 6 arrays of n_var values on the GPU
  *
  * @see AndersonMixing for the algorithm description
- * @see CudaAndersonMixingReduceMemory for memory-saving version
  * @see CpuAndersonMixing for CPU implementation
  */
 
@@ -35,20 +34,19 @@
  * @class CudaAndersonMixing
  * @brief GPU-accelerated Anderson Mixing for SCFT iteration.
  *
- * Implements Anderson mixing entirely on the GPU for fast convergence
- * acceleration. Uses circular buffers in device memory for history.
- *
  * @tparam T Numeric type (double or std::complex<double>)
  *
- * **GPU Memory Layout:**
+ * **Memory Layout:**
  *
- * - d_cb_w_hist: History of field values in device memory
- * - d_cb_w_deriv_hist: History of residuals in device memory
- * - cb_w_deriv_dots: Cached dot products (on CPU for small size)
+ * - w_hist, w_deriv_hist: histories of the fields and residuals (device or pinned host memory)
+ * - cb_w_deriv_dots: cached inner products of the residuals (CPU)
+ * - d_w_current, d_w_deriv: the current field and residual on the GPU, which serve
+ *   as the newest history entries
+ * - d_stage_w, d_stage_deriv: a pinned history entry copied to the GPU (pinned history only)
  *
  * @example
  * @code
- * CudaAndersonMixing<double> am(n_grid, 20, 1e-1, 0.01, 0.1);
+ * CudaAndersonMixing<double> am(n_grid, 20, 1e-1, 0.01, 0.1, false);
  *
  * // In SCFT loop
  * am.calculate_new_fields(w_new, w_current, w_deriv, old_err, err);
@@ -58,9 +56,9 @@ template <typename T>
 class CudaAndersonMixing : public AndersonMixing<T>
 {
 private:
-    std::unique_ptr<CudaCircularBuffer<T>> d_cb_w_hist;        ///< Field history on GPU
-    std::unique_ptr<CudaCircularBuffer<T>> d_cb_w_deriv_hist;  ///< Residual history on GPU
-    std::unique_ptr<CircularBuffer<T>> cb_w_deriv_dots;        ///< Cached dot products (CPU)
+    std::unique_ptr<CudaCircularBuffer<T>> w_hist;         ///< Field history (device or pinned host memory)
+    std::unique_ptr<CudaCircularBuffer<T>> w_deriv_hist;   ///< Residual history (device or pinned host memory)
+    std::unique_ptr<CircularBuffer<T>> cb_w_deriv_dots;    ///< Cached dot products (CPU)
     std::vector<T> w_deriv_dots;                            ///< Current residual dots
 
     /// @name Least-squares solve arrays (on CPU)
@@ -73,10 +71,12 @@ private:
 
     /// @name Temporary GPU arrays
     /// @{
-    CudaDeviceBuffer<CuDeviceData<T>> d_w_current;  ///< Current field on GPU
-    CudaDeviceBuffer<CuDeviceData<T>> d_w_new;      ///< New field on GPU
-    CudaDeviceBuffer<CuDeviceData<T>> d_w_deriv;    ///< Residual on GPU
-    CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Reduction temp
+    CudaDeviceBuffer<CuDeviceData<T>> d_w_current;    ///< Current field on GPU
+    CudaDeviceBuffer<CuDeviceData<T>> d_w_new;        ///< New field on GPU
+    CudaDeviceBuffer<CuDeviceData<T>> d_w_deriv;      ///< Residual on GPU
+    CudaDeviceBuffer<CuDeviceData<T>> d_sum;          ///< Reduction temp
+    CudaDeviceBuffer<CuDeviceData<T>> d_stage_w;      ///< Pinned history: a field entry on GPU
+    CudaDeviceBuffer<CuDeviceData<T>> d_stage_deriv;  ///< Pinned history: a residual entry on GPU
     /// @}
 
     /// @name CUB reduction storage
@@ -86,20 +86,25 @@ private:
     CudaDeviceBuffer<CuDeviceData<T>> d_sum_out;
     /// @}
 
+    /// History entry n on the GPU: the entry itself, or with a pinned history its copy in d_stage
+    const CuDeviceData<T>* entry_on_device(CudaCircularBuffer<T>& hist, int n,
+                                           CudaDeviceBuffer<CuDeviceData<T>>& d_stage);
+
 public:
     /**
      * @brief Construct GPU Anderson mixing optimizer.
      *
-     * @param n_var      Number of field variables (n_grid)
-     * @param max_hist   Maximum history length
-     * @param start_error Error threshold for switching to Anderson mixing
-     * @param mix_min    Minimum mixing parameter
-     * @param mix_init   Initial mixing parameter
+     * @param n_var          Number of field variables (n_grid)
+     * @param max_hist       Maximum history length
+     * @param start_error    Error threshold for switching to Anderson mixing
+     * @param mix_min        Minimum mixing parameter
+     * @param mix_init       Initial mixing parameter
+     * @param pinned_history Keep the histories in pinned host memory (memory-saving mode)
      */
     CudaAndersonMixing(int n_var, int max_hist,
-        double start_error, double mix_min, double mix_init);
+        double start_error, double mix_min, double mix_init, bool pinned_history);
 
-    /// Destructor. Frees GPU memory.
+    /// Destructor. Frees GPU and pinned memory.
     ~CudaAndersonMixing();
 
     /// Reset history and iteration counter.
@@ -108,9 +113,9 @@ public:
     /**
      * @brief Compute next iterate using Anderson mixing.
      *
-     * @param w_new         Output: new field values (device pointer)
-     * @param w_current     Input: current field values (device pointer)
-     * @param w_deriv       Input: residual (device pointer)
+     * @param w_new         Output: new field values (host)
+     * @param w_current     Input: current field values (host)
+     * @param w_deriv       Input: residual (host)
      * @param old_error_level Previous error level
      * @param error_level   Current error level
      */

@@ -1,6 +1,5 @@
 import os
 import numpy as np
-from scipy.io import savemat, loadmat
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
@@ -22,8 +21,7 @@ params = {
                               # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,     # Compute stress every iteration (for reproducibility)      # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
     "chain_model":"continuous",  # "discrete" or "continuous" chain model
     "ds":1/90,                   # Contour step interval, which is equal to 1/N_Ref.
 
@@ -35,7 +33,7 @@ params = {
 
     "polymers":[{      # Polymer species
         "volume_fraction":0.7,  # volume fraction of polymer chain
-        "blocks":[              # AB homopolymer
+        "blocks":[              # AB diblock copolymer
             {"type":"A", "length":f, },     # A-block
             {"type":"B", "length":1.0-f, }, # B-block
         ],},
@@ -68,10 +66,8 @@ for i in range(0,params["nx"][2]):
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-
 # Run
 calculation.run(initial_fields={"A": w_A, "B": w_B})
-
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("fields.mat")

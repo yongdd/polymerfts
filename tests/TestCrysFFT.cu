@@ -371,7 +371,9 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
     std::mt19937_64 rng(4242 + Nx);
     std::normal_distribution<double> dist(0.0, 1.0);
     for (auto& v : q_phys) v = dist(rng);
-    sg.symmetrize_reduced_basis(q_phys.data(), 1);
+    std::vector<double> q_irreducible(sg.get_n_reduced_basis_full());
+    sg.reduced_to_irreducible(q_phys.data(), q_irreducible.data(), 1);
+    sg.irreducible_to_reduced(q_irreducible.data(), q_phys.data(), 1);
     std::vector<double> q_logical(M_logical);
     sg.from_reduced_basis(q_phys.data(), q_logical.data(), 1);
 

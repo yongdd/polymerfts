@@ -18,10 +18,9 @@
  *
  * **Update Mechanism:**
  *
- * upload() copies the host arrays to device memory, allocating the device
- * arrays at its first call, and update() recalculates the Fourier space
- * operators for the current box and uploads them. The solvers create this
- * object when a full-grid path first needs it: one whose propagators and
+ * update() computes the host tables of a cell and copies them to device
+ * memory, allocating the device arrays at its first call. The solvers create
+ * this object when a full-grid path first needs it: one whose propagators and
  * stress take the CrysFFT path holds none of these full-grid arrays.
  *
  * **Template Instantiations:**
@@ -46,93 +45,56 @@ template <typename T>
 CudaPseudo<T>::CudaPseudo(
     std::map<std::string, double> bond_lengths,
     std::vector<BoundaryCondition> bc,
-    std::vector<int> nx, std::vector<double> dx,
-    std::array<double, 6> recip_metric,
-    std::array<double, 9> recip_vec)
-        : Pseudo<T>(bond_lengths, bc, nx, dx, recip_metric, recip_vec)
+    std::vector<int> nx,
+    std::map<int, double> ds_values)
+        : Pseudo<T>(bond_lengths, bc, nx, ds_values)
 {
-    // The device arrays are owning buffers, allocated by the first upload()
+    // The device arrays are owning buffers, allocated by the first update()
 }
 //----------------- Destructor -----------------------------
 template <typename T>
 CudaPseudo<T>::~CudaPseudo() = default;
 
 namespace {
-/// Copy a host table of n values into `slot`, allocated first when it does not hold n values
-void upload_table(CudaDeviceBuffer<double>& slot, const double* h_values, int n)
+/// Copy a host table into `slot`, allocated first when it does not hold as many values
+/// (an empty table releases the slot)
+template <typename V>
+void upload_table(CudaDeviceBuffer<V>& slot, const std::vector<V>& h_values)
 {
-    if (slot.size() != static_cast<size_t>(n))
-        slot.allocate(n);
-    CUDA_CHECK(cudaMemcpy(slot, h_values, sizeof(double) * n, cudaMemcpyHostToDevice));
+    if (slot.size() != h_values.size())
+        slot.allocate(h_values.size());
+    if (!h_values.empty())
+        CUDA_CHECK(cudaMemcpy(slot, h_values.data(), sizeof(V) * h_values.size(), cudaMemcpyHostToDevice));
 }
 }  // namespace
 
-template <typename T>
-void CudaPseudo<T>::upload_boltz_bond()
-{
-    const int M_COMPLEX = Pseudo<T>::get_total_complex_grid();
-
-    // Upload all ds_index values: boltz_bond[ds_index][monomer_type]
-    for (const auto& ds_entry : this->boltz_bond)
-        for (const auto& item : ds_entry.second)
-            upload_table(d_boltz_bond[ds_entry.first][item.first], item.second.data(), M_COMPLEX);
-
-    for (const auto& ds_entry : this->boltz_bond_half)
-        for (const auto& item : ds_entry.second)
-            upload_table(d_boltz_bond_half[ds_entry.first][item.first], item.second.data(), M_COMPLEX);
-}
-
-//----------------- Upload Fourier basis to GPU -----------------------------
-template <typename T>
-void CudaPseudo<T>::upload_fourier_basis()
-{
-    const int M_COMPLEX = Pseudo<T>::get_total_complex_grid();
-
-    // Diagonal terms
-    upload_table(d_fourier_basis_x, this->fourier_basis_x.data(), M_COMPLEX);
-    upload_table(d_fourier_basis_y, this->fourier_basis_y.data(), M_COMPLEX);
-    upload_table(d_fourier_basis_z, this->fourier_basis_z.data(), M_COMPLEX);
-    // Cross-terms for non-orthogonal systems
-    upload_table(d_fourier_basis_xy, this->fourier_basis_xy.data(), M_COMPLEX);
-    upload_table(d_fourier_basis_xz, this->fourier_basis_xz.data(), M_COMPLEX);
-    upload_table(d_fourier_basis_yz, this->fourier_basis_yz.data(), M_COMPLEX);
-
-    // negative_k_idx for complex fields with periodic BC
-    if constexpr (std::is_same<T, std::complex<double>>::value)
-    {
-        // The negative-frequency mapping exists only for periodic BCs
-        // (conjugate symmetry of the full complex FFT); for non-periodic
-        // boxes the host pointer is nullptr, nothing is uploaded and
-        // get_negative_frequency_mapping() returns nullptr on both sides.
-        const int* negative_k_idx = Pseudo<T>::get_negative_frequency_mapping();
-        if (negative_k_idx != nullptr)
-        {
-            if (d_negative_k_idx.size() != static_cast<size_t>(M_COMPLEX))
-                d_negative_k_idx.allocate(M_COMPLEX);
-            CUDA_CHECK(cudaMemcpy(d_negative_k_idx, negative_k_idx,
-                                       sizeof(int) * M_COMPLEX, cudaMemcpyHostToDevice));
-        }
-    }
-}
-
 //----------------- Update -----------------------------
 template <typename T>
-void CudaPseudo<T>::update(
-    std::vector<BoundaryCondition> bc,
-    std::map<std::string, double> bond_lengths,
-    std::vector<double> dx,
-    std::array<double, 6> recip_metric,
-    std::array<double, 9> recip_vec)
+void CudaPseudo<T>::update(const std::vector<double>& dx, const std::array<double, 6>& recip_metric,
+                           bool with_stress_basis)
 {
-    Pseudo<T>::update(bc, bond_lengths, dx, recip_metric, recip_vec);
-    upload();
-}
+    Pseudo<T>::update(dx, recip_metric, with_stress_basis);
 
-template <typename T>
-void CudaPseudo<T>::upload()
-{
-    upload_boltz_bond();
-    upload_fourier_basis();
+    // Boltzmann bond factors of every ds_index and monomer type
+    for (const auto& [ds_idx, by_type] : this->boltz_bond)
+        for (const auto& [monomer_type, table] : by_type)
+            upload_table(d_boltz_bond[ds_idx][monomer_type], table);
+    for (const auto& [ds_idx, by_type] : this->boltz_bond_half)
+        for (const auto& [monomer_type, table] : by_type)
+            upload_table(d_boltz_bond_half[ds_idx][monomer_type], table);
+
+    // The stress basis of the box axes (empty without it; no cross terms for non-periodic BC)
+    upload_table(d_fourier_basis_x, this->fourier_basis_x);
+    upload_table(d_fourier_basis_y, this->fourier_basis_y);
+    upload_table(d_fourier_basis_z, this->fourier_basis_z);
+    upload_table(d_fourier_basis_xy, this->fourier_basis_xy);
+    upload_table(d_fourier_basis_xz, this->fourier_basis_xz);
+    upload_table(d_fourier_basis_yz, this->fourier_basis_yz);
+
+    // The negative-frequency map of complex fields with periodic BC: a map of the grid,
+    // copied when Pseudo builds it (with the stress basis) and released with it
+    if (d_negative_k_idx.size() != this->negative_k_idx.size())
+        upload_table(d_negative_k_idx, this->negative_k_idx);
 }
 
 // Explicit template instantiation

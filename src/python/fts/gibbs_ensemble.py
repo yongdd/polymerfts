@@ -46,7 +46,7 @@ chemical potentials and the pressure. Without initial fields a box starts at its
 saddle point. The global step numbers continue, and
 the CL-FTS output of each box goes to <dir>/box<b> (clfts.log holds its console output).
 gibbs_history.json holds the settings and every cycle; continue_run() continues an interrupted
-run from it as the uninterrupted run would.
+run from it as the uninterrupted run would, also with another verbosity, platform or memory option.
 """
 
 import contextlib
@@ -100,6 +100,10 @@ class GibbsEnsemble:
     HISTORY = "gibbs_history.json"
 
     MOBILITY_RIDGE = 0.03   # λ of the mobility: small enough for the tie line, large enough for equal boxes
+
+    # The options that a continuation may change, as that of CL-FTS: they change how the boxes are
+    # computed and reported, not their model
+    CONTINUATION_KEYS = ("verbose_level", "platform", "reduce_memory", "aggregate_propagator_computation")
 
     def __init__(self, params, random_seed=None):
         params = validate_gibbs_params(params)   # a copy with the current names
@@ -170,15 +174,32 @@ class GibbsEnsemble:
 
     def settings(self):
         """Settings that a continuation must share (the number of cycles may grow): the keys of the input
-        that CL-FTS reads, so that the options of other methods, which it ignores, may come and go."""
+        that CL-FTS reads, so that the options of other methods, which it ignores, may come and go, but
+        those that box_params sets for each box and those that a continuation may change (_hashed_input)."""
         gibbs = {key: value for key, value in self.params["gibbs_ensemble"].items() if key != "cycles"}
-        template = self._clfts_input()
-        template["langevin"] = {key: value for key, value in template["langevin"].items() if key != "max_step"}
         # The amounts and the chemical potentials of the history follow the order of the point ions;
         # the hash of the input does not see that order
-        return {"input_hash": input_hash(json_ready(template)), "gibbs_ensemble": json_ready(gibbs),
+        return {"input_hash": input_hash(json_ready(self._hashed_input())), "gibbs_ensemble": json_ready(gibbs),
                 "random_seed": self.random_seed, "ion_names": self.point_ion_names,
                 "effective_block_lengths": [list(lengths) for lengths in self.block_lengths]}
+
+    def _hashed_input(self, legacy=None):
+        """The keys of the input that CL-FTS reads without those that box_params sets (langevin.max_step,
+        the directory, the intervals and the pressure of the recording and the volume fractions of the
+        polymers) and those that a continuation may change (CONTINUATION_KEYS). Earlier histories hashed
+        more keys (legacy): those written before 2026-11-18 all but max_step ("all"), those written until
+        2026-11-19 all but the keys that box_params sets ("cycle keys")."""
+        template = copy.deepcopy(self._clfts_input())
+        template["langevin"].pop("max_step", None)
+        if legacy != "all":
+            for key in ("dir", "checkpoint_interval", "statistics_save_interval", "pressure"):
+                template["recording"].pop(key, None)
+            for polymer in template["polymers"]:
+                polymer.pop("volume_fraction", None)
+        if legacy is None:
+            for key in self.CONTINUATION_KEYS:
+                template.pop(key, None)
+        return template
 
     def _clfts_input(self):
         """The keys of the input that CL-FTS reads (validate_gibbs_params has warned about the others)."""
@@ -277,6 +298,11 @@ class GibbsEnsemble:
                                   "continue in the cell 'lx' of both boxes; start a fresh run().")
         self.random_seed = int(stored["random_seed"])
         current = json.loads(json.dumps(json_ready(self.settings())))
+        # A history written by an earlier version hashed more keys: it continues with the input that wrote
+        # it, and its history takes the hash without them
+        if stored.get("input_hash") in [input_hash(json_ready(self._hashed_input(legacy)))
+                                        for legacy in ("all", "cycle keys")]:
+            stored["input_hash"] = self.history["settings"]["input_hash"] = current["input_hash"]
         stored_lengths = stored.pop("effective_block_lengths", None)
         effective_lengths = current.pop("effective_block_lengths")
         ion_names = current["ion_names"]
@@ -285,7 +311,10 @@ class GibbsEnsemble:
             raise ValidationError("'electrostatics.ions' lists the point ions in another order than the "
                                   "Gibbs-ensemble history; its amounts and chemical potentials follow that order")
         if stored != current:
-            raise ValidationError("The input differs from that of the Gibbs-ensemble history (only 'cycles' may change)")
+            raise ValidationError("The input differs from that of the Gibbs-ensemble history (only 'cycles', the "
+                                  "options of other methods, the keys that the cycles set and "
+                                  f"{', '.join(self.CONTINUATION_KEYS)} may change; a history written by an "
+                                  "earlier version continues only with the input that wrote it)")
         # Reinterpreting the amounts after a material snap of the lengths would change the
         # physical volumes or charges; ordinary roundoff is harmless.
         try:
@@ -344,7 +373,8 @@ class GibbsEnsemble:
                 psi_noise = data["psi_noise_prev"]
         with open(os.path.join(directory, "clfts.log"), "a") as log, contextlib.redirect_stdout(log):
             sim = CLFTS(params, random_seed=self._seed(cycle, b))
-            sim.draw_architectures = draw
+            if not draw:   # the chains are drawn in the first cycle of a run only
+                sim.draw_architectures = False
             n_grid = sim.prop_solver.n_grid
             if initial_fields is None:
                 initial_fields = {m: np.full(n_grid, w_saddle[i]) for i, m in enumerate(monomer_types)}

@@ -26,9 +26,10 @@ that go with them.
    stress had no Gamma term: the relaxed L was 16 % off here (1.5388 instead
    of 1.8417 for a_int = 0.1). After relaxation steps the smearing |k|^2 must
    be the solver's bit for bit (oblique, hexagonal and a 3D cell with a fixed
-   105-degree angle): until 2026-11 the kernel was rebuilt from the angles of
-   get_angles_degrees(), a round trip through radians (5e-16 of the largest
-   |k|^2 in the 3D cell; a free angle differs only at some steps).
+   105-degree angle): the smearing takes |k|^2 from the transform of the solver.
+   Until 2026-11 the kernel was rebuilt from the angles of get_angles_degrees(),
+   a round trip through radians (5e-16 of the largest |k|^2 in the 3D cell; a
+   free angle differs only at some steps).
 
 4. L-FTS and CL-FTS noise: sigma uses the cell volume (with the angle factor),
    not the product of the box lengths.
@@ -46,8 +47,13 @@ that go with them.
 
 7. With the Fourier transform of the simulation (Smearing(..., transform=PropagatorSolver.fourier),
    as SCFT, LFTS and CLFTS create it) apply() equals the NumPy path: periodic 3D, an oblique 2D
-   cell, reflecting and absorbing walls, real and complex fields, per-type and shared kernels,
-   also after set_box().
+   cell, reflecting and absorbing walls, real and complex fields (also complex fields with a
+   transform of real fields), per-type and shared kernels, also after the box of the solver and
+   set_box() change. With real fields in a periodic box the smearing takes |k|^2 from the
+   transform, on its half spectrum. There the derivatives of the two lengths and of the angle from
+   an orthogonal cell equal the central differences of H = <w (Gamma * w)>/2 (an even grid with
+   content at the Nyquist modes, whose tied aliases give a zero angle derivative and whose plane
+   of the last axis counts once in the length derivatives).
 """
 
 import os
@@ -64,6 +70,7 @@ from polymerfts import _core, scft, LFTS, CLFTS
 from polymerfts.theory.smearing import Smearing
 from polymerfts.utils.common import calculate_sigma
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from cuda_part import cpu_platform
 from fts_checks import quiet
 
 n_pass = 0
@@ -78,11 +85,6 @@ def check(cond, msg):
     else:
         n_fail += 1
         print(f"[FAIL] {msg}")
-
-
-def cpu_platform():
-    cpu = [p for p in _core.PlatformSelector.avail_platforms() if p.startswith("cpu")]
-    return cpu[0] if cpu else "cuda"
 
 
 def lattice_vectors(lx, angles):
@@ -251,7 +253,8 @@ def test_walls():
 
 
 def test_native_transform():
-    """apply() through PropagatorSolver.fourier equals the NumPy transforms."""
+    """apply() through PropagatorSolver.fourier equals the NumPy transforms, also after the box of the solver
+    and of the smearing changes; a transform of real fields smears a complex field part by part."""
     rng = np.random.default_rng(7)
     cases = [([8, 6, 10], [1.6, 1.3, 2.0], None, ["periodic"] * 6),
              ([12, 10], [1.5, 1.4], [110.0], ["periodic"] * 4),
@@ -262,28 +265,71 @@ def test_native_transform():
             for field_type in ("real", "complex"):
                 solver = quiet(PropagatorSolver, nx=nx, lx=lx, ds=0.1, bond_lengths={"A": 1.0}, bc=bc,
                                chain_model="continuous", platform=cpu_platform(), field_type=field_type, angles=angles)
+                solver.add_polymer(1.0, [["A", 1.0, 0, 1]])   # the box of the solver changes with polymers only
                 native = quiet(Smearing, nx, lx, smearing, angles=angles, bc=bc, transform=solver.fourier)
                 reference = quiet(Smearing, nx, lx, smearing, angles=angles, bc=bc)
                 n = int(np.prod(nx))
-                field = rng.normal(0.0, 5.0, n)
-                if field_type == "complex":
-                    field = field + 1j * rng.normal(0.0, 5.0, n)
+                fields = [rng.normal(0.0, 5.0, n) + 1j * rng.normal(0.0, 5.0, n)]
+                if field_type == "real":
+                    fields.insert(0, rng.normal(0.0, 5.0, n))
                 errors = []
                 for box in (lx, [1.1 * length for length in lx]):
+                    # The transform of real fields in a periodic box gives the smearing |k|^2 of its box
+                    quiet(solver.set_lx, box) if angles is None else quiet(solver.set_lattice_parameters, box, angles)
                     native.set_box(box, angles)
                     reference.set_box(box, angles)
                     for name in "AB":
-                        expected = reference.apply(field, name)
-                        errors.append(np.max(np.abs(native.apply(field, name) - expected)) / np.max(np.abs(expected)))
+                        for field in fields:
+                            expected = reference.apply(field, name)
+                            errors.append(np.max(np.abs(native.apply(field, name) - expected)) / np.max(np.abs(expected)))
                 check(max(errors) < 1e-12,
                       f"{smearing['type']} smearing through the Fourier transform, {bc[0]} {len(nx)}D"
                       f"{' oblique' if angles else ''}, {field_type} fields, also after set_box: "
                       f"equals NumPy (max rel diff {max(errors):.1e})")
 
 
+def test_nyquist_derivatives():
+    """The lattice derivatives of the smearing on the half spectrum of the transform (real fields), from an
+    orthogonal cell, equal the central differences of H = <w (Gamma * w)>/2. On the Nyquist plane
+    m_a = N_a/2 of an even axis the aliases -+N_a/2 tie, and their angle derivatives 2 k_a k_b have opposite
+    signs: the angle derivative is zero there. On the half spectrum the planes of the other axis do not
+    cancel it. The length derivatives count the Nyquist plane of the last axis once (Parseval weight 1, not
+    the 2 of the modes that stand for k and -k): weighted 2 they are off by 5-46 % here."""
+    nx, lx = [8, 6], [1.6, 1.3]
+    w = np.random.default_rng(13).normal(0.0, 5.0, int(np.prod(nx)))   # content at the Nyquist modes
+    for smearing in ({"type": "gaussian", "a_int": 0.15}, {"type": "sigmoidal", "k_int": 12.0, "dk_int": 4.0}):
+        solver = quiet(PropagatorSolver, nx=nx, lx=lx, ds=0.1, bond_lengths={"A": 1.0}, bc=["periodic"] * 4,
+                       chain_model="continuous", platform=cpu_platform())
+        solver.add_polymer(1.0, [["A", 1.0, 0, 1]])
+        sm = quiet(Smearing, nx, lx, smearing, transform=solver.fourier)
+        stress = sm.stress([w], [0.5 * w])   # dH/dL1, dH/dL2 and dH/dgamma per radian
+        analytic = stress[2]
+
+        def hamiltonian(gamma, box=lx):
+            quiet(solver.set_lattice_parameters, box, [90.0, 90.0, gamma])
+            sm.set_box(box, [90.0, 90.0, gamma])
+            return 0.5 * np.mean(w * sm.apply(w))
+
+        h = 1e-4
+        fd = (hamiltonian(90.0 + np.rad2deg(h)) - hamiltonian(90.0 - np.rad2deg(h))) / (2 * h)
+        err = abs(analytic - fd) / abs(fd)
+        check(sm.half_spectrum and err < 1e-6,
+              f"{smearing['type']}: angle derivative on the half spectrum from an orthogonal cell = FD of H "
+              f"({analytic:.10e} against {fd:.10e}, rel. err {err:.1e})")
+        h = 1e-5
+        for a in range(2):
+            plus, minus = list(lx), list(lx)
+            plus[a] += h
+            minus[a] -= h
+            fd = (hamiltonian(90.0, plus) - hamiltonian(90.0, minus)) / (2 * h)
+            err = abs(stress[a] - fd) / abs(fd)
+            check(err < 1e-6, f"{smearing['type']}: dH/dL{a + 1} on the half spectrum = FD of H "
+                              f"({stress[a]:.10e} against {fd:.10e}, rel. err {err:.1e})")
+
+
 def test_scft_box_relaxation():
     def params(lx, box):
-        return {"nx": [32], "lx": [lx], "relax_cell": box, "stress_interval": 1,
+        return {"nx": [32], "lx": [lx], "relax_cell": box,
                 "chain_model": "discrete", "ds": 1 / 50, "segment_lengths": {"A": 1.0, "B": 1.0},
                 "chi_n": {"A,B": 20.0}, "platform": cpu_platform(),
                 "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5},
@@ -313,13 +359,14 @@ def test_scft_box_relaxation():
 
 def test_scft_relaxation_wavenumbers():
     """After relaxation steps the smearing |k|^2 is the solver's bit for bit, as at construction: with a
-    free angle (oblique 105 degrees) and with fixed angles that change in a round trip through radians
-    (hexagonal 120, a 3D cell with gamma 105 whose lengths relax)."""
+    free angle (oblique 105 degrees) and with fixed angles (hexagonal 120, a 3D cell with gamma 105 whose
+    lengths relax). Oblique cells take |k|^2 from the solver's transform, so the test catches a smearing
+    whose box is not updated after a cell change."""
     cases = (("2D oblique 105, gamma free", [12, 14], [3.0, 3.2], [105.0], "Oblique2D"),
              ("2D hexagonal 120", [12, 12], [3.0, 3.0], [120.0], "Hexagonal2D"),
              ("3D gamma 105 fixed", [8, 10, 6], [2.4, 2.6, 2.2], [90.0, 90.0, 105.0], None))
     for name, nx, lx, angles, crystal_system in cases:
-        p = {"nx": nx, "lx": lx, "angles": angles, "relax_cell": True, "stress_interval": 1,
+        p = {"nx": nx, "lx": lx, "angles": angles, "relax_cell": True,
              "chain_model": "continuous", "ds": 1 / 20, "segment_lengths": {"A": 1.0, "B": 1.1},
              "chi_n": {"A,B": 16.0}, "platform": cpu_platform(),
              "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.35},
@@ -411,6 +458,7 @@ def main():
     test_stress()
     test_walls()
     test_native_transform()
+    test_nyquist_derivatives()
     test_scft_box_relaxation()
     test_scft_relaxation_wavenumbers()
     test_noise_volume()

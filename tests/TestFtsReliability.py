@@ -171,10 +171,12 @@ def main():
         try:
             with silenced():
                 for cls in (LFTS, CLFTS):
+                    def make(name, steps, seed):
+                        sim = cls(diblock_parameters(root / (cls.__name__ + name), steps, cls), random_seed=seed)
+                        sim.draw_architectures = True   # fts_checks turns the drawings off; checked below
+                        return sim
                     exact_restart(
-                        lambda name, steps, seed: cls(diblock_parameters(root / (cls.__name__ + name), steps, cls),
-                                                      random_seed=seed),
-                        lambda sim: sim.run(diblock_fields()), 4, 1, {
+                        make, lambda sim: sim.run(diblock_fields()), 4, 1, {
                             "fields_000004.mat": ("w_", "phi_"),
                             "dH_000002.mat": ("H_history", "dH_history", "drift_max_history"),
                             "structure_function_000002.mat": ("structure_function",)})

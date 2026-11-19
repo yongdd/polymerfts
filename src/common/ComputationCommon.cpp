@@ -134,15 +134,17 @@ void ComputationCommon<T>::set_fields(
 
     // w keeps the fields of earlier calls; only the types of this call are current
     w_input_types.clear();
+    std::map<std::string, BackendArray<T>*> w_current;
     for (const auto& [monomer_type, w_monomer] : w_input)
     {
         if (!w.contains(monomer_type))
             w[monomer_type] = backend->allocate();
         backend->copy_from_host(0, w[monomer_type], w_monomer);
         w_input_types.insert(monomer_type);
+        w_current[monomer_type] = w[monomer_type];
     }
 
-    backend->update_dw(w_input);
+    backend->update_dw(w_current);
 }
 
 template <typename T>
@@ -340,17 +342,16 @@ void ComputationCommon<T>::update_laplacian_operator()
 template <typename T>
 void ComputationCommon<T>::set_force_off_diagonal_stress(bool force)
 {
-    PropagatorComputation<T>::set_force_off_diagonal_stress(force);
     backend->set_force_off_diagonal_stress(force);
 }
 
 template <typename T>
-void ComputationCommon<T>::compute_statistics(
-    std::map<std::string, const T*> w_input,
-    std::map<std::string, const T*> q_init)
+void ComputationCommon<T>::compute_concentrations_and_stress()
 {
-    this->compute_propagators(w_input, q_init);
+    // A method without stress computes neither, as in the reduced-memory classes
+    check_stress_supported();
     this->compute_concentrations();
+    this->compute_stress();
 }
 
 template <typename T>
@@ -376,43 +377,44 @@ T ComputationCommon<T>::get_solvent_partition(int s)
 }
 
 template <typename T>
+void ComputationCommon<T>::collect_block_concentrations(
+    int p, const std::string& monomer_type, std::optional<double> fugacity,
+    std::vector<BackendArray<T>*>& arrays, std::vector<T>& weights) const
+{
+    for (const auto& [key, phi_b] : phi_block)
+    {
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
+        if ((p != -1 && std::get<0>(key) != p) || block.monomer_type != monomer_type || block.n_segment_right == 0)
+            continue;
+        if (fugacity)
+            weights.push_back(*fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
+        else if (!this->molecules->get_polymer(std::get<0>(key)).is_absent())
+            weights.push_back(concentration_norm(key));
+        else
+            continue;
+        arrays.push_back(phi_b);
+    }
+}
+
+template <typename T>
 void ComputationCommon<T>::get_total_concentration(std::string monomer_type, T* phi)
 {
     this->check_box_space_group();
     this->require_concentrations();
-    try
+    // A name that is not a monomer type (a typo) is an error, not a zero field
+    validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
+    std::vector<BackendArray<T>*> arrays;
+    std::vector<T> weights;
+    collect_block_concentrations(-1, monomer_type, std::nullopt, arrays, weights);
+    for (int s = 0; s < this->molecules->get_n_solvent_types(); s++)
     {
-        // A name that is not a monomer type (a typo) is an error, not a zero field
-        validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
-        std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
-        for (const auto& [key, phi_b] : phi_block)
+        if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
         {
-            const std::string& key_left = std::get<1>(key);
-            const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-            // An absent species adds nothing, also when its unused propagators are not
-            // finite; an occupied one whose Q overflows keeps its non-finite density
-            if (PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-                && !this->molecules->get_polymer(std::get<0>(key)).is_absent())
-            {
-                arrays.push_back(phi_b);
-                weights.push_back(concentration_norm(key));
-            }
+            arrays.push_back(phi_solvent[s]);
+            weights.push_back(1.0);
         }
-        for (int s = 0; s < this->molecules->get_n_solvent_types(); s++)
-        {
-            if (std::get<1>(this->molecules->get_solvent(s)) == monomer_type)
-            {
-                arrays.push_back(phi_solvent[s]);
-                weights.push_back(1.0);
-            }
-        }
-        backend->sum_to_host(phi, arrays, weights);
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    backend->sum_to_host(phi, arrays, weights);
 }
 
 template <typename T>
@@ -420,34 +422,16 @@ void ComputationCommon<T>::get_total_concentration(int p, std::string monomer_ty
 {
     this->check_box_space_group();
     this->require_concentrations();
-    try
-    {
-        // A name that is not a monomer type (a typo) is an error, not a zero field
-        validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
-        const int P = this->molecules->get_n_polymer_types();
-        if (p < 0 || p > P-1)
-            throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
+    // A name that is not a monomer type (a typo) is an error, not a zero field
+    validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
+    const int P = this->molecules->get_n_polymer_types();
+    if (p < 0 || p > P-1)
+        throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
-        std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
-        for (const auto& [key, phi_b] : phi_block)
-        {
-            const std::string& key_left = std::get<1>(key);
-            const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-            // An absent species adds nothing (see the overload above)
-            if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0
-                && !this->molecules->get_polymer(p).is_absent())
-            {
-                arrays.push_back(phi_b);
-                weights.push_back(concentration_norm(key));
-            }
-        }
-        backend->sum_to_host(phi, arrays, weights);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    std::vector<BackendArray<T>*> arrays;
+    std::vector<T> weights;
+    collect_block_concentrations(p, monomer_type, std::nullopt, arrays, weights);
+    backend->sum_to_host(phi, arrays, weights);
 }
 
 template <typename T>
@@ -455,42 +439,25 @@ void ComputationCommon<T>::get_total_concentration_gce(double fugacity, int p, s
 {
     this->check_box_space_group();
     this->require_concentrations();
-    try
-    {
-        // A name that is not a monomer type (a typo) is an error, not a zero field
-        validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
-        validation::require_non_negative(fugacity, "fugacity");
-        const int P = this->molecules->get_n_polymer_types();
-        if (p < 0 || p > P-1)
-            throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
+    // A name that is not a monomer type (a typo) is an error, not a zero field
+    validation::require_string_key(this->molecules->get_bond_lengths(), monomer_type, "the monomer types");
+    validation::require_non_negative(fugacity, "fugacity");
+    const int P = this->molecules->get_n_polymer_types();
+    if (p < 0 || p > P-1)
+        throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
 
-        // An absent GCE species contributes exactly zero even if an unused
-        // propagator integral is nonfinite. Validate its arguments first.
-        if (fugacity == 0.0)
-        {
-            std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
-            return;
-        }
-
-        std::vector<BackendArray<T>*> arrays;
-        std::vector<T> weights;
-        for (const auto& [key, phi_b] : phi_block)
-        {
-            const std::string& key_left = std::get<1>(key);
-            const int n_segment_right = this->propagator_computation_optimizer->get_computation_block(key).n_segment_right;
-            if (std::get<0>(key) == p && PropagatorCode::get_monomer_type_from_key(key_left) == monomer_type && n_segment_right != 0)
-            {
-                arrays.push_back(phi_b);
-                const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-                weights.push_back(fugacity * contour_step(std::get<2>(key)) * block.n_repeated);
-            }
-        }
-        backend->sum_to_host(phi, arrays, weights);
-    }
-    catch (std::exception& exc)
+    // An absent GCE species contributes exactly zero even if an unused
+    // propagator integral is nonfinite. Validate its arguments first.
+    if (fugacity == 0.0)
     {
-        throw_without_line_number(exc.what());
+        std::fill_n(phi, this->cb->get_n_basis(), T(0.0));
+        return;
     }
+
+    std::vector<BackendArray<T>*> arrays;
+    std::vector<T> weights;
+    collect_block_concentrations(p, monomer_type, fugacity, arrays, weights);
+    backend->sum_to_host(phi, arrays, weights);
 }
 
 template <typename T>
@@ -498,52 +465,45 @@ void ComputationCommon<T>::get_block_concentration(int p, T* phi)
 {
     this->check_box_space_group();
     this->require_concentrations();
-    try
+    const int N = this->cb->get_n_basis();
+    const int P = this->molecules->get_n_polymer_types();
+    if (p < 0 || p > P-1)
+        throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
+
+    if (this->propagator_computation_optimizer->use_aggregation())
+        throw_with_line_number("Disable 'aggregation' option to invoke 'get_block_concentration'.");
+
+    Polymer& pc = this->molecules->get_polymer(p);
+    std::vector<Block>& blocks = pc.get_blocks();
+    for (size_t b = 0; b < blocks.size(); b++)
     {
-        const int N = this->cb->get_n_basis();
-        const int P = this->molecules->get_n_polymer_types();
-        if (p < 0 || p > P-1)
-            throw_with_line_number("Index (" + std::to_string(p) + ") must be in range [0, " + std::to_string(P-1) + "]");
+        std::string key_left  = pc.get_propagator_key(blocks[b].v, blocks[b].u);
+        std::string key_right = pc.get_propagator_key(blocks[b].u, blocks[b].v);
+        if (key_left < key_right)
+            key_left.swap(key_right);
 
-        if (this->propagator_computation_optimizer->use_aggregation())
-            throw_with_line_number("Disable 'aggregation' option to invoke 'get_block_concentration'.");
-
-        Polymer& pc = this->molecules->get_polymer(p);
-        std::vector<Block>& blocks = pc.get_blocks();
-        for (size_t b = 0; b < blocks.size(); b++)
+        const auto block_key = std::make_tuple(p, key_left, key_right);
+        auto block_it = phi_block.find(block_key);
+        if (block_it == phi_block.end())
+            throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
+        // An absent species has zero density, also when its unused propagators are not finite
+        if (pc.is_absent())
         {
-            std::string key_left  = pc.get_propagator_key(blocks[b].v, blocks[b].u);
-            std::string key_right = pc.get_propagator_key(blocks[b].u, blocks[b].v);
-            if (key_left < key_right)
-                key_left.swap(key_right);
-
-            const auto block_key = std::make_tuple(p, key_left, key_right);
-            auto block_it = phi_block.find(block_key);
-            if (block_it == phi_block.end())
-                throw_with_line_number("Block (" + std::to_string(p) + ", " + key_left + ", " + key_right + ") is not in phi_block.");
-            // An absent species has zero density, also when its unused propagators are not finite
-            if (pc.is_absent())
-            {
-                std::fill_n(&phi[b*N], N, T(0.0));
-                continue;
-            }
-            const T norm = concentration_norm(block_key);
-            backend->copy_to_host(&phi[b*N], block_it->second);
-            for (int i = 0; i < N; i++)
-                phi[b*N + i] *= norm;
-
-            // Identical blocks (e.g. the equal arms of a star) share one entry, which
-            // holds the copies of all of them; each block gets the share of its copies
-            const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
-            const double n_copies = blocks[b].n_copies;
-            if (n_repeated != n_copies)
-                for (int i = 0; i < N; i++)
-                    phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
+            std::fill_n(&phi[b*N], N, T(0.0));
+            continue;
         }
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
+        const T norm = concentration_norm(block_key);
+        backend->copy_to_host(&phi[b*N], block_it->second);
+        for (int i = 0; i < N; i++)
+            phi[b*N + i] *= norm;
+
+        // Identical blocks (e.g. the equal arms of a star) share one entry, which
+        // holds the copies of all of them; each block gets the share of its copies
+        const double n_repeated = this->propagator_computation_optimizer->get_computation_block(block_key).n_repeated;
+        const double n_copies = blocks[b].n_copies;
+        if (n_repeated != n_copies)
+            for (int i = 0; i < N; i++)
+                phi[b*N + i] = phi[b*N + i]/n_repeated*n_copies;
     }
 }
 
@@ -552,17 +512,10 @@ void ComputationCommon<T>::get_solvent_concentration(int s, T* phi)
 {
     this->check_box_space_group();
     this->require_concentrations();
-    try
-    {
-        const int S = this->molecules->get_n_solvent_types();
-        if (s < 0 || s > S-1)
-            throw_with_line_number("Index (" + std::to_string(s) + ") must be in range [0, " + std::to_string(S-1) + "]");
-        backend->copy_to_host(phi, phi_solvent[s]);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    const int S = this->molecules->get_n_solvent_types();
+    if (s < 0 || s > S-1)
+        throw_with_line_number("Index (" + std::to_string(s) + ") must be in range [0, " + std::to_string(S-1) + "]");
+    backend->copy_to_host(phi, phi_solvent[s]);
 }
 
 // Explicit template instantiation

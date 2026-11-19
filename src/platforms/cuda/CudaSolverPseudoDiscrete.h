@@ -80,16 +80,7 @@ private:
     using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
     using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-
-
-    /// @name Fourier Space Buffers
-    /// @{
-    CudaDeviceBuffer<cuDoubleComplex> d_qk_in_1_one[MAX_STREAMS];
-    CudaDeviceBuffer<cuDoubleComplex> d_qk_in_1_two[MAX_STREAMS];
-    CudaDeviceBuffer<double> d_rk_in_1_one[MAX_STREAMS];  ///< Real-valued FFT coefficients for non-periodic BC (DCT/DST); nullptr when periodic
-    CudaDeviceBuffer<double> d_rk_in_2_one[MAX_STREAMS];  ///< Real-valued FFT coefficients for non-periodic BC (DCT/DST); nullptr when periodic
-    /// @}
-
+    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
 
 public:
     /**
@@ -103,7 +94,7 @@ public:
      * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
      * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
      */
-    CudaSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS][2],
+    CudaSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                                 SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
     /// Destructor. Frees GPU resources.
@@ -120,7 +111,7 @@ public:
     bool exp_dw_stored_reduced() const { return use_crysfft_; }
 
     /// Update Boltzmann factors.
-    void update_dw(std::string device, std::map<std::string, const T*> w_input) override;
+    void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;
 
     /**
      * @brief Advance propagator by one full segment.
@@ -158,15 +149,12 @@ public:
         CuDeviceData<T> *d_q_in, CuDeviceData<T> *d_q_out,
         std::string monomer_type) override;
 
-    /// Scratch buffers lent to CudaSolverPseudoBase::compute_single_segment_stress()
-    typename Base::StressScratch stress_scratch(int STREAM) override;
     /// CrysFFT steps of a block: its bonds, and half bonds, which always take the
     /// global ds (index 0; see advance_propagator_half_bond_step())
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
         return {this->crysfft_coeff(monomer_type, ds_index, 6.0), this->crysfft_coeff(monomer_type, 0, 12.0)};
     }
-    void allocate_work(int n_field, bool full_grid) override;
     /// Boltzmann bond factor of the stress integrand (see CudaSolverPseudoBase)
     const double* get_stress_boltz_bond(
         const std::string& monomer_type, bool is_half_bond_length) const override;

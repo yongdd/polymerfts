@@ -3,8 +3,9 @@
  * @brief CUDA implementation of spectral transforms for all boundary conditions.
  *
  * Implements:
- * - cuFFT for periodic boundary conditions
- * - Delegates to CudaRealTransform for non-periodic BCs (DCT/DST)
+ * - cuFFT for periodic boundary conditions (complex coefficient interface)
+ * - Delegates to CudaRealTransform for non-periodic BCs (DCT/DST, real
+ *   coefficient interface)
  *
  * @see CudaFFT.h for class documentation
  * @see CudaRealTransform for DCT/DST implementation
@@ -73,66 +74,10 @@ __global__ void ker_real_to_complex_part(cuDoubleComplex* dst, const double* src
     }
 }
 
-__global__ void ker_complex_to_interleaved(double* dst, const cuDoubleComplex* src, int M_COMPLEX)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M_COMPLEX; idx += blockDim.x * gridDim.x)
-    {
-        dst[2 * idx] = src[idx].x;
-        dst[2 * idx + 1] = src[idx].y;
-    }
-}
-
-__global__ void ker_interleaved_to_complex(cuDoubleComplex* dst, const double* src, int M_COMPLEX)
-{
-    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M_COMPLEX; idx += blockDim.x * gridDim.x)
-    {
-        dst[idx].x = src[2 * idx];
-        dst[idx].y = src[2 * idx + 1];
-    }
-}
-
 __global__ void ker_scale(double* data, double scale, int M)
 {
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < M; idx += blockDim.x * gridDim.x)
         data[idx] *= scale;
-}
-
-//------------------------------------------------------------------------------
-// Constructor (all periodic - backward compatible)
-//------------------------------------------------------------------------------
-template <typename T, int DIM>
-CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx)
-    : nx_(nx), is_all_periodic_(true)
-{
-    for (int d = 0; d < DIM; ++d)
-        bc_[d] = BoundaryCondition::PERIODIC;
-
-    try
-    {
-        total_grid_ = 1;
-        for (int d = 0; d < DIM; ++d)
-            total_grid_ *= nx_[d];
-
-        if constexpr (std::is_same<T, std::complex<double>>::value)
-        {
-            // c2c transform: full spectrum (no Hermitian symmetry)
-            total_complex_grid_ = total_grid_;
-        }
-        else if (DIM == 3)
-            total_complex_grid_ = nx_[0] * nx_[1] * (nx_[2] / 2 + 1);
-        else if (DIM == 2)
-            total_complex_grid_ = nx_[0] * (nx_[1] / 2 + 1);
-        else if (DIM == 1)
-            total_complex_grid_ = nx_[0] / 2 + 1;
-
-        d_work_buffer_.allocate(2 * total_complex_grid_);   // complex layout
-
-        initPeriodicFFT();
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
-    }
 }
 
 //------------------------------------------------------------------------------
@@ -173,19 +118,6 @@ CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, 
 
         if (is_all_periodic_)
         {
-            if constexpr (std::is_same<T, std::complex<double>>::value)
-            {
-                // c2c transform: full spectrum (no Hermitian symmetry)
-                total_complex_grid_ = total_grid_;
-            }
-            else if (DIM == 3)
-                total_complex_grid_ = nx_[0] * nx_[1] * (nx_[2] / 2 + 1);
-            else if (DIM == 2)
-                total_complex_grid_ = nx_[0] * (nx_[1] / 2 + 1);
-            else if (DIM == 1)
-                total_complex_grid_ = nx_[0] / 2 + 1;
-
-            d_work_buffer_.allocate(2 * total_complex_grid_);   // complex layout
             initPeriodicFFT();
         }
         else
@@ -202,10 +134,9 @@ CudaFFT<T, DIM>::CudaFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, 
                 }
             }
 
-            total_complex_grid_ = total_grid_;
-
-            // Allocate work buffer for non-periodic transforms
-            d_work_buffer_.allocate(total_grid_);
+            // A complex field is transformed part by part in a work buffer
+            if constexpr (std::is_same<T, std::complex<double>>::value)
+                d_work_buffer_.allocate(total_grid_);
 
             initNonPeriodicFFT();
         }
@@ -304,57 +235,35 @@ void CudaFFT<T, DIM>::forward_stream(T* d_rdata, double* d_cdata, cudaStream_t s
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
         if (is_all_periodic_)
+            throw_with_line_number("The real coefficient interface is for non-periodic boundary conditions.");
+
+        // Non-periodic: use CudaRealTransform (in-place). The DCT/DST is
+        // real-linear, so complex fields (CL-FTS) transform their real and
+        // imaginary parts independently; coefficients are stored
+        // interleaved as complex pairs (d_cdata then holds 2*total_grid_ doubles).
+        if constexpr (std::is_same<T, double>::value)
         {
-            cuDoubleComplex* d_complex = reinterpret_cast<cuDoubleComplex*>(d_work_buffer_.get());
-
-            if constexpr (std::is_same<T, double>::value)
-            {
-                CUFFT_CHECK(cufftSetStream(plan_forward_, stream));
-                CUFFT_CHECK(cufftExecD2Z(plan_forward_, d_rdata, d_complex));
-            }
-            else
-            {
-                CUFFT_CHECK(cufftSetStream(plan_forward_, stream));
-                CUFFT_CHECK(cufftExecZ2Z(plan_forward_, reinterpret_cast<cuDoubleComplex*>(d_rdata),
-                             d_complex, CUFFT_FORWARD));
-            }
+            // Real fields: copy the input into the output buffer (both hold
+            // total_grid_ values) and transform it there, so the input is kept
+            ker_copy_data<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_cdata, d_rdata, total_grid_);
             CUDA_CHECK_LAUNCH();
-
-            ker_complex_to_interleaved<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                d_cdata, d_complex, total_complex_grid_);
-            CUDA_CHECK_LAUNCH();
+            rt_forward_->execute(d_cdata, stream);
+            return;
         }
-        else
+        const int n_parts = 2;
+        for (int part = 0; part < n_parts; ++part)
         {
-            // Non-periodic: use CudaRealTransform (in-place). The DCT/DST is
-            // real-linear, so complex fields (CL-FTS) transform their real and
-            // imaginary parts independently; coefficients are stored
-            // interleaved as complex pairs (d_cdata then holds
-            // 2*total_complex_grid_ doubles, matching the periodic layout).
-            if constexpr (std::is_same<T, double>::value)
-            {
-                // Real fields: copy the input into the output buffer (both hold
-                // total_grid_ values) and transform it there, so the input is kept
-                ker_copy_data<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_cdata, d_rdata, total_grid_);
-                CUDA_CHECK_LAUNCH();
-                rt_forward_->execute(d_cdata, stream);
-                return;
-            }
-            const int n_parts = 2;
-            for (int part = 0; part < n_parts; ++part)
-            {
-                ker_complex_part_to_real<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    d_work_buffer_, reinterpret_cast<cuDoubleComplex*>(d_rdata), part, total_grid_);
-                CUDA_CHECK_LAUNCH();
+            ker_complex_part_to_real<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_work_buffer_, reinterpret_cast<cuDoubleComplex*>(d_rdata), part, total_grid_);
+            CUDA_CHECK_LAUNCH();
 
-                // Execute forward transform (DCT-2 or DST-2) on the given stream
-                rt_forward_->execute(d_work_buffer_, stream);
+            // Execute forward transform (DCT-2 or DST-2) on the given stream
+            rt_forward_->execute(d_work_buffer_, stream);
 
-                // Copy to output (interleaved for complex fields)
-                ker_real_to_interleaved_part<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    d_cdata, d_work_buffer_, part, total_complex_grid_);
-                CUDA_CHECK_LAUNCH();
-            }
+            // Copy to output (interleaved for complex fields)
+            ker_real_to_interleaved_part<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_cdata, d_work_buffer_, part, total_grid_);
+            CUDA_CHECK_LAUNCH();
         }
     }
     catch (std::exception& exc)
@@ -375,75 +284,46 @@ void CudaFFT<T, DIM>::backward_stream(double* d_cdata, T* d_rdata, cudaStream_t 
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
         if (is_all_periodic_)
+            throw_with_line_number("The real coefficient interface is for non-periodic boundary conditions.");
+
+        // Non-periodic: use CudaRealTransform (in-place). Complex fields
+        // arrive as interleaved coefficient pairs (see forward_stream);
+        // inverse-transform the two components independently.
+        double scale = 1.0;
+        for (int d = 0; d < DIM; ++d)
+            scale *= 1.0 / (2.0 * nx_[d]);
+
+        if constexpr (std::is_same<T, double>::value)
         {
-            cuDoubleComplex* d_complex = reinterpret_cast<cuDoubleComplex*>(d_work_buffer_.get());
-
-            ker_interleaved_to_complex<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                d_complex, d_cdata, total_complex_grid_);
+            // Real fields: copy the coefficients into the output buffer and
+            // transform there, so the coefficients are kept
+            ker_copy_data<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_rdata, d_cdata, total_grid_);
             CUDA_CHECK_LAUNCH();
-
-            if constexpr (std::is_same<T, double>::value)
-            {
-                CUFFT_CHECK(cufftSetStream(plan_backward_, stream));
-                CUFFT_CHECK(cufftExecZ2D(plan_backward_, d_complex, d_rdata));
-
-                ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    d_rdata, 1.0 / total_grid_, total_grid_);
-                CUDA_CHECK_LAUNCH();
-            }
-            else
-            {
-                CUFFT_CHECK(cufftSetStream(plan_backward_, stream));
-                CUFFT_CHECK(cufftExecZ2Z(plan_backward_, d_complex,
-                             reinterpret_cast<cuDoubleComplex*>(d_rdata), CUFFT_INVERSE));
-
-                ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    reinterpret_cast<double*>(d_rdata), 1.0 / total_grid_, total_grid_ * 2);
-                CUDA_CHECK_LAUNCH();
-            }
+            rt_backward_->execute(d_rdata, stream);
+            // Normalize (DCT/DST round-trip scaling is 2*N per dimension)
+            ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_rdata, scale, total_grid_);
             CUDA_CHECK_LAUNCH();
+            return;
         }
-        else
+        const int n_parts = 2;
+        for (int part = 0; part < n_parts; ++part)
         {
-            // Non-periodic: use CudaRealTransform (in-place). Complex fields
-            // arrive as interleaved coefficient pairs (see forward_stream);
-            // inverse-transform the two components independently.
-            double scale = 1.0;
-            for (int d = 0; d < DIM; ++d)
-                scale *= 1.0 / (2.0 * nx_[d]);
+            // Copy input component to work buffer
+            ker_interleaved_part_to_real<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_work_buffer_, d_cdata, part, total_grid_);
+            CUDA_CHECK_LAUNCH();
 
-            if constexpr (std::is_same<T, double>::value)
-            {
-                // Real fields: copy the coefficients into the output buffer and
-                // transform there, so the coefficients are kept
-                ker_copy_data<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_rdata, d_cdata, total_grid_);
-                CUDA_CHECK_LAUNCH();
-                rt_backward_->execute(d_rdata, stream);
-                // Normalize (DCT/DST round-trip scaling is 2*N per dimension)
-                ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_rdata, scale, total_grid_);
-                CUDA_CHECK_LAUNCH();
-                return;
-            }
-            const int n_parts = 2;
-            for (int part = 0; part < n_parts; ++part)
-            {
-                // Copy input component to work buffer
-                ker_interleaved_part_to_real<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    d_work_buffer_, d_cdata, part, total_complex_grid_);
-                CUDA_CHECK_LAUNCH();
+            // Execute backward transform (DCT-3 or DST-3) on the given stream
+            rt_backward_->execute(d_work_buffer_, stream);
 
-                // Execute backward transform (DCT-3 or DST-3) on the given stream
-                rt_backward_->execute(d_work_buffer_, stream);
+            // Normalize (DCT/DST round-trip scaling is 2*N per dimension)
+            ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work_buffer_, scale, total_grid_);
+            CUDA_CHECK_LAUNCH();
 
-                // Normalize (DCT/DST round-trip scaling is 2*N per dimension)
-                ker_scale<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work_buffer_, scale, total_grid_);
-                CUDA_CHECK_LAUNCH();
-
-                // Copy to output component
-                ker_real_to_complex_part<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-                    reinterpret_cast<cuDoubleComplex*>(d_rdata), d_work_buffer_, part, total_grid_);
-                CUDA_CHECK_LAUNCH();
-            }
+            // Copy to output component
+            ker_real_to_complex_part<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                reinterpret_cast<cuDoubleComplex*>(d_rdata), d_work_buffer_, part, total_grid_);
+            CUDA_CHECK_LAUNCH();
         }
     }
     catch (std::exception& exc)

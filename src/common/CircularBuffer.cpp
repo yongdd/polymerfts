@@ -94,19 +94,6 @@ T* CircularBuffer<T>::get_array(int n)
 }
 
 /**
- * @brief Array subscript operator (alias for get_array).
- *
- * @param n History index (0 = most recent)
- * @return Pointer to array of size `width`
- */
-template <typename T>
-T* CircularBuffer<T>::operator[] (int n)
-{
-    int i = (start+n_items-n-1+length)%length;
-    return elems[i].data();
-}
-
-/**
  * @brief Get single element from history.
  *
  * @param n History index (0 = most recent)

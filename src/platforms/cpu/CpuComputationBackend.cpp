@@ -121,8 +121,11 @@ void CpuComputationBackend<T>::update_laplacian_operator()
 }
 
 template <typename T>
-void CpuComputationBackend<T>::update_dw(std::map<std::string, const T*> w_input)
+void CpuComputationBackend<T>::update_dw(const std::map<std::string, BackendArray<T>*>& w)
 {
+    std::map<std::string, const T*> w_input;
+    for (const auto& [monomer_type, w_monomer] : w)
+        w_input[monomer_type] = raw(w_monomer);
     solver->update_dw(w_input);
 
     // The discrete solver keeps exp(-w ds) on the full grid unless its CrysFFT
@@ -316,24 +319,19 @@ void CpuComputationBackend<T>::add_segment_products(
 }
 
 template <typename T>
-void CpuComputationBackend<T>::normalize_concentration(int, BackendArray<T>* phi, T norm, BackendArray<T>* divisor)
+void CpuComputationBackend<T>::divide_by_boltzmann_factor(int, BackendArray<T>* phi, BackendArray<T>* boltzmann_factor)
 {
     T* _phi = raw(phi);
-    if (divisor != nullptr)
-    {
-        const T* _divisor = raw(divisor);
-        const double* mask = cb->get_mask();
-        for (int i = 0; i < n_basis; i++)
-        {
-            // A masked bead has zero density, including when exp(-w ds) underflows.
-            if (mask != nullptr && mask[i] == 0.0)
-                _phi[i] = T(0.0);
-            else
-                _phi[i] /= _divisor[i];
-        }
-    }
+    const T* exp_dw = raw(boltzmann_factor);
+    const double* mask = cb->get_mask();
     for (int i = 0; i < n_basis; i++)
-        _phi[i] *= norm;
+    {
+        // A masked bead has zero density, including when exp(-w ds) underflows.
+        if (mask != nullptr && mask[i] == 0.0)
+            _phi[i] = T(0.0);
+        else
+            _phi[i] /= exp_dw[i];
+    }
 }
 
 template <typename T>

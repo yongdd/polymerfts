@@ -216,14 +216,15 @@ void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels,
-                                             int derivative_axis, const RealSpaceBond::Derivative* derivative) const
+                                             WorkArrays& work, int derivative_axis,
+                                             const RealSpaceBond::Derivative* derivative) const
 {
     const std::vector<int> nx = cb->get_nx();
     const int dim = static_cast<int>(nx.size());
     const long M = cb->get_total_grid();
 
-    // Scratch kept per thread (propagators advance in parallel)
-    thread_local std::vector<T> work_a, work_b, line;
+    std::vector<T>& work_a = work.pass_a;
+    std::vector<T>& work_b = work.pass_b;
     work_a.resize(M);
     work_b.resize(M);
 
@@ -253,7 +254,7 @@ void CpuSolverRealSpaceDiscrete<T>::convolve(const T* q_in, T* q_out, const Real
         if (!folded.empty())
             pass_folded(src, dst, n, inner, outer, folded);
         else if (inner == 1)
-            pass_contiguous(src, dst, n, outer, stencil, index, sign, line);
+            pass_contiguous(src, dst, n, outer, stencil, index, sign, work.line);
         else
             pass_strided(src, dst, n, inner, outer, stencil, index, sign);
         src = dst;
@@ -271,14 +272,14 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
         const int M = cb->get_total_grid();
         const int n_basis = space_group_ != nullptr ? space_group_->get_n_reduced_basis() : M;
         const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        thread_local std::vector<T> full_in, full_out;
+        WorkArrays& work = work_arrays();
         T* out = q_out;
         if (space_group_ != nullptr)
         {
-            full_out.resize(M);
-            out = full_out.data();
+            work.full_2.resize(M);
+            out = work.full_2.data();
         }
-        convolve(expanded(q_in, full_in), out, bonds.full.at(ds_index).at(monomer_type));
+        convolve(expanded(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
         for (int i = 0; i < M; ++i)
             out[i] *= exp_dw[i];
         reduced(out, q_out);
@@ -297,14 +298,14 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T
 {
     try
     {
-        thread_local std::vector<T> full_in, full_out;
+        WorkArrays& work = work_arrays();
         if (space_group_ == nullptr)
-            convolve(q_in, q_out, bonds.half.at(monomer_type));
+            convolve(q_in, q_out, bonds.half.at(monomer_type), work);
         else
         {
-            full_out.resize(cb->get_total_grid());
-            convolve(expanded(q_in, full_in), full_out.data(), bonds.half.at(monomer_type));
-            reduced(full_out.data(), q_out);
+            work.full_2.resize(cb->get_total_grid());
+            convolve(expanded(q_in, work.full_1), work.full_2.data(), bonds.half.at(monomer_type), work);
+            reduced(work.full_2.data(), q_out);
         }
     }
     catch (std::exception& exc)
@@ -334,14 +335,15 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
                                                                     : bonds.full.at(0).at(monomer_type);
         const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
-        thread_local std::vector<T> dq, full_1, full_2;
+        WorkArrays& work = work_arrays();
+        std::vector<T>& dq = work.dq;
         dq.resize(M);
-        const T* full_q_1 = expanded(q_1, full_1);
-        const T* full_q_2 = expanded(q_2, full_2);
+        const T* full_q_1 = expanded(q_1, work.full_1);
+        const T* full_q_2 = expanded(q_2, work.full_2);
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
-            convolve(full_q_2, dq.data(), kernels, a, &derivatives[a]);
+            convolve(full_q_2, dq.data(), kernels, work, a, &derivatives[a]);
             T sum = 0.0;
             for (int i = 0; i < M; ++i)
                 sum += full_q_1[i] * dq[i];

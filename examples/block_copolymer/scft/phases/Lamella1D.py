@@ -1,12 +1,15 @@
 import os
-import numpy as np
-from scipy.io import savemat
+import sys
 
 # OpenMP environment variables (set before importing polymerfts)
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"  # 0, 1
 os.environ["OMP_NUM_THREADS"] = "2"  # 1 ~ 4
 
 from polymerfts import scft
+
+# Initial fields of common phases (seeds.py in the folder above)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import seeds
 
 # Major Simulation params
 f = 0.5         # A-fraction of major BCP chain, f
@@ -18,9 +21,7 @@ params = {
                         # and "N_Ref" is the number of segments of reference linear homopolymer chain.
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
-    "relax_cell":True,
-    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
-    # Relax cell lengths and allowed angles during SCFT iteration.
+    "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
     "chain_model":"discrete",   # "discrete" or "continuous" chain model
     "ds":1/90,                  # Contour step interval, which is equal to 1/N_Ref.
 
@@ -49,23 +50,15 @@ params = {
     "tolerance":1e-8     # Terminate iteration if the self-consistency error is less than tolerance
 }
 
-# Set initial fields
-w_A = np.zeros(list(params["nx"]), dtype=np.float64)
-w_B = np.zeros(list(params["nx"]), dtype=np.float64)
+# Set initial fields: one cosine period (seeds.py)
+seed = seeds.lamellae(params["nx"], params["lx"])
 print("w_A and w_B are initialized to lamellar phase.")
-for i in range(0,params["nx"][0]):
-    w_A[i] =  np.cos(2*np.pi*i/params["nx"][0])
-    w_B[i] = -np.cos(2*np.pi*i/params["nx"][0])
 
 # Initialize calculation
 calculation = scft.SCFT(params=params)
 
-# Set a timer
-
 # Run
-calculation.run(initial_fields={"A": w_A, "B": w_B})
-
-# Estimate execution time
+calculation.run(initial_fields=seed["w"])
 
 # Save final results (.mat, .json or .yaml format)
 calculation.save_results("L1D.json")
