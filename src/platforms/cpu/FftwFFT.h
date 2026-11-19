@@ -24,6 +24,24 @@
 #include "MakhoulTransform.h"
 
 /**
+ * @brief Whether FFTW's new-array execute functions may run a plan on the array p.
+ *
+ * They take arrays of the alignment of the planning arrays, which come from
+ * fftw_malloc, for which fftw_alignment_of() is 0. The scratch of the transforms
+ * (AlignedScratch) starts on a 64-byte boundary and has that alignment as well.
+ */
+inline bool has_fftw_plan_alignment(const void* p)
+{
+    return fftw_alignment_of(static_cast<double*>(const_cast<void*>(p))) == 0;
+}
+
+/// Deleter of a planning array of fftw_malloc held by a std::unique_ptr
+struct FftwFree
+{
+    void operator()(void* p) const { fftw_free(p); }
+};
+
+/**
  * @class FftwRealFFT
  * @brief FFTW's unnormalized real FFT of a grid, the FFT under MakhoulTransform.
  *
@@ -67,8 +85,9 @@ public:
  * functions when FFTW allows it: the array has the alignment of the planning
  * arrays (fftw_alignment_of() is 0) and the input and output do not overlap.
  * Otherwise, as for a packed field after an odd number of grid points, the
- * array goes through thread-local scratch that starts on a 64-byte boundary,
- * which has that alignment too. The input of the complex-to-real transform
+ * array goes through thread-local scratch that starts on a 64-byte boundary
+ * (AlignedScratch), which has that alignment too; a call takes scratch only for
+ * the arrays it copies. The input of the complex-to-real transform
  * goes through the scratch, since that transform overwrites it, unless the
  * caller gives it up (backward_with_factors(cdata, nullptr, rdata, r_factor)). The same plan
  * thus always runs on arrays of one alignment class, and the result does not
@@ -118,22 +137,6 @@ public:
 
     /// Destructor. Frees the FFTW plans.
     ~FftwFFT();
-
-    /**
-     * @brief Perform forward FFT (complex output interface).
-     *
-     * @param rdata Input: real array
-     * @param cdata Output: complex array
-     */
-    void forward(T *rdata, std::complex<double> *cdata) override;
-
-    /**
-     * @brief Perform backward FFT (complex input interface).
-     *
-     * @param cdata Input: complex array
-     * @param rdata Output: real array
-     */
-    void backward(std::complex<double> *cdata, T *rdata) override;
 
     /**
      * @brief Perform forward FFT (real coefficient interface).

@@ -28,6 +28,10 @@
  * - 2D reflecting, absorbing, and mixed BCs
  * - 3D reflecting, absorbing, and mixed BCs
  *
+ * An axis that reflects at one end and absorbs at the other, which the pseudo-spectral
+ * method cannot take, is checked against its exact oracle: the half of the box doubled
+ * across the reflecting wall, absorbing at both ends, with the mirrored input.
+ *
  * Platform support:
  * - CPU (FFTW): Both pseudo-spectral (DCT/DST) and real-space
  * - CUDA: Real-space only for non-periodic BCs (pseudo-spectral uses FFT only)
@@ -53,13 +57,7 @@
 
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
-#ifdef USE_CPU_FFTW
 #include "ComputationBox.h"
-#endif
-
-#ifdef USE_CPU_MKL
-#include "ComputationBox.h"
-#endif
 
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
@@ -96,6 +94,105 @@ bool has_mixed_bc(const std::vector<std::string>& bc)
 }
 
 /**
+ * @brief Compare the real-space propagator of a box whose one axis reflects at one end and
+ *        absorbs at the other with its exact oracle.
+ *
+ * The cell-centred reflecting wall is the mirror plane of the box doubled across it, which
+ * absorbs at both ends: next to the wall the finite-difference Laplacian reads the mirror image
+ * of a point as its ghost value, and the doubled box keeps a mirror-symmetric input symmetric.
+ * The propagator of the mixed box therefore equals its half of the doubled box with the mirrored
+ * input, up to the rounding of the larger tridiagonal solves.
+ *
+ * @param q_mixed Propagator of the mixed box after n_steps steps from q_init
+ * @return true if they agree to 1e-12 of the largest value
+ */
+template <typename T>
+bool mirror_oracle_passed(const std::string& platform, const std::vector<int>& nx, const std::vector<double>& lx,
+                          const std::vector<std::string>& bc, const std::vector<double>& q_init,
+                          const std::vector<double>& q_mixed, int n_steps, Molecules& molecules,
+                          PropagatorComputationOptimizer& prop_opt)
+{
+    const int dim = nx.size();
+    int axis = -1;
+    int n_mixed = 0;
+    for (int d = 0; d < dim; ++d)
+    {
+        if (bc[2*d] != bc[2*d + 1])
+        {
+            axis = d;
+            ++n_mixed;
+        }
+    }
+    if (n_mixed != 1 || std::count(bc.begin() + 2*axis, bc.begin() + 2*axis + 2, std::string("reflecting")) != 1
+        || std::count(bc.begin() + 2*axis, bc.begin() + 2*axis + 2, std::string("absorbing")) != 1)
+    {
+        std::cout << "FAILED (the mirror oracle takes one axis reflecting at one end and absorbing at the other)" << std::endl;
+        return false;
+    }
+
+    // The doubled box: the mixed axis twice as long, absorbing at both ends, the mixed box in the
+    // half next to its absorbing end (outer x n x inner points)
+    const bool reflecting_low = bc[2*axis] == "reflecting";
+    std::vector<int> nx_2 = nx;
+    std::vector<double> lx_2 = lx;
+    std::vector<std::string> bc_2 = bc;
+    nx_2[axis] *= 2;
+    lx_2[axis] *= 2.0;
+    bc_2[2*axis] = "absorbing";
+    bc_2[2*axis + 1] = "absorbing";
+    const int n = nx[axis];
+    int outer = 1;
+    int inner = 1;
+    for (int d = 0; d < axis; ++d)
+        outer *= nx[d];
+    for (int d = axis + 1; d < dim; ++d)
+        inner *= nx[d];
+    auto mixed_index = [&](int o, int i, int r) { return (static_cast<long>(o) * n + i) * inner + r; };
+    auto doubled_index = [&](int o, int i, int r) { return (static_cast<long>(o) * 2 * n + i) * inner + r; };
+    const int offset = reflecting_low ? n : 0;
+
+    // Point i of the mixed box and its mirror image
+    std::vector<double> q_2(2 * q_init.size()), q_out(2 * q_init.size());
+    for (int o = 0; o < outer; ++o)
+        for (int i = 0; i < n; ++i)
+            for (int r = 0; r < inner; ++r)
+            {
+                q_2[doubled_index(o, offset + i, r)] = q_init[mixed_index(o, i, r)];
+                q_2[doubled_index(o, reflecting_low ? n - 1 - i : 2 * n - 1 - i, r)] = q_init[mixed_index(o, i, r)];
+            }
+
+    ComputationBox<T>* cb_2 = new ComputationBox<T>(nx_2, lx_2, bc_2);
+    PropagatorComputation<T>* solver_2 = make_propagator_computation<T>(platform, false, cb_2, &molecules, &prop_opt, "cn-adi2");
+    std::vector<double> w_2(q_2.size(), 0.0);
+    solver_2->compute_propagators({{"A", w_2.data()}}, {});
+    for (int step = 0; step < n_steps; ++step)
+    {
+        solver_2->advance_propagator_single_segment(q_2.data(), q_out.data(), 0, 0, 1);
+        std::swap(q_2, q_out);
+    }
+    delete solver_2;
+    delete cb_2;
+
+    double max_diff = 0.0;
+    for (int o = 0; o < outer; ++o)
+        for (int i = 0; i < n; ++i)
+            for (int r = 0; r < inner; ++r)
+            {
+                const double d = std::abs(q_mixed[mixed_index(o, i, r)] - q_2[doubled_index(o, offset + i, r)]);
+                if (std::isnan(d) || d > max_diff)
+                    max_diff = d;   // a NaN stays
+            }
+    const double rel_err = max_diff / max_or_nan(q_mixed);
+    if (!(rel_err <= 1e-12))
+    {
+        std::cout << "FAILED (rel_err=" << rel_err << " against the doubled box)" << std::endl;
+        return false;
+    }
+    std::cout << "PASSED (rel_err=" << rel_err << " against the doubled box)" << std::endl;
+    return true;
+}
+
+/**
  * @brief Run a single comparison test between pseudo-spectral and real-space methods.
  *
  * @param test_name   Name of the test for output
@@ -107,7 +204,8 @@ bool has_mixed_bc(const std::vector<std::string>& bc)
  * @return true if test passed, false otherwise
  *
  * Note: For mixed BCs (different on each side of a direction), only real-space
- * is tested since pseudo-spectral doesn't support mixed BCs.
+ * is tested since pseudo-spectral doesn't support mixed BCs; it is compared with
+ * the doubled box of mirror_oracle_passed().
  */
 template <typename T>
 bool run_comparison_test(
@@ -198,8 +296,8 @@ bool run_comparison_test(
 
     if (mixed_bc)
     {
-        // Mixed BCs: only test real-space
-        std::cout << "  [CPU-FFTW RS only] " << std::flush;
+        // Mixed BCs: only test real-space, against the doubled box
+        std::cout << "  [CPU-FFTW RS, mirror oracle] " << std::flush;
         ComputationBox<T>* cb_rs = new ComputationBox<T>(nx, lx, bc);
         PropagatorComputation<T>* solver_rs = make_propagator_computation<T>("cpu-fftw", false, cb_rs, &molecules, &prop_opt, "cn-adi2");
 
@@ -212,17 +310,8 @@ bool run_comparison_test(
             std::swap(q_rs, q_out);
         }
 
-        // Just verify it ran without errors and produced reasonable output
-        double max_val = max_or_nan(q_rs);
-        if (max_val > 0 && std::isfinite(max_val))
-        {
-            std::cout << "PASSED (max_q=" << max_val << ")" << std::endl;
-        }
-        else
-        {
-            std::cout << "FAILED (invalid output)" << std::endl;
+        if (!mirror_oracle_passed<T>("cpu-fftw", nx, lx, bc, q_init, q_rs, n_steps, molecules, prop_opt))
             all_passed = false;
-        }
 
         q_cpu_ref = q_rs;  // Use CPU real-space as reference for CUDA
 
@@ -288,8 +377,8 @@ bool run_comparison_test(
 
     if (mixed_bc)
     {
-        // Mixed BCs: only test real-space
-        std::cout << "  [CPU-MKL RS only] " << std::flush;
+        // Mixed BCs: only test real-space, against the doubled box
+        std::cout << "  [CPU-MKL RS, mirror oracle] " << std::flush;
         ComputationBox<T>* cb_rs_mkl = new ComputationBox<T>(nx, lx, bc);
         PropagatorComputation<T>* solver_rs_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_rs_mkl, &molecules, &prop_opt, "cn-adi2");
 
@@ -302,17 +391,8 @@ bool run_comparison_test(
             std::swap(q_rs, q_out);
         }
 
-        // Just verify it ran without errors and produced reasonable output
-        double max_val = max_or_nan(q_rs);
-        if (max_val > 0 && std::isfinite(max_val))
-        {
-            std::cout << "PASSED (max_q=" << max_val << ")" << std::endl;
-        }
-        else
-        {
-            std::cout << "FAILED (invalid output)" << std::endl;
+        if (!mirror_oracle_passed<T>("cpu-mkl", nx, lx, bc, q_init, q_rs, n_steps, molecules, prop_opt))
             all_passed = false;
-        }
 
 #ifndef USE_CPU_FFTW
         q_cpu_ref = q_rs;  // Use CPU real-space as reference for CUDA

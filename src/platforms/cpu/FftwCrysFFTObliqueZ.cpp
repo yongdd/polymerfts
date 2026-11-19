@@ -6,7 +6,9 @@
 #include <cstring>
 #include <memory>
 
+#include "AlignedScratch.h"
 #include "FftwCrysFFTObliqueZ.h"
+#include "FftwFFT.h"
 
 //------------------------------------------------------------------------------
 // Constructor / Destructor
@@ -49,11 +51,11 @@ void FftwCrysFFTObliqueZ::initFFTPlans()
     const unsigned plan_flags = FFTW_MEASURE;
 
     // Planning arrays only, freed on return: the transforms run on the
-    // thread-local buffers of get_thread_buffers() and on the caller's fields
-    // of the same alignment (new-array execute)
-    std::unique_ptr<double, RealDeleter> io_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-    std::unique_ptr<double, RealDeleter> temp_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-    std::unique_ptr<fftw_complex, ComplexDeleter> complex_buffer(
+    // thread-local scratch of apply_spectral_multiplier() and on the caller's
+    // fields of the same alignment (new-array execute)
+    std::unique_ptr<double, FftwFree> io_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
+    std::unique_ptr<double, FftwFree> temp_buffer(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
+    std::unique_ptr<fftw_complex, FftwFree> complex_buffer(
         static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_complex_)));
 
     if (!io_buffer || !temp_buffer || !complex_buffer)
@@ -111,25 +113,8 @@ void FftwCrysFFTObliqueZ::initFFTPlans()
 }
 
 //------------------------------------------------------------------------------
-// Thread-local work buffers and z-direction DCT helpers of diffusion()
+// z-direction DCT helpers and the steps of diffusion()
 //------------------------------------------------------------------------------
-FftwCrysFFTObliqueZ::ThreadBuffers& FftwCrysFFTObliqueZ::get_thread_buffers() const
-{
-    thread_local ThreadBuffers buffers;
-    if (buffers.size_real != M_physical_ || buffers.size_complex != M_complex_)
-    {
-        buffers.size_real = buffers.size_complex = 0;
-        buffers.real_in.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-        buffers.real_tmp.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-        buffers.complex.reset(static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_complex_)));
-        if (!buffers.real_in || !buffers.real_tmp || !buffers.complex)
-            throw_with_line_number("Failed to allocate thread-local FFTW buffers for FftwCrysFFTObliqueZ.");
-        buffers.size_real = M_physical_;
-        buffers.size_complex = M_complex_;
-    }
-    return buffers;
-}
-
 void FftwCrysFFTObliqueZ::dct2_execute(const double* in, double* out) const
 {
     fftw_execute_r2r(plan_dct_forward_z_, const_cast<double*>(in), out);
@@ -142,29 +127,34 @@ void FftwCrysFFTObliqueZ::dct3_execute(const double* in, double* out) const
 
 void FftwCrysFFTObliqueZ::apply_spectral_multiplier(const double* q_in, double* q_out, const double* multiplier) const
 {
-    ThreadBuffers& buffers = get_thread_buffers();
+    // Work arrays of this thread, from 64-byte boundaries (AlignedScratch), which have the
+    // alignment of the planning arrays that the new-array execute functions need
+    thread_local AlignedScratch copy_scratch, real_scratch, complex_scratch;
+    double* real_tmp = real_scratch.get(M_physical_);
+    fftw_complex* spectrum = reinterpret_cast<fftw_complex*>(complex_scratch.get(2 * static_cast<size_t>(M_complex_)));
 
-    // The z transforms run on the caller's fields when they have the alignment of the
-    // planning arrays (the r2r transforms keep their input), otherwise on the copy in real_in
+    // The z transforms run on the caller's fields when they have that alignment (the r2r
+    // transforms keep their input), otherwise on a copy
     const double* dct_in = q_in;
-    if (fftw_alignment_of(const_cast<double*>(q_in)) != 0)
+    if (!has_fftw_plan_alignment(q_in))
     {
-        std::memcpy(buffers.real_in.get(), q_in, sizeof(double) * M_physical_);
-        dct_in = buffers.real_in.get();
+        double* copy = copy_scratch.get(M_physical_);
+        std::memcpy(copy, q_in, sizeof(double) * M_physical_);
+        dct_in = copy;
     }
 
-    dct2_execute(dct_in, buffers.real_tmp.get());
-    fftw_execute_dft_r2c(plan_fft_forward_xy_, buffers.real_tmp.get(), buffers.complex.get());
+    dct2_execute(dct_in, real_tmp);
+    fftw_execute_dft_r2c(plan_fft_forward_xy_, real_tmp, spectrum);
 
     for (int i = 0; i < M_complex_; ++i)
     {
-        buffers.complex.get()[i][0] *= multiplier[i];
-        buffers.complex.get()[i][1] *= multiplier[i];
+        spectrum[i][0] *= multiplier[i];
+        spectrum[i][1] *= multiplier[i];
     }
 
-    fftw_execute_dft_c2r(plan_fft_backward_xy_, buffers.complex.get(), buffers.real_tmp.get());
-    double* dct_out = (fftw_alignment_of(q_out) == 0) ? q_out : buffers.real_in.get();
-    dct3_execute(buffers.real_tmp.get(), dct_out);
+    fftw_execute_dft_c2r(plan_fft_backward_xy_, spectrum, real_tmp);
+    double* dct_out = has_fftw_plan_alignment(q_out) ? q_out : copy_scratch.get(M_physical_);
+    dct3_execute(real_tmp, dct_out);
 
     for (int i = 0; i < M_physical_; ++i)
         q_out[i] = dct_out[i] * norm_factor_;

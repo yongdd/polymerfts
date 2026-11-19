@@ -43,7 +43,6 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
 {
     this->cb = cb;
     this->molecules = molecules;
-    this->chain_model = molecules->get_model_name();
     this->fft_backend_ = backend;
 
     // Check if all BCs are periodic

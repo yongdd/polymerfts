@@ -418,10 +418,9 @@ algorithmic difference or a real-only feature and is commented as such.
 
 ```
 FFT<T>                                        [Abstract Base]
-├── forward(T* real, double* spectral)        [pure virtual]
+├── forward(T* real, double* spectral)        [pure virtual; complex coefficients as interleaved doubles]
 ├── backward(double* spectral, T* real)       [pure virtual]
-├── forward(T* real, complex* spectral)       [pure virtual, periodic only]
-└── backward(complex* spectral, T* real)      [pure virtual, periodic only]
+└── backward_with_factors(...)                [k_factor · coefficients, r_factor · field]
         │
         ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)

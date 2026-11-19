@@ -53,13 +53,7 @@
 #include "PropagatorComputationOptimizer.h"
 #include "TestComputationFactory.h"
 
-#ifdef USE_CPU_FFTW
 #include "ComputationBox.h"
-#endif
-
-#ifdef USE_CPU_MKL
-#include "ComputationBox.h"
-#endif
 
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"

@@ -18,7 +18,7 @@
  * Each periodic transform runs from and into arrays placed 0, 16, 32 and 48
  * bytes after a 64-byte boundary (the placements of heap arrays), and for FFTW
  * also 8, 24, 40 and 56 bytes after it, for real and complex fields on even and
- * odd grids, through the real-coefficient and the complex-coefficient interface.
+ * odd grids.
  * Every placement must give the values of the first one, and the input must stay
  * unchanged. A failure prints which placements of the input (rows) and the
  * output (columns) give which result. FftwFFT must also give these values when
@@ -247,12 +247,6 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
         [&](double* in, double* out) { fft.forward(reinterpret_cast<T*>(in), out); }), fftw);
     ok &= report(label + " backward", run_placements(offsets, coeff, n_field,
         [&](double* in, double* out) { fft.backward(in, reinterpret_cast<T*>(out)); }), fftw);
-    ok &= report(label + " forward, complex interface", run_placements(offsets, field, n_coeff,
-        [&](double* in, double* out)
-        { fft.forward(reinterpret_cast<T*>(in), reinterpret_cast<std::complex<double>*>(out)); }), fftw);
-    ok &= report(label + " backward, complex interface", run_placements(offsets, coeff, n_field,
-        [&](double* in, double* out)
-        { fft.backward(reinterpret_cast<std::complex<double>*>(in), reinterpret_cast<T*>(out)); }), fftw);
     if (fftw)
     {
         ok &= report_in_place(label + " forward", field, coeff,

@@ -24,9 +24,12 @@
  *
  * Forward and backward transforms also run in place (CrysFFTPmmm relies on
  * it) and concurrently, with their thread-local scratch, on one object, and must
- * give the same results as out of place and serially. The definitions and the
- * mixed grids are those of TestMakhoulDefinitions.h; the error maxima keep a NaN
- * (TestNanSafe.h).
+ * give the same results as out of place and serially. The backward transform with
+ * a factor per coefficient and one per grid point, each given or not, which
+ * MakhoulTransform applies inside its loops, must give the values of separate
+ * loops around backward() bit for bit, out of place and in place. The definitions
+ * and the mixed grids are those of TestMakhoulDefinitions.h; the error maxima keep
+ * a NaN (TestNanSafe.h).
  *
  * Boxes that mix periodic axes and walls (CpuFourierTransform) run
  * MakhoulTransform over the real FFT of either library with periodic axes. For
@@ -131,6 +134,51 @@ double check_grid(FFTBackend backend, std::array<int, DIM> nx, int sine_mask, st
     worst = max_or_nan(worst, max_difference(in_place, coefficient) / max_abs_or_nan(coefficient));
     fft.backward(in_place.data(), reinterpret_cast<T*>(in_place.data()));
     worst = max_or_nan(worst, max_difference(in_place, result) / max_abs_or_nan(result));
+
+    // The backward transform with factors: the values of separate loops around backward(), as the
+    // default of FFT<T> computes them, bit for bit (factors from a generator of their own, so the
+    // fields of the other checks stay those of the shared one)
+    {
+        std::mt19937 factor_rng(17 + total);
+        std::normal_distribution<double> factor_normal(0.0, 0.5);
+        std::vector<double> k_factor(total), r_factor(parts * total);
+        for (int i = 0; i < total; ++i)
+            k_factor[i] = std::exp(-0.37 * (i % 11));
+        for (double& x : r_factor)
+            x = std::exp(factor_normal(factor_rng));
+        const T* r_field = reinterpret_cast<const T*>(r_factor.data());
+        for (bool with_k : {false, true})
+        {
+            for (bool with_r : {false, true})
+            {
+                std::vector<double> separate = coefficient, expected(parts * total);
+                T* separate_coefficients = reinterpret_cast<T*>(separate.data());
+                T* expected_field = reinterpret_cast<T*>(expected.data());
+                if (with_k)
+                    for (int i = 0; i < total; ++i)
+                        separate_coefficients[i] *= k_factor[i];
+                fft.backward(separate.data(), expected_field);
+                if (with_r)
+                    for (int i = 0; i < total; ++i)
+                        expected_field[i] *= r_field[i];
+
+                std::vector<double> fused = coefficient, out(parts * total), in_place_fused = coefficient;
+                fft.backward_with_factors(fused.data(), with_k ? k_factor.data() : nullptr,
+                                          reinterpret_cast<T*>(out.data()), with_r ? r_field : nullptr);
+                fft.backward_with_factors(in_place_fused.data(), with_k ? k_factor.data() : nullptr,
+                                          reinterpret_cast<T*>(in_place_fused.data()), with_r ? r_field : nullptr);
+                if (out != expected || in_place_fused != expected)
+                {
+                    std::cout << "  backward_with_factors differs from separate loops (k_factor " << with_k
+                              << ", r_factor " << with_r << ", " << (is_complex ? "complex" : "real") << " field, grid";
+                    for (int n : nx)
+                        std::cout << " " << n;
+                    std::cout << ", sine axes " << sine_mask << ")" << std::endl;
+                    worst = max_or_nan(worst, 1.0);
+                }
+            }
+        }
+    }
 
 #ifdef _OPENMP
     // Concurrent transforms of one object, one field per thread

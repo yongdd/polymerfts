@@ -30,6 +30,9 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 
 #include "Exception.h"
 #include "Molecules.h"
@@ -37,6 +40,30 @@
 #include "FFT.h"
 
 class SpaceGroup;
+
+/**
+ * @brief Work arrays W of each calling thread, owned by a solver and released with it.
+ *
+ * The propagators run in OpenMP threads, so every thread needs its own arrays
+ * (thread_local arrays would stay allocated until the threads end). A step
+ * function or the stress routine uses them from start to end of one call;
+ * nothing nests, so one W per thread is enough.
+ */
+template <typename W>
+class PerThread
+{
+private:
+    mutable std::mutex mutex_;
+    mutable std::unordered_map<std::thread::id, W> items_;
+
+public:
+    /// The W of the calling thread, created on first use (a reference into a node map stays valid)
+    W& get() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return items_[std::this_thread::get_id()];
+    }
+};
 
 /**
  * @class CpuSolver

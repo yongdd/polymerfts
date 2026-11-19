@@ -20,12 +20,7 @@
 #include "PropagatorComputationOptimizer.h"
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
-#ifdef USE_CPU_FFTW
 #include "ComputationBox.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "ComputationBox.h"
-#endif
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
 #include <cuda_runtime.h>
@@ -192,6 +187,33 @@ int main()
         }
         #endif
 
+        // Reference values of q_next in the boxes of bc_abs, bc_rfl and bc_prd: the output of the CPU
+        // solver, which CUDA reproduces. Every solver is checked against them, so that a build without
+        // a GPU, whose CPU platforms all run the same CN-ADI code, tests that code as well.
+        const double q_reference[3][M] = {
+            {  // bc_abs
+                0.41565103137540887, 0.41871070684552214, 0.34271971656680872, 0.302863044003153,
+                0.51741205242335331, 0.54980260060528208, 0.66216305043766321, 0.675556570325336,
+                0.56471825243850915, 0.68441943772772951, 0.7497787288975114, 0.64969355642163518,
+                0.55299585805242979, 0.5525844632622835, 0.50986693465577104, 0.48951043026252195,
+                0.30966369106844083, 0.39324968772123436, 0.32309976916367822, 0.35986369750643854
+            },
+            {  // bc_rfl
+                0.64273991065539648, 0.66289270694540514, 0.53204515154681342, 0.47936227651127034,
+                0.5551361041774866, 0.5785849532299806, 0.68559285366858591, 0.68537184521911765,
+                0.57892402442923296, 0.69032179749600808, 0.75344427032088923, 0.64374660604263179,
+                0.57673085386047884, 0.57912094448062201, 0.53292059309890061, 0.51393699134342552,
+                0.49464568094727068, 0.62163849604726007, 0.5083058676721397, 0.55920420143228644
+            },
+            {  // bc_prd
+                0.39514024271393278, 0.62155622696980906, 0.50531610984629083, 0.29174766464782026,
+                0.32745110075037992, 0.54393270246787817, 0.64789746857729968, 0.42335800188747807,
+                0.3458973182892387, 0.65257871489731611, 0.71382085832644049, 0.39728686769662624,
+                0.34749576690309769, 0.54507241663954886, 0.5001508588771848, 0.30737843331387305,
+                0.29833972535356573, 0.59283867965774806, 0.47301852303973752, 0.33025968052026555
+            },
+        };
+
         // For each platform
         for(size_t n=0; n<solver_list.size(); n++)
         {
@@ -208,6 +230,15 @@ int main()
             solver->compute_concentrations();
 
             solver->get_chain_propagator(q_next, 0, 1, 2, pc.get_block(1,2).n_segment);
+
+            // Against the reference values of the boundary conditions
+            const double* q_ref = q_reference[n / repeat];
+            for(int i=0; i<M; i++)
+                diff_sq[i] = pow(q_ref[i] - q_next[i],2);
+            error = sqrt(max_or_nan(diff_sq));
+            std::cout<< "Error against the reference values: "<< error << std::endl;
+            if (!std::isfinite(error) || error > 1e-7)
+                return -1;
             if (n % repeat != 0)
             {
                 //--------------- check --------------------

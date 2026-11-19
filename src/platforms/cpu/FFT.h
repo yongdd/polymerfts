@@ -10,8 +10,8 @@
  *
  * **Interfaces:**
  *
- * - `forward(T*, double*)` / `backward(double*, T*)`: Universal interface for all BCs
- * - `forward(T*, complex<double>*)` / `backward(complex<double>*, T*)`: Periodic BC only
+ * - `forward(T*, double*)` / `backward(double*, T*)`: all BCs; the complex coefficients of a
+ *   periodic axis are stored as interleaved doubles
  * - `backward_with_factors(double*, k_factor, T*, r_factor)`: the backward transform with a factor
  *   on the coefficients and one on the grid, as a propagator step takes it
  *
@@ -71,9 +71,9 @@ enum class FFTBackend
  * @code
  * FFT<double>* fft = ...;
  * double* real_data = ...;
- * std::complex<double>* complex_data = ...;
- * fft->forward(real_data, complex_data);
- * fft->backward(complex_data, real_data);
+ * std::complex<double>* complex_data = ...;   // periodic: Nx × Ny × (Nz/2 + 1) values
+ * fft->forward(real_data, reinterpret_cast<double*>(complex_data));
+ * fft->backward(reinterpret_cast<double*>(complex_data), real_data);
  * @endcode
  */
 template <typename T>
@@ -109,28 +109,6 @@ public:
      * @param rdata Output: real-space data
      */
     virtual void backward(double* cdata, T* rdata) = 0;
-
-    /**
-     * @brief Perform forward (real-to-complex) FFT.
-     *
-     * @param rdata Input: real array of size Nx × Ny × Nz
-     * @param cdata Output: complex array of size Nx × Ny × (Nz/2+1)
-     *
-     * @note The complex output uses Hermitian symmetry packing.
-     * @throws Exception if any dimension is non-periodic
-     */
-    virtual void forward(T* rdata, std::complex<double>* cdata) = 0;
-
-    /**
-     * @brief Perform backward (complex-to-real) FFT.
-     *
-     * @param cdata Input: complex array of size Nx × Ny × (Nz/2+1)
-     * @param rdata Output: real array of size Nx × Ny × Nz
-     *
-     * @note Includes 1/N normalization factor.
-     * @throws Exception if any dimension is non-periodic
-     */
-    virtual void backward(std::complex<double>* cdata, T* rdata) = 0;
 
     /**
      * @brief Backward transform of the coefficients times k_factor, times r_factor:

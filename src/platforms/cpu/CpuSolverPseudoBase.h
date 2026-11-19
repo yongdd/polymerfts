@@ -39,9 +39,6 @@
 #include <map>
 #include <complex>
 #include <memory>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
 #include <utility>
 
 #include "Exception.h"
@@ -82,15 +79,7 @@ template <typename T>
 class CpuSolverPseudoBase : public CpuSolver<T>
 {
 protected:
-    /**
-     * @brief Work arrays of one calling thread.
-     *
-     * The propagators run in OpenMP threads, so every thread needs its own
-     * arrays. They are owned by the solver and released with it (thread_local
-     * arrays would stay allocated until the threads end). Each step function
-     * and the stress routine use them from start to end of one call; nothing
-     * nests, so one set per thread is enough.
-     */
+    /// Work arrays of one calling thread (PerThread)
     struct WorkArrays
     {
         std::vector<T> q_1, q_2;                     ///< Step results (RQM4 full step and half steps)
@@ -103,15 +92,10 @@ protected:
     };
 
     /// Work arrays of the calling thread (created on first use)
-    WorkArrays& work_arrays() const
-    {
-        std::lock_guard<std::mutex> lock(work_mutex_);
-        return work_arrays_[std::this_thread::get_id()];
-    }
+    WorkArrays& work_arrays() const { return work_arrays_.get(); }
 
     ComputationBox<T>* cb;       ///< Computation box for grid info
     Molecules* molecules;        ///< Molecules container
-    std::string chain_model;     ///< Chain model identifier
 
     /**
      * @brief Spectral transform object for FFT/DCT/DST (handles all BCs).
@@ -189,16 +173,6 @@ protected:
      * @param cdata Fourier/DCT coefficient output
      */
     void transform_forward(T* rdata, double* cdata) { fft_->forward(rdata, cdata); }
-
-    /**
-     * @brief Perform backward transform.
-     *
-     * Delegates to fft_->backward() which handles all boundary conditions.
-     *
-     * @param cdata Fourier/DCT coefficient input
-     * @param rdata Real-space data output
-     */
-    void transform_backward(double* cdata, T* rdata) { fft_->backward(cdata, rdata); }
 
     /**
      * @brief Backward transform with factors: rdata = r_factor · backward(k_factor · cdata)
@@ -406,8 +380,7 @@ private:
     /// CrysFFT steps propagate and the stress takes the CrysFFT fast path.
     bool full_grid_path() const;
 
-    mutable std::mutex work_mutex_;
-    mutable std::unordered_map<std::thread::id, WorkArrays> work_arrays_;   ///< Per-thread work arrays (see WorkArrays)
+    PerThread<WorkArrays> work_arrays_;   ///< Work arrays of each thread
 };
 
 #endif

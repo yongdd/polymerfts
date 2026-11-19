@@ -5,8 +5,11 @@
  * MKL may pick its code by the alignment of the arrays it is given, and a
  * std::vector of each thread starts at its own offset from a 64-byte boundary,
  * so the same transform could run different code, and round differently, on
- * different threads. The per-thread scratch of the MKL CrysFFT engines lives in
- * these arrays instead, as that of MakhoulTransform does.
+ * different threads. FFTW's new-array execute functions take only arrays of the
+ * alignment of the planning arrays (fftw_malloc), which a 64-byte boundary has.
+ * Every per-thread scratch of the CPU transforms (FftwFFT, MakhoulTransform, the
+ * CrysFFT engines) and the coefficients of CpuFourierTransform live in these
+ * arrays.
  */
 
 #ifndef ALIGNED_SCRATCH_H_

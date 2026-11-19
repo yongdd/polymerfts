@@ -412,8 +412,8 @@ int main()
             std::complex<double>* pk = reinterpret_cast<std::complex<double>*>(d_pk.get());
             CUDA_CHECK(cudaMemcpy(d_p, data_p.data(), sizeof(double) * MP, cudaMemcpyHostToDevice));
 
-            fft_p.forward(d_p, pk);
-            fft_p.backward(pk, d_p_back);
+            fft_p.forward_stream(d_p, pk, 0);
+            fft_p.backward_stream(pk, d_p_back, 0);
             CUDA_CHECK(cudaMemcpy(data_p_back.data(), d_p_back, sizeof(double) * MP, cudaMemcpyDeviceToHost));
 
             std::vector<double> diff_p(MP);

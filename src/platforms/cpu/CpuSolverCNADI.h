@@ -40,10 +40,7 @@
 #define CPU_SOLVER_CNADI_H_
 
 #include <map>
-#include <mutex>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "Exception.h"
@@ -137,13 +134,7 @@ private:
     /// Tridiagonal matrices of the axes: [ds_index][monomer_type][axis]
     std::map<int, std::map<std::string, std::vector<TridiagonalLines>>> matrices_;
 
-    /**
-     * @brief Work arrays of one calling thread.
-     *
-     * The propagators run in OpenMP threads, so every thread needs its own
-     * arrays. They are owned by the solver and released with it (thread_local
-     * arrays would stay allocated until the threads end).
-     */
+    /// Work arrays of one calling thread (PerThread)
     struct WorkArrays
     {
         std::vector<double> q_full;          ///< full-grid propagator (space group)
@@ -152,8 +143,7 @@ private:
         std::vector<double> plane;           ///< right-hand sides of the lines of one plane
         std::vector<double> correction;      ///< cyclic matrices: correction factor of each line of a plane
     };
-    mutable std::mutex work_mutex_;
-    mutable std::unordered_map<std::thread::id, WorkArrays> work_arrays_;   ///< Per-thread work arrays
+    PerThread<WorkArrays> work_arrays_;   ///< Work arrays of each thread
 
     /// Work arrays of the calling thread, sized for the grid
     WorkArrays& work_arrays() const;

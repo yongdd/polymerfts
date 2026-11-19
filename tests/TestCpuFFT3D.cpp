@@ -102,7 +102,7 @@ int main()
 
             //---------------- Forward --------------------
             std::cout<< "Running FFT<double> 3D" << std::endl;
-            fft->forward(data_init,data_k);
+            fft->forward(data_init, reinterpret_cast<double*>(data_k));
             std::cout<< "If error is less than 1.0e-7, it is ok!" << std::endl;
             for(int i=0; i<M_COMPLEX; i++){
                 diff_sq_cplx[i]  = pow(std::abs(data_k[i].real() - data_k_answer[i].real()),2);
@@ -114,7 +114,7 @@ int main()
                 return -1;
 
             //--------------- Backward --------------------
-            fft->backward(data_k_answer,data_r);
+            fft->backward(reinterpret_cast<double*>(data_k_answer), data_r);
             for(int i=0; i<M; i++)
                 diff_sq[i] = pow(std::abs(data_r[i] - data_init[i]),2);
             error = sqrt(max_or_nan(diff_sq));

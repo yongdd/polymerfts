@@ -171,7 +171,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         // the CrysFFT path reads the reduced basis directly)
         T* fft_in = q_in;
 
-        // Thread-local buffer for expand (called from OpenMP parallel regions)
+        // Work array of this thread for expand (called from OpenMP parallel regions)
         std::vector<T>& q_full_in_local = work.q_full_in;
 
         if (this->space_group_ != nullptr && !crysfft_path)

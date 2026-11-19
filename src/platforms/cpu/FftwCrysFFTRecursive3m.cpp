@@ -6,6 +6,10 @@
 #include "FftwCrysFFTRecursive3m.h"
 #include <algorithm>
 #include <cstring>
+#include <memory>
+
+#include "AlignedScratch.h"
+#include "FftwFFT.h"
 
 namespace {
 
@@ -14,17 +18,6 @@ constexpr size_t kAlignment = 64;
 inline size_t align_up(size_t value, size_t alignment)
 {
     return ((value + alignment - 1) / alignment) * alignment;
-}
-
-struct AlignedDeleter {
-    void operator()(double* ptr) const { if (ptr) fftw_free(ptr); }
-    void operator()(fftw_complex* ptr) const { if (ptr) fftw_free(ptr); }
-};
-
-/// The new-array execute functions take arrays of the alignment of the planning arrays
-bool has_plan_alignment(const double* p)
-{
-    return fftw_alignment_of(const_cast<double*>(p)) == 0;
 }
 
 }  // namespace
@@ -71,9 +64,9 @@ void FftwCrysFFTRecursive3m::release()
 //------------------------------------------------------------------------------
 void FftwCrysFFTRecursive3m::init_fft_plans()
 {
-    std::unique_ptr<double, AlignedDeleter> dummy_in(
+    std::unique_ptr<double, FftwFree> dummy_in(
         static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-    std::unique_ptr<fftw_complex, AlignedDeleter> dummy_out(
+    std::unique_ptr<fftw_complex, FftwFree> dummy_out(
         static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_physical_)));
     // FFTW_PATIENT runs trial transforms on these arrays
     if (!dummy_in || !dummy_out)
@@ -107,40 +100,25 @@ void FftwCrysFFTRecursive3m::init_fft_plans()
 void FftwCrysFFTRecursive3m::apply_with_table(
     const double* table, const double* q_in, double* q_out) const
 {
-    // fftw_malloc'd like the planning arrays: the new-array execute functions
-    // need the alignment the plans were made with. The transforms run on the
-    // caller's fields when they have it (the r2c transform keeps its input) and
-    // otherwise on the copy in iomat.
-    struct ThreadBuffers {
-        std::unique_ptr<double, AlignedDeleter> iomat;
-        std::unique_ptr<fftw_complex, AlignedDeleter> step1;
-        std::unique_ptr<fftw_complex, AlignedDeleter> step2;
-        int size = 0;
-    };
-
-    thread_local ThreadBuffers buffers;
-    if (buffers.size != M_physical_)
-    {
-        buffers.size = 0;
-        buffers.iomat.reset(static_cast<double*>(fftw_malloc(sizeof(double) * M_physical_)));
-        buffers.step1.reset(static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_physical_)));
-        buffers.step2.reset(static_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * M_physical_)));
-        if (!buffers.iomat || !buffers.step1 || !buffers.step2)
-        {
-            throw_with_line_number("Failed to allocate FFTW work buffers.");
-        }
-        buffers.size = M_physical_;
-    }
+    // Work arrays of this thread, from 64-byte boundaries (AlignedScratch), which have the
+    // alignment of the planning arrays that the new-array execute functions need. The
+    // transforms run on the caller's fields when they have it (the r2c transform keeps its
+    // input) and otherwise on a copy.
+    thread_local AlignedScratch copy_scratch, step1_scratch, step2_scratch;
+    const size_t complex_doubles = 2 * static_cast<size_t>(M_physical_);
+    fftw_complex* step1 = reinterpret_cast<fftw_complex*>(step1_scratch.get(complex_doubles));
+    fftw_complex* step2 = reinterpret_cast<fftw_complex*>(step2_scratch.get(complex_doubles));
 
     const double* r2c_in = q_in;
-    if (!has_plan_alignment(q_in))
+    if (!has_fftw_plan_alignment(q_in))
     {
-        std::memcpy(buffers.iomat.get(), q_in, sizeof(double) * M_physical_);
-        r2c_in = buffers.iomat.get();
+        double* copy = copy_scratch.get(M_physical_);
+        std::memcpy(copy, q_in, sizeof(double) * M_physical_);
+        r2c_in = copy;
     }
 
     // Forward r2c FFT
-    fftw_execute_dft_r2c(plan_forward_, const_cast<double*>(r2c_in), buffers.step1.get());
+    fftw_execute_dft_r2c(plan_forward_, const_cast<double*>(r2c_in), step1);
 
     const int Nx2 = nx_physical_[0];
     const int Ny2 = nx_physical_[1];
@@ -165,11 +143,11 @@ void FftwCrysFFTRecursive3m::apply_with_table(
         for (int iy = 0; iy < Ny2; ++iy)
         {
             const size_t base_shift = static_cast<size_t>(ix * Ny2 + iy) * Nz2;
-            const fftw_complex* src000 = buffers.step1.get() + base_shift;
-            const fftw_complex* src110 = buffers.step1.get() + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const fftw_complex* src010 = buffers.step1.get() + (static_cast<size_t>(ix) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const fftw_complex* src100 = buffers.step1.get() + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + iy) * Nz2;
-            fftw_complex* dst = buffers.step2.get() + base_shift;
+            const fftw_complex* src000 = step1 + base_shift;
+            const fftw_complex* src110 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
+            const fftw_complex* src010 = step1 + (static_cast<size_t>(ix) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
+            const fftw_complex* src100 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + iy) * Nz2;
+            fftw_complex* dst = step2 + base_shift;
 
             for (size_t iz = 0; iz < Nz_qua; ++iz)
             {
@@ -190,13 +168,14 @@ void FftwCrysFFTRecursive3m::apply_with_table(
     }
 
     // Backward c2r FFT
-    if (has_plan_alignment(q_out))
+    if (has_fftw_plan_alignment(q_out))
     {
-        fftw_execute_dft_c2r(plan_backward_, buffers.step2.get(), q_out);
+        fftw_execute_dft_c2r(plan_backward_, step2, q_out);
     }
     else
     {
-        fftw_execute_dft_c2r(plan_backward_, buffers.step2.get(), buffers.iomat.get());
-        std::memcpy(q_out, buffers.iomat.get(), sizeof(double) * M_physical_);
+        double* copy = copy_scratch.get(M_physical_);
+        fftw_execute_dft_c2r(plan_backward_, step2, copy);
+        std::memcpy(q_out, copy, sizeof(double) * M_physical_);
     }
 }

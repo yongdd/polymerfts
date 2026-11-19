@@ -65,9 +65,6 @@ template <typename T, int DIM>
 class MklFFT : public FFT<T>
 {
 private:
-    std::array<int, DIM> nx_;                      ///< Grid dimensions
-    int total_grid_;                               ///< Total real grid size
-
     // MKL DFTI descriptors
     DFTI_DESCRIPTOR_HANDLE hand_forward_ = nullptr;   ///< Forward (r2c or c2c) transform
     DFTI_DESCRIPTOR_HANDLE hand_backward_ = nullptr;  ///< Backward (c2r or c2c) transform
@@ -85,22 +82,6 @@ public:
 
     /// Destructor. Frees the MKL DFTI descriptors.
     ~MklFFT();
-
-    /**
-     * @brief Perform forward FFT (complex output interface).
-     *
-     * @param rdata Input: real array
-     * @param cdata Output: complex array
-     */
-    void forward(T *rdata, std::complex<double> *cdata) override;
-
-    /**
-     * @brief Perform backward FFT (complex input interface).
-     *
-     * @param cdata Input: complex array
-     * @param rdata Output: real array
-     */
-    void backward(std::complex<double> *cdata, T *rdata) override;
 
     /**
      * @brief Perform forward FFT (real coefficient interface).

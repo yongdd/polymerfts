@@ -10,7 +10,8 @@
  * **Interfaces:**
  *
  * - `forward(T*, double*)` / `backward(double*, T*)`: Non-periodic BCs (real coefficients)
- * - `forward(T*, complex<double>*)` / `backward(complex<double>*, T*)`: Periodic BC only
+ * - `forward_stream(T*, complex<double>*, stream)` / `backward_stream(complex<double>*, T*, stream)`:
+ *   Periodic BC only
  *
  * **Implementation:**
  *
@@ -175,8 +176,6 @@ public:
     // Override pure virtual methods from FFT<T> base class
     void forward(T* rdata, double* cdata) override { forward_stream(rdata, cdata, 0); }
     void backward(double* cdata, T* rdata) override { backward_stream(cdata, rdata, 0); }
-    void forward(T* rdata, std::complex<double>* cdata) override { forward_stream(rdata, cdata, 0); }
-    void backward(std::complex<double>* cdata, T* rdata) override { backward_stream(cdata, rdata, 0); }
 };
 
 #endif

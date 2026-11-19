@@ -155,7 +155,7 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
         T* fft_in = q_in;
         T* fft_out = q_out;
 
-        // Thread-local buffers for expand/reduce (called from OpenMP parallel regions);
+        // Work arrays of this thread for expand/reduce (called from OpenMP parallel regions);
         // the CrysFFT path reads and writes the reduced basis directly
         std::vector<T>& q_full_in_local = work.q_full_in;
         std::vector<T>& q_full_out_local = work.q_full_out;

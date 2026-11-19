@@ -25,12 +25,7 @@
 #include "FFT.h"
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
-#ifdef USE_CPU_FFTW
 #include "ComputationBox.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "ComputationBox.h"
-#endif
 #ifdef USE_CUDA
 #include "CudaComputationBox.h"
 #include <cuda_runtime.h>

@@ -355,13 +355,9 @@ void CpuSolverCNADI::update_dw(std::map<std::string, const double*> w_input)
 
 CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
 {
-    WorkArrays* work;
-    {
-        std::lock_guard<std::mutex> lock(work_mutex_);
-        work = &work_arrays_[std::this_thread::get_id()];
-    }
+    WorkArrays& work = work_arrays_.get();
     const size_t M = cb->get_total_grid();
-    if (work->q_exp.size() != M)
+    if (work.q_exp.size() != M)
     {
         // Planes: 1D the line; 2D the grid (y sweep, transposed); 3D (x, z) of the x sweep and (z, y) of the z sweep.
         // Lines per plane: 1D one; 2D n_y (x sweep) and n_x (y sweep); 3D n_z (x, y sweeps) and n_y (z sweep)
@@ -377,13 +373,13 @@ CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
             plane = static_cast<size_t>(std::max(nx_[0], nx_[1])) * nx_[2];
             lines = std::max(nx_[1], nx_[2]);
         }
-        work->q_exp.resize(M);
-        work->q_star.resize(dim_ >= 2 ? M : 0);
-        work->q_dstar.resize(dim_ == 3 ? M : 0);
-        work->plane.resize(plane);
-        work->correction.resize(lines);
+        work.q_exp.resize(M);
+        work.q_star.resize(dim_ >= 2 ? M : 0);
+        work.q_dstar.resize(dim_ == 3 ? M : 0);
+        work.plane.resize(plane);
+        work.correction.resize(lines);
     }
-    return *work;
+    return work;
 }
 
 void CpuSolverCNADI::advance_propagator(
