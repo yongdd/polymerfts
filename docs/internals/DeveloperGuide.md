@@ -39,7 +39,7 @@ C++     ▼
         │      └── owns ComputationBackend<T> = CpuComputationBackend | CudaComputationBackend
         │             └── owns the solver: CpuSolver<T> | CudaSolver<T>
         │                    └── owns the transforms: FFT/DCT/DST, CrysFFT, Pseudo tables
-        └── AndersonMixing<T>          CpuAndersonMixing | CudaAndersonMixing[ReduceMemory]
+        └── AndersonMixing<T>          CpuAndersonMixing | CudaAndersonMixing
 ```
 
 The computation classes are written once (`src/common/Computation*.cpp`) and decide **what** is computed and in **which order**. Everything that touches grid data goes through `ComputationBackend`, so the CPU and CUDA code differ only below that line.
@@ -109,7 +109,7 @@ AbstractFactory<T>                    [Abstract Base]
         │                CpuComputationBackend (FFTW or MKL)
         │
         └── CudaFactory<T>            [GPU]
-            └── Creates: CudaComputationBox, CudaAndersonMixing[ReduceMemory],
+            └── Creates: CudaComputationBox, CudaAndersonMixing (pinned history with reduce_memory),
                          CudaComputationBackend
 ```
 
@@ -659,7 +659,7 @@ When adding new computational features, you must implement them for both platfor
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
 | Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), and the top-level keys each method reads | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid

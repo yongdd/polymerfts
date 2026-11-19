@@ -80,7 +80,7 @@ class LftsStructureFunctions:
             # does not see, Γ < 1e-12, are recorded as 0). With walls Γ lives in the cosine
             # basis while S(k) is a Fourier transform, so it is recorded as it is.
             if self.smearing.enabled and self.smearing.periodic:
-                gamma = self.smearing.fourier[..., :self.prop_solver.nx[-1]//2+1]
+                gamma = self.smearing.kernel()   # on the half spectrum, as the sums
                 sf_average[key] = np.divide(sf_average[key], gamma, out=np.zeros_like(sf_average[key]), where=gamma > 1e-12)
             mdic["structure_function_" + pair_suffix(key)] = sf_average[key]
         mdic["sample_count"] = sf_sample_count
@@ -114,6 +114,11 @@ class ClftsStructureFunctions:
             u = projector @ np.array([self.electrostatics.charges[name] for name in self.monomer_types])
             if u @ u > 1e-12:
                 self.psi_probe = u / (u @ u)
+        # The transform of the fixed charge, which does not change, for the estimators with ψ
+        self.fixed_charge_k = None
+        if self.electrostatics is not None and self.electrostatics.coupling > 0 and self.periodic_box \
+                and self.electrostatics.fixed_charge is not None:
+            self.fixed_charge_k = self._transform(self.electrostatics.fixed_charge)[0]
 
     def empty_sums(self):
         """Sums of <u(k) phi(-k)> on the full spectrum of complex fields, and of the charge structure function."""
@@ -165,7 +170,7 @@ class ClftsStructureFunctions:
             if es.ions:
                 probe -= np.reshape(self._transform(es.ion_charge())[0], probe.shape) / self.prop_solver.n_grid
             if es.fixed_charge is not None:
-                probe -= np.reshape(self._transform(es.fixed_charge)[0], probe.shape) / self.prop_solver.n_grid
+                probe -= np.reshape(self.fixed_charge_k, probe.shape) / self.prop_solver.n_grid
             # k = 0 is not a structure function in the canonical ensemble; with screening
             # κ²ψ(0)/E would carry a net charge there
             probe[(0,) * len(self.prop_solver.nx)] = 0.0
@@ -190,7 +195,7 @@ class ClftsStructureFunctions:
                 ion_mk = np.conj(self._transform(np.conj(es.ion_charge()))[0]) / n_grid
                 charge_mk = charge_mk + np.reshape(ion_mk, np.shape(psi_k))
             if es.fixed_charge is not None:
-                fixed_mk = np.conj(self._transform(es.fixed_charge)[0]) / n_grid
+                fixed_mk = np.conj(self.fixed_charge_k) / n_grid
                 charge_mk = charge_mk + np.reshape(fixed_mk, np.shape(psi_k))
             rate = es.screened_k_sq / es.coupling
             with np.errstate(divide="ignore", invalid="ignore"):

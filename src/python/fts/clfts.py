@@ -331,7 +331,7 @@ class CLFTS:
             raise NumericalError("Non-finite intermediate CLFTS force", self.mpt.to_monomer_fields_dict(fields[:M]))
         return force
 
-    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux=None):
+    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux, record):
         """Save CL-FTS simulation checkpoint data to MATLAB file.
 
         Parameters
@@ -346,9 +346,13 @@ class CLFTS:
             Current Langevin step number.
         normal_noise_prev : numpy.ndarray
             Previous noise array for Leimkuhler-Matthews integration.
+        w_aux : numpy.ndarray
+            The auxiliary fields of w.
+        record : RunRecord
+            The measurements of the run since its last statistics file.
         """
         # Make dictionary for data
-        mdic = fields_data(self, w, langevin_step, normal_noise_prev, w_aux)
+        mdic = fields_data(self, w_aux, langevin_step, normal_noise_prev, record)
         mdic["zeta_n"] = self.zeta_n
 
         # Add w fields to the dictionary (complex values)
@@ -598,11 +602,11 @@ class CLFTS:
 
             # Save simulation data
             if langevin_step % self.recording["checkpoint_interval"] == 0:
-                self._recording_state = record
                 w = self.mpt.to_monomer_fields(w_aux)
                 self.save_simulation_data(
                     path=os.path.join(self.recording["dir"], "fields_%06d.mat" % langevin_step),
-                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux
+                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux,
+                    record=record
                 )
 
         # Estimate execution time

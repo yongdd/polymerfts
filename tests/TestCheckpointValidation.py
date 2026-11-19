@@ -11,7 +11,7 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.checkpoint import extension_state
-from polymerfts.utils.common import atomic_savemat
+from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
 from fts_checks import diblock_fields, diblock_parameters, expect_error, silenced
 
 
@@ -76,6 +76,30 @@ def check_corruption(root, cls):
     assert counter.count == 4
 
 
+def check_unread_section_keys(root):
+    """A checkpoint of an earlier release whose saddle and compressor held keys that no release read (the
+    section key table refuses them now) continues without them; a stored key that is read still has to
+    match."""
+    original_dir = root / "unread_original"
+    LFTS(diblock_parameters(original_dir, 1, LFTS), random_seed=11).run(diblock_fields())
+    data = read_checkpoint(original_dir / "fields_000001.mat")
+
+    def with_stored(change):
+        stored = json.loads(str(data["checkpoint_settings_json"]))
+        change(stored)
+        edited = dict(data, checkpoint_settings_json=settings_json(stored), checkpoint_settings_hash=input_hash(stored))
+        path = root / "unread.mat"
+        atomic_savemat(path, edited)
+        return path
+
+    unread = with_stored(lambda s: (s["saddle"].update(max_retry=3), s["compressor"].update(mixing="fast")))
+    candidate = LFTS(diblock_parameters(root / "unread_candidate", cls=LFTS), random_seed=99)
+    assert candidate.continue_run(unread)["status"] == "completed"
+    read = with_stored(lambda s: s["saddle"].update(tolerance=s["saddle"]["tolerance"] * 2))
+    candidate = LFTS(diblock_parameters(root / "read_candidate", cls=LFTS), random_seed=99)
+    expect_error(lambda: candidate.continue_run(read), ValidationError)
+
+
 def check_wtmd(root):
     output = root / "wtmd"
     params = diblock_parameters(output)
@@ -132,6 +156,7 @@ def main():
             with silenced():
                 for cls in (LFTS, CLFTS):
                     check_corruption(Path(directory), cls)
+                check_unread_section_keys(Path(directory))
                 check_wtmd(Path(directory))
         finally:
             os.chdir(previous)

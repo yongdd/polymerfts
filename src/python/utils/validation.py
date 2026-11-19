@@ -569,8 +569,9 @@ def _validate_smearing(params: Dict[str, Any], complex_fields: bool) -> None:
 
 def _numerical_method(params: Dict[str, Any]) -> tuple:
     """The numerical method of the input as the factories resolve it, and its capabilities in the method
-    registry: (None, None) for a name the registry does not know (PropagatorSolver names the valid ones),
-    and without the native extension (the input is also checked before it is built)."""
+    registry: (None, None) for a name the registry does not know or a method of the other chain model
+    (PropagatorSolver names the valid ones), and without the native extension (the input is also checked
+    before it is built)."""
     try:
         from .. import _core
     except ImportError:
@@ -603,14 +604,50 @@ _UNREAD_KEY_HINTS = {"mask": "impenetrable regions are available through Propaga
 # until a later release refuses them
 _RETIRED_KEYS = {"stress_interval": "SCFT computes the stress in every iteration of the cell relaxation"}
 
+# The keys that each option section takes, with the names of normalize_params. A method refuses a key
+# that a section it reads does not take (check_section_keys), as it refuses a top-level key that no
+# method reads: a misspelled option would otherwise keep its default. A new option of a section needs
+# its entry here. The entries of a section (the point ions of electrostatics, the boxes of
+# gibbs_ensemble) are checked with their section
+SECTION_KEYS = {
+    "langevin": {"dt", "nbar", "max_step", "integrator"},
+    "recording": {"dir", "checkpoint_interval", "sample_interval", "statistics_save_interval", "pressure",
+                  "concentrations"},
+    "saddle": {"max_iter", "tolerance", "max_retries", "failure_policy"},
+    "compressor": {"name", "max_hist", "start_error", "mix_min", "mix_init"},
+    "wtmd": {"ell", "kc", "delta_t", "sigma_psi", "psi_min", "psi_max", "dpsi", "update_freq", "recording_period"},
+    "optimizer": {"name", "max_hist", "start_error", "mix_min", "mix_init"},
+    "space_group": {"symbol", "hall_number"},
+    "smearing": {"type", "a_int", "k_int", "dk_int"},
+    "electrostatics": {"charges", "bjerrum_length", "coupling", "n_segments", "ions", "counterion", "psi_dt_scaling",
+                       "screening_length", "fixed_charge"},
+    "gibbs_ensemble": {"boxes", "cycles", "cycle_steps", "exchange_rate", "skip_steps"},
+}
+
+
+def check_section_keys(params: Dict[str, Any], sections) -> None:
+    """A key in one of the option sections of params that the section does not take (SECTION_KEYS)
+    raises ValidationError naming it, the closest valid key and the keys of the section. A section that
+    is not a dict is left to the checks of its options."""
+    for section in sections:
+        options = params.get(section)
+        if not isinstance(options, dict):
+            continue
+        unknown = sorted(str(key) for key in options if key not in SECTION_KEYS[section])
+        if unknown:
+            close = difflib.get_close_matches(unknown[0], SECTION_KEYS[section], n=1)
+            hint = f" (did you mean '{close[0]}'?)" if close else ""
+            raise ValidationError(f"'{section}' has unknown keys: {unknown}{hint}; it takes "
+                                  + ", ".join(sorted(SECTION_KEYS[section])))
+
 
 def check_method_keys(params: Dict[str, Any], method: str) -> None:
     """The top-level keys that the method ("SCFT", "L-FTS" or "CL-FTS") does not read (METHOD_KEYS):
     the options of another method are ignored with one warning that lists them, so that one input serves
     SCFT and the Langevin methods; an option of an earlier release (_RETIRED_KEYS) is ignored with one
     warning that says why; a key that no method reads (a misspelled or unsupported option) raises
-    ValidationError naming it and the closest key. params comes from normalize_params (its names, no
-    None values)."""
+    ValidationError naming it and the closest key. So does a key that a section the method reads does
+    not take (check_section_keys). params comes from normalize_params (its names, no None values)."""
     known = sorted(set().union(*METHOD_KEYS.values()))
     ignored = []
     for key in params:
@@ -629,6 +666,7 @@ def check_method_keys(params: Dict[str, Any], method: str) -> None:
                         else "no method reads it (docs/references/Parameters.md lists the keys)")
             raise ValidationError(f"{method} does not take a '{key}' parameter: {hint}")
         ignored.append(f"{key} ({' and '.join(readers)})")
+    check_section_keys(params, sorted(METHOD_KEYS[method] & SECTION_KEYS.keys()))
     if ignored:
         warnings.warn(f"{method} ignores the options of other methods: {', '.join(ignored)}",
                       stacklevel=_user_stacklevel())
@@ -860,10 +898,6 @@ def validate_electrostatics(params: Dict[str, Any]) -> None:
     electrostatics = params["electrostatics"]
     if not isinstance(electrostatics, dict):
         raise ValidationError("'electrostatics' must be a dict or None")
-    unknown = set(electrostatics) - {"charges", "bjerrum_length", "coupling", "psi_dt_scaling", "screening_length",
-                                     "ions", "counterion", "n_segments", "fixed_charge"}
-    if unknown:
-        raise ValidationError(f"'electrostatics' has unknown keys: {sorted(unknown)}")
     charges = electrostatics.get("charges")
     if not isinstance(charges, dict) or not charges:
         raise ValidationError("'electrostatics.charges' must be a dict {monomer type: valence}")
@@ -1052,9 +1086,7 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
     gibbs = params.get("gibbs_ensemble")
     if not isinstance(gibbs, dict):
         raise ValidationError("Missing required dict: 'gibbs_ensemble'")
-    unknown = set(gibbs) - {"boxes", "cycles", "cycle_steps", "exchange_rate", "skip_steps"}
-    if unknown:
-        raise ValidationError(f"'gibbs_ensemble' has unknown keys: {sorted(unknown)}")
+    check_section_keys(params, ("gibbs_ensemble",))
     # The rest is a CL-FTS input: one warning about the options of the other methods, which the boxes
     # leave out (GibbsEnsemble.box_params)
     _check_langevin_keys({key: value for key, value in params.items() if key != "gibbs_ensemble"},

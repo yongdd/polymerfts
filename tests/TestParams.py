@@ -8,7 +8,8 @@ and ValidationError for invalid input. The top-level keys: a key given as None
 is absent, the options of other methods are ignored with one warning at the
 caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
 an option of an earlier release (stress_interval) is ignored with one warning,
-and a key that no method reads is refused.
+and a key that no method reads is refused, as is a key that a section of the
+method does not take.
 """
 
 import sys
@@ -621,6 +622,33 @@ def main():
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         ok &= expect_error(cls, {**params, "relax_cel": False}, f"{cls.__name__} with a misspelled key",
                            "does not take a 'relax_cel' parameter: did you mean 'relax_cell'?")
+    # So is a key that a section of the method does not take, which would leave its option at the default
+    # (the deep-langevin-fts names l and dT of WTMD among them); the sections of another method are ignored
+    # with what they hold
+    sections = {"langevin": lfts_params()["langevin"], "recording": lfts_params()["recording"],
+                "saddle": lfts_params()["saddle"], "compressor": lfts_params()["compressor"], "wtmd": {"ell": 4},
+                "smearing": {"type": "gaussian", "a_int": 0.1}, "optimizer": scft_parameters()["optimizer"],
+                "space_group": {"symbol": "Im-3m"}}
+    for cls, params, names in ((SCFT, scft_parameters(), ("optimizer", "space_group", "smearing")),
+                               (LFTS, lfts_params(), ("langevin", "recording", "saddle", "compressor", "wtmd",
+                                                      "smearing")),
+                               (CLFTS, clfts_params(), ("langevin", "recording", "smearing"))):
+        for section in names:
+            ok &= expect_error(cls, {**params, section: {**sections[section], "unknown_key": 1}},
+                               f"{cls.__name__} with an unknown key in '{section}'",
+                               f"'{section}' has unknown keys: ['unknown_key']")
+    for cls, params, section, key, message in (
+            (LFTS, lfts_params(), "langevin", "integrater", "(did you mean 'integrator'?); it takes dt, integrator, "
+                                                            "max_step, nbar"),
+            (CLFTS, clfts_params(), "recording", "pressur", "did you mean 'pressure'?"),
+            (LFTS, lfts_params(), "saddle", "max_retry", "did you mean 'max_retries'?"),
+            (SCFT, scft_parameters(), "optimizer", "max_hst", "did you mean 'max_hist'?"),
+            (LFTS, lfts_params(), "wtmd", "l", "'wtmd' has unknown keys: ['l']"),
+            (LFTS, lfts_params(), "wtmd", "dT", "'wtmd' has unknown keys: ['dT']")):
+        ok &= expect_error(cls, {**params, section: {**sections[section], key: 2}},
+                           f"{cls.__name__} with '{section}.{key}'", message)
+    ok &= expect_ignored(CLFTS, {**clfts_params(), "saddle": {"unknown_key": 1}},
+                         "CLFTS with an unknown key in the L-FTS section 'saddle'", "saddle (L-FTS")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False

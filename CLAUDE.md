@@ -199,6 +199,8 @@ Keep each simulation class readable from top to bottom:
   defaults next to their use. Avoid introducing parameter dataclass/spec layers.
   A new top-level option also needs its entry in `METHOD_KEYS` (`validation.py`):
   a method warns about the keys of other methods and refuses keys no method reads.
+  A new option inside a section (`langevin`, `recording`, `wtmd`, ...) also needs
+  its entry in `SECTION_KEYS`: a method refuses keys its sections do not take.
 - Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.
