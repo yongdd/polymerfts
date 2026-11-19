@@ -26,7 +26,6 @@ params = {
 
     "reduce_memory":False,     # Reduce memory usage by storing only check points.
     "relax_cell":True,          # Relax cell lengths and allowed angles during SCFT iteration.
-    "stress_interval":1,        # Compute stress every iteration (for reproducibility)
     "chain_model":"continuous",      # "discrete" or "continuous" chain model
     "ds":1/100,                      # Contour step interval, which is equal to 1/N_Ref.
 

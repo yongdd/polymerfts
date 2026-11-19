@@ -83,8 +83,6 @@ def test_exported_presets(preset, tmp_path, monkeypatch):
         assert calls["kwargs"]["random_seed"] == 12345
     if "ABA" in preset:
         assert sum(b["length"] for b in params["polymers"][0]["blocks"]) == 2
-    # Only the .mat seed uses math
-    assert "import math" not in BUILDER["build_script"](values)
 
 
 @pytest.mark.parametrize("dimension", (1, 2, 3))

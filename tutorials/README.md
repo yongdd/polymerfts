@@ -160,6 +160,9 @@ cd tutorials
 jupyter notebook
 ```
 
+`ctest --test-dir build -R TestTutorials` runs the code cells of every notebook against the
+build, with at most 5 Langevin steps in each L-FTS run.
+
 ## Additional Resources
 
 - **Examples**: See `examples/` ([index](../examples/README.md)) for production simulation scripts, grouped by physical system and method

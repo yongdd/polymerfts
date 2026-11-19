@@ -11,6 +11,7 @@ Each phase function returns {"w": {"A": w_A, "B": w_B}, "lx": lx}, the initial f
 the grid nx and the cell they belong to.
 """
 
+import json
 import os
 
 import numpy as np
@@ -33,10 +34,15 @@ def resample(field, nx):
 
 
 def from_file(file_name, nx, axes=None):
-    """The fields w_<type> of a .mat file (an SCFT result, or another file with nx, lx and the
-    flattened fields), resampled to the grid nx, with the cell of the file. axes reorders the
-    axes of the file first (numpy.transpose), e.g. a file in the order [c, a, b]."""
-    data = scipy.io.loadmat(file_name, squeeze_me=True)
+    """The fields w_<type> of a .mat or .json file (an SCFT result, or another file with nx, lx
+    and the flattened fields), resampled to the grid nx, with the cell of the file. axes reorders
+    the axes of the file first (numpy.transpose), e.g. a file in the order [c, a, b]. With nx None
+    the fields keep the grid of the file."""
+    if str(file_name).endswith(".json"):
+        with open(file_name, encoding="utf-8") as file:
+            data = json.load(file)
+    else:
+        data = scipy.io.loadmat(file_name, squeeze_me=True)
     nx_file = [int(n) for n in np.atleast_1d(data["nx"])]
     lx = [float(x) for x in np.atleast_1d(data["lx"])]
     w = {}
@@ -45,7 +51,7 @@ def from_file(file_name, nx, axes=None):
             field = np.reshape(data[key], nx_file)
             if axes is not None:
                 field = np.transpose(field, axes)
-            w[key[2:]] = resample(field, nx)
+            w[key[2:]] = field if nx is None else resample(field, nx)
     if axes is not None:
         lx = [lx[axis] for axis in axes]
     return {"w": w, "lx": lx}

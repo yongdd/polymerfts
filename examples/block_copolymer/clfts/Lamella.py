@@ -88,11 +88,9 @@ print("Generating initial fields with lamellar pattern...")
 nx = params["nx"]
 lx = params["lx"]
 
-# Create coordinate grid
+# The x coordinate of every grid point
 x = np.linspace(0, lx[0], nx[0], endpoint=False)
-y = np.linspace(0, lx[1], nx[1], endpoint=False)
-z = np.linspace(0, lx[2], nx[2], endpoint=False)
-X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+X = np.broadcast_to(x[:, None, None], nx)
 
 # Lamellar pattern along x-direction (2 periods)
 period = lx[0] / 2

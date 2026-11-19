@@ -8,7 +8,7 @@
 #              (ctest -L basic -j 4)
 #   numerical  the physical and numerical regressions, for a change of a numerical
 #              algorithm (ctest -L numerical); some of them are basic too
-#   examples   the example scripts
+#   examples   the example scripts and the tutorial notebooks
 # Only a run without -L covers the whole suite.
 SET(BASIC_TESTS
     # Parameter handling of the simulation classes and array handling of the
@@ -180,6 +180,7 @@ SET(NUMERICAL_TESTS
 
 SET(EXAMPLES_TESTS
     TestExamples
+    TestTutorials
 )
 
 # Every name in the lists is a test of this directory

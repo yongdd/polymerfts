@@ -5,19 +5,18 @@ Each script under examples/ runs in its own process, in its directory of a
 temporary copy of the examples tree (it finds its input files there, also in a
 neighbouring directory, and writes nothing into the source tree). Warnings of the
 UserWarning category, such as the one about the keys of another method, are errors.
-The SCFT, LFTS and CLFTS classes are wrapped: a platform the build lacks is replaced
-by a CPU platform, and the first run() or continue_run() stops the script, so the
-example is checked up to the start of its simulation (inputs, parameter validation,
-construction). With a visible CUDA device the first run() instead runs briefly
-(SCFT max_iter 6, L-FTS and CL-FTS max_step 5) and the script continues, so that the
-code after it, such as a second construction, is checked too; the second run() or a
-continue_run() stops the script then. On the CPU platforms these runs would more than
-double the time of the test, so a CPU-only build checks the construction only. The examples
-in FIRST_RUN_STOPS need a complete first run for what follows it and always stop at
-their first run(). An example that iterates a PropagatorSolver itself stops the same
-way at its first compute_propagators() outside a simulation. The examples of tools
-that build no simulation (WITHOUT_SIMULATION) run to the end instead and check their
-own results.
+The SCFT, LFTS and CLFTS classes are wrapped: the first run() or continue_run() stops
+the script, so the example is checked up to the start of its simulation (inputs,
+parameter validation, construction) on the platform it selects. With a visible CUDA
+device the first run() instead runs briefly (SCFT max_iter 6, L-FTS and CL-FTS
+max_step 5) and the script continues, so that the code after it, such as a second
+construction, is checked too; the second run() or a continue_run() stops the script
+then. On the CPU platforms these runs would more than double the time of the test, so
+a CPU-only build checks the construction only. The examples in FIRST_RUN_STOPS need a
+complete first run for what follows it and always stop at their first run(). An
+example that iterates a PropagatorSolver itself stops the same way at its first
+compute_propagators() outside a simulation. The examples of tools that build no
+simulation (WITHOUT_SIMULATION) run to the end instead and check their own results.
 """
 
 import os
@@ -53,15 +52,12 @@ DRIVER = r"""
 import copy, os, runpy, sys, warnings
 warnings.simplefilter("error", UserWarning)
 import polymerfts
-from polymerfts import PlatformSelector
 
 # The process output, kept for the messages below: an example may redirect file
 # descriptor 1 around run(), e.g. to silence the native library
 output = os.dup(1)
 short = sys.argv[2] == "short"
 
-platforms = PlatformSelector.avail_platforms()
-fallback = next((p for p in platforms if p.startswith("cpu")), platforms[0])
 runs = {"count": 0, "inside": 0}
 
 
@@ -88,8 +84,6 @@ def wrap(cls):
     @inside
     def __init__(self, params, *args, **kwargs):
         params = copy.deepcopy(params)
-        if params.get("platform") is not None and params["platform"] not in platforms:
-            params["platform"] = fallback
         if short and cls is polymerfts.SCFT:
             params["max_iter"] = 6
         elif short and isinstance(params.get("langevin"), dict):

@@ -27,7 +27,6 @@ import seeds
 # Parameters shared by all phases
 base_params = {
     "relax_cell": True,
-    "stress_interval": 1,
     "chain_model": "continuous",
     "ds": 1/100,
     "segment_lengths": {"A": 1.0, "B": 1.0},

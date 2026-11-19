@@ -51,7 +51,6 @@ import contextlib
 from collections import deque
 
 import numpy as np
-import scipy.io
 from scipy.optimize import brentq
 import matplotlib
 matplotlib.use("Agg")
@@ -326,18 +325,10 @@ def run(base_params, set_point, phases, x_grid, y_grid, x_tol, y_tol,
         """Fields and cell of a seed, interpolated to the grid of the phase if needed."""
         x, y = phases[phase]["point"]
         seed = phases[phase]["seed"]
-        if isinstance(seed, dict):
-            return {"x": x, "y": y, "w": seed["w"], "lx": list(seed["lx"])}
-        path = os.path.join(seed_dir, seed)
-        data = scipy.io.loadmat(path, squeeze_me=True) if path.endswith(".mat") else json.load(open(path))
-        nx_seed = [int(n) for n in np.atleast_1d(data["nx"])]
-        nx = phases[phase].get("params", {}).get("nx", base_params.get("nx", nx_seed))
-        w = {}
-        for key in data:
-            if key.startswith("w_"):
-                field = np.reshape(np.array(data[key], dtype=np.float64), nx_seed)
-                w[key[2:]] = seeds.resample(field, nx)
-        return {"x": x, "y": y, "w": w, "lx": [float(v) for v in np.atleast_1d(data["lx"])]}
+        if not isinstance(seed, dict):
+            nx = phases[phase].get("params", {}).get("nx", base_params.get("nx"))
+            seed = seeds.from_file(os.path.join(seed_dir, seed), nx)
+        return {"x": x, "y": y, "w": seed["w"], "lx": list(seed["lx"])}
 
     time_start = time.perf_counter()
     grid = {}       # (phase, i, j) -> converged state at (x_grid[i], y_grid[j])
