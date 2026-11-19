@@ -159,7 +159,6 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
 
         // Get Boltzmann factors for the correct ds_index
         const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
 
         // Determine input/output pointers based on space group
         T* fft_in = q_in;
@@ -201,6 +200,7 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator(
         {
             // Forward transform -> multiply by bond function ĝ(k) -> Backward transform
             // -> exp(-w*ds) in real space
+            const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
             this->transform_forward(fft_in, k_q_in.data());
             this->transform_backward(k_q_in.data(), _boltz_bond, fft_out, _exp_dw);
 
@@ -251,9 +251,6 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         if (!crysfft_path)
             k_q_in.resize(coeff_size);
 
-        // Discrete chains always use ds_index=0 (global ds)
-        const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
-
         // Determine input/output pointers based on space group
         T* fft_in = q_in;
         T* fft_out = q_out;
@@ -293,6 +290,8 @@ void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         else
         {
             // Forward transform -> multiply by half-bond function ĝ^(1/2)(k) -> Backward transform
+            // (discrete chains always use ds_index=0, the global ds)
+            const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
             this->transform_forward(fft_in, k_q_in.data());
             this->transform_backward(k_q_in.data(), _boltz_bond_half, fft_out, nullptr);
 

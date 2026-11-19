@@ -23,7 +23,7 @@
  * unchanged. A failure prints which placements of the input (rows) and the
  * output (columns) give which result. FftwFFT must also give these values when
  * its input and output overlap. MKL runs one thread inside each transform, as
- * MklFactory sets it for the solvers. A build without either library skips its
+ * CpuFactory sets it for the solvers. A build without either library skips its
  * part, and a build without both skips the test.
  *
  * The backward transform with factors, backward_with_factors(cdata, k_factor,
@@ -389,7 +389,7 @@ int main()
     {
         bool ok = true;
 #ifdef USE_CPU_MKL
-        mkl_set_num_threads(1);  // As MklFactory does: no threading inside a transform
+        mkl_set_num_threads(1);  // As CpuFactory does: no threading inside a transform
         std::cout << "Periodic MKL transforms from and into arrays 0, 16, 32 and 48 bytes after a 64-byte boundary"
                   << std::endl;
         ok &= check_type<MklFFT, double>("mkl");

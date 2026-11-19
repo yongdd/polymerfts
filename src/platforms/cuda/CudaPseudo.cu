@@ -83,15 +83,18 @@ void CudaPseudo<T>::update(const std::vector<double>& dx, const std::array<doubl
         for (const auto& [monomer_type, table] : by_type)
             upload_table(d_boltz_bond_half[ds_idx][monomer_type], table);
 
-    // The stress basis (empty without it; no cross terms for non-periodic BC) and the
-    // negative-frequency map of complex fields with periodic BC
+    // The stress basis of the box axes (empty without it; no cross terms for non-periodic BC)
     upload_table(d_fourier_basis_x, this->fourier_basis_x);
     upload_table(d_fourier_basis_y, this->fourier_basis_y);
     upload_table(d_fourier_basis_z, this->fourier_basis_z);
     upload_table(d_fourier_basis_xy, this->fourier_basis_xy);
     upload_table(d_fourier_basis_xz, this->fourier_basis_xz);
     upload_table(d_fourier_basis_yz, this->fourier_basis_yz);
-    upload_table(d_negative_k_idx, this->negative_k_idx);
+
+    // The negative-frequency map of complex fields with periodic BC: a map of the grid,
+    // copied when Pseudo builds it (with the stress basis) and released with it
+    if (d_negative_k_idx.size() != this->negative_k_idx.size())
+        upload_table(d_negative_k_idx, this->negative_k_idx);
 }
 
 // Explicit template instantiation

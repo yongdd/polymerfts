@@ -300,6 +300,7 @@ SET(POLYMERFTS_CPU_COMMON_SOURCES
     src/platforms/cpu/CpuAndersonMixing.cpp
     src/platforms/cpu/CpuFourierTransform.cpp
     src/platforms/cpu/MakhoulTransform.cpp
+    src/platforms/cpu/CpuFactory.cpp
 )
 
 # ---- FFTW3 ----
@@ -377,7 +378,6 @@ IF(BUILD_CPU_FFTW_LIB)
         src/platforms/cpu/FftwFFT.cpp
         src/platforms/cpu/FftwCrysFFTRecursive3m.cpp
         src/platforms/cpu/FftwCrysFFTObliqueZ.cpp
-        src/platforms/cpu/FftwFactory.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     # PUBLIC so consumers (tests, _core) inherit FFTW transitively and no
@@ -390,7 +390,6 @@ IF(BUILD_CPU_MKL_LIB)
         src/platforms/cpu/MklRealTransform.cpp
         src/platforms/cpu/MklCrysFFTRecursive3m.cpp
         src/platforms/cpu/MklCrysFFTObliqueZ.cpp
-        src/platforms/cpu/MklFactory.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     TARGET_LINK_LIBRARIES(cpu-mkl ${MKL_LIBRARIES})

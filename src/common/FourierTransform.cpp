@@ -115,26 +115,23 @@ std::vector<double> FourierTransform<T>::get_k_squared() const
 
     if (!periodic_)
     {
-        // Pad to 3D in front, as the propagator solvers do (Pseudo.cpp)
-        std::array<int, 3> tnx = {1, 1, 1};
-        for (int d = 0; d < dim_; ++d)
-            tnx[3 - dim_ + d] = nx[d];
         // Separable wavenumbers (orthogonal cell): k = πm/L (cosine), π(m+1)/L (sine)
-        // or 2πm/L with the signed index m of the FFT (periodic axes of a mixed box)
+        // or 2πm/L with the signed index m of the FFT (periodic axes of a mixed box);
+        // the axes padded to three at the end have k = 0
+        const std::array<int, 3> tnx = padded_grid(nx);
         const std::vector<double> lx = cb_->get_lx();
         std::array<std::vector<double>, 3> k_axis;
         for (int d = 0; d < 3; ++d)
         {
             k_axis[d].assign(tnx[d], 0.0);
-            const int a = d - (3 - dim_);
-            if (a < 0)
+            if (d >= dim_)
                 continue;
             for (int m = 0; m < tnx[d]; ++m)
             {
-                if (bc_[a] == BoundaryCondition::PERIODIC)
-                    k_axis[d][m] = 2.0 * PI * ((m > tnx[d] / 2) ? m - tnx[d] : m) / lx[a];
+                if (bc_[d] == BoundaryCondition::PERIODIC)
+                    k_axis[d][m] = 2.0 * PI * ((m > tnx[d] / 2) ? m - tnx[d] : m) / lx[d];
                 else
-                    k_axis[d][m] = PI * (m + (bc_[a] == BoundaryCondition::ABSORBING ? 1 : 0)) / lx[a];
+                    k_axis[d][m] = PI * (m + (bc_[d] == BoundaryCondition::ABSORBING ? 1 : 0)) / lx[d];
             }
         }
         for (int i = 0; i < tnx[0]; ++i)

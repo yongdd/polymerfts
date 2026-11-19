@@ -19,8 +19,7 @@
  * computational objects (ComputationBox, Pseudo, AndersonMixing, etc.).
  *
  * @see AbstractFactory for factory interface
- * @see FftwFactory for FFTW CPU implementation
- * @see MklFactory for MKL CPU implementation
+ * @see CpuFactory for the CPU implementation (FFTW or MKL transforms)
  * @see CudaFactory for GPU implementation
  */
 
@@ -32,11 +31,8 @@
 #include <cuda_runtime.h>
 #endif
 
-#ifdef USE_CPU_FFTW
-#include "FftwFactory.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "MklFactory.h"
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+#include "CpuFactory.h"
 #endif
 #ifdef USE_CUDA
 #include "CudaFactory.h"
@@ -91,11 +87,11 @@ std::unique_ptr<AbstractFactory<double>> PlatformSelector::create_factory_real(
 {
 #ifdef USE_CPU_FFTW
     if (platform == "cpu-fftw")
-        return std::make_unique<FftwFactory<double>>(reduce_memory);
+        return std::make_unique<CpuFactory<double>>(reduce_memory, FFTBackend::FFTW);
 #endif
 #ifdef USE_CPU_MKL
     if (platform == "cpu-mkl")
-        return std::make_unique<MklFactory<double>>(reduce_memory);
+        return std::make_unique<CpuFactory<double>>(reduce_memory, FFTBackend::MKL);
 #endif
 #ifdef USE_CUDA
     if (platform == "cuda")
@@ -123,11 +119,11 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> PlatformSelector::create_
 {
 #ifdef USE_CPU_FFTW
     if (platform == "cpu-fftw")
-        return std::make_unique<FftwFactory<std::complex<double>>>(reduce_memory);
+        return std::make_unique<CpuFactory<std::complex<double>>>(reduce_memory, FFTBackend::FFTW);
 #endif
 #ifdef USE_CPU_MKL
     if (platform == "cpu-mkl")
-        return std::make_unique<MklFactory<std::complex<double>>>(reduce_memory);
+        return std::make_unique<CpuFactory<std::complex<double>>>(reduce_memory, FFTBackend::MKL);
 #endif
 #ifdef USE_CUDA
     if (platform == "cuda")

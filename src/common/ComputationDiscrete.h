@@ -23,8 +23,8 @@
  * from.
  *
  * The class is platform neutral: the grid work goes through a
- * ComputationBackend, which the platform factories (MklFactory, FftwFactory,
- * CudaFactory) pass in.
+ * ComputationBackend, which the platform factories (CpuFactory, CudaFactory)
+ * pass in.
  *
  * **Propagator storage:** propagator[key][n] for n = 1..max_n_segment
  * (segment n; index 0 is unused).

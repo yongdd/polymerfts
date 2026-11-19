@@ -167,9 +167,6 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
         const T* _exp_dw_half = this->exp_dw_half.at(ds_index).at(monomer_type).data();
 
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
-        const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, ds_index);
-
         // Determine input pointer (expand reduced basis if space_group is set;
         // the CrysFFT path reads the reduced basis directly)
         T* fft_in = q_in;
@@ -210,6 +207,9 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
         }
         else
         {
+            const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
+            const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, ds_index);
+
             // The full step and the first half step start from the same input
             for (int i = 0; i < M_full; ++i)
             {

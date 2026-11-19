@@ -97,6 +97,8 @@ protected:
      * boltz_bond = exp(-|k|² b² ds / 6), boltz_bond_half = exp(-|k|² b² ds / 12), where
      * k depends on the boundary conditions: the diffusion propagator of continuous
      * chains, the bond function (and half-bond function at chain ends) of discrete ones.
+     * The first update() allocates them: a solver that never updates Pseudo (CrysFFT
+     * propagators with the stress fast path) holds none.
      */
     std::map<int, std::map<std::string, std::vector<double>>> boltz_bond;
     std::map<int, std::map<std::string, std::vector<double>>> boltz_bond_half;
@@ -105,11 +107,12 @@ protected:
      * @brief The stress basis: v⊗v of the deformation vector v = 2π g⁻¹ m of each mode,
      *        with the weight of the mode in the sum over the spectrum.
      *
-     * fourier_basis_x[m] = v₁², _y = v₂², _z = v₃² along the box axes (1D and 2D boxes
-     * use the first one or two); the cross terms _xy = v₁v₂, _xz = v₁v₃, _yz = v₂v₃
-     * drive the angles of oblique cells and exist for periodic BC only (walls need an
-     * orthogonal cell). Non-periodic BC use k² = (π n / L)² of their wavenumbers.
-     * vᵢ has units of 1/L², not 1/L like the Cartesian wavevector.
+     * fourier_basis_x[m] = v₁², _y = v₂², _z = v₃² of the box axes (a 1D box has _x, a
+     * 2D box _x and _y; the others stay empty); the cross terms _xy = v₁v₂, _xz = v₁v₃,
+     * _yz = v₂v₃ of each pair of box axes drive the angles of oblique cells and exist
+     * for periodic BC only (walls need an orthogonal cell). Non-periodic BC use
+     * k² = (π n / L)² of their wavenumbers. vᵢ has units of 1/L², not 1/L like the
+     * Cartesian wavevector.
      */
     std::vector<double> fourier_basis_x;
     std::vector<double> fourier_basis_y;
@@ -189,19 +192,19 @@ public:
     /// Get x-direction Fourier basis for stress.
     virtual const double* get_fourier_basis_x();
 
-    /// Get y-direction Fourier basis for stress.
+    /// Get y-direction Fourier basis for stress (2D and 3D boxes).
     virtual const double* get_fourier_basis_y();
 
-    /// Get z-direction Fourier basis for stress.
+    /// Get z-direction Fourier basis for stress (3D boxes).
     virtual const double* get_fourier_basis_z();
 
-    /// Get xy cross-term Fourier basis for stress (nullptr for non-periodic BC).
+    /// Get xy cross-term Fourier basis for stress (2D and 3D boxes, periodic BC).
     virtual const double* get_fourier_basis_xy();
 
-    /// Get xz cross-term Fourier basis for stress (nullptr for non-periodic BC).
+    /// Get xz cross-term Fourier basis for stress (3D boxes, periodic BC).
     virtual const double* get_fourier_basis_xz();
 
-    /// Get yz cross-term Fourier basis for stress (nullptr for non-periodic BC).
+    /// Get yz cross-term Fourier basis for stress (3D boxes, periodic BC).
     virtual const double* get_fourier_basis_yz();
 
     /// Get negative frequency index mapping.
@@ -211,7 +214,7 @@ public:
      * @brief Compute the tables of a cell.
      *
      * The Boltzmann bond factors of every contour step and monomer type, and, with
-     * with_stress_basis, the stress basis (its tables are released otherwise).
+     * with_stress_basis, the stress basis of the box axes (its tables are released otherwise).
      *
      * @param dx                Grid spacings (the lengths of non-periodic axes are nx·dx)
      * @param recip_metric      Reciprocal metric tensor (periodic BC)

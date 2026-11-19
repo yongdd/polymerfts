@@ -13,8 +13,8 @@
  *     φ(r) = (1/Q) ∫ q(r,s) q†(r,N-s) ds
  *
  * The class is platform neutral: the grid work goes through a
- * ComputationBackend, which the platform factories (MklFactory, FftwFactory,
- * CudaFactory) pass in.
+ * ComputationBackend, which the platform factories (CpuFactory, CudaFactory)
+ * pass in.
  *
  * **Propagator storage:** propagator[key][n] for n = 0..max_n_segment, where
  * n = 0 is the initial condition.

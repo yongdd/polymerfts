@@ -260,6 +260,9 @@ protected:
     virtual const double* get_stress_boltz_bond(
         std::string monomer_type, bool is_half_bond_length) const;
 
+    /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
+    virtual bool stress_has_bond_factor() const { return false; }
+
     // ---- space group / CrysFFT setup (set_space_group) ----------------------
     /// Drop the CrysFFT engine, its tables and the index map.
     void reset_crysfft();
@@ -306,8 +309,7 @@ protected:
      * prepare_stress(). Returns false when the fast path does not apply;
      * `stress` is then untouched.
      */
-    bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq,
-                                const double* boltz_bond, std::vector<T>& stress);
+    bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq, std::vector<T>& stress);
     /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
     void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
                                     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;

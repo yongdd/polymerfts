@@ -508,7 +508,7 @@ void CpuSolverPseudoBase<T>::prepare_stress()
         {
             for (const bool half : {false, true})
             {
-                const bool include_bond_factor = (get_stress_boltz_bond(monomer_type, half) != nullptr);
+                const bool include_bond_factor = stress_has_bond_factor();
                 if (half && !include_bond_factor)
                     continue;   // continuous chains: one multiplier per axis group
                 for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
@@ -526,12 +526,12 @@ void CpuSolverPseudoBase<T>::prepare_stress()
 
 template <typename T>
 bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
-    const T* q_1, const T* q_2, double bond_length_sq, const double* boltz_bond, std::vector<T>& stress)
+    const T* q_1, const T* q_2, double bond_length_sq, std::vector<T>& stress)
 {
     // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
     if constexpr (!std::is_same_v<T, double>)
     {
-        (void)q_1; (void)q_2; (void)bond_length_sq; (void)boltz_bond; (void)stress;
+        (void)q_1; (void)q_2; (void)bond_length_sq; (void)stress;
         return false;
     }
     else
@@ -564,7 +564,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         // the axes of the group (see crysfft_stress_axis_groups), built by prepare_stress()
         // with the bond factor for discrete chains
         double sums[3] = {0.0, 0.0, 0.0};
-        for (const auto& key : crysfft_stress_keys(bond_length_sq, boltz_bond != nullptr))
+        for (const auto& key : crysfft_stress_keys(bond_length_sq, stress_has_bond_factor()))
         {
             const int axes = key.first;
             const auto multiplier = crysfft_multipliers_.find(key);
@@ -584,7 +584,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
 
         // The CrysFFT multipliers are Cartesian k_d² = (2πm_d/L_d)², while the
         // standard path accumulates deformation-vector components v_d² = k_d²/L_d²
-        // (see update_weighted_fourier_basis_periodic_impl in Pseudo.cpp). Divide by L_d²
+        // (see fill_periodic_stress_basis in Pseudo.cpp). Divide by L_d²
         // so both paths return the same V_dd.
         const std::vector<double> lx = cb->get_lx();
         for (int d = 0; d < 3; ++d)
@@ -723,7 +723,7 @@ const double* CpuSolverPseudoBase<T>::get_stress_boltz_bond(
  *
  * Uses v⊗v dyad product components stored in fourier_basis arrays, where
  * v = 2π g⁻¹ m is the deformation vector (units 1/L², NOT the Cartesian
- * wavevector — see update_weighted_fourier_basis_periodic_impl in Pseudo.cpp):
+ * wavevector — see fill_periodic_stress_basis in Pseudo.cpp):
  * - fourier_basis_x = v₁², fourier_basis_y = v₂², fourier_basis_z = v₃²
  * - fourier_basis_xy = v₁v₂, fourier_basis_xz = v₁v₃, fourier_basis_yz = v₂v₃
  *
@@ -746,12 +746,12 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
 
         std::vector<T> stress(N_STRESS, 0.0);
 
+        // CrysFFT fast path (reduced grid, no full-grid FFT and no Pseudo tables)
+        if (compute_stress_crysfft(q_1, q_2, bond_length_sq, stress))
+            return stress;
+
         // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains)
         const double* _boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
-
-        // CrysFFT fast path (reduced grid, no full-grid FFT)
-        if (compute_stress_crysfft(q_1, q_2, bond_length_sq, _boltz_bond, stress))
-            return stress;
 
         const int coeff_size = complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
         WorkArrays& work = work_arrays();

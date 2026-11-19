@@ -20,8 +20,7 @@
  * - **cpu-fftw**: FFTW-based CPU implementation using OpenMP
  * - **cuda**: NVIDIA CUDA GPU implementation using cuFFT
  *
- * @see MklFactory for CPU implementation (MKL)
- * @see FftwFactory for CPU implementation (FFTW)
+ * @see CpuFactory for CPU implementation (FFTW or MKL transforms)
  * @see CudaFactory for GPU implementation
  * @see PlatformSelector for factory creation
  *
@@ -75,7 +74,7 @@
  *
  * This template class defines the interface for creating all major objects
  * needed for polymer field theory simulations. Concrete implementations
- * (MklFactory, FftwFactory, CudaFactory) provide platform-optimized versions of
+ * (CpuFactory, CudaFactory) provide platform-optimized versions of
  * each object. The propagator computation is assembled here, the same way on
  * every platform; a platform contributes only its backend (create_backend()).
  *

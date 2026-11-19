@@ -26,7 +26,7 @@
  *   async transfers (2-4× slower but uses much less GPU memory)
  *
  * @see AbstractFactory for the factory interface
- * @see FftwFactory for CPU implementation
+ * @see CpuFactory for CPU implementation
  * @see PlatformSelector for factory instantiation
  *
  * @example

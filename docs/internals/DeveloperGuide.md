@@ -30,7 +30,7 @@ Python (src/python)
         │   _core module (src/pybind11)
 ════════╪══════════════════════════════════════════════════════════════════════
 C++     ▼
-  PlatformSelector ──► AbstractFactory<T> = MklFactory | FftwFactory | CudaFactory
+  PlatformSelector ──► AbstractFactory<T> = CpuFactory | CudaFactory
         │ creates
         ├── ComputationBox<T>          itself (CPU) | CudaComputationBox
         ├── Molecules, PropagatorComputationOptimizer
@@ -104,13 +104,9 @@ AbstractFactory<T>                    [Abstract Base]
 ├── display_info()                    [pure virtual]
 └── create_backend()                  [pure virtual, protected]
         │
-        ├── FftwFactory<T>             [CPU - FFTW transforms]
+        ├── CpuFactory<T>(FFTBackend)  [CPU - FFTW or MKL transforms]
         │   └── Creates: ComputationBox, CpuAndersonMixing,
-        │                CpuComputationBackend (FFTW)
-        │
-        ├── MklFactory<T>              [CPU - MKL transforms]
-        │   └── Creates: ComputationBox, CpuAndersonMixing,
-        │                CpuComputationBackend (MKL)
+        │                CpuComputationBackend (FFTW or MKL)
         │
         └── CudaFactory<T>            [GPU]
             └── Creates: CudaComputationBox, CudaAndersonMixing[ReduceMemory],
@@ -132,7 +128,7 @@ The classes each platform provides (the computation classes above them are share
 | Role | CPU | CUDA |
 |------|-----|------|
 | Backend | `CpuComputationBackend` | `CudaComputationBackend` |
-| Factory | `MklFactory`, `FftwFactory` | `CudaFactory` |
+| Factory | `CpuFactory` (FFTW or MKL) | `CudaFactory` |
 | Computation box | `ComputationBox` | `CudaComputationBox` |
 | Solver interface | `CpuSolver<T>` | `CudaSolver<T>` |
 | Pseudo-spectral base | `CpuSolverPseudoBase<T>` | `CudaSolverPseudoBase<T>` |
@@ -267,8 +263,8 @@ ComputationBackend<T>                         [Abstract Base, grid operations]
 
 All of these live in `src/common/` except the two backends.
 `AbstractFactory::create_propagator_computation()` creates the computation with
-the backend that the platform factory (`MklFactory`, `FftwFactory`,
-`CudaFactory`) supplies; the Python layer and the C++ tests (through
+the backend that the platform factory (`CpuFactory`, `CudaFactory`)
+supplies; the Python layer and the C++ tests (through
 `tests/TestComputationFactory.h`) obtain every computation from a factory.
 
 **What has been computed.** The base class records whether the propagators,

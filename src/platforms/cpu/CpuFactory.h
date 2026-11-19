@@ -1,37 +1,33 @@
 /**
- * @file FftwFactory.h
- * @brief Concrete factory for FFTW3-based CPU implementations.
+ * @file CpuFactory.h
+ * @brief Concrete factory for the CPU platforms (cpu-fftw and cpu-mkl).
  *
- * This header provides the FftwFactory class, which is the concrete implementation
- * of AbstractFactory for CPU-based computations using FFTW3 (Fastest Fourier
- * Transform in the West). It creates CPU-optimized versions of all simulation objects.
+ * This header provides the CpuFactory class, the implementation of
+ * AbstractFactory for computations on the host. The two CPU platforms differ
+ * only in the FFT library of their transforms, the FFTBackend the factory
+ * passes to the objects it creates:
+ *
+ * - cpu-fftw: FFTW3. FFTW3 is licensed under GPL; distributing binaries built
+ *   with it requires compliance with GPL terms.
+ * - cpu-mkl: Intel MKL. The factory turns MKL's internal threading off: the
+ *   parallelism is at the propagator level.
  *
  * **Platform Features:**
  *
- * - Uses FFTW3 for FFT operations (O(N log N) for all transform types)
- * - OpenMP parallelization for multi-core CPUs
- * - Supports both continuous and discrete chain models
- * - Supports pseudo-spectral and real-space solvers
- * - DCT/DST through MakhoulTransform over FFTW real FFT plans
- *
- * **Performance Notes:**
- *
- * - O(N log N) DCT/DST through FFTW's real FFT
+ * - OpenMP parallelization over propagators
+ * - Continuous and discrete chain models, pseudo-spectral and real-space solvers
+ * - DCT/DST through MakhoulTransform over the real FFT of the backend
  * - Whether FFTW or MKL is faster depends on the processor
  *   (docs/internals/FFTImplementation.md, Section 8.2)
  *
- * **License Note:**
- *
- * FFTW3 is licensed under GPL. Using this factory requires compliance with GPL terms.
- *
  * @see AbstractFactory for the factory interface
- * @see FftwFactory for FFTW implementation
+ * @see CudaFactory for GPU implementation
  * @see PlatformSelector for factory instantiation
  *
  * @example
  * @code
- * // Create FFTW factory
- * FftwFactory<double> factory(false);  // reduce_memory=false for speed
+ * // Create the factory of the cpu-fftw platform
+ * CpuFactory<double> factory(false, FFTBackend::FFTW);  // reduce_memory=false for speed
  *
  * // Create simulation objects (each create function returns a std::unique_ptr)
  * auto cb = factory.create_computation_box(nx, lx, bc);
@@ -45,8 +41,8 @@
  * @endcode
  */
 
-#ifndef FFTW_FACTORY_H_
-#define FFTW_FACTORY_H_
+#ifndef CPU_FACTORY_H_
+#define CPU_FACTORY_H_
 
 #include "ComputationBox.h"
 #include "Polymer.h"
@@ -54,12 +50,12 @@
 #include "PropagatorComputation.h"
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
+#include "FFT.h"  // FFTBackend
 
 /**
- * @class FftwFactory
- * @brief Factory for creating FFTW3-based CPU simulation objects.
+ * @class CpuFactory
+ * @brief Factory for creating CPU simulation objects with FFTW3 or Intel MKL transforms.
  *
- * Implements AbstractFactory to create CPU-optimized objects using FFTW3.
  * All created objects operate on host memory and use OpenMP for parallelization.
  *
  * @tparam T Numeric type (double or std::complex<double>)
@@ -67,21 +63,23 @@
  * **Created Object Types:**
  *
  * - ComputationBox: Grid and integration on CPU
- * - Propagator computations with the CPU backend (FFTW transforms)
+ * - Propagator computations with the CPU backend (transforms of the FFT backend)
  * - CpuAndersonMixing: Iteration accelerator
+ * - CpuFourierTransform: Fourier multipliers of whole fields
  *
  * @note The reduce_memory flag enables checkpointing mode for memory-constrained
  *       simulations at the cost of increased computation time.
  */
 template <typename T>
-class FftwFactory : public AbstractFactory<T>
+class CpuFactory : public AbstractFactory<T>
 {
 public :
     /**
-     * @brief Construct an FFTW factory.
+     * @brief Construct a CPU factory.
      * @param reduce_memory Enable checkpointing mode (reduces memory, increases compute)
+     * @param backend       FFT library of the transforms (one the build includes)
      */
-    FftwFactory(bool reduce_memory);
+    CpuFactory(bool reduce_memory, FFTBackend backend);
 
     /**
      * @brief Create a CPU computation box.
@@ -127,7 +125,7 @@ public :
         double mix_min, double mix_init) override;
 
     /**
-     * @brief Create a CPU (FFTW) Fourier transform.
+     * @brief Create a CPU Fourier transform with the transforms of the FFT backend.
      * @param cb Computation box
      * @param bc Transform of each axis
      * @return CpuFourierTransform instance
@@ -138,14 +136,17 @@ public :
     /**
      * @brief Display CPU platform information.
      *
-     * Prints FFTW version and other configuration details.
+     * Prints the version of the FFT library (and, for MKL, its configuration).
      */
     void display_info() override;
 
 protected:
-    /// CPU backend with FFTW transforms (see AbstractFactory::create_backend())
+    /// CPU backend with the transforms of the FFT backend (see AbstractFactory::create_backend())
     std::unique_ptr<ComputationBackend<T>> create_backend(
         ComputationBox<T>* cb, Molecules* molecules, const NumericalMethodInfo& method_info,
         SpaceGroup* space_group, int max_n_streams) override;
+
+private:
+    FFTBackend backend_;   ///< FFT library of the transforms
 };
 #endif

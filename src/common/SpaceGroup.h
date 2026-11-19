@@ -73,7 +73,6 @@ private:
     PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
     mutable bool in_use_{false};  ///< set once a computation box or solver holds this group
     int z_mirror_shift_{0};
-    double z_mirror_translation_{0.0};
 
     /// Initialize space group from Hall number.
     void initialize(std::vector<int> nx, int hall_number);
@@ -284,8 +283,18 @@ public:
      */
     bool get_z_mirror_translation(double& t_z, double tol = 1e-10) const;
 
-    /// Enable one physical basis (None restores the irreducible basis).
-    void enable_physical_basis(PhysicalBasis basis);
+    /**
+     * @brief The z offset, in grid points, of the half grid of a z-mirror basis; -1 without one.
+     *
+     * The (x,y,-z) + t mirror (get_z_mirror_translation) has its planes at z = t_z/2 and
+     * t_z/2 + 1/2. With t_z = 0 the half grid starts at 0 and needs an even nz; with
+     * t_z = 1/2 it starts at nz/4 and needs nz divisible by 4. Other translations have
+     * no half-grid basis. The z-mirror physical basis and the ObliqueZ CrysFFT use this rule.
+     *
+     * @param why Receives the reason when the result is -1 (when not null).
+     */
+    int z_mirror_half_grid_shift(std::string* why = nullptr) const;
+
     PhysicalBasis physical_basis() const { return physical_basis_; }
     /// Human-readable name of the active basis ("irreducible", "pmmm", "m3", "z-mirror").
     std::string physical_basis_name() const;
@@ -336,7 +345,6 @@ public:
     void enable_z_mirror_physical_basis();
     bool using_z_mirror_physical_basis() const { return physical_basis_ == PhysicalBasis::ZMirror; }
     int get_z_mirror_shift() const { return z_mirror_shift_; }
-    double get_z_mirror_translation() const { return z_mirror_translation_; }
 
 };
 

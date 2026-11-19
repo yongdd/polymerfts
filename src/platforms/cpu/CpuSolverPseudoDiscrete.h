@@ -122,6 +122,7 @@ protected:
      */
     const double* get_stress_boltz_bond(
         std::string monomer_type, bool is_half_bond_length) const override;
+    bool stress_has_bond_factor() const override { return true; }
 
     /// CrysFFT steps of a block: its bonds, and half bonds, which always take the
     /// global ds (index 0; see advance_propagator_half_bond_step())

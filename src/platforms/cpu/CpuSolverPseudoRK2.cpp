@@ -150,7 +150,6 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
 
         // Get Boltzmann factors for the correct ds_index
         const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
 
         // Determine input/output pointers based on space group
         T* fft_in = q_in;
@@ -190,6 +189,8 @@ void CpuSolverPseudoRK2<T>::advance_propagator(
         }
         else
         {
+            const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
+
             // Step 1: exp(-w·ds/2) * q_in
             for (int i = 0; i < M_full; ++i)
                 fft_out[i] = _exp_dw[i] * fft_in[i];
