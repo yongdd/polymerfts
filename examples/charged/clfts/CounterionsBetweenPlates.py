@@ -23,8 +23,9 @@ Result (60000 steps, about 10 min on one CPU core): the CL-FTS profile agrees wi
 simulation of the same lattice model (ions on the grid sites, smeared Coulomb pair potential of the
 cosine series) within its statistical errors, chi^2 = 43/32, and with PB + one loop to about 2 % of
 the fluctuation correction (the next order, Xi^2). At stronger coupling CL-FTS needs smaller time
-steps (dt <= 0.25 beyond Xi = 0.4), and at Xi >= 0.85 it departs from the exact Monte Carlo result even
-as dt -> 0 (docs/validation/Electrolytes.md). Writes counterions_between_plates.json and .png.
+steps (dt <= 0.25 beyond Xi = 0.4). From Xi ~ 0.85 on, complex Langevin dynamics departs from the
+exact result, also as dt -> 0; the strong-coupling regime of counterions was not reached in these tests
+(docs/theory/ComplexLangevinSimulation.md, Section 6). Writes counterions_between_plates.json and .png.
 """
 
 import json
