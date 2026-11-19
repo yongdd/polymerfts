@@ -58,6 +58,7 @@ SET(BASIC_TESTS
     TestPackageHashes
     # Platform & utilities
     TestConsoleEncoding
+    TestOpenMPDefaults
     TestDisplayArchitecture
     TestCircularBuffer
     TestException

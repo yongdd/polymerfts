@@ -171,8 +171,9 @@ def chain_fields(sim, w):
     return w_input
 
 
-def solve_chains(sim, w_input, q_init=None):
-    """The concentrations of the monomer types in the fields w_input, and the time they took.
+def solve_chains(sim, w_input, q_init=None, stress=False):
+    """The concentrations of the monomer types in the fields w_input, and the time they took; with stress
+    the propagators also compute their stress (PropagatorSolver.get_stress) in the same pass.
 
     The fields are smeared before they enter the Boltzmann weights of the propagators (Matsen et al.,
     J. Chem. Phys. 164, 014905 (2026)), and each random copolymer adds to its monomer types.
@@ -188,7 +189,10 @@ def solve_chains(sim, w_input, q_init=None):
     # Compute concentrations for each monomer type
     time_phi_start = time.time()
     phi = {}
-    sim.prop_solver.compute_concentrations()
+    if stress:
+        sim.prop_solver.compute_concentrations_and_stress()
+    else:
+        sim.prop_solver.compute_concentrations()
     for monomer_type in sim.monomer_types:
         phi[monomer_type] = sim.prop_solver.get_concentration(monomer_type)
 

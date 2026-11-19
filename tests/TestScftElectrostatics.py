@@ -14,7 +14,10 @@ AB diblocks with charged blocks in 1D periodic boxes (Gaussian smearing 0.05):
 4. The stress equals the derivative of the free energy with respect to the box length, with
    canonical point ions (unscreened) and with grand-canonical ions and screening. In a 2D oblique
    cell (100 degrees, canonical ions, 24 x 20) the stress of L1, L2 and gamma equals the central
-   differences of F (1e-6); without its electrostatic part it does not (1e-2).
+   differences of F (1e-6); without its electrostatic part it does not (1e-2). A lamella with
+   canonical point ions relaxed with relax_cell from L = 3.6 reaches a period where dF/dL of
+   fixed-cell runs vanishes (1e-6): the Coulomb kernel and the smearing of the point ions follow
+   the cell (kept at the first cell, they move the period by 6 % and 0.2 %).
 5. Homogeneous states: grand-canonical salt gives the Donnan potential, a screened net charge
    psi_0 = E q/kappa^2, and both have the free energy of the homogeneous reference; canonical
    point ions add their ideal terms N c_s (ln N c_s - 1) to it, and their charge to q.
@@ -200,6 +203,17 @@ def stress_oblique():
         f"(without the electrostatic part {error_without:.1e})"
 
 
+def relaxation():
+    electrostatics = {"charges": {"A": 0.2}, "coupling": 2e3, "ions": ions()}
+    _, result = run(parameters(18.0, electrostatics, lx=3.6, relax_cell=True))
+    length, delta, energies = result.lx[0], 1e-4, []
+    for sign in (1.0, -1.0):
+        _, shifted = run(parameters(18.0, electrostatics, lx=length + sign * delta), dict(result.w), result.psi)
+        energies.append(shifted.free_energy_absolute)
+    derivative = (energies[0] - energies[1]) / (2 * delta)
+    assert abs(derivative) < 1e-6, f"relaxed period {length:.6f}: dF/dL {derivative:.1e} of fixed-cell runs"
+
+
 def homogeneous():
     # Donnan: 0.1 + c0 (x - 1/x) = 0 for the A charge 0.2 at phi_A = 0.5, x = exp(-psi_0/N)
     c0 = 0.02
@@ -293,6 +307,7 @@ def main():
         return 77
     for name, check in (("inputs", inputs), ("neutral reduction", neutral_reduction),
                         ("strong screening", strong_screening), ("stress", stress), ("oblique stress", stress_oblique),
+                        ("relaxation", relaxation),
                         ("homogeneous states", homogeneous), ("ensembles", ensembles), ("axis ordering", axis_ordering),
                         ("platforms", platforms)):
         check()

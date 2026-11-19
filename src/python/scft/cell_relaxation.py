@@ -16,8 +16,8 @@ class CellRelaxation:
     """Which lattice parameters of an SCFT calculation vary, and their update from the stress.
 
     stress() computes the stress of the fields and error() its size along the lattice parameters that
-    vary. In the iteration, error_at() gives the part of the error from the stress, computed every
-    stress_interval iterations (stress_array), update() moves the fields and the cell together, and
+    vary. In the iteration, stress_error() gives the part of the error from the stress of the fields of
+    the iteration (stress_array), update() moves the fields and the cell together, and
     check_tied_lengths() reports a tie of the crystal system that the structure does not satisfy.
     n_variables is the size of the optimizer.
     """
@@ -28,13 +28,8 @@ class CellRelaxation:
         self.prop_solver, self.smearing = sim.prop_solver, sim.smearing
         self.electrostatics = sim.electrostatics
         self.stress_scale = params.get("stress_scale", 1)
-        # Stress computation interval: an integer (every N iterations) or "adaptive" (more often
-        # while the error is high, see error_at)
-        self.stress_interval = params.get("stress_interval", 1)
-        # The stress of the last iteration that computed one, in the layout of get_stress(), and
-        # whether it belongs to the fields of the current iteration
+        # The stress of the fields of the last iteration, in the layout of get_stress()
         self.stress_array = None
-        self.stress_is_current = False
         self.n_variables = self._choose_lattice_parameters(params, angles)
 
     def _choose_lattice_parameters(self, params, angles):
@@ -137,42 +132,18 @@ class CellRelaxation:
                             for j in range(len(self.lx_reduced_indices))]
         return n_var
 
-    def error_at(self, iter, w, phi, field_error):
-        """The part of the error of iteration iter from the stress (0 for a fixed cell): error() of the
-        stress of the fields w, whose concentrations are phi; field_error is the rest of the error.
-
-        The stress costs ~30 % of an iteration: it is computed every stress_interval iterations
-        ("adaptive": every 1, 2 or 4 as the field error drops below 1e-2 and 1e-4), and at the first
-        and the last one, and reused in between. A reused stress can guide updates, but cannot
-        certify convergence: when the error with it falls below the tolerance, the stress of w
-        replaces it.
-        """
+    def stress_error(self, w, phi):
+        """The part of the error of an iteration from the stress (0 for a fixed cell): error() of the
+        stress of the fields w, whose concentrations phi and propagator stress the iteration computed
+        together (SCFT.compute_concentrations with stress=True). update() moves the cell with it."""
         if not self.sim.relax_cell:
             return 0.0
-        if self.stress_interval == "adaptive":
-            stress_interval = 1 if field_error > 1e-2 else (2 if field_error > 1e-4 else 4)
-        else:
-            stress_interval = self.stress_interval
-        self.stress_is_current = iter == 1 or iter % stress_interval == 0 or iter == self.sim.max_iter
-        if self.stress_is_current:
-            self.stress_array = self.stress(w, phi)
-        error = self.error(self.stress_array)
-        if not self.stress_is_current and field_error + error < self.sim.tolerance:
-            return self.current_error(w, phi)
-        return error
-
-    def current_error(self, w, phi):
-        """error_at() with the stress of the fields w of this iteration, computed if the last one is reused."""
-        if not self.sim.relax_cell:
-            return 0.0
-        if not self.stress_is_current:
-            self.stress_array = self.stress(w, phi)
-            self.stress_is_current = True
+        self.stress_array = self._lattice_derivatives(w, phi)
         return self.error(self.stress_array)
 
     def update(self, fields, fields_diff, old_error_level, error_level):
         """One optimizer step on the concatenated (fields, box lengths, angles)
-        vector, with the stress of the last error_at(); fields are the flattened
+        vector, with the stress of the last stress_error(); fields are the flattened
         fields (and ψ). Applies the new lattice parameters to the solver and returns
         the new flattened fields. Length changes are limited to 10 % and angle
         changes to 5 degrees per step.
@@ -237,8 +208,12 @@ class CellRelaxation:
         w_i + z_i ψ the chains feel, and with electrostatics that of the Coulomb kernel and the
         smearing of the point ions.
         """
-        dim = self.prop_solver.dim
         self.prop_solver.compute_stress()
+        return self._lattice_derivatives(w, phi)
+
+    def _lattice_derivatives(self, w, phi):
+        """stress() once the propagators have computed their stress (PropagatorSolver.compute_stress)."""
+        dim = self.prop_solver.dim
         stress = np.array(self.prop_solver.get_stress())
         if self.smearing.enabled:
             es = self.electrostatics

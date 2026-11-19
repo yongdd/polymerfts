@@ -190,7 +190,7 @@ simulation.saddle = my_saddle.SaddlePointSearch(simulation, params)
 Other options:
 
 - To change a single method, subclass instead of copying:
-  `class MySCFT(scft.SCFT): def compute_concentrations(self, w, q_init=None): ...`
+  `class MySCFT(scft.SCFT): def compute_concentrations(self, w, q_init=None, stress=False): ...`
 - To change the whole package, including C++ code, clone the repository,
   build it with CMake and point `PYTHONPATH` at `build/python` for development.
   The `polymerfts_stage` target updates Python files after each edit.

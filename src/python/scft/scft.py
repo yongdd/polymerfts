@@ -292,7 +292,7 @@ class SCFT:
         params = with_overrides(load_config(path), overrides)
         return cls(params)
 
-    def compute_concentrations(self, w, q_init=None):
+    def compute_concentrations(self, w, q_init=None, stress=False):
         """Compute monomer concentration fields for given potential fields.
 
         NOTE: unlike LFTS/CLFTS.compute_concentrations (which take AUXILIARY
@@ -303,6 +303,9 @@ class SCFT:
         distributions. Handles both block copolymers and random copolymers.
         q_init optionally supplies initial propagator values for grafted
         polymers (passed through to PropagatorSolver.compute_propagators).
+        With stress the propagators also give their stress, in the same pass
+        (PropagatorSolver.compute_concentrations_and_stress), which the cell
+        relaxation reads (CellRelaxation.stress_error).
 
         Parameters
         ----------
@@ -331,7 +334,7 @@ class SCFT:
         if self.electrostatics is not None:
             self.electrostatics.add_potential(w_input)
 
-        phi, elapsed_time = solve_chains(self, w_input, q_init)
+        phi, elapsed_time = solve_chains(self, w_input, q_init, stress=stress)
         check_partition_once(self, lambda: self._full_grid_fields(w))
 
         # Convert concentrations back to irreducible grid for optimizer.
@@ -569,8 +572,8 @@ class SCFT:
         time_iter_start = time.time()
         for iter in range(1, self.max_iter+1):
 
-            # Concentrations for the current fields
-            phi, runtime_info = self.compute_concentrations(w, q_init=q_init)
+            # Concentrations for the current fields, and with relax_cell the stress of the propagators
+            phi, runtime_info = self.compute_concentrations(w, q_init=q_init, stress=self.relax_cell)
 
             # Deviation of the total density from 1
             phi_total = sum(phi[m] for m in self.monomer_types)
@@ -596,9 +599,8 @@ class SCFT:
             field_error_level = self._error_level(w, w_diff, psi_diff)
             mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
 
-            # With relax_cell, the stress along the lattice parameters that relax counts towards the
-            # error (computed every stress_interval iterations: CellRelaxation.error_at)
-            error_level = field_error_level + self.cell.error_at(iter, w, phi, field_error_level)
+            # With relax_cell, the stress along the lattice parameters that relax counts towards the error
+            error_level = field_error_level + self.cell.stress_error(w, phi)
             if not np.isfinite(error_level):
                 raise NumericalError(f"Non-finite SCFT error level at iteration {iter}", self._full_grid_fields(w))
 
@@ -609,8 +611,6 @@ class SCFT:
             if on_iteration is not None:
                 keep_going = on_iteration(iteration_info(self, iter, error_level, energy_total, mass_error, total_partitions))
                 if keep_going is not None and not keep_going:
-                    # The final error with the stress of these fields, not a reused one
-                    error_level = field_error_level + self.cell.current_error(w, phi)
                     print(f"Iteration stopped by callback at iteration {iter}")
                     break
 

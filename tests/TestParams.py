@@ -7,6 +7,7 @@ completion, random copolymers, no modification of the user's dictionary,
 and ValidationError for invalid input. The top-level keys: a key given as None
 is absent, the options of other methods are ignored with one warning at the
 caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
+an option of an earlier release (stress_interval) is ignored with one warning,
 and a key that no method reads is refused.
 """
 
@@ -93,7 +94,7 @@ def check_none_keys():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         given = {**scft_parameters(), **absent, "max_iter": None, "tolerance": None, "stress_scale": None,
-                 "stress_interval": None, "crystal_system": None, "space_group": None, "axis_ordering": None,
+                 "crystal_system": None, "space_group": None, "axis_ordering": None,
                  "langevin": None, "wtmd": None, "dynamic_stabilization": None}
         params = validate_scft_params(given)
         given["platform"] = cpu_platform()
@@ -109,9 +110,8 @@ def check_none_keys():
     if set(params) != set(scft_parameters()) - {"platform"}:
         print(f"FAILED: the keys given as None stay in the SCFT input: {sorted(params)}")
         ok = False
-    expected = (2000, 1e-8, 1, 1, 0.0, 100.0)
-    actual = (scft.max_iter, scft.tolerance, scft.cell.stress_scale, scft.cell.stress_interval, clfts.alpha_ds,
-              clfts.zeta_n)
+    expected = (2000, 1e-8, 1, 0.0, 100.0)
+    actual = (scft.max_iter, scft.tolerance, scft.cell.stress_scale, clfts.alpha_ds, clfts.zeta_n)
     if actual != expected or lfts.zeta_n is not None or not lfts.prop_solver.aggregate_propagator_computation:
         print(f"FAILED: the defaults of options given as None: {actual}, L-FTS zeta_n {lfts.zeta_n}")
         ok = False
@@ -134,7 +134,7 @@ def check_ignored_keys():
     refuse axis_ordering, which would reorder the shared nx, lx, bc and angles."""
     ok = True
     invalid = {SCFT: {"langevin": "x", "saddle": 3, "wtmd": {"ell": -1}, "dynamic_stabilization": "fast"},
-               LFTS: {"optimizer": 3, "space_group": "Im-3m", "stress_interval": "fast", "dynamic_stabilization": -1},
+               LFTS: {"optimizer": 3, "space_group": "Im-3m", "stress_scale": "fast", "dynamic_stabilization": -1},
                CLFTS: {"saddle": "x", "compressor": {"name": "foo"}, "wtmd": {"ell": -1}, "relax_cell": "yes"}}
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         with warnings.catch_warnings(record=True) as caught:
@@ -251,7 +251,6 @@ def main():
     checks = {
         "max_iter": calc.max_iter == 2000,
         "tolerance": calc.tolerance == 1e-8,
-        "stress_interval": calc.cell.stress_interval == 1,
         "stress_scale": calc.cell.stress_scale == 1,
         "zeta_n": calc.zeta_n is None,
         "space_group": calc.sg is None,
@@ -269,11 +268,11 @@ def main():
 
     # ---- explicit options reach the solver
     params = scft_parameters()
-    params.update({"max_iter": 10, "tolerance": 1e-5, "stress_interval": "adaptive", "stress_scale": 2.0,
+    params.update({"max_iter": 10, "tolerance": 1e-5, "stress_scale": 2.0,
                    "zeta_n": 100.0, "numerical_method": "rk2",
                    "crystal_system": "Cubic", "relax_cell": True})
     calc = build(SCFT, params)
-    if not (calc.max_iter == 10 and calc.tolerance == 1e-5 and calc.cell.stress_interval == "adaptive"
+    if not (calc.max_iter == 10 and calc.tolerance == 1e-5
             and calc.cell.stress_scale == 2.0 and calc.zeta_n == 100.0
             and calc.prop_solver.numerical_method == "rk2"
             and calc.cell.lx_reduced_indices == [0] and calc.cell.lx_full_indices == [0, 0, 0]):
@@ -609,7 +608,7 @@ def main():
         params = lfts_params(); params[key] = 0.05
         ok &= expect_ignored(LFTS, params, f"LFTS with the CL-FTS option '{key}'", "dynamic_stabilization")
     scft_options = {"relax_cell": True, "crystal_system": "Cubic", "optimizer": scft_parameters()["optimizer"],
-                    "stress_scale": 0.5, "stress_interval": 2, "max_iter": 10, "tolerance": 1e-6,
+                    "stress_scale": 0.5, "max_iter": 10, "tolerance": 1e-6,
                     "space_group": {"symbol": "Im-3m"}}
     for cls, params in ((LFTS, lfts_params()), (CLFTS, clfts_params())):
         for key, value in scft_options.items():
@@ -655,9 +654,14 @@ def main():
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")
     params = clfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
-    for value in (0, -1, 1.5, "fast"):
-        params = scft_parameters(); params["stress_interval"] = value
-        ok &= expect_error(SCFT, params, f"stress_interval {value!r}")
+    # The retired stress_interval: every method ignores it, whatever its value, with one warning
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            build(cls, {**params, "stress_interval": "fast"})
+        if [str(w.message).split(":")[0] for w in caught] != ["'stress_interval' is ignored"]:
+            print(f"FAILED: {cls.__name__} with stress_interval warned {[str(w.message) for w in caught]}")
+            ok = False
     ok &= check_none_keys()
     ok &= check_ignored_keys()
 

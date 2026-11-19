@@ -728,7 +728,7 @@ class MeanFieldElectrostatics:
         coefficients = self._smearing.coefficients
         result = np.zeros(6)
         n = self.psi.size
-        psi_k = np.ravel(coefficients(self.psi))
+        psi_k = np.ravel(coefficients(self.psi, self._psi_k))   # the transform of ψ, kept by its setter
         weight = -0.5 * np.abs(psi_k) ** 2 / n ** 2 / self.coupling
         if self.ions:
             densities, _ = self.ion_densities()

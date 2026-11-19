@@ -105,8 +105,7 @@ def lfts(platform, root, bc):
     with contextlib.redirect_stdout(io.StringIO()):
         sim = LFTS(params, random_seed=5)
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "ABC"})
-    half = nx[-1] // 2 + 1
-    gamma = (lambda name: sim.smearing.fourier[..., :half]) if bc == "periodic" else None
+    gamma = (lambda name: sim.smearing.fourier) if bc == "periodic" else None
     worst, count, angles_ok = compare(sim, root, False, gamma)
     check(f"{platform} L-FTS ABC {bc}{' with smearing' if gamma else ''}: recorded S_ij = recomputation",
           worst < 1e-10 and count == 6 and angles_ok, f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")

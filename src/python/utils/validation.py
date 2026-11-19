@@ -590,8 +590,8 @@ _SYSTEM_KEYS = {"nx", "lx", "angles", "bc", "ds", "chain_model", "segment_length
                 "platform", "numerical_method", "reduce_memory", "aggregate_propagator_computation", "smearing"}
 _LANGEVIN_KEYS = {"langevin", "recording", "verbose_level"}
 METHOD_KEYS = {
-    "SCFT": _SYSTEM_KEYS | {"optimizer", "relax_cell", "max_iter", "tolerance", "stress_scale", "stress_interval",
-                           "crystal_system", "space_group", "axis_ordering", "electrostatics", "polymer_figure_dir",
+    "SCFT": _SYSTEM_KEYS | {"optimizer", "relax_cell", "max_iter", "tolerance", "stress_scale", "crystal_system",
+                           "space_group", "axis_ordering", "electrostatics", "polymer_figure_dir",
                            "fts_consistent_energy"},
     "L-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"saddle", "compressor", "wtmd"},
     "CL-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"dynamic_stabilization", "electrostatics"},
@@ -599,18 +599,26 @@ METHOD_KEYS = {
 # Why no method reads a key that users give
 _UNREAD_KEY_HINTS = {"mask": "impenetrable regions are available through PropagatorSolver(mask=...) only",
                      "gibbs_ensemble": "a Gibbs-ensemble input runs with GibbsEnsemble(params)"}
+# The options of an earlier release that no method reads any more: ignored with one warning that says why,
+# until a later release refuses them
+_RETIRED_KEYS = {"stress_interval": "SCFT computes the stress in every iteration of the cell relaxation"}
 
 
 def check_method_keys(params: Dict[str, Any], method: str) -> None:
     """The top-level keys that the method ("SCFT", "L-FTS" or "CL-FTS") does not read (METHOD_KEYS):
     the options of another method are ignored with one warning that lists them, so that one input serves
-    SCFT and the Langevin methods; a key that no method reads (a misspelled or unsupported option)
-    raises ValidationError naming it and the closest key. params comes from normalize_params (its names,
-    no None values)."""
+    SCFT and the Langevin methods; an option of an earlier release (_RETIRED_KEYS) is ignored with one
+    warning that says why; a key that no method reads (a misspelled or unsupported option) raises
+    ValidationError naming it and the closest key. params comes from normalize_params (its names, no
+    None values)."""
     known = sorted(set().union(*METHOD_KEYS.values()))
     ignored = []
     for key in params:
         if key in METHOD_KEYS[method]:
+            continue
+        if key in _RETIRED_KEYS:
+            warnings.warn(f"'{key}' is ignored: {_RETIRED_KEYS[key]} (remove the key; a later release will refuse it)",
+                          stacklevel=_user_stacklevel())
             continue
         readers = [other for other, keys in METHOD_KEYS.items() if key in keys]
         if not readers:
@@ -680,8 +688,6 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
             raise ValidationError("SCFT needs a positive 'electrostatics.coupling'; leave out 'electrostatics' "
                                   "for uncharged chains")
     _reject_grand_canonical(params, "SCFT")
-    if params.get("stress_interval", 1) != "adaptive":
-        _integer(params.get("stress_interval", 1), "stress_interval")
     optimizer = params["optimizer"]
     if not isinstance(optimizer, dict) or optimizer.get("name") != "am":
         raise ValidationError("optimizer.name must be 'am' (Anderson mixing)")

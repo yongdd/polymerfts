@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-SCFT options: angle relaxation, axis_ordering, stress_interval, the field-residual projector and tied lengths.
+SCFT options: angle relaxation, axis_ordering, the retired stress_interval, the field-residual projector and tied
+lengths.
 
 1. Angle relaxation (Oblique2D): hexagonal cylinders started from gamma = 100 deg
    relax to gamma = 120 deg with a = b. The angles enter the optimizer in radians,
@@ -13,14 +14,12 @@ SCFT options: angle relaxation, axis_ordering, stress_interval, the field-residu
    standard order). Until 2026-10 the initial fields and the boundary conditions
    were not reordered (walls on the wrong axis: dF 9e-2 here). A triclinic 3D cell
    given in three other axis orders reproduces the standard run: its angles move
-   with the axes.
-   stress_interval: a stress reused between the iterations that compute it guides
-   the updates, but only the stress of the final fields certifies convergence;
-   stress_interval 4 and "adaptive" reach the cell of stress_interval 1 (to 5e-7)
-   in a 1D lamella, and a reused stress whose error falls below the tolerance is
-   replaced by the stress of the fields of that iteration. Without that check the
-   run with stress_interval 4 stopped (cpu-mkl) at 12 times the tolerance with a
-   cell 1.4e-6 off.
+   with the axes. The four runs agree step by step, so 10 iterations show it (with
+   the angles not moved: dF 1.6-1.9e-2).
+   stress_interval: the stress is computed in every iteration of the cell
+   relaxation; a given stress_interval (the option of earlier releases that computed
+   it every few iterations) is ignored with one warning, also through from_file, and
+   the run is that of the input without it, bit for bit.
 3. Free energy: the full CE value from the monomer fields does not change when
    the field means are moved to the saddle point (the fields of L-FTS), 1e-10.
    Subtracting the ideal mixing term gives the field-theoretic Hamiltonian with
@@ -66,8 +65,10 @@ SCFT options: angle relaxation, axis_ordering, stress_interval, the field-residu
 import os
 import io
 import sys
+import json
 import contextlib
 import tempfile
+import warnings
 from pathlib import Path
 
 os.environ["OMP_MAX_ACTIVE_LEVELS"] = "1"
@@ -168,7 +169,7 @@ def test_axis_ordering_3d():
 
     def params(nx, lx, angles, order=None):
         p = base(nx, lx, {"A,B": 14.0}, [("A", 0.4), ("B", 0.6)], False)
-        p.update(angles=angles, ds=1 / 20, tolerance=1e-10)
+        p.update(angles=angles, ds=1 / 20, tolerance=1e-10, max_iter=10)
         if order is not None:
             p["axis_ordering"] = order
         return p
@@ -189,44 +190,35 @@ def test_axis_ordering_3d():
 
 
 def test_stress_interval():
-    """A stress reused between the stress computations of stress_interval guides the updates, but convergence is
-    certified with the stress of the final fields: stress_interval 4 and "adaptive" reach the cell of
-    stress_interval 1, and a reused stress whose error falls below the tolerance is replaced by the stress of
-    the fields of the iteration."""
-    nx, tolerance = 64, 1e-7
+    """A given stress_interval is ignored with one warning at the line of the caller, also through from_file,
+    and the run is that of the input without it."""
+    nx = 64
     wave = 5.0 * np.cos(2 * np.pi * np.arange(nx) / nx)
-    results = {}
-    for interval in (1, 4, "adaptive"):
-        params = base([nx], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
-        params.update(tolerance=tolerance, stress_interval=interval)
-        with contextlib.redirect_stdout(io.StringIO()):
-            calc = scft.SCFT(params=params)
+    params = base([nx], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
+    params["max_iter"] = 30
+    results = []
+    for given in ({}, {"stress_interval": 4}):
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter("always")
+            calc = scft.SCFT(params={**params, **given})
             result = calc.run(initial_fields={"A": wave, "B": -wave}, return_result=True)
-            calc.compute_concentrations(calc.w)
-            final_error = calc.cell.error(calc.cell.stress(calc.w, calc.phi))   # the stress of the final fields
-        results[interval] = (calc, result, final_error)
-    reference = results[1][1].lx[0]
-    for interval in (4, "adaptive"):
-        _, result, final_error = results[interval]
-        d_lx = abs(result.lx[0] - reference) / reference
-        check(result.converged and final_error < tolerance and d_lx < 5e-7,
-              f"stress_interval {interval}: converged in {result.iterations} iterations with the stress error "
-              f"{final_error:.1e} of the final fields, L {result.lx[0]:.8f} (stress_interval 1: {reference:.8f}, "
-              f"{results[1][1].iterations} iterations; rel. {d_lx:.1e})")
-
-    # Iteration 6 of stress_interval 4 reuses the stress of iteration 4. In a box 2 % longer the fields are
-    # stressed; a reused stress of zero with no field error would certify convergence
-    calc = results[4][0]
-    with contextlib.redirect_stdout(io.StringIO()):
-        calc.prop_solver.set_lx([1.02 * reference])
-        phi, _ = calc.compute_concentrations(calc.w)
-    current = calc.cell.error(calc.cell.stress(calc.w, phi))
-    calc.cell.stress_array = np.zeros(6)
-    with contextlib.redirect_stdout(io.StringIO()):
-        error = calc.cell.error_at(6, calc.w, phi, 0.0)
-    check(current > 1e3 * tolerance and error == current and calc.cell.stress_is_current,
-          f"a reused stress below the tolerance is replaced by the stress of the fields (error {error:.2e}, "
-          f"with the stress of the fields {current:.2e})")
+        results.append(result)
+        warned = [w for w in caught if "'stress_interval' is ignored" in str(w.message)]
+        check(len(warned) == len(given) and len(caught) == len(given)
+              and all(Path(w.filename).resolve() == Path(__file__).resolve() for w in warned),
+              f"input {given}: {len(warned)} warning(s) about stress_interval, at the line of the caller")
+    check(results[0].free_energy == results[1].free_energy and results[0].lx == results[1].lx,
+          f"stress_interval 4 is ignored: the run is that of the input without it (F {results[1].free_energy:.12f}, "
+          f"L {results[1].lx[0]:.10f})")
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "params.json"
+        path.write_text(json.dumps({**params, "stress_interval": "adaptive"}))
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(io.StringIO()):
+            warnings.simplefilter("always")
+            scft.SCFT.from_file(path)
+    warned = [w for w in caught if "'stress_interval' is ignored" in str(w.message)]
+    check(len(warned) == 1 and Path(warned[0].filename).resolve() == Path(__file__).resolve(),
+          f"from_file with stress_interval: {len(warned)} warning(s), at the line of the caller")
 
 
 def test_free_energy():

@@ -154,6 +154,8 @@ class Smearing:
             if "k_int" not in smearing_params:
                 raise ValueError("Sigmoidal smearing requires 'k_int' parameter.")
             self.params = {"k_int": smearing_params["k_int"], "dk_int": smearing_params.get("dk_int", 5.0)}
+            # C₀ of Γ(k) = C₀[1 - tanh((k - k_int)/Δk_int)], so that Γ(0) = 1
+            self._c0 = 1.0 / (1 - np.tanh(-self.params["k_int"] / self.params["dk_int"]))
             print(f"Smearing: Sigmoidal, k_int = {self.params['k_int']}, dk_int = {self.params['dk_int']}")
         else:
             raise ValueError(f"Unknown smearing type: {self.type}. "
@@ -235,8 +237,7 @@ class Smearing:
         else:
             # Γ(k) = C₀[1 - tanh((k - k_int)/Δk_int)], normalized so that Γ(0) = 1
             k_int, dk_int = self.params["k_int"], self.params["dk_int"]
-            c0 = 1.0 / (1 - np.tanh(-k_int / dk_int))
-            self.fourier = c0 * (1 - np.tanh((np.sqrt(self.k_sq) - k_int) / dk_int))
+            self.fourier = self._c0 * (1 - np.tanh((np.sqrt(self.k_sq) - k_int) / dk_int))
 
     def stress(self, fields, concentrations, dk_sq=None):
         """Lattice derivatives of H through the smearing kernel Γ(k).
@@ -274,18 +275,7 @@ class Smearing:
             correlation = correlation + np.real(np.conj(self.coefficients(phi)) * self.coefficients(w))
         correlation = np.ravel(correlation) / self.n_grid ** 2
 
-        # dΓ/d(k²)
-        k_sq = np.ravel(self.k_sq)
-        if self.type == "gaussian":
-            dgamma_dk_sq = -0.5 * self.params["a_int"] ** 2 * np.ravel(self.fourier)
-        else:
-            k_int, dk_int = self.params["k_int"], self.params["dk_int"]
-            c0 = 1.0 / (1 - np.tanh(-k_int / dk_int))
-            k = np.sqrt(k_sq)
-            dgamma_dk = -c0 / dk_int * (1 - np.tanh((k - k_int) / dk_int) ** 2)
-            dgamma_dk_sq = np.divide(dgamma_dk, 2 * k, out=np.zeros_like(k), where=k > 0)
-
-        weight = dgamma_dk_sq * correlation
+        weight = np.ravel(self._dgamma_dk_sq()) * correlation
         for slot, derivative in (self.lattice_derivatives_k_sq() if dk_sq is None else dk_sq).items():
             result[slot] = np.sum(weight * derivative)
         return result
@@ -341,16 +331,7 @@ class Smearing:
         """
         if not self.enabled:
             return np.zeros(np.size(field), dtype=np.complex128)
-        if self.type == "gaussian":
-            a_int = self.params["a_int"][name] if self.per_species else self.params["a_int"]
-            dgamma_dk_sq = -0.5 * a_int ** 2 * self.kernel(name)
-        else:
-            k_int, dk_int = self.params["k_int"], self.params["dk_int"]
-            c0 = 1.0 / (1 - np.tanh(-k_int / dk_int))
-            k = np.sqrt(self.k_sq)
-            dgamma_dk = -c0 / dk_int * (1 - np.tanh((k - k_int) / dk_int) ** 2)
-            dgamma_dk_sq = np.divide(dgamma_dk, 2 * k, out=np.zeros_like(k), where=k > 0)
-        multiplier = -(2.0 / self.dim) * self.k_sq * dgamma_dk_sq
+        multiplier = -(2.0 / self.dim) * self.k_sq * self._dgamma_dk_sq(name)
         result = self._multiply(field, ("dilation", name if self.per_species else None), multiplier)
         if result is not None:
             return np.asarray(result, dtype=np.complex128)
@@ -368,6 +349,16 @@ class Smearing:
         if name not in self.species_fourier:
             raise ValueError(f"No smearing length for monomer type '{name}'.")
         return self.species_fourier[name]
+
+    def _dgamma_dk_sq(self, name=None):
+        """dΓ/d(k²) on the grid of k_sq, of monomer type `name` when the lengths are given per type."""
+        if self.type == "gaussian":
+            a_int = self.params["a_int"][name] if self.per_species else self.params["a_int"]
+            return -0.5 * a_int ** 2 * self.kernel(name)
+        k_int, dk_int = self.params["k_int"], self.params["dk_int"]
+        k = np.sqrt(self.k_sq)
+        dgamma_dk = -self._c0 / dk_int * (1 - np.tanh((k - k_int) / dk_int) ** 2)
+        return np.divide(dgamma_dk, 2 * k, out=np.zeros_like(k), where=k > 0)
 
     def apply(self, field, name=None):
         """Apply smearing to a single field array.
@@ -418,8 +409,8 @@ class Smearing:
     def _multiply(self, field, key, values):
         """backward(values(k) · forward(field)) with the Fourier transform of the simulation.
 
-        values is given on the grid of k_sq; its multiplier is stored once under key (until
-        set_box). A transform of real fields takes the real and the imaginary part of a complex
+        values is given on the grid of k_sq, the coefficient shape of the transform; its multiplier
+        is stored once under key (until set_box). A transform of real fields takes the real and the imaginary part of a complex
         field one after the other (values is real and even in k). Returns None without a
         transform, where NumPy/SciPy transform instead.
         """
@@ -427,22 +418,23 @@ class Smearing:
         if transform is None:
             return None
         if key not in self._multipliers:
-            # values on the coefficients of the transform (the rfftn half spectrum for real fields)
-            self._multipliers[key] = transform.set_multiplier(
-                values[tuple(slice(0, n) for n in transform.coefficient_shape)])
+            self._multipliers[key] = transform.set_multiplier(values)
         multiplier, field = self._multipliers[key], np.reshape(field, -1)
         if transform.field_type == "real" and np.iscomplexobj(field):
             return (transform.apply([(multiplier, np.ascontiguousarray(field.real))])
                     + 1j * transform.apply([(multiplier, np.ascontiguousarray(field.imag))]))
         return transform.apply([(multiplier, field)])
 
-    def coefficients(self, field):
+    def coefficients(self, field, field_k=None):
         """Coefficients of a real field at the wavenumbers of k_sq, normalized like numpy.fft.fftn:
         <a b> = (1/n²) Σ_k conj(a(k)) b(k). On wall axes they are the orthonormal cosine series
         times √n. On the half spectrum they are those of the transform times the square root of
-        the Parseval weight (2 for the modes that stand for k and -k)."""
+        the Parseval weight (2 for the modes that stand for k and -k); field_k, the transform of the
+        field when the caller has it, then saves transforming it again."""
         if self.half_spectrum:
-            return self._transform.forward(np.ascontiguousarray(field, dtype=np.float64)) * self._sqrt_weights
+            if field_k is None:
+                field_k = self._transform.forward(np.ascontiguousarray(field, dtype=np.float64))
+            return field_k * self._sqrt_weights
         if self.periodic:
             return np.fft.fftn(np.reshape(field, self.nx))
         return self._forward(np.reshape(field, self.nx)) * np.sqrt(self.n_grid)

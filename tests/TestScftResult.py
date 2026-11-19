@@ -58,11 +58,11 @@ def main():
     failed = []
 
     # A max_iter exit must return fields, densities, box, Q and stress from the
-    # same iteration, including when the final step is between stress updates.
+    # same iteration.
     x_short = (np.arange(32) + 0.5)/32
     for altering in (False, True):
         p = params([np.int64(32)], [1.7], max_iter=5, tolerance=1e-11,
-                   relax_cell=altering, stress_interval=2)
+                   relax_cell=altering)
         with contextlib.redirect_stdout(io.StringIO()):
             short = SCFT(p)
             r = short.run({"A": np.sqrt(2)*5*np.cos(2*np.pi*x_short),
@@ -153,11 +153,11 @@ def main():
         saved = json.loads((Path(tmp)/"zero.json").read_text(), parse_constant=reject)
         assert saved["chemical_potentials"][1] == {"nonfinite_float": "-inf"}, saved["chemical_potentials"]
 
-    # Callback stops between stress updates must also return the final stress,
-    # including its smearing contribution, and report the corresponding error.
+    # A callback stop must also return the stress of the final fields, including
+    # its smearing contribution, and report the corresponding error.
     for smearing in (None, {"type": "gaussian", "a_int": 0.1}):
         p = params([32], [1.7], max_iter=10, tolerance=1e-11,
-                   relax_cell=True, stress_interval=4, smearing=smearing)
+                   relax_cell=True, smearing=smearing)
         with contextlib.redirect_stdout(io.StringIO()):
             short = SCFT(p)
             r = short.run({"A": np.sqrt(2)*5*np.cos(2*np.pi*x_short),
@@ -250,8 +250,8 @@ def main():
     def nan_concentrations(calc):
         compute = calc.compute_concentrations
 
-        def nan_phi(w, q_init=None):
-            phi, elapsed = compute(w, q_init=q_init)
+        def nan_phi(w, **options):
+            phi, elapsed = compute(w, **options)
             return {m: np.full_like(v, np.nan) for m, v in phi.items()}, elapsed
         calc.compute_concentrations = nan_phi
 

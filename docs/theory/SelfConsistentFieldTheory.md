@@ -238,7 +238,7 @@ where $`\eta`$ is the `stress_scale` parameter. At equilibrium, all stress compo
 **Implementation details:**
 - Box size changes are limited to 10% per iteration
 - Angle changes are limited to 5° per iteration
-- Stress can be computed adaptively (`stress_interval: "adaptive"`) or at fixed intervals (default: 1)
+- The stress is computed in every iteration, together with the concentrations (`PropagatorSolver.compute_concentrations_and_stress`)
 - Crystal system constraints (orthorhombic, tetragonal, cubic, hexagonal, monoclinic, triclinic) are automatically enforced
 - Lengths tied by the crystal system move together along the mean of their derivatives, so the relaxation and its convergence test reach the optimum of the tied cell. A structure without the symmetry of the tie (for example a = b of `"Tetragonal"` without a space group) can have tied lengths whose derivatives are nonzero and opposite at that optimum; no cell of that crystal system is then free of stress, and SCFT prints a warning that names a crystal system with free lengths
 - Stress computation supports periodic, reflecting, and absorbing boundary conditions (real fields) with every method except the real-space CN-ADI2 solver, so `relax_cell=True` needs another method. RS keeps the cell orthogonal: it relaxes the box lengths, and SCFT rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries the angles stay at 90° for every method.
@@ -394,7 +394,6 @@ The SCFT class supports several advanced features not covered in the basic examp
 | Random copolymers | `{"monomer_fractions": {"A": 0.3, "B": 0.7}}` | Statistical copolymer blocks |
 | Non-orthogonal cells | `"angles": [90, 90, 120]` | Monoclinic/triclinic unit cells |
 | Memory saving | `"reduce_memory": True` | Checkpoint-based propagator storage |
-| Stress interval | `"stress_interval": 3` or `"adaptive"` | Control stress computation frequency |
 
 See [Parameters.md](../references/Parameters.md) for complete parameter reference.
 

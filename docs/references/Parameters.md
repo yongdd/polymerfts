@@ -263,9 +263,8 @@ All keys are **required**: omitting one, a name other than `"am"`, a `max_hist` 
 | `tolerance` | float | Stop when the self-consistency error (plus the norm of the stress along the relaxed lattice parameters when the box relaxes) is below this value | `1e-8` |
 | `relax_cell` | bool | Relax the box lengths (and, for monoclinic/triclinic/oblique systems, the angles) together with the fields | Required |
 | `stress_scale` | float | Scaling of the stress entries in the optimizer vector | `1` |
-| `stress_interval` | int or `"adaptive"` | Compute the stress every N iterations; `"adaptive"` uses 1, 2 or 4 as the error drops below 1e-2 and 1e-4. Anderson mixing then mixes a stress of older fields and cells, so fewer stress computations need more iterations: `examples/block_copolymer/scft/Gyroid.py` converges in 221 iterations with 1, 277-284 with 4 and 233-244 with `"adaptive"` (cpu-mkl and CUDA), a 1D lamella in 206, 744 and 404 | `1` |
 
-Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). Each iteration changes every box length by at most 10 % and every angle by at most 5°.
+Box relaxation needs a method with the stress (every method except `"cn-adi2"`) and real fields (see [Box Optimization](#box-optimization) for the restrictions). The stress is computed in every iteration, together with the concentrations. Each iteration changes every box length by at most 10 % and every angle by at most 5°.
 
 ### Crystal System
 
@@ -574,7 +573,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 ### Box Optimization
 
-`relax_cell`, `stress_scale`, `stress_interval` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
+`relax_cell`, `stress_scale` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
 **Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"` (on CUDA, `"rqm4"` and `"rk2"` take no complex fields with walls, which `"auto"` runs on the CPU); `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
@@ -633,6 +632,9 @@ even when their values are equal.
 | `recording.recording_period` | `recording.checkpoint_interval` |
 | `recording.sf_computing_period` | `recording.sample_interval` |
 | `recording.sf_recording_period` | `recording.statistics_save_interval` |
+
+Every method ignores `stress_interval`, an option of earlier releases, with one
+warning: SCFT computes the stress in every iteration of the box relaxation.
 
 Version-1 and version-2 checkpoints written with earlier names can be resumed
 using current parameter names. The stored settings hash is verified before

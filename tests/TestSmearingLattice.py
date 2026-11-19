@@ -50,9 +50,10 @@ that go with them.
    cell, reflecting and absorbing walls, real and complex fields (also complex fields with a
    transform of real fields), per-type and shared kernels, also after the box of the solver and
    set_box() change. With real fields in a periodic box the smearing takes |k|^2 from the
-   transform, on its half spectrum. There the angle derivative from an orthogonal cell equals
-   the central difference of H = <w (Gamma * w)>/2 in the angle (an even grid with content at the
-   Nyquist modes, whose tied aliases give a zero derivative).
+   transform, on its half spectrum. There the derivatives of the two lengths and of the angle from
+   an orthogonal cell equal the central differences of H = <w (Gamma * w)>/2 (an even grid with
+   content at the Nyquist modes, whose tied aliases give a zero angle derivative and whose plane
+   of the last axis counts once in the length derivatives).
 """
 
 import os
@@ -291,11 +292,13 @@ def test_native_transform():
                       f"equals NumPy (max rel diff {max(errors):.1e})")
 
 
-def test_nyquist_angle_derivative():
-    """The angle derivative of the smearing on the half spectrum of the transform (real fields), from an
-    orthogonal cell, equals the central difference of H = <w (Gamma * w)>/2 in the angle. On the Nyquist
-    plane m_a = N_a/2 of an even axis the aliases -+N_a/2 tie, and their derivatives 2 k_a k_b have opposite
-    signs: the derivative is zero there. On the half spectrum the planes of the other axis do not cancel it."""
+def test_nyquist_derivatives():
+    """The lattice derivatives of the smearing on the half spectrum of the transform (real fields), from an
+    orthogonal cell, equal the central differences of H = <w (Gamma * w)>/2. On the Nyquist plane
+    m_a = N_a/2 of an even axis the aliases -+N_a/2 tie, and their angle derivatives 2 k_a k_b have opposite
+    signs: the angle derivative is zero there. On the half spectrum the planes of the other axis do not
+    cancel it. The length derivatives count the Nyquist plane of the last axis once (Parseval weight 1, not
+    the 2 of the modes that stand for k and -k): weighted 2 they are off by 5-46 % here."""
     nx, lx = [8, 6], [1.6, 1.3]
     w = np.random.default_rng(13).normal(0.0, 5.0, int(np.prod(nx)))   # content at the Nyquist modes
     for smearing in ({"type": "gaussian", "a_int": 0.15}, {"type": "sigmoidal", "k_int": 12.0, "dk_int": 4.0}):
@@ -303,11 +306,12 @@ def test_nyquist_angle_derivative():
                        chain_model="continuous", platform=cpu_platform())
         solver.add_polymer(1.0, [["A", 1.0, 0, 1]])
         sm = quiet(Smearing, nx, lx, smearing, transform=solver.fourier)
-        analytic = sm.stress([w], [0.5 * w])[2]   # dH/dgamma per radian
+        stress = sm.stress([w], [0.5 * w])   # dH/dL1, dH/dL2 and dH/dgamma per radian
+        analytic = stress[2]
 
-        def hamiltonian(gamma):
-            quiet(solver.set_lattice_parameters, lx, [90.0, 90.0, gamma])
-            sm.set_box(lx, [90.0, 90.0, gamma])
+        def hamiltonian(gamma, box=lx):
+            quiet(solver.set_lattice_parameters, box, [90.0, 90.0, gamma])
+            sm.set_box(box, [90.0, 90.0, gamma])
             return 0.5 * np.mean(w * sm.apply(w))
 
         h = 1e-4
@@ -316,11 +320,20 @@ def test_nyquist_angle_derivative():
         check(sm.half_spectrum and err < 1e-6,
               f"{smearing['type']}: angle derivative on the half spectrum from an orthogonal cell = FD of H "
               f"({analytic:.10e} against {fd:.10e}, rel. err {err:.1e})")
+        h = 1e-5
+        for a in range(2):
+            plus, minus = list(lx), list(lx)
+            plus[a] += h
+            minus[a] -= h
+            fd = (hamiltonian(90.0, plus) - hamiltonian(90.0, minus)) / (2 * h)
+            err = abs(stress[a] - fd) / abs(fd)
+            check(err < 1e-6, f"{smearing['type']}: dH/dL{a + 1} on the half spectrum = FD of H "
+                              f"({stress[a]:.10e} against {fd:.10e}, rel. err {err:.1e})")
 
 
 def test_scft_box_relaxation():
     def params(lx, box):
-        return {"nx": [32], "lx": [lx], "relax_cell": box, "stress_interval": 1,
+        return {"nx": [32], "lx": [lx], "relax_cell": box,
                 "chain_model": "discrete", "ds": 1 / 50, "segment_lengths": {"A": 1.0, "B": 1.0},
                 "chi_n": {"A,B": 20.0}, "platform": cpu_platform(),
                 "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5},
@@ -357,7 +370,7 @@ def test_scft_relaxation_wavenumbers():
              ("2D hexagonal 120", [12, 12], [3.0, 3.0], [120.0], "Hexagonal2D"),
              ("3D gamma 105 fixed", [8, 10, 6], [2.4, 2.6, 2.2], [90.0, 90.0, 105.0], None))
     for name, nx, lx, angles, crystal_system in cases:
-        p = {"nx": nx, "lx": lx, "angles": angles, "relax_cell": True, "stress_interval": 1,
+        p = {"nx": nx, "lx": lx, "angles": angles, "relax_cell": True,
              "chain_model": "continuous", "ds": 1 / 20, "segment_lengths": {"A": 1.0, "B": 1.1},
              "chi_n": {"A,B": 16.0}, "platform": cpu_platform(),
              "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.35},
@@ -449,7 +462,7 @@ def main():
     test_stress()
     test_walls()
     test_native_transform()
-    test_nyquist_angle_derivative()
+    test_nyquist_derivatives()
     test_scft_box_relaxation()
     test_scft_relaxation_wavenumbers()
     test_noise_volume()
