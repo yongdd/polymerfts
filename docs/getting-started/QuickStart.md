@@ -93,7 +93,7 @@ For large systems that exceed GPU memory:
 params["reduce_memory"] = True
 ```
 
-This stores only checkpoints and recomputes intermediate values, which cuts the memory that grows with the grid and the number of contour steps (for `examples/block_copolymer/scft/Gyroid.py` with `nx` changed to 64³, the GPU memory falls from 1064 to 420 MiB) at the cost of 2-4x slower execution.
+This stores only checkpoints and recomputes intermediate values, which cuts the memory that grows with the grid and the number of contour steps (for `examples/block_copolymer/scft/Gyroid.py` with `nx` changed to 64³, the GPU memory falls from 1002 to 390 MiB) at the cost of 2-4x slower execution.
 
 ### Multi-threading Settings
 

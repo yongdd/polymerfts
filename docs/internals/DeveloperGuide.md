@@ -156,9 +156,6 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
     PlatformSelector::create_factory<std::complex<double>>("cuda", reduce_memory);
 ```
 
-`create_factory_real` and `create_factory_complex` are the same calls for `double` and
-`std::complex<double>`.
-
 **Notes:**
 
 - The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` create the solver with `chain_solver` (`src/python/theory/chains.py`), which just passes `platform="auto"` through to `PropagatorSolver`. It is not in C++.
@@ -413,12 +410,13 @@ tables exist only for a path that uses them (`provide_work()` with the derived s
 again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
 Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them, and the stress
-workspace exists only from the first `prepare_stress()` on. The steps reuse what they have
+workspace (for RK2 and discrete chains also the second spectrum, which only the stress reads)
+exists only from the first `prepare_stress()` on. The steps reuse what they have
 read: the RK2 step runs in its output, and with a space group the pseudo-spectral and CN-ADI
 steps work in place in one full grid per stream (the rs bonds, which cannot run in place,
 take a second).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
-their real-space work buffers and `update_dw()`/`advance_propagator()`;
+`update_dw()`/`advance_propagator()` (RQM4 also the buffers of its full and half steps);
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
 bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /

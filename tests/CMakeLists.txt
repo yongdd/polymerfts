@@ -158,7 +158,7 @@ SET(NUMERICAL_TESTS
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
     TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
     TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
-    TestPartitionIntegrand
+    TestPartitionIntegrand TestConcentrationsAndStress TestCrankNicolson1D TestCrankNicolson2D TestCrankNicolson3D
     # Stress, SCFT and propagators
     TestStressFiniteDifference TestStressSpaceGroup TestStressComplexPlatforms
     TestScft3D TestScftCompressible TestScftHexagonalCylinder2D TestScftOptions TestSpaceGroupPhases TestCrysFFTM3SmallGrid

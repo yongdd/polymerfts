@@ -536,7 +536,7 @@ The checkpoints store $`\psi`$ and its random-number stream, and a continuation 
 
 When `True`:
 - Stores only checkpoints every ~$`2\sqrt{N_{tot}}`$ contour steps, i.e. ~$`\sqrt{N_{tot}}/2`$ checkpoints per propagator (where $`N_{tot}`$ is the total number of contour steps)
-- Reduces the memory that grows with the grid and the number of contour steps: for `examples/block_copolymer/scft/Gyroid.py` (AB diblock, $`ds = 0.01`$) the GPU memory of the process on an A10 falls from 332 to 254 MiB on its 32³ grid and from 1064 to 420 MiB on a 64³ grid, of which about 236 MiB is the CUDA context. The CUDA checkpoints are kept in pinned host memory, which raises the host memory at 64³ from 298 to 494 MiB. On cpu-mkl the peak host memory at 64³ falls from 783 to 448 MiB
+- Reduces the memory that grows with the grid and the number of contour steps: for `examples/block_copolymer/scft/Gyroid.py` (AB diblock, $`ds = 0.01`$) the GPU memory of the process on an A10 falls from 324 to 252 MiB on its 32³ grid and from 1002 to 390 MiB on a 64³ grid, of which about 232 MiB is the CUDA context. The CUDA checkpoints are kept in pinned host memory, which raises the host memory at 64³ from 270 to 463 MiB. On cpu-mkl the peak host memory at 64³ falls from 762 to 423 MiB
 - Increases computation time by 2-4x
 
 `reduce_memory=True` works with every chain model and with space-group symmetry, including **discrete chains combined with a space group**, on both CPU and CUDA (see [SpaceGroup.md](../theory/SpaceGroup.md)).
