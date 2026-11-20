@@ -93,7 +93,7 @@ For large systems that exceed GPU memory:
 params["reduce_memory"] = True
 ```
 
-This stores only checkpoints and recomputes intermediate values, which cuts the memory that grows with the grid and the number of contour steps (for `examples/block_copolymer/scft/Gyroid.py` on a 64³ grid the GPU memory falls from 1064 to 420 MiB) at the cost of 2-4x slower execution.
+This stores only checkpoints and recomputes intermediate values, which cuts the memory that grows with the grid and the number of contour steps (for `examples/block_copolymer/scft/Gyroid.py` with `nx` changed to 64³, the GPU memory falls from 1064 to 420 MiB) at the cost of 2-4x slower execution.
 
 ### Multi-threading Settings
 
@@ -157,17 +157,10 @@ and the shared modules.
    ```bash
    sed -i -E 's/^( *)from \.\. import _core/\1from polymerfts import _core/; s/^( *)from \.\.([a-z_.]+) import/\1from polymerfts.\2 import/; s/^( *)from \.([a-z_]+) import/\1from polymerfts.scft.\2 import/' ~/my_project/my_scft.py
    ```
-   The result looks like
-   ```python
-   from polymerfts import _core
-   from polymerfts.theory.symmetric_formulation import SymmetricPolymerTheory
-   from polymerfts.theory.propagator_solver import PropagatorSolver
-   from polymerfts.utils.validation import (...)
-   from polymerfts.utils.common import (...)
-   from polymerfts.scft.cell_relaxation import CellRelaxation
-   from polymerfts.scft.scft_results import (...)
-   from polymerfts.theory.chains import (...)
-   ```
+   Each relative import then names the package:
+   `from .cell_relaxation import CellRelaxation` becomes
+   `from polymerfts.scft.cell_relaxation import CellRelaxation`, and
+   `grep -n "from \." ~/my_project/my_scft.py` finds none left.
 3. Use the copy in your script:
    ```python
    import my_scft as scft          # instead of: from polymerfts import scft

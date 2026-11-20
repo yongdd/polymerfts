@@ -18,7 +18,7 @@ Read the notebooks in the following order:
 | # | Notebook | Description |
 |---|----------|-------------|
 | 1 | `NaiveLFTS.ipynb` | Step-by-step L-FTS implementation (educational) |
-| 2 | `Lamellar.ipynb` | Production L-FTS with structure functions |
+| 2 | `Lamellar.ipynb` | L-FTS of a lamellar phase with the `lfts` module; draws a slice of the A concentration and points to the analysis notebooks |
 
 ## Key Concepts
 

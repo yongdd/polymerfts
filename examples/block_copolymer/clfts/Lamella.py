@@ -95,7 +95,7 @@ X = np.broadcast_to(x[:, None, None], nx)
 # Lamellar pattern along x-direction (2 periods)
 period = lx[0] / 2
 w_A = 2.0 * np.cos(2 * np.pi * X / period).flatten()
-w_B = -w_A.copy()
+w_B = -w_A
 
 # Set a timer
 time_start = time.time()
