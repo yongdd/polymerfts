@@ -154,9 +154,6 @@ public:
     /// a = 0.
     virtual void set_zero(int stream, BackendArray<T>* a) = 0;
 
-    /// dst = src.
-    virtual void copy(int stream, BackendArray<T>* dst, BackendArray<T>* src) = 0;
-
     /// q = Σ_i n_i q_i over sources (q_i, n_i): aggregated propagators.
     virtual void junction_sum(int stream, BackendArray<T>* q,
                               const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;

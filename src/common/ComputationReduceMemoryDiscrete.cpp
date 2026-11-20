@@ -22,21 +22,18 @@ ComputationReduceMemoryDiscrete<T>::ComputationReduceMemoryDiscrete(
 {
     try
     {
-        // The first segment of every propagator, the segments and junction
-        // values other propagators start from, and the half-bond states at
-        // the junction ends
+        // The first segment of every propagator, the segments an aggregation
+        // sums, the junction values and the half-bond states at the junction ends
         for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
         {
             this->add_checkpoint(key, 1);
-            if (edge.deps.size() > 0)
+            // A junction joins the half-bond states of its branches (junction_ends below)
+            // and keeps its junction value; an aggregation sums sliced segments
+            if (key[0] == '(')
                 add_half_checkpoint(key, 0);
-            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-            {
-                if (sub_n_segment == 0)
-                    add_half_checkpoint(sub_key, 0);
-                else
+            else
+                for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                     this->add_checkpoint(sub_key, sub_n_segment);
-            }
             for (int n : edge.junction_ends)
                 add_half_checkpoint(key, n);
         }
@@ -58,25 +55,16 @@ ComputationReduceMemoryDiscrete<T>::ComputationReduceMemoryDiscrete(
             current_p++;
         }
 
-        // The jobs of the scheduler, with the checkpoints they start from, store and join
-        for (const auto& parallel_job : this->sc->get_schedule())
+        // The propagators, with the checkpoints they store and join
+        for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
         {
-            std::vector<Job>& jobs = schedule.emplace_back();
-            for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
-            {
-                const ComputationEdge& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
-                std::vector<std::pair<CheckpointArray<T>*, double>> sources;
-                for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-                {
-                    // Aggregated at a junction (n = 0) or joining one: half-bond states
-                    const bool half_bond = (key[0] == '(' || sub_n_segment == 0);
-                    sources.push_back({half_bond ? half_checkpoint_at(sub_key, sub_n_segment)
+            std::vector<std::pair<CheckpointArray<T>*, double>> sources;
+            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
+                sources.push_back({key[0] == '(' ? half_checkpoint_at(sub_key, sub_n_segment)
                                                  : this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
-                }
-                jobs.push_back({&key, &edge, n_segment_from, n_segment_to, std::move(sources),
-                                this->stored_segments(this->checkpoint, key, n_segment_from, n_segment_to),
-                                this->stored_segments(half_checkpoint, key, n_segment_from, n_segment_to)});
-            }
+            jobs.push_back({&key, &edge, std::move(sources),
+                            this->stored_segments(this->checkpoint, key, 0, edge.max_n_segment),
+                            this->stored_segments(half_checkpoint, key, 0, edge.max_n_segment)});
         }
     }
     catch (std::exception& exc)
@@ -125,93 +113,67 @@ void ComputationReduceMemoryDiscrete<T>::compute_propagators(
 {
     this->set_fields(w_input, q_init);
 
-    // The propagators one at a time, in the scheduler's order
-    for (const std::vector<Job>& parallel_jobs : schedule)
+    // The propagators one at a time
+    for (const Job& job : jobs)
     {
-        for (const Job& job : parallel_jobs)
+        const std::string& key = *job.key;
+        const ComputationEdge& edge = *job.edge;
+        const std::string& monomer_type = edge.monomer_type;
+        BackendArray<T>** q = this->q_work;  // q[cur] holds the current segment
+        int cur = 0;
+
+        // First segment q(r, 1)
+        if (edge.deps.size() == 0)  // chain end: q(1) = exp(-w ds) q_init
         {
-            const std::string& key = *job.key;
-            const ComputationEdge& edge = *job.edge;
-            const std::string& monomer_type = edge.monomer_type;
-            BackendArray<T>** q = this->q_work;  // q[cur] holds the current segment
-            int cur = 0;
+            if (key[0] == '{')      // grafting point
+                this->backend->copy_from_host(0, q[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
+            else                    // free chain end
+                this->backend->set_unity(0, q[0]);
+            this->backend->multiply_boltzmann_factor(0, q[0], monomer_type);
+        }
+        else if (key[0] == '[')     // aggregated propagators
+        {
+            // Sum of the sliced segments, then a full bond and the next segment
+            this->backend->junction_sum(0, q[0], job.sources);
+            this->backend->advance_propagator(0, q[0], q[0], monomer_type, 0);
+        }
+        else if (key[0] == '(')     // junction of branches
+        {
+            // Junction value: product of the half-bond states of the branches
+            this->backend->junction_product(0, q[0], job.sources);
+            this->backend->store_checkpoint(0, job.half_checkpoints[0], q[0]);
 
-            // First segment q(r, 1)
-            if (job.n_segment_from == 0)
+            // Half a bond and the first segment
+            if (edge.max_n_segment > 0)
             {
-                if (edge.deps.size() == 0)  // chain end: q(1) = exp(-w ds) q_init
-                {
-                    if (key[0] == '{')      // grafting point
-                        this->backend->copy_from_host(0, q[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
-                    else                    // free chain end
-                        this->backend->set_unity(0, q[0]);
-                    this->backend->multiply_boltzmann_factor(0, q[0], monomer_type);
-                }
-                else if (key[0] == '[')     // aggregated propagators
-                {
-                    // Propagators aggregated at a junction (n = 0) are half-bond
-                    // states; the others are segments
-                    this->backend->junction_sum(0, q[0], job.sources);
-
-                    if (std::get<1>(edge.deps[0]) == 0)
-                    {
-                        // Junction value, then half a bond and the first segment
-                        this->backend->store_checkpoint(0, job.half_checkpoint(0), q[0]);
-                        this->backend->advance_propagator_half_bond_step(0, q[0], q[0], monomer_type);
-                        this->backend->multiply_boltzmann_factor(0, q[0], monomer_type);
-                    }
-                    else
-                    {
-                        // A full bond and the next segment
-                        this->backend->advance_propagator(0, q[0], q[0], monomer_type, 0);
-                    }
-                }
-                else if (key[0] == '(')     // junction of branches
-                {
-                    // Junction value: product of the half-bond states of the branches
-                    this->backend->junction_product(0, q[0], job.sources);
-                    this->backend->store_checkpoint(0, job.half_checkpoint(0), q[0]);
-
-                    // Half a bond and the first segment
-                    if (job.n_segment_to > 0)
-                    {
-                        this->backend->advance_propagator_half_bond_step(0, q[0], q[1], monomer_type);
-                        this->backend->multiply_boltzmann_factor(0, q[1], monomer_type);
-                        cur = 1;
-                    }
-                }
+                this->backend->advance_propagator_half_bond_step(0, q[0], q[1], monomer_type);
+                this->backend->multiply_boltzmann_factor(0, q[1], monomer_type);
+                cur = 1;
             }
-            if (job.n_segment_to == 0)
-                continue;
+        }
+        if (edge.max_n_segment == 0)
+            continue;
 
-            int n_from = job.n_segment_from;
-            if (n_from == 0)
-            {
-                this->backend->apply_mask(0, q[cur]);
-                this->backend->store_checkpoint(0, job.checkpoint(1), q[cur]);
-                if (CheckpointArray<T>* half = job.half_checkpoint(1))
-                {
-                    this->backend->advance_propagator_half_bond_step(0, q[cur], q[1-cur], monomer_type);
-                    this->backend->store_checkpoint(0, half, q[1-cur]);
-                }
-                n_from = 1;
-            }
-            else
-                this->backend->load_checkpoint(0, q[cur], job.checkpoint(n_from));
+        this->backend->apply_mask(0, q[cur]);
+        this->backend->store_checkpoint(0, job.checkpoints[1], q[cur]);
+        if (CheckpointArray<T>* half = job.half_checkpoints[1])
+        {
+            this->backend->advance_propagator_half_bond_step(0, q[cur], q[1-cur], monomer_type);
+            this->backend->store_checkpoint(0, half, q[1-cur]);
+        }
 
-            // q(r, n+1) from q(r, n), keeping the checkpointed segments and
-            // the half-bond states where a junction attaches
-            for (int n = n_from; n < job.n_segment_to; n++)
+        // q(r, n+1) from q(r, n), keeping the checkpointed segments and
+        // the half-bond states where a junction attaches
+        for (int n = 1; n < edge.max_n_segment; n++)
+        {
+            this->backend->advance_propagator(0, q[cur], q[1-cur], monomer_type, 0);
+            cur = 1-cur;
+            if (CheckpointArray<T>* stored = job.checkpoints[n+1])
+                this->backend->store_checkpoint(0, stored, q[cur]);
+            if (CheckpointArray<T>* half = job.half_checkpoints[n+1])
             {
-                this->backend->advance_propagator(0, q[cur], q[1-cur], monomer_type, 0);
-                cur = 1-cur;
-                if (CheckpointArray<T>* stored = job.checkpoint(n+1))
-                    this->backend->store_checkpoint(0, stored, q[cur]);
-                if (CheckpointArray<T>* half = job.half_checkpoint(n+1))
-                {
-                    this->backend->advance_propagator_half_bond_step(0, q[cur], q[1-cur], monomer_type);
-                    this->backend->store_checkpoint(0, half, q[1-cur]);
-                }
+                this->backend->advance_propagator_half_bond_step(0, q[cur], q[1-cur], monomer_type);
+                this->backend->store_checkpoint(0, half, q[1-cur]);
             }
         }
     }
@@ -244,24 +206,6 @@ void ComputationReduceMemoryDiscrete<T>::advance_propagator_single_segment(T* q_
     this->backend->advance_propagator(0, this->q_work[0], this->q_work[1], monomer_type, 0);
     this->backend->synchronize();
     this->backend->copy_to_host(q_out, this->q_work[1]);
-}
-
-template <typename T>
-void ComputationReduceMemoryDiscrete<T>::compute_concentrations()
-{
-    compute_blocks(true, false);
-}
-
-template <typename T>
-void ComputationReduceMemoryDiscrete<T>::compute_stress()
-{
-    compute_blocks(false, true);
-}
-
-template <typename T>
-void ComputationReduceMemoryDiscrete<T>::compute_concentrations_and_stress()
-{
-    compute_blocks(true, true);
 }
 
 template <typename T>

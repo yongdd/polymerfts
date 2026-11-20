@@ -113,7 +113,6 @@ public:
 
     void set_unity(int stream, BackendArray<T>* q) override;
     void set_zero(int stream, BackendArray<T>* a) override;
-    void copy(int stream, BackendArray<T>* dst, BackendArray<T>* src) override;
     void junction_sum(int stream, BackendArray<T>* q,
                       const std::vector<std::pair<BackendArray<T>*, double>>& sources) override;
     void junction_product(int stream, BackendArray<T>* q,

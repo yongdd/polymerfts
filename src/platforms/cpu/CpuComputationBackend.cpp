@@ -189,12 +189,6 @@ void CpuComputationBackend<T>::set_zero(int, BackendArray<T>* a)
 }
 
 template <typename T>
-void CpuComputationBackend<T>::copy(int, BackendArray<T>* dst, BackendArray<T>* src)
-{
-    std::copy(raw(src), raw(src) + n_basis, raw(dst));
-}
-
-template <typename T>
 template <typename Source>
 void CpuComputationBackend<T>::sum_sources(T* q, const std::vector<std::pair<Source*, double>>& sources)
 {

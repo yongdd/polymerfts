@@ -249,10 +249,10 @@ PropagatorComputation<T>                      [Abstract Base]
 ├── check_total_partition(tolerance)
 └── update_laplacian_operator()               [pure virtual]
         │
-        └── ComputationCommon<T>              [backend, scheduler, φ storage, getters, solvents]
+        └── ComputationCommon<T>              [backend, φ storage, getters, solvents]
             │
-            ├── ComputationContinuous<T>      full storage; RQM4, RK2 or CN-ADI2
-            ├── ComputationDiscrete<T>        full storage; bond convolution and half bonds
+            ├── ComputationContinuous<T>      full storage, scheduler groups; RQM4, RK2 or CN-ADI2
+            ├── ComputationDiscrete<T>        full storage, scheduler groups; bond convolution and half bonds
             │
             └── ComputationReduceMemoryBase<T> [checkpoints and recomputation]
                 ├── ComputationReduceMemoryContinuous<T>
@@ -288,11 +288,12 @@ a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 (`ComputationBox::hold_orthogonal_cell()`).
 
 **Who does what.** The computation classes decide *what* is computed and in
-*which order*: the scheduler's groups of propagators, the initial condition of
+*which order*: the scheduler's groups of propagators (full storage) or one
+propagator at a time in height order (reduced memory), the initial condition of
 each propagator (free end, grafting point, junction product, aggregated sum),
 which segment pairs enter the concentration and stress integrals and with
 which weights, and the normalization. Their loops read top to bottom in the
-order the work happens. The constructors resolve each job of the schedule once
+order the work happens. The constructors resolve each job once
 (its propagator storage or checkpoints, contour step and junction sources), so
 `compute_propagators()` looks up no propagator keys, which grow with the size of a polymer.
 Every operation on grid data goes through
@@ -673,7 +674,7 @@ operation is a new `ComputationBackend` operation implemented by both backends.
 Who owns whom:
 
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
-- A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
+- A computation owns its backend, the concentration fields and the propagator storage; the backend is deleted last.
 - A backend owns its solver, and on CUDA the streams and scratch buffers.
 - A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
@@ -693,7 +694,7 @@ that throw need no cleanup code:
   `create_without_work_area(bytes, cufftMakePlanMany, ...)` makes a plan without a work area of its
   own, so that the plans of one stream, which never run at the same time, share one);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
-  `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
+  `Pseudo`, the backend): `std::unique_ptr`.
 
 Raw pointers are lent, never owned. The factory functions (`create_computation_box`,
 `create_propagator_computation`, ...) return `std::unique_ptr`, which the Python bindings

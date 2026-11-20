@@ -270,7 +270,8 @@ The checkpointing algorithm stores propagators only at strategic positions and r
 
 1. **During propagator computation**:
    - Compute propagator step by step: $`q(\mathbf{r}, s+\Delta s) = \Gamma[q(\mathbf{r}, s)]`$
-   - Store at checkpoint positions: the first segment of every propagator (0 for continuous, 1 for discrete chains), the segments other propagators start from, the start of every scheduled job, the segments of the partition functions, and every $`\lceil 2\sqrt{N}\rceil`$ steps; discrete chains also keep the half-bond states at junctions
+   - Compute the propagators whole, one at a time, each after the propagators it depends on
+   - Store at checkpoint positions: the first segment of every propagator (0 for continuous, 1 for discrete chains), the segments other propagators start from, the segments of the partition functions, and every $`\lceil 2\sqrt{N}\rceil`$ steps; discrete chains also keep the half-bond states at junctions, from which a junction starts instead of the segments of its branches
    - Discard intermediate values
 
 2. **During concentration calculation** (block-based algorithm):

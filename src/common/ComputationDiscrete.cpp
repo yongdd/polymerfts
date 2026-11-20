@@ -9,6 +9,7 @@
 
 #include "ComputationDiscrete.h"
 #include "PropagatorCode.h"
+#include "Scheduler.h"
 
 template <typename T>
 ComputationDiscrete<T>::ComputationDiscrete(
@@ -34,28 +35,30 @@ ComputationDiscrete<T>::ComputationDiscrete(
             for (int n = 1; n < size; n++)
                 propagator[key][n] = this->backend->allocate();
 
-            // Half-bond states: the junction value it starts from (n = 0) and
-            // the states half a bond past the segments where junctions attach
+            // Half-bond states: the junction value a junction propagator starts from
+            // (n = 0) and the states half a bond past the segments where junctions attach
             propagator_half_steps[key].assign(size, nullptr);
-            propagator_half_steps[key][0] = (edge.deps.size() > 0) ? this->backend->allocate() : nullptr;
+            propagator_half_steps[key][0] = (key[0] == '(') ? this->backend->allocate() : nullptr;
             for (int n = 1; n < size; n++)
                 propagator_half_steps[key][n] = edge.junction_ends.contains(n) ? this->backend->allocate() : nullptr;
         }
 
-        // The jobs of the scheduler: the propagator and the sources of a junction
-        for (const auto& parallel_job : this->sc->get_schedule())
+        // The jobs of the scheduler: the propagator and the sources of a junction or aggregation.
+        // A job points to the key and edge of the optimizer, which outlive the scheduler.
+        const auto& propagators = this->propagator_computation_optimizer->get_computation_propagators();
+        Scheduler scheduler(propagators, this->n_streams);
+        for (const auto& parallel_job : scheduler.get_schedule())
         {
             std::vector<Job>& jobs = schedule.emplace_back();
-            for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
+            for (const auto& [job_key, n_segment_from, n_segment_to] : parallel_job)
             {
-                const ComputationEdge& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
+                const auto& [key, edge] = *propagators.find(job_key);
                 std::vector<std::pair<BackendArray<T>*, double>> sources;
                 for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                 {
-                    // Aggregated at a junction (n = 0) or joining one: half-bond states
-                    const bool half_bond = (key[0] == '(' || sub_n_segment == 0);
-                    sources.push_back({half_bond ? propagator_half_steps.at(sub_key)[sub_n_segment]
-                                                 : propagator.at(sub_key)[sub_n_segment], sub_n_repeated});
+                    // A junction joins half-bond states, an aggregation sliced segments
+                    sources.push_back({key[0] == '(' ? propagator_half_steps.at(sub_key)[sub_n_segment]
+                                                     : propagator.at(sub_key)[sub_n_segment], sub_n_repeated});
                 }
                 jobs.push_back({&key, &edge, propagator.at(key).data(), propagator_half_steps.at(key).data(),
                                 n_segment_from, n_segment_to, std::move(sources)});
@@ -146,22 +149,9 @@ void ComputationDiscrete<T>::compute_propagators(
                     }
                     else if (key[0] == '[')     // aggregated propagators
                     {
-                        // Propagators aggregated at a junction (n = 0) are half-bond
-                        // states; the others are segments
+                        // Sum of the sliced segments, then a full bond and the next segment
                         this->backend->junction_sum(STREAM, q[1], job.sources);
-
-                        if (std::get<1>(edge.deps[0]) == 0)
-                        {
-                            // Junction value, then half a bond and the first segment
-                            this->backend->copy(STREAM, q_half[0], q[1]);
-                            this->backend->advance_propagator_half_bond_step(STREAM, q[1], q[1], monomer_type);
-                            this->backend->multiply_boltzmann_factor(STREAM, q[1], monomer_type);
-                        }
-                        else
-                        {
-                            // A full bond and the next segment
-                            this->backend->advance_propagator(STREAM, q[1], q[1], monomer_type, 0);
-                        }
+                        this->backend->advance_propagator(STREAM, q[1], q[1], monomer_type, 0);
                     }
                     else if (key[0] == '(')     // junction of branches
                     {
