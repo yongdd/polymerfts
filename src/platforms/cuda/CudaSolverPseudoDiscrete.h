@@ -70,17 +70,10 @@ class CudaSolverPseudoDiscrete : public CudaSolverPseudoBase<T>
 {
 private:
     using Base = CudaSolverPseudoBase<T>;
-    using Base::cb; using Base::molecules; using Base::pseudo;
-    using Base::n_streams; using Base::is_periodic_; using Base::streams;
-
-    using Base::space_group_; using Base::d_reduced_basis_indices_; using Base::d_full_to_reduced_map_;
-    using Base::n_basis_; using Base::d_q_full_in_; using Base::d_q_full_out_;
-    using Base::use_crysfft_; using Base::crysfft_identity_map_;
-    using Base::crysfft_physical_size_;
-    using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
-    using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
+    using Base::cb; using Base::pseudo; using Base::streams;
+    using Base::use_crysfft_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
+    using Base::d_qk_; using Base::d_rk_1_;
 
 public:
     /**

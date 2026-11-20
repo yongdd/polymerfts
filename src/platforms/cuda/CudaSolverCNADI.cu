@@ -59,17 +59,9 @@ CudaSolverCNADI::CudaSolverCNADI(
     SpaceGroup* space_group,
     const int* d_reduced_basis_indices,
     const int* d_full_to_reduced_map)
+    : CudaSolver<double>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
 {
     try{
-        this->cb = cb;
-        this->molecules = molecules;
-        this->n_streams = n_streams;
-        // The solver expands/reduces around its finite-difference steps when a space group is set
-        this->space_group_ = space_group;
-        this->d_reduced_basis_indices_ = d_reduced_basis_indices;
-        this->d_full_to_reduced_map_ = d_full_to_reduced_map;
-        this->n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : 0;
-
         if(molecules->get_model_name() != "continuous")
             throw_with_line_number("Real-space method only support 'continuous' chain model.");
 
@@ -93,12 +85,6 @@ CudaSolverCNADI::CudaSolverCNADI(
             nx = {cb->get_nx(0), cb->get_nx(1), 1};
         else if (DIM == 1)
             nx = {cb->get_nx(0), 1, 1};
-
-        // Copy streams
-        for(int i=0; i<n_streams; i++)
-        {
-            this->streams[i] = streams[i];
-        }
 
         // Ensure ContourLengthMapping is finalized
         molecules->finalize_contour_length_mapping();
@@ -135,7 +121,6 @@ CudaSolverCNADI::CudaSolverCNADI(
             for(int i=0; i<n_streams; i++)
             {
                 d_q_star[i].allocate(M);
-                d_q_dstar[i].allocate(M);
                 d_temp[i].allocate(M);
             }
 
@@ -201,15 +186,8 @@ CudaSolverCNADI::CudaSolverCNADI(
             CUDA_CHECK(cudaMemset(d_offset, 0, sizeof(int)));
         }
 
-        // The full grid around the steps of a reduced-basis run
-        if (space_group_ != nullptr)
-        {
-            for (int i = 0; i < n_streams; i++)
-            {
-                d_q_full_in_[i].allocate(M);
-                d_q_full_out_[i].allocate(M);
-            }
-        }
+        // The full grid around the steps of a reduced-basis run, in which they work in place
+        provide_full_grid(/*separate_output=*/false);
 
         // Allow tridiagonal_lines_shared() up to 96000 bytes of dynamic shared memory, or the
         // device's opt-in limit when that is smaller (see solve_lines())
@@ -317,8 +295,7 @@ void CudaSolverCNADI::update_dw(const std::map<std::string, const double*>& d_w)
         if (!cb->is_orthogonal())
             throw_with_line_number("CN-ADI requires an orthogonal computation box.");
         // exp(-w ds/2) on the full grid, on both sides of the implicit step
-        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(), cb->get_total_grid(),
-                             space_group_ != nullptr ? d_full_to_reduced_map_ : nullptr, false, 0.5, 0.0);
+        compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 0.5, 0.0);
     }
     catch(std::exception& exc)
     {
@@ -337,19 +314,11 @@ void CudaSolverCNADI::advance_propagator(
 
         const int M = this->cb->get_total_grid();
         const int DIM = this->cb->get_dim();
-        const bool use_reduced_basis = (space_group_ != nullptr);
 
-        double *d_q_in_full = d_q_in;
-        double *d_q_out_full = d_q_out;
-
-        if (use_reduced_basis)
-        {
-            ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_full_in_[STREAM], d_q_in, d_full_to_reduced_map_, M);
-            CUDA_CHECK_LAUNCH();
-            d_q_in_full = d_q_full_in_[STREAM];
-            d_q_out_full = d_q_full_out_[STREAM];
-        }
+        // Full-grid input/output (expanded from / reduced to the basis with a space group;
+        // the steps then work in place in the expanded input)
+        double *d_q_in_full = expand_to_full_grid(STREAM, d_q_in);
+        double *d_q_out_full = full_grid_output(STREAM, d_q_out);
 
         // CN-ADI2: single full step only (2nd order accuracy)
         double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
@@ -373,20 +342,8 @@ void CudaSolverCNADI::advance_propagator(
         ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_out_full, d_q_out_full, _d_exp_dw, 1.0, M);
         CUDA_CHECK_LAUNCH();
 
-        if (use_reduced_basis)
-        {
-            ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_out, d_q_out_full, d_reduced_basis_indices_, n_basis_);
-            CUDA_CHECK_LAUNCH();
-        }
-
-        // Multiply mask (stored in the reduced basis when a space group is set)
-        if (d_q_mask != nullptr)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_out, d_q_out, d_q_mask, 1.0, use_reduced_basis ? n_basis_ : M);
-            CUDA_CHECK_LAUNCH();
-        }
+        // Reduce to the basis (with a space group) and multiply the mask
+        store_full_grid(STREAM, d_q_out_full, d_q_out, d_q_mask);
     }
     catch(std::exception& exc)
     {
@@ -429,20 +386,20 @@ void CudaSolverCNADI::advance_propagator_3d(
 
         solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_yz, nx[1]*nx[2], nx[1]*nx[2], nx[0]);
 
-        // Calculate q_dstar
+        // Calculate q_dstar, into d_q_star: the right-hand side reads q_star point by point
         compute_crank_3d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[2], bc[3], 
             _d_yl, _d_yd, _d_yh, nx[1], nx[2],
             d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
         CUDA_CHECK_LAUNCH();
 
-        solve_lines(STREAM, factors[1], d_temp[STREAM], d_q_dstar[STREAM], d_offset_xz, nx[0]*nx[2], nx[2], nx[1]);
+        solve_lines(STREAM, factors[1], d_temp[STREAM], d_q_star[STREAM], d_offset_xz, nx[0]*nx[2], nx[2], nx[1]);
 
         // Calculate q^(n+1)
         compute_crank_3d_step_3<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             bc[4], bc[5], 
             _d_zl, _d_zd, _d_zh, nx[1], nx[2],
-            d_temp[STREAM], d_q_dstar[STREAM], d_q_in, M);
+            d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
         CUDA_CHECK_LAUNCH();
 
         solve_lines(STREAM, factors[2], d_temp[STREAM], d_q_out, d_offset_xy, nx[0]*nx[1], 1, nx[2]);

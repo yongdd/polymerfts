@@ -16,11 +16,9 @@
 
 #include <algorithm>
 #include <complex>
-#include <type_traits>
 #include <vector>
 
 #include "CudaSolverRealSpaceDiscrete.h"
-#include "SpaceGroup.h"
 
 namespace
 {
@@ -180,23 +178,14 @@ template <typename T>
 CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
-    : cb(cb), molecules(molecules), n_streams(n_streams), space_group_(space_group),
-      d_reduced_basis_indices_(d_reduced_basis_indices), d_full_to_reduced_map_(d_full_to_reduced_map)
+    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
 {
     try
     {
         if (molecules->get_model_name() != "discrete")
             throw_with_line_number("The rs method is for discrete chains.");
-        if (space_group != nullptr && !std::is_same_v<T, double>)
-            throw_with_line_number("Space groups need real fields.");
-
-        for (int i = 0; i < n_streams; ++i)
-        {
-            this->streams[i] = streams[i];
-        }
 
         const int M = cb->get_total_grid();
-        n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : M;
         molecules->finalize_contour_length_mapping();
         const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
         for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
@@ -206,13 +195,10 @@ CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
         {
             d_work_a[i].allocate(M);
             d_work_b[i].allocate(M);
-            if (space_group != nullptr)
-            {
-                // The full grid around the bonds of a reduced-basis run
-                d_q_full_in[i].allocate(M);
-                d_q_full_out[i].allocate(M);
-            }
         }
+        // The full grid around the bonds of a reduced-basis run: the input and, as a bond
+        // does not run in place, the output
+        this->provide_full_grid(/*separate_output=*/true);
 
         update_laplacian_operator();
     }
@@ -315,8 +301,7 @@ void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const
         if (!refusal_.empty())
             throw_with_line_number(refusal_);
         // exp(-w ds) on the full grid: one full segment per bond
-        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(), cb->get_total_grid(),
-                             space_group_ != nullptr ? d_full_to_reduced_map_ : nullptr, false, 1.0, 0.0);
+        this->compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 1.0, 0.0);
     }
     catch (std::exception& exc)
     {
@@ -399,20 +384,8 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator(
             return;
         }
         // From and back to the reduced basis, where the mask is
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = cb->get_total_grid();
-        cudaStream_t stream = streams[STREAM];
-        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_in[STREAM], d_q_in, d_full_to_reduced_map_, M);
-        CUDA_CHECK_LAUNCH();
-        convolve(STREAM, d_q_full_in[STREAM], d_q_full_out[STREAM], kernels, exp_dw, nullptr);
-        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_full_out[STREAM], d_reduced_basis_indices_, n_basis_);
-        CUDA_CHECK_LAUNCH();
-        if (d_q_mask != nullptr)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_out, d_q_mask, 1.0, n_basis_);
-            CUDA_CHECK_LAUNCH();
-        }
+        convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM], kernels, exp_dw, nullptr);
+        this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, d_q_mask);
     }
     catch (std::exception& exc)
     {
@@ -431,15 +404,9 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(
             convolve(STREAM, d_q_in, d_q_out, d_bond_half.at(monomer_type), nullptr, nullptr);
             return;
         }
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = cb->get_total_grid();
-        cudaStream_t stream = streams[STREAM];
-        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_in[STREAM], d_q_in, d_full_to_reduced_map_, M);
-        CUDA_CHECK_LAUNCH();
-        convolve(STREAM, d_q_full_in[STREAM], d_q_full_out[STREAM], d_bond_half.at(monomer_type), nullptr, nullptr);
-        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_full_out[STREAM], d_reduced_basis_indices_, n_basis_);
-        CUDA_CHECK_LAUNCH();
+        convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM],
+                 d_bond_half.at(monomer_type), nullptr, nullptr);
+        this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, nullptr);
     }
     catch (std::exception& exc)
     {
@@ -480,20 +447,9 @@ void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         const DeviceKernels& kernels = is_half_bond_length ? d_bond_half.at(monomer_type) : d_bond.at(0).at(monomer_type);
         const auto& derivatives = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
         cudaStream_t stream = streams[STREAM];
-        // The pair in the basis of the propagators; with a space group on the full grid
-        const CuDeviceData<T>* q_1 = d_q_1;
-        const CuDeviceData<T>* q_2 = d_q_2;
-        if (space_group_ != nullptr)
-        {
-            const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-            const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-            ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_out[STREAM], q_1, d_full_to_reduced_map_, M);
-            CUDA_CHECK_LAUNCH();
-            ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_full_in[STREAM], q_2, d_full_to_reduced_map_, M);
-            CUDA_CHECK_LAUNCH();
-            q_1 = d_q_full_out[STREAM];
-            q_2 = d_q_full_in[STREAM];
-        }
+        // The pair on the full grid, expanded from the reduced basis with a space group
+        const CuDeviceData<T>* q_1 = this->expand_to_full_grid(STREAM, d_q_1, d_q_full_out_[STREAM]);
+        const CuDeviceData<T>* q_2 = this->expand_to_full_grid(STREAM, d_q_2);
         for (int a = 0; a < cb->get_dim(); ++a)
         {
             convolve(STREAM, q_2, d_work_stress[STREAM], kernels, nullptr, nullptr, a, &derivatives[a]);

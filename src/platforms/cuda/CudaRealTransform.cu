@@ -1929,8 +1929,8 @@ __global__ void kernel_dst3_3d_copy_x(
 
 
 //------------------------------------------------------------------------------
-// Supported transform lengths, verified against FFTW (tests/TestCudaDCT.cu and
-// tests/TestCudaDST.cu, including odd lengths): DCT-2/3 and the 1D DST-3 accept any
+// Supported transform lengths, verified against FFTW (tests/TestCudaDCTDST.cu,
+// including odd lengths): DCT-2/3 and the 1D DST-3 accept any
 // length; the DST-2 kernels (all dimensions) and the 2D/3D DST-3 kernels assume even
 // lengths.
 // Unsupported lengths are refused here instead of returning wrong values (nothing in

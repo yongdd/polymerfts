@@ -214,8 +214,8 @@ TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const
  * **Workspace Arrays:**
  *
  * Per-stream workspace for tridiagonal solves:
- * - d_q_star: Intermediate ADI solution (after first sweep)
- * - d_q_dstar: Second intermediate (3D only)
+ * - d_q_star: Intermediate ADI solution (after the first sweep, and in 3D after the second)
+ * - d_temp: Right-hand side of a sweep (2D and 3D)
  *
  * The Thomas factors of each axis (d_factors) are computed once per box and ds.
  *
@@ -231,24 +231,7 @@ TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const
 class CudaSolverCNADI : public CudaSolver<double>
 {
 private:
-    ComputationBox<double>* cb;  ///< Computation box
-    Molecules *molecules;        ///< Molecules container
-
     int dim;                     ///< Dimensionality (1, 2, or 3)
-
-    int n_streams;               ///< Number of parallel streams
-
-    cudaStream_t streams[MAX_STREAMS];  ///< CUDA stream per stream index
-
-    /// @name Space group support (reduced basis)
-    /// @{
-    SpaceGroup* space_group_;           ///< Space group pointer (nullptr if not used)
-    const int* d_reduced_basis_indices_;  ///< Device array: reduced → full index mapping (lent by the backend)
-    const int* d_full_to_reduced_map_;    ///< Device array: full → reduced index mapping (lent by the backend)
-    int n_basis_;                       ///< Number of reduced basis points
-    CudaDeviceBuffer<double> d_q_full_in_[MAX_STREAMS];  ///< Work buffer: full grid input (per stream)
-    CudaDeviceBuffer<double> d_q_full_out_[MAX_STREAMS]; ///< Work buffer: full grid output (per stream)
-    /// @}
 
     /// @name Tridiagonal Coefficients per ds_index per monomer_type
     /// Nested map structure: [ds_index][monomer_type] -> coefficient array (device)
@@ -269,9 +252,8 @@ private:
 
     /// @name Tridiagonal Solver Workspace (per stream)
     /// @{
-    CudaDeviceBuffer<double> d_q_star[MAX_STREAMS];  ///< First intermediate solution
-    CudaDeviceBuffer<double> d_q_dstar[MAX_STREAMS];  ///< Second intermediate (3D)
-    CudaDeviceBuffer<double> d_temp[MAX_STREAMS];  ///< General temporary
+    CudaDeviceBuffer<double> d_q_star[MAX_STREAMS];  ///< Intermediate solutions of the sweeps
+    CudaDeviceBuffer<double> d_temp[MAX_STREAMS];  ///< Right-hand side of a sweep (2D, 3D)
     /// @}
 
     /// @name Index Offset Arrays

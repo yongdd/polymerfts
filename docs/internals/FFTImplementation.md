@@ -395,7 +395,8 @@ half-step pair), and these plans share one work area, since they run one after a
 on their stream. The `CudaPseudo` tables hold the Boltzmann bond
 factors only for full-grid propagator steps or the discrete-chain stress (not for the
 ObliqueZ steps of continuous chains), and the stress basis from the first
-`prepare_stress()` on. The CPU solvers likewise compute their `Pseudo` tables for a new
+`prepare_stress()` on, as the solver holds its stress workspace (the integrand and its
+partial sums, and for RK2 and discrete chains the second spectrum, which only the stress reads) only from then on. The CPU solvers likewise compute their `Pseudo` tables for a new
 cell only while a full-grid path uses them, with the stress basis from the first
 `prepare_stress()` on.
 

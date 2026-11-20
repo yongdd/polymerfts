@@ -61,7 +61,7 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
                               /*complex_requires_periodic=*/false)
 {
     try{
-        // The CrysFFT objects and the work buffers (allocate_work()) of the path the space group chooses
+        // The CrysFFT objects and the work buffers of the path the space group chooses
         this->init_path();
     }
     catch(std::exception& exc)
@@ -75,8 +75,8 @@ CudaSolverPseudoDiscrete<T>::~CudaSolverPseudoDiscrete() = default;
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
-    // exp(-w ds): one full segment per discrete bond step
-    this->update_dw_impl(d_w, false, 1.0, 0.0);
+    // exp(-w ds): one full segment per discrete bond step, in the basis of the steps
+    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/use_crysfft_, false, 1.0, 0.0);
 }
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::advance_propagator(

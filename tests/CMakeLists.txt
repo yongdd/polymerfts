@@ -96,8 +96,7 @@ SET(BASIC_TESTS
     # CUDA FFT & utilities
     TestCudaFFTMixedBC
     TestCudaMakhoulTransform
-    TestCudaDCT
-    TestCudaDST
+    TestCudaDCTDST
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
@@ -293,7 +292,7 @@ IF(POLYMERFTS_BUILD_CUDA)
 
         # Several CUDA tests use FFTW as the CPU reference (#include <fftw3.h>
         # without a USE_CPU_FFTW guard); they cannot build without it.
-        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT|CudaDCT|CudaDST") AND NOT BUILD_CPU_FFTW_LIB)
+        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT|CudaDCTDST") AND NOT BUILD_CPU_FFTW_LIB)
             CONTINUE()
         ENDIF()
 

@@ -66,6 +66,7 @@
 #include "Polymer.h"
 #include "PropagatorComputationOptimizer.h"
 #include "SpaceGroup.h"
+#include "TestCudaPart.h"
 
 static long long live_device() { return CudaDeviceMemory::counters().live_count.load(); }
 static long long live_pinned() { return CudaPinnedMemory::counters().live_count.load(); }
@@ -131,38 +132,6 @@ static std::string one_line(std::string text)
     return text;
 }
 
-#ifdef _WIN32
-// The CRT environment that getenv reads; an empty value removes the variable
-static void set_env(const char* name, const char* value) { _putenv_s(name, value); }
-static void unset_env(const char* name) { _putenv_s(name, ""); }
-#else
-static void set_env(const char* name, const char* value) { setenv(name, value, 1); }
-static void unset_env(const char* name) { unsetenv(name); }
-#endif
-
-/// Sets OMP_NUM_THREADS (the backends create one stream per thread, at most 4)
-/// for a scope and restores the caller's value afterwards.
-struct ScopedStreams
-{
-    explicit ScopedStreams(const char* n)
-    {
-        const char* value = std::getenv("OMP_NUM_THREADS");
-        had = (value != nullptr);
-        if (had)
-            saved = value;
-        set_env("OMP_NUM_THREADS", n);
-    }
-    ~ScopedStreams()
-    {
-        if (had)
-            set_env("OMP_NUM_THREADS", saved.c_str());
-        else
-            unset_env("OMP_NUM_THREADS");
-    }
-    bool had = false;
-    std::string saved;
-};
-
 static size_t free_bytes()
 {
     size_t f = 0, t = 0;
@@ -226,15 +195,6 @@ static_assert(std::convertible_to<CudaDeviceBuffer<double>, const void*>);
 //------------------------------------------------------------------------------
 // One construction and a short run of each kind of object
 //------------------------------------------------------------------------------
-template <typename T>
-static std::unique_ptr<AbstractFactory<T>> make_factory(bool reduce_memory)
-{
-    if constexpr (std::is_same_v<T, double>)
-        return PlatformSelector::create_factory_real("cuda", reduce_memory);
-    else
-        return PlatformSelector::create_factory_complex("cuda", reduce_memory);
-}
-
 struct ComputationSpec
 {
     std::string chain_model = "continuous";
@@ -253,7 +213,7 @@ struct ComputationSpec
 template <typename T>
 static void run_computation(const ComputationSpec& c)
 {
-    std::unique_ptr<AbstractFactory<T>> factory(make_factory<T>(c.reduce_memory));
+    std::unique_ptr<AbstractFactory<T>> factory(PlatformSelector::create_factory<T>("cuda", c.reduce_memory));
     std::unique_ptr<SpaceGroup> sg;
     if (!c.sg_symbol.empty())
     {
@@ -280,7 +240,7 @@ static void run_computation(const ComputationSpec& c)
 static void run_anderson_mixing(bool reduce_memory)
 {
     const int n_var = 2 * 4096;
-    std::unique_ptr<AbstractFactory<double>> factory(make_factory<double>(reduce_memory));
+    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>("cuda", reduce_memory));
     std::unique_ptr<AndersonMixing<double>> am(factory->create_anderson_mixing(n_var, 5, 1e3, 0.1, 0.1));
     std::vector<double> w(n_var), w_new(n_var), w_deriv(n_var);
     for (int it = 0; it < 4; ++it)
@@ -366,7 +326,7 @@ static bool out_of_memory_check(bool& oom_skipped)
         try
         {
             const long long counted_before = live_device_bytes();
-            std::unique_ptr<AbstractFactory<double>> factory(make_factory<double>(false));
+            std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>("cuda", false));
             std::unique_ptr<ComputationBox<double>> cb(factory->create_computation_box(spec.nx, spec.lx, {}));
             std::unique_ptr<Molecules> molecules(factory->create_molecules_information("continuous", 0.05, {{"A", 1.0}, {"B", 1.0}}));
             molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
@@ -726,7 +686,7 @@ int main(int argc, char** argv)
         // computations use one), and its plans and buffers
         {
             const Live before = Live::now();
-            std::unique_ptr<AbstractFactory<double>> factory(make_factory<double>(false));
+            std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>("cuda", false));
             std::unique_ptr<ComputationBox<double>> cb(factory->create_computation_box({16, 16, 16}, {1.9, 1.9, 1.9}, {}));
             std::unique_ptr<Molecules> molecules(factory->create_molecules_information("continuous", 0.05, {{"A", 1.0}, {"B", 1.0}}));
             molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});

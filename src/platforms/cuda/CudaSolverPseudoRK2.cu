@@ -50,7 +50,7 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
                               /*complex_requires_periodic=*/true)
 {
     try{
-        // The CrysFFT objects and the work buffers (allocate_work()) of the path the space group chooses
+        // The CrysFFT objects and the work buffers of the path the space group chooses
         this->init_path();
     }
     catch(std::exception& exc)
@@ -63,21 +63,11 @@ template <typename T>
 CudaSolverPseudoRK2<T>::~CudaSolverPseudoRK2() = default;
 
 template <typename T>
-void CudaSolverPseudoRK2<T>::allocate_work(int, bool)
-{
-    // The full-grid steps (the CrysFFT steps need no buffer of their own)
-    if (use_crysfft_)
-        return;
-    const int M = cb->get_total_grid();
-    for(int i=0; i<n_streams; i++)
-        provide(d_q_work[i], M);
-}
-
-template <typename T>
 void CudaSolverPseudoRK2<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
-    // exp(-w ds/2): the half-step factor applied on both sides of the diffusion step
-    this->update_dw_impl(d_w, false, 0.5, 0.0);
+    // exp(-w ds/2): the half-step factor applied on both sides of the diffusion step, in the
+    // basis of the steps
+    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/use_crysfft_, false, 0.5, 0.0);
 }
 
 // Advance propagator using RK2 (single full step)
@@ -116,7 +106,9 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         // Bond factors of the full grid (the Pseudo tables exist on this path only)
         const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
 
-        // Full-grid input/output (expanded from / reduced to the basis with a space group)
+        // Full-grid input/output (expanded from / reduced to the basis with a space group).
+        // The step runs in fft_out: the transform reads it before the inverse transform
+        // writes the result there
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
         CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
 
@@ -128,11 +120,11 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
 
             // Step 1: Evaluate exp(-w*ds/2) in real space
             ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_work[STREAM], fft_in, _d_exp_dw, 1.0, M);
+                fft_out, fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Execute a forward FFT
-            fft_forward(STREAM, d_q_work[STREAM], d_qk_[STREAM], 1);
+            fft_forward(STREAM, fft_out, d_qk_[STREAM], 1);
             CUDA_CHECK_LAUNCH();
 
             // Step 3: Multiply exp(-k^2 ds/6) in fourier space
@@ -155,15 +147,12 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             // Non-periodic BC: Use CudaFFT (DCT/DST) with real coefficients
             // ============================================================
 
-            // Cast device pointers for FFT interface
-            T* d_q_step = reinterpret_cast<T*>(d_q_work[STREAM].get());
-
             // Step 1: Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_work[STREAM], fft_in, _d_exp_dw, 1.0, M);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
 
             // Step 2: Forward transform (DCT/DST)
-            fft_[STREAM]->forward_stream(d_q_step, d_rk_1_[STREAM], streams[STREAM]);
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(fft_out), d_rk_1_[STREAM], streams[STREAM]);
 
             // Step 3: Multiply by Boltzmann factor (real coefficients)
             ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);

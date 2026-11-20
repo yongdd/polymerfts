@@ -73,9 +73,10 @@ class CudaCrysFFTBase;  // Forward declaration
  *
  * **Memory per Stream:**
  *
- * - d_q_step_1_one, d_q_step_2_one: Full step workspace (the reduced basis on the CrysFFT path)
+ * - d_q_step_2_one: the two half steps (the reduced basis on the CrysFFT path)
  * - d_q_step_1_two: the full step and the first half step side by side for the batched
- *   cuFFT (2*M; full-grid steps with periodic BC)
+ *   cuFFT (2*M; full-grid steps with periodic BC), the full step staying in the first half
+ * - d_q_step_1_one: the full step of the other paths (the reduced basis on the CrysFFT path)
  *
  * The spectra go to the base's scratch (d_qk_ or d_rk_1_/d_rk_2_), which the stress shares.
  */
@@ -84,23 +85,18 @@ class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
 {
 private:
     using Base = CudaSolverPseudoBase<T>;
-    using Base::cb; using Base::molecules; using Base::pseudo;
+    using Base::cb; using Base::pseudo;
     using Base::n_streams; using Base::is_periodic_; using Base::streams;
-
-    using Base::space_group_; using Base::d_reduced_basis_indices_; using Base::d_full_to_reduced_map_;
-    using Base::n_basis_; using Base::d_q_full_in_; using Base::d_q_full_out_;
-    using Base::use_crysfft_; using Base::crysfft_identity_map_;
+    using Base::n_basis_; using Base::use_crysfft_; using Base::crysfft_identity_map_;
     using Base::crysfft_physical_size_;
-    using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
-    using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
     using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
 
     /// @name Workspace Arrays (per stream)
     /// @{
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_1_one[MAX_STREAMS];      ///< Full step workspace 1
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_2_one[MAX_STREAMS];      ///< Full step workspace 2
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_1_two[MAX_STREAMS];      ///< Half step workspace 1
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_1_one[MAX_STREAMS];      ///< The full step (not batched)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_2_one[MAX_STREAMS];      ///< The two half steps
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_step_1_two[MAX_STREAMS];      ///< The full step and the first half step, batched
     /// @}
 
 public:
@@ -146,7 +142,7 @@ public:
     void advance_propagator_half_bond_step(
         const int, CuDeviceData<T> *, CuDeviceData<T> *, std::string) override {};
 
-    void allocate_work(int n_field, bool full_grid) override;
+    void allocate_work(int n_field) override;
     /// CrysFFT steps of a block: a full step and two half steps
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
