@@ -348,7 +348,7 @@ int main()
             std::cout << std::endl;
             std::cout << "----------------------------------------" << std::endl;
 
-            std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
+            std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
 
             //==================================================================
             // Test: Fixed Box SCFT - verify stress is small at optimal parameters

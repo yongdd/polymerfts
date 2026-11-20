@@ -269,7 +269,7 @@ int main()
             {
                 std::cout << "=== Platform: " << platform << " ===" << std::endl;
 
-                std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
+                std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
 
                 for (const auto& config : configs)
                 {

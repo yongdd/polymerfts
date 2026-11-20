@@ -36,11 +36,7 @@ PropagatorComputation<T>* make_propagator_computation(
     PropagatorComputationOptimizer* propagator_computation_optimizer,
     const std::string& numerical_method = "")
 {
-    std::unique_ptr<AbstractFactory<T>> factory;
-    if constexpr (std::is_same_v<T, double>)
-        factory = PlatformSelector::create_factory_real(platform, reduce_memory);
-    else
-        factory = PlatformSelector::create_factory_complex(platform, reduce_memory);
+    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<T>(platform, reduce_memory);
     return factory->create_propagator_computation(cb, molecules, propagator_computation_optimizer, numerical_method).release();
 }
 

@@ -82,10 +82,7 @@ struct System
 
     System(bool reduced, double length, int n_segments = 10) : segments(n_segments)
     {
-        if constexpr (std::is_same_v<T, double>)
-            factory = PlatformSelector::create_factory_real("cuda", reduced);
-        else
-            factory = PlatformSelector::create_factory_complex("cuda", reduced);
+        factory = PlatformSelector::create_factory<T>("cuda", reduced);
         molecules = factory->create_molecules_information("discrete", 0.1, {{"A", 1.0}});
         molecules->add_polymer(1.0, {{"A", 0.1 * segments, 0, 1}});
         optimizer = factory->create_propagator_computation_optimizer(molecules.get(), false);

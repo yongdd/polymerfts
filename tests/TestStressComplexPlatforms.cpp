@@ -57,7 +57,7 @@ static std::vector<T> run_case(const std::string& platform, const GridCase& grid
     std::vector<BlockInput> blocks = {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}};
     const int M = w.size()/2;
 
-    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory_complex(platform, false);
+    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<std::complex<double>>(platform, false);
     std::unique_ptr<ComputationBox<T>> cb = factory->create_computation_box(grid.nx, grid.lx, {});
     std::unique_ptr<Molecules> molecules = factory->create_molecules_information(chain_model, ds, bond_lengths);
     molecules->add_polymer(1.0, blocks, {});

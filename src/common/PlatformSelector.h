@@ -130,19 +130,6 @@ public:
      */
     template <typename T>
     static std::unique_ptr<AbstractFactory<T>> create_factory(const std::string& platform, bool reduce_memory);
-
-    /// create_factory<double>()
-    static std::unique_ptr<AbstractFactory<double>> create_factory_real(const std::string& platform, bool reduce_memory)
-    {
-        return create_factory<double>(platform, reduce_memory);
-    }
-
-    /// create_factory<std::complex<double>>()
-    static std::unique_ptr<AbstractFactory<std::complex<double>>> create_factory_complex(
-        const std::string& platform, bool reduce_memory)
-    {
-        return create_factory<std::complex<double>>(platform, reduce_memory);
-    }
 };
 
 #endif

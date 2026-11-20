@@ -56,7 +56,7 @@ static RunResult run(const std::string& platform, bool reduce_memory, bool aggre
     const int M = w.size()/2;
     std::map<std::string, double> bond_lengths = {{"A",1.0}, {"B",1.2}};
 
-    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory_real(platform, reduce_memory));
+    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>(platform, reduce_memory));
     std::unique_ptr<ComputationBox<double>> cb(factory->create_computation_box(nx, lx, {}));
     std::unique_ptr<Molecules> molecules(factory->create_molecules_information(chain_model, ds, bond_lengths));
     molecules->add_polymer(1.0, blocks, {});

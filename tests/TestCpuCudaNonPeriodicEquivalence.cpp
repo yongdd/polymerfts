@@ -41,7 +41,7 @@ static double compute_Q(const std::string& platform, const std::string& chain_mo
                         const std::string& bc_kind, double ds,
                         const std::vector<double>& w)
 {
-    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, false);
+    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, false);
 
     std::map<std::string, double> bond_lengths = {{"A", 1.0}};
     std::unique_ptr<Molecules> molecules = factory->create_molecules_information(chain_model, ds, bond_lengths);

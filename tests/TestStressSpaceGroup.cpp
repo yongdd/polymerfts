@@ -100,7 +100,7 @@ int run_case(const std::string& platform, const std::string& chain_model, const 
     std::cout << "---- Case: " << cs.name << " (" << platform << ", " << chain_model << ") ----" << std::endl;
     std::cout << "n_reduced_basis: " << n_red << " / " << M << std::endl;
 
-    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, false);
+    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, false);
 
     // Solver 1: WITH space group; fields are passed in the reduced basis
     std::unique_ptr<ComputationBox<double>> cb_sg = factory->create_computation_box(cs.nx, cs.lx, {});
