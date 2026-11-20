@@ -427,7 +427,8 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 template <typename T>
 void CpuSolverPseudoBase<T>::update_pseudo()
 {
-    pseudo->update(cb->get_dx(), cb->get_recip_metric());
+    // The stress basis once a stress is computed (prepare_stress()), as on CUDA
+    pseudo->update(cb->get_dx(), cb->get_recip_metric(), stress_basis_);
     pseudo_current_ = true;
 }
 
@@ -484,7 +485,13 @@ template <typename T>
 void CpuSolverPseudoBase<T>::prepare_stress()
 {
     // The Pseudo tables of the cell when the off-diagonal flag has turned the stress
-    // to the full grid since the last cell change (see full_grid_path())
+    // to the full grid since the last cell change (see full_grid_path()), with the
+    // stress basis from the first stress on
+    if (!stress_basis_)
+    {
+        stress_basis_ = true;
+        pseudo_current_ = false;
+    }
     if (full_grid_path() && !pseudo_current_)
         update_pseudo();
 

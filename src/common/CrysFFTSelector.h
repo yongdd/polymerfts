@@ -264,10 +264,8 @@ inline CrysFFTPlan plan_crysfft(
     {
         if (use_m3_basis || use_pmmm_basis)
             throw_with_line_number("ObliqueZ CrysFFT selected but Pmmm/M3 physical basis is enabled.");
-        const int z_shift = use_z_mirror_basis ? sg->get_z_mirror_shift() : selection.oblique_z_shift;
-        if (use_z_mirror_basis && z_shift != selection.oblique_z_shift)
-            throw_with_line_number("Z-mirror physical basis shift does not match CrysFFT selection.");
-        auto map = build_crysfft_mapping_z_mirror(nx, full_to_reduced, M_reduced, z_shift);
+        // The z-mirror physical basis has the same shift (SpaceGroup::z_mirror_half_grid_shift)
+        auto map = build_crysfft_mapping_z_mirror(nx, full_to_reduced, M_reduced, selection.oblique_z_shift);
         if (crysfft_mapping_usable(map, use_z_mirror_basis, "Z-mirror physical basis does not match ObliqueZ CrysFFT grid ordering."))
             return adopt(CrysFFTChoice::ObliqueZ, std::move(map), use_z_mirror_basis);
     }

@@ -27,7 +27,7 @@
  * @example
  * @code
  * // Create factory for the desired platform
- * std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(
+ * std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(
  *     "cuda", false);  // Use CUDA, no memory reduction
  *
  * // Create simulation objects through factory
@@ -96,7 +96,7 @@
  * propagator checkpoints are stored. This increases computation time
  * 2-4x but significantly reduces memory usage.
  *
- * @see PlatformSelector::create_factory_real for factory instantiation
+ * @see PlatformSelector::create_factory for factory instantiation
  */
 template <typename T>
 class AbstractFactory

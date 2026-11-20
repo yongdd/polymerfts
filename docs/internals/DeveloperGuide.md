@@ -149,17 +149,20 @@ The classes each platform provides (the computation classes above them are share
 
 // Create factory for a specific platform ("cpu-fftw", "cpu-mkl", or "cuda")
 std::unique_ptr<AbstractFactory<double>> factory =
-    PlatformSelector::create_factory_real("cuda", reduce_memory);
+    PlatformSelector::create_factory<double>("cuda", reduce_memory);
 
 // For complex-valued field theories
 std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
-    PlatformSelector::create_factory_complex("cuda", reduce_memory);
+    PlatformSelector::create_factory<std::complex<double>>("cuda", reduce_memory);
 ```
+
+`create_factory_real` and `create_factory_complex` are the same calls for `double` and
+`std::complex<double>`.
 
 **Notes:**
 
 - The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` create the solver with `chain_solver` (`src/python/theory/chains.py`), which just passes `platform="auto"` through to `PropagatorSolver`. It is not in C++.
-- The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
+- The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory<double>`/`create_factory<std::complex<double>>` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
 

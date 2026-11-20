@@ -373,6 +373,7 @@ protected:
 
 private:
     bool pseudo_current_ = false;   ///< pseudo's tables are those of the current cell (see update_pseudo())
+    bool stress_basis_ = false;     ///< pseudo computes the stress basis (from the first prepare_stress())
 
     /// Compute the Pseudo tables of the current cell.
     void update_pseudo();

@@ -210,7 +210,7 @@ static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int
 
     SpaceGroup sg({Nx, Ny, Nz}, "P6_3/mmc", 488);
     sg.enable_z_mirror_physical_basis();
-    const int z_shift = sg.get_z_mirror_shift();
+    const int z_shift = sg.z_mirror_half_grid_shift();
     if (z_shift != Nz / 4)
     {
         std::printf("  CPU: unexpected z-shift %d (expected %d)\n", z_shift, Nz / 4);
@@ -306,7 +306,7 @@ static bool test_cuda_oblique_glide(int Nx, int Ny, int Nz, double ds)
 
     SpaceGroup sg({Nx, Ny, Nz}, "P6_3/mmc", 488);
     sg.enable_z_mirror_physical_basis();
-    const int z_shift = sg.get_z_mirror_shift();
+    const int z_shift = sg.z_mirror_half_grid_shift();
     if (z_shift != Nz / 4)
     {
         std::printf("  CUDA: unexpected z-shift %d (expected %d)\n", z_shift, Nz / 4);

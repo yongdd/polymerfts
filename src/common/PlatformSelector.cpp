@@ -14,15 +14,16 @@
  *
  * **Factory Creation:**
  *
- * The create_factory_real() and create_factory_complex() methods return
- * platform-specific AbstractFactory instances that can create all
- * computational objects (ComputationBox, Pseudo, AndersonMixing, etc.).
+ * create_factory<T>() returns the platform's AbstractFactory, which creates
+ * the computational objects (ComputationBox, Molecules, PropagatorComputation,
+ * AndersonMixing, FourierTransform, ...).
  *
  * @see AbstractFactory for factory interface
  * @see CpuFactory for the CPU implementation (FFTW or MKL transforms)
  * @see CudaFactory for GPU implementation
  */
 
+#include <complex>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -71,64 +72,34 @@ std::vector<std::string> PlatformSelector::avail_platforms()
 }
 
 /**
- * @brief Create factory for real-valued field computations.
- *
- * Instantiates a platform-specific factory for simulations with
- * real-valued fields (standard SCFT/L-FTS with periodic boundaries).
+ * @brief Create the factory of a platform for fields of type T.
  *
  * @param platform       Platform name ("cpu-fftw", "cpu-mkl", or "cuda")
  * @param reduce_memory  Enable checkpointing mode (reduces memory, increases compute)
  *
- * @return Owning pointer to the platform-specific AbstractFactory<double>
+ * @return Owning pointer to the platform-specific AbstractFactory<T>
  * @throws Exception if platform not found or not compiled
  */
-std::unique_ptr<AbstractFactory<double>> PlatformSelector::create_factory_real(
-    std::string platform, bool reduce_memory)
+template <typename T>
+std::unique_ptr<AbstractFactory<T>> PlatformSelector::create_factory(const std::string& platform, bool reduce_memory)
 {
 #ifdef USE_CPU_FFTW
     if (platform == "cpu-fftw")
-        return std::make_unique<CpuFactory<double>>(reduce_memory, FFTBackend::FFTW);
+        return std::make_unique<CpuFactory<T>>(reduce_memory, FFTBackend::FFTW);
 #endif
 #ifdef USE_CPU_MKL
     if (platform == "cpu-mkl")
-        return std::make_unique<CpuFactory<double>>(reduce_memory, FFTBackend::MKL);
+        return std::make_unique<CpuFactory<T>>(reduce_memory, FFTBackend::MKL);
 #endif
 #ifdef USE_CUDA
     if (platform == "cuda")
-        return std::make_unique<CudaFactory<double>>(reduce_memory);
+        return std::make_unique<CudaFactory<T>>(reduce_memory);
 #endif
     throw_with_line_number("Could not find platform '" + platform + "'");
     return nullptr;
 }
 
-/**
- * @brief Create factory for complex-valued field computations.
- *
- * Instantiates a platform-specific factory for simulations with
- * complex-valued fields (required for non-periodic boundaries or
- * certain field transformations).
- *
- * @param platform       Platform name ("cpu-fftw", "cpu-mkl", or "cuda")
- * @param reduce_memory  Enable checkpointing mode (reduces memory, increases compute)
- *
- * @return Owning pointer to the platform-specific AbstractFactory<std::complex<double>>
- * @throws Exception if platform not found or not compiled
- */
-std::unique_ptr<AbstractFactory<std::complex<double>>> PlatformSelector::create_factory_complex(
-    std::string platform, bool reduce_memory)
-{
-#ifdef USE_CPU_FFTW
-    if (platform == "cpu-fftw")
-        return std::make_unique<CpuFactory<std::complex<double>>>(reduce_memory, FFTBackend::FFTW);
-#endif
-#ifdef USE_CPU_MKL
-    if (platform == "cpu-mkl")
-        return std::make_unique<CpuFactory<std::complex<double>>>(reduce_memory, FFTBackend::MKL);
-#endif
-#ifdef USE_CUDA
-    if (platform == "cuda")
-        return std::make_unique<CudaFactory<std::complex<double>>>(reduce_memory);
-#endif
-    throw_with_line_number("Could not find platform '" + platform + "'");
-    return nullptr;
-}
+template std::unique_ptr<AbstractFactory<double>> PlatformSelector::create_factory<double>(
+    const std::string& platform, bool reduce_memory);
+template std::unique_ptr<AbstractFactory<std::complex<double>>> PlatformSelector::create_factory<std::complex<double>>(
+    const std::string& platform, bool reduce_memory);

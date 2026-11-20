@@ -33,22 +33,24 @@
  * for (const auto& p : platforms) {
  *     std::cout << "Available: " << p << std::endl;
  * }
- * // Output: "cuda", "cpu-fftw"
+ * // Output of a build with all three backends on a GPU node: "cpu-fftw", "cpu-mkl", "cuda"
  *
  * // Create factory for CUDA platform
- * auto factory = PlatformSelector::create_factory_real("cuda", false);
+ * auto factory = PlatformSelector::create_factory<double>("cuda", false);
  *
- * // Create factory for CPU with memory reduction (ignored for CPU)
- * auto factory_cpu = PlatformSelector::create_factory_real("cpu-fftw", false);
+ * // Create factory for CPU with memory reduction (only propagator checkpoints are stored)
+ * auto factory_cpu = PlatformSelector::create_factory<double>("cpu-fftw", true);
  *
- * // Create factory for complex fields (for certain advanced applications)
- * auto factory_complex = PlatformSelector::create_factory_complex("cuda", false);
+ * // Create factory for complex fields (e.g. complex Langevin simulations)
+ * auto factory_complex = PlatformSelector::create_factory<std::complex<double>>("cuda", false);
  * @endcode
  */
 
 #ifndef PLATFORM_SELECTOR_H_
 #define PLATFORM_SELECTOR_H_
 
+#include <complex>
+#include <memory>
 #include <string>
 #include <vector>
 #include "AbstractFactory.h"
@@ -63,15 +65,16 @@
  *
  * **Platform Selection Strategy:**
  *
- * The Python interface typically auto-selects the platform:
- * - 2D/3D simulations: Prefer "cuda" if available, fall back to "cpu-mkl"
- * - 1D simulations: Use "cpu-mkl" (GPU overhead not worthwhile)
+ * The Python interface (PropagatorSolver with platform "auto") selects the platform:
+ * - 2D/3D simulations: "cuda" if available, otherwise the first CPU backend
+ * - 1D simulations: the first CPU backend (GPU overhead not worthwhile)
  *
  * **Build Configuration:**
  *
  * Available platforms depend on CMake build configuration:
  * - CUDA support: Requires CUDA Toolkit and compatible GPU
  * - FFTW support: Requires FFTW library
+ * - MKL support: Requires Intel MKL
  *
  * @note This class has only static methods; do not instantiate it.
  */
@@ -82,11 +85,12 @@ public:
      * @brief Get list of available computational platforms.
      *
      * Returns a vector of platform name strings that can be passed to
-     * create_factory_real() or create_factory_complex().
+     * create_factory().
      *
-     * @return Vector of available platform names, e.g., {"cuda", "cpu-fftw"}
+     * @return The platforms of this build in the order "cpu-fftw", "cpu-mkl", "cuda";
+     *         "cuda" only when a GPU is visible
      *
-     * @note The order indicates preference (first = fastest/recommended).
+     * @throws Exception if no platform is available
      *
      * @example
      * @code
@@ -99,26 +103,24 @@ public:
     static std::vector<std::string> avail_platforms();
 
     /**
-     * @brief Create an AbstractFactory for real-valued fields.
+     * @brief Create an AbstractFactory for fields of type T.
      *
-     * Creates a platform-specific factory for simulations using real-valued
-     * fields (standard SCFT and L-FTS calculations).
+     * @tparam T double for real fields (SCFT and L-FTS) or std::complex<double>
+     *           for complex fields (e.g. CL-FTS)
      *
-     * @param platform          Platform name: "cuda", "cpu-mkl", or "cpu-fftw"
+     * @param platform      Platform name: "cuda", "cpu-mkl", or "cpu-fftw"
      * @param reduce_memory If true, store only propagator checkpoints instead
-     *                          of full histories, recomputing as needed.
-     *                          Reduces memory usage but increases computation time.
+     *                      of full histories, recomputing as needed.
+     *                      Reduces memory usage but increases computation time.
      *
      * @return Owning pointer to the created factory
      *
      * @throws Exception if platform is not available or invalid
      *
-     * @note Caller is responsible for deleting the returned factory.
-     *
      * @example
      * @code
      * // Create CUDA factory
-     * auto factory = PlatformSelector::create_factory_real("cuda", false);
+     * auto factory = PlatformSelector::create_factory<double>("cuda", false);
      *
      * // Create solver with specific numerical method
      * auto solver = factory->create_propagator_computation(cb.get(), mols.get(), optimizer.get(), "rqm4");
@@ -126,28 +128,21 @@ public:
      * // auto solver = factory->create_propagator_computation(cb.get(), mols.get(), optimizer.get(), "cn-adi2");
      * @endcode
      */
-    static std::unique_ptr<AbstractFactory<double>> create_factory_real(
-        std::string platform, bool reduce_memory);
+    template <typename T>
+    static std::unique_ptr<AbstractFactory<T>> create_factory(const std::string& platform, bool reduce_memory);
 
-    /**
-     * @brief Create an AbstractFactory for complex-valued fields.
-     *
-     * Creates a platform-specific factory for simulations using complex-valued
-     * fields (certain advanced applications with complex order parameters).
-     *
-     * @param platform          Platform name: "cuda", "cpu-mkl", or "cpu-fftw"
-     * @param reduce_memory If true, store only propagator checkpoints instead
-     *                          of full histories, recomputing as needed.
-     *
-     * @return Owning pointer to the created factory
-     *
-     * @throws Exception if platform is not available or invalid
-     *
-     * @note Complex field support is less commonly used. Most simulations
-     *       use real-valued fields via create_factory_real().
-     */
+    /// create_factory<double>()
+    static std::unique_ptr<AbstractFactory<double>> create_factory_real(const std::string& platform, bool reduce_memory)
+    {
+        return create_factory<double>(platform, reduce_memory);
+    }
+
+    /// create_factory<std::complex<double>>()
     static std::unique_ptr<AbstractFactory<std::complex<double>>> create_factory_complex(
-        std::string platform, bool reduce_memory);
+        const std::string& platform, bool reduce_memory)
+    {
+        return create_factory<std::complex<double>>(platform, reduce_memory);
+    }
 };
 
 #endif

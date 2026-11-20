@@ -176,7 +176,6 @@ void SpaceGroup::initialize(std::vector<int> nx, int hall_number)
 
     // Preserve full-space-group irreducible mapping
     n_irreducible_full_ = n_irreducible_;
-    reduced_basis_indices_full_ = reduced_basis_indices_;
     full_to_reduced_map_full_ = full_to_reduced_map_;
     orbit_counts_full_ = orbit_counts_;
     reduced_to_irreducible_map_.clear();
@@ -192,30 +191,14 @@ void SpaceGroup::display_info() const
     std::cout << "Number of symmetry operations: " << n_symmetry_ops_ << std::endl;
     std::cout << "Original mesh size: " << total_grid_ << std::endl;
     std::cout << "Reduced basis size (irreducible): " << get_n_reduced_basis_full() << std::endl;
-    if (nx_.size() == 3)
-    {
-        const bool even_grid = (nx_[0] % 2 == 0 && nx_[1] % 2 == 0 && nx_[2] % 2 == 0);
-        std::array<double, 9> m3_part = {0,0,0, 0,0,0, 0,0,0};
-        const bool has_m3 = even_grid && get_m3_translations(m3_part);
-        if (even_grid && has_mirror_planes_xyz())
-        {
-            const int pmmm_size = (nx_[0] / 2) * (nx_[1] / 2) * (nx_[2] / 2);
-            std::cout << "Pmmm physical basis size (if enabled): " << pmmm_size << std::endl;
-        }
-        else
-        {
-            std::cout << "Pmmm physical basis size (if enabled): n/a" << std::endl;
-        }
-        if (has_m3)
-        {
-            const int m3_size = (nx_[0] / 2) * (nx_[1] / 2) * (nx_[2] / 2);
-            std::cout << "M3 physical basis size (if enabled): " << m3_size << std::endl;
-        }
-        else
-        {
-            std::cout << "M3 physical basis size (if enabled): n/a" << std::endl;
-        }
-    }
+    // The Pmmm and m3 physical bases are an octant of an even grid
+    const bool even_grid = (nx_[0] % 2 == 0 && nx_[1] % 2 == 0 && nx_[2] % 2 == 0);
+    const std::string octant = std::to_string((nx_[0] / 2) * (nx_[1] / 2) * (nx_[2] / 2));
+    std::array<double, 9> m3_part{};
+    const bool has_m3 = even_grid && get_m3_translations(m3_part);
+    std::cout << "Pmmm physical basis size (if enabled): " << (even_grid && has_mirror_planes_xyz() ? octant : "n/a")
+              << std::endl;
+    std::cout << "M3 physical basis size (if enabled): " << (has_m3 ? octant : "n/a") << std::endl;
 }
 
 void SpaceGroup::validate_grid()
@@ -1194,7 +1177,6 @@ void SpaceGroup::enable_z_mirror_physical_basis()
     }
 
     map_reduced_to_irreducible();
-    z_mirror_shift_ = shift;
     physical_basis_ = PhysicalBasis::ZMirror;
 }
 
