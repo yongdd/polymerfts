@@ -118,49 +118,16 @@ public:
      * coefficient, or a real one of the cosine and sine series), r_factor one per
      * grid point; either may be nullptr. The products are those of separate loops
      * around backward(), so the result is the same bit for bit. cdata may be
-     * overwritten. The default multiplies cdata in place, runs backward() and then
-     * multiplies by r_factor, with the sizes of set_sizes(). It has a name of its
-     * own: an overload of backward() would be hidden in every transform that
-     * overrides backward().
+     * overwritten. The CPU transforms implement it (FftwFFT, MklFFT, MakhoulFFT);
+     * the default refuses, for CudaFFT, whose solvers run their own kernels. It has
+     * a name of its own: an overload of backward() would be hidden in every
+     * transform that overrides backward().
      */
-    virtual void backward_with_factors(double* cdata, const double* k_factor, T* rdata, const T* r_factor)
+    virtual void backward_with_factors(double* /*cdata*/, const double* /*k_factor*/, T* /*rdata*/,
+                                       const T* /*r_factor*/)
     {
-        if (n_grid_ == 0)
-            throw_with_line_number("This transform has no sizes for backward_with_factors().");
-        if (k_factor != nullptr)
-        {
-            if (complex_coefficients_)
-            {
-                std::complex<double>* c = reinterpret_cast<std::complex<double>*>(cdata);
-                for (int i = 0; i < n_coefficients_; ++i)
-                    c[i] *= k_factor[i];
-            }
-            else
-            {
-                for (int i = 0; i < n_coefficients_; ++i)
-                    cdata[i] *= k_factor[i];
-            }
-        }
-        backward(cdata, rdata);
-        if (r_factor != nullptr)
-            for (int i = 0; i < n_grid_; ++i)
-                rdata[i] *= r_factor[i];
+        throw_with_line_number("This transform has no backward_with_factors().");
     }
-
-protected:
-    /// Sizes of the default backward_with_factors(): grid points, coefficients
-    /// and whether a coefficient is a complex number (two doubles)
-    void set_sizes(int n_grid, int n_coefficients, bool complex_coefficients)
-    {
-        n_grid_ = n_grid;
-        n_coefficients_ = n_coefficients;
-        complex_coefficients_ = complex_coefficients;
-    }
-
-private:
-    int n_grid_ = 0;
-    int n_coefficients_ = 0;
-    bool complex_coefficients_ = false;
 };
 
 #endif

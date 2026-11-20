@@ -48,7 +48,7 @@ class CpuSolverRealSpaceDiscrete : public CpuSolver<T>
 private:
     ComputationBox<T>* cb;
     Molecules* molecules;
-    SpaceGroup* space_group_ = nullptr;   ///< propagators in its reduced basis when set
+    SpaceGroup* space_group_;   ///< propagators in its reduced basis when set
 
     /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
     RealSpaceBond::Bonds bonds;
@@ -76,10 +76,10 @@ private:
     void reduced(const T* q_full, T* q) const;
 
 public:
-    CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules);
+    /// The solver of the box, with the propagators in the reduced basis of space_group (nullptr: full grid)
+    CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group);
     ~CpuSolverRealSpaceDiscrete() override = default;
 
-    void set_space_group(SpaceGroup* sg) override;
     void update_laplacian_operator() override;
     void update_dw(std::map<std::string, const T*> w_input) override;
     void advance_propagator(T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index) override;

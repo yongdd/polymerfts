@@ -210,14 +210,15 @@ void last_sweep(const TridiagonalLines& m, const int* lower, const int* upper, c
  *
  * @param cb            Computation box for grid and boundary info
  * @param molecules     Molecular system (must use continuous model)
+ * @param space_group   Space group of the reduced basis (nullptr: full grid)
  * @throws Exception if discrete chain model is specified
  */
-CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules)
+CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules, SpaceGroup* space_group)
 {
     try{
         this->cb = cb;
         this->molecules = molecules;
-        this->space_group_ = nullptr;
+        this->space_group_ = space_group;
 
         if(molecules->get_model_name() != "continuous")
             throw_with_line_number("Real-space method only support 'continuous' chain model.");

@@ -326,7 +326,7 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 
 - `FftwFFT<T, DIM>`: Periodic FFT using FFTW3
 - `FftwRealFFT`: the real FFT of the grid under `MakhoulTransform` (Section 2.4)
-- `FftwCrysFFTRecursive3m`: Recursive 3m algorithm
+- `FftwCrysFFTRecursive3m`: Recursive 3m algorithm (`CrysFFTRecursive3mBase`) over the real FFT of the physical grid
 - `FftwCrysFFTObliqueZ`: DCT-z + FFT-xy
 
 **MKL backend** (`POLYMERFTS_USE_MKL`):
@@ -334,7 +334,7 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 - `MklFFT<T, DIM>`: Periodic FFT using MKL DFTI
 - `MklRealFFT`: the real FFT of the grid under `MakhoulTransform` (Section 2.4)
 - `MklRealTransform1D/2D/3D`: DCT/DST of all types (FFT-based algorithms + MKL TT interface, see Section 8.2)
-- `MklCrysFFTRecursive3m`: Recursive 3m algorithm
+- `MklCrysFFTRecursive3m`: Recursive 3m algorithm (`CrysFFTRecursive3mBase`) over the real FFT of the physical grid
 - `MklCrysFFTObliqueZ`: DCT-z through a real FFT of the same length (Makhoul) + FFT-xy on contiguous z planes
 
 **Both backends**:
@@ -349,7 +349,7 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 
 **Arrays of the periodic FFTW transforms**: `FftwFFT` plans on `fftw_malloc` arrays, which it frees after planning, and runs its plans on the caller's arrays through FFTW's new-array execute functions when these have the alignment of the planning arrays (`fftw_alignment_of()` is 0) and the input and output do not overlap. An array 8 bytes off, such as a packed field after an odd number of grid points, goes through thread-local scratch that starts on a 64-byte boundary, and so does the input of the complex-to-real transform, which FFTW overwrites, unless the caller gives it up; a call takes scratch only for the arrays it copies. The same plan thus runs on one alignment class, and the result does not depend on where the caller's arrays lie (`TestCpuFFTAddressIndependence`).
 
-**Backward transform with factors**: a propagator step multiplies the coefficients by the bond factor before the backward transform and the field by the Boltzmann factor after it. `FFT<T>::backward_with_factors(cdata, k_factor, rdata, r_factor)` takes both factors: `FftwFFT` multiplies the coefficients into its scratch while copying them and applies the 1/N and `r_factor` in one pass; `MakhoulFFT` multiplies the coefficients as `MakhoulTransform` reads them and a real field as it restores the grid order (a complex field takes its complex `r_factor` afterwards), and `CrysFFTPmmm` applies its multiplier the same way; `MklFFT` multiplies in place around its transform. The products are those of separate loops, so the result does not change. The call may overwrite the coefficients; without `k_factor`, `FftwFFT` then runs its complex-to-real transform on them when it can. `CpuFourierTransform` uses this for the coefficients it owns: the sums of `apply()` and the copy that `backward()` makes Hermitian (`make_hermitian()`), so a real periodic field takes one copy of its coefficients.
+**Backward transform with factors**: a propagator step multiplies the coefficients by the bond factor before the backward transform and the field by the Boltzmann factor after it. `FFT<T>::backward_with_factors(cdata, k_factor, rdata, r_factor)` takes both factors: `FftwFFT` multiplies the coefficients in place and applies the 1/N and `r_factor` in one pass; `MakhoulFFT` multiplies the coefficients as `MakhoulTransform` reads them and a real field as it restores the grid order (a complex field takes its complex `r_factor` afterwards), and `CrysFFTPmmm` applies its multiplier the same way; `MklFFT` multiplies in place around its transform. The products are those of separate loops, so the result does not change. The call may overwrite the coefficients; `FftwFFT` then runs its complex-to-real transform on them when it can. `CpuFourierTransform` uses this for the coefficients it owns: the sums of `apply()` and the copy that `backward()` makes Hermitian (`make_hermitian()`), so a real periodic field takes one copy of its coefficients.
 
 ### 7.2 CUDA
 

@@ -85,12 +85,7 @@ SET(BASIC_TESTS
     TestPartitionFunctionCheck
 
     # CPU FFT (all types)
-    TestCpuFFT1D
-    TestCpuFFT1DComplex
-    TestCpuFFT2D
-    TestCpuFFT2DComplex
-    TestCpuFFT3D
-    TestCpuFFT3DComplex
+    TestCpuFFT
     TestCpuFFTAddressIndependence
     TestCpuMakhoulTransform
     TestSimulationBox
@@ -120,8 +115,7 @@ SET(BASIC_TESTS
     TestCrankNicolson1D
     TestCrankNicolson2D
     TestCrankNicolson3D
-    TestDCT2Propagator
-    TestDST2Propagator
+    TestDCTDSTPropagator
     TestPseudoLinearContinuous3D
     TestPseudoLinearDiscrete3D
     TestRealSpaceLinearContinuous3D

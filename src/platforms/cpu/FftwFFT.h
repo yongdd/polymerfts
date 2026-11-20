@@ -89,9 +89,9 @@ public:
  * (AlignedScratch), which has that alignment too; a call takes scratch only for
  * the arrays it copies. The input of the complex-to-real transform
  * goes through the scratch, since that transform overwrites it, unless the
- * caller gives it up (backward_with_factors(cdata, nullptr, rdata, r_factor)). The same plan
- * thus always runs on arrays of one alignment class, and the result does not
- * depend on where the caller's arrays lie.
+ * caller gives it up (backward_with_factors()), which also multiplies a k_factor
+ * into it in place. The same plan thus always runs on arrays of one alignment
+ * class, and the result does not depend on where the caller's arrays lie.
  *
  * **Normalization:**
  *
@@ -118,8 +118,8 @@ private:
     /**
      * @brief Backward transform with the 1/N normalization: field = r_factor · IFFT of (k_factor · modes).
      *
-     * k_factor and r_factor may be nullptr. A k_factor is applied while the modes are copied
-     * into the scratch; the modes themselves are overwritten only when keep_modes is false.
+     * k_factor and r_factor may be nullptr. The modes are overwritten only when keep_modes is
+     * false, which a k_factor needs: it is multiplied into the modes in place.
      */
     void periodic_backward(std::complex<double>* modes, const double* k_factor, T* field, const T* r_factor,
                            bool keep_modes) const;
@@ -157,9 +157,8 @@ public:
     /**
      * @brief rdata = r_factor · backward(k_factor · cdata) (see FFT<T>).
      *
-     * A k_factor is multiplied into the scratch, and the 1/N and r_factor are
-     * applied in one pass; without a k_factor the complex-to-real transform
-     * runs on cdata when FFTW can, overwriting it.
+     * A k_factor is multiplied into cdata in place, and the 1/N and r_factor are
+     * applied in one pass; the transform runs on cdata when FFTW can, overwriting it.
      */
     void backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor) override;
 };

@@ -69,13 +69,13 @@
  * **Performance:**
  *
  * Each propagator step requires:
- * - 6 FFTs (3 for full step, 3 for each half-step)
+ * - 6 FFTs (a forward and a backward one for the full step and for each of the two half steps)
  * - O(n_grid) element-wise operations
  *
  * @example
  * @code
  * // Create solver
- * CpuSolverPseudoRQM4<double> solver(cb, molecules);
+ * CpuSolverPseudoRQM4<double> solver(cb, molecules, space_group, FFTBackend::FFTW);
  *
  * // Update for new fields
  * solver.update_dw(w_fields);
@@ -104,11 +104,12 @@ public:
      *
      * @param cb        Computation box defining the grid and BCs
      * @param molecules Molecules container with monomer types
-     * @param backend   FFT backend to use (FFTW, default: FFTW)
+     * @param space_group Space group of the reduced basis of the propagators (nullptr: full grid)
+     * @param backend   FFT backend to use (FFTW or MKL)
      *
      * @note Supports the FFTW and MKL backends.
      */
-    CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, FFTBackend backend = FFTBackend::FFTW);
+    CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
     /// Destructor. Frees exp_dw arrays.
     ~CpuSolverPseudoRQM4();

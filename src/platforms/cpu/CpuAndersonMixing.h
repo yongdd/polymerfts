@@ -37,7 +37,7 @@
  * - cb_w_deriv_hist: History of residuals (functional derivatives)
  * - u_nm, v_n, a_n: Temporary arrays for least-squares solve
  *
- * @note Uses OpenMP for parallel dot products when available.
+ * @note The dot products run serially, in a fixed order.
  */
 template <typename T>
 class CpuAndersonMixing : public AndersonMixing<T>

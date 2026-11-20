@@ -235,10 +235,19 @@ void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const doubl
     const std::size_t modes_bytes = sizeof(std::complex<double>) * total_complex_grid_;
     const double scale = 1.0 / static_cast<double>(total_grid_);
 
-    // The complex-to-real transform overwrites its input, which therefore goes through
-    // the scratch unless the caller gives it up; the complex-to-complex transform keeps
-    // its input. A k_factor is multiplied into the scratch.
-    const bool may_run_on_modes = (!real_field || !keep_modes) && k_factor == nullptr;
+    // A k_factor comes with modes the caller gives up (backward_with_factors()): it is
+    // multiplied in place. The complex-to-real transform overwrites its input, which
+    // therefore goes through the scratch unless the caller gives it up; the
+    // complex-to-complex transform keeps its input. Unaligned modes, or modes that
+    // overlap the field, go through the scratch as well.
+    if (k_factor != nullptr)
+    {
+        if (keep_modes)
+            throw_with_line_number("A k_factor multiplies the modes in place; the modes cannot be kept.");
+        for (int i = 0; i < total_complex_grid_; ++i)
+            modes[i] *= k_factor[i];
+    }
+    const bool may_run_on_modes = !real_field || !keep_modes;
     const bool modes_direct = may_run_on_modes && has_fftw_plan_alignment(modes) && !overlap(modes, modes_bytes, field, field_bytes);
     const bool field_direct = has_fftw_plan_alignment(field);
 
@@ -246,11 +255,7 @@ void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const doubl
     if (!modes_direct)
     {
         in = reinterpret_cast<std::complex<double>*>(modes_scratch.get(2 * static_cast<std::size_t>(total_complex_grid_)));
-        if (k_factor != nullptr)
-            for (int i = 0; i < total_complex_grid_; ++i)
-                in[i] = modes[i] * k_factor[i];
-        else
-            std::copy_n(modes, total_complex_grid_, in);
+        std::copy_n(modes, total_complex_grid_, in);
     }
     T* out = field_direct ? field : reinterpret_cast<T*>(field_scratch.get(doubles_per_point * total_grid_));
 

@@ -209,15 +209,17 @@ protected:
      * Sets up:
      * - Boundary condition checking (is_periodic_)
      * - FFT object creation (fft_) using specified backend
-     * - The contour steps (ds_values_) and the Fourier-space tables (pseudo), which
-     *   update_laplacian_operator() computes for the cell (the owner calls it after
-     *   set_space_group(), as CpuComputationBackend does)
+     * - The contour steps (ds_values_) and the Fourier-space tables (pseudo)
+     * - With a space group, the reduced basis of the propagators and, for real
+     *   fields, the CrysFFT fast path (init_crysfft())
+     * - The tables of the cell (update_laplacian_operator())
      *
      * @param cb Computation box
      * @param molecules Molecules container
+     * @param space_group Space group of the reduced basis (nullptr: full grid)
      * @param backend FFT backend to use (FFTW or MKL)
      */
-    void init_shared(ComputationBox<T>* cb, Molecules* molecules, FFTBackend backend);
+    void init_shared(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group, FFTBackend backend);
 
 
     /**
@@ -237,11 +239,10 @@ protected:
     /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
     virtual bool stress_has_bond_factor() const { return false; }
 
-    // ---- space group / CrysFFT setup (set_space_group) ----------------------
-    /// Drop the CrysFFT engine, its tables and the index map.
-    void reset_crysfft();
-    /// Select and build the CrysFFT fast path for the current space group (3D periodic,
-    /// real fields), with the Boltzmann tables of every block.
+    // ---- space group / CrysFFT setup (init_shared) ---------------------------
+    /// Select and build the CrysFFT fast path for the space group (3D periodic, real
+    /// fields), with a Boltzmann table of every block, which update_laplacian_operator()
+    /// builds for the cell.
     void init_crysfft();
     /// Rebuild every CrysFFT table in place for the current cell.
     void update_crysfft_tables();
@@ -298,16 +299,6 @@ public:
 
     /// Virtual destructor. Frees the shared components (FFT, Pseudo).
     virtual ~CpuSolverPseudoBase() = default;   // fft_ and pseudo are owning members
-
-    /**
-     * @brief Set space group for reduced basis operations.
-     *
-     * When set, propagator input/output uses reduced basis and the solver
-     * internally handles expand/reduce around FFT operations.
-     *
-     * @param sg Space group pointer (nullptr to disable reduced basis)
-     */
-    void set_space_group(SpaceGroup* sg) override;
 
     /// Get the contour step size for a ds index.
     double get_ds_value(int ds_index) const;

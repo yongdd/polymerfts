@@ -385,6 +385,10 @@ CpuSolver<T>                                  [Abstract Base]
             └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
+Every CPU solver takes the space group (`nullptr` for the full grid) in its constructor
+and builds the tables of the cell there; `update_laplacian_operator()` rebuilds them for a
+new cell.
+
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base, whose
 `compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver;
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the

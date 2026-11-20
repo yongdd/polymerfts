@@ -39,7 +39,8 @@
 // Initialize shared components
 //------------------------------------------------------------------------------
 template <typename T>
-void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molecules, FFTBackend backend)
+void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group,
+                                         FFTBackend backend)
 {
     this->cb = cb;
     this->molecules = molecules;
@@ -108,21 +109,30 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
     for (int d = 0; d < dim_; ++d)
         bc_per_dim.push_back(bc_vec[2 * d]);
     pseudo = std::make_unique<Pseudo<T>>(molecules->get_bond_lengths(), bc_per_dim, cb->get_nx(), ds_values_);
+
+    // With a space group the propagators live in its reduced basis, and the solver expands
+    // and reduces around its full-grid steps. [real-only feature] The CrysFFT fast paths
+    // fold real fields on the physical sub-grid (the factory refuses complex fields with
+    // a space group).
+    space_group_ = space_group;
+    if (space_group_ != nullptr)
+    {
+        if constexpr (std::is_same_v<T, double>)
+        {
+            if (dim_ == 3)
+                init_crysfft();
+        }
+        // The CrysFFT maps above are snapshots: freeze the physical basis
+        space_group_->mark_in_use();
+    }
+
+    // The tables of the cell
+    update_laplacian_operator();
 }
 
 //------------------------------------------------------------------------------
 // Space group / CrysFFT setup
 //------------------------------------------------------------------------------
-template <typename T>
-void CpuSolverPseudoBase<T>::reset_crysfft()
-{
-    crysfft_.reset();
-    crysfft_boltz_.clear();
-    crysfft_multipliers_.clear();
-    crysfft_reduced_indices_.clear();
-    crysfft_identity_map_ = false;
-}
-
 template <typename T>
 void CpuSolverPseudoBase<T>::adopt_crysfft_mapping(const CrysFFTBasisMapping& map, bool physical_basis_enabled)
 {
@@ -137,31 +147,6 @@ void CpuSolverPseudoBase<T>::adopt_crysfft_mapping(const CrysFFTBasisMapping& ma
         crysfft_reduced_indices_ = map.phys_to_reduced;
         crysfft_identity_map_ = map.identity;
     }
-}
-
-template <typename T>
-void CpuSolverPseudoBase<T>::set_space_group(SpaceGroup* sg)
-{
-    space_group_ = sg;
-
-    if (sg == nullptr)
-    {
-        if constexpr (std::is_same_v<T, double>)
-            reset_crysfft();
-        return;
-    }
-
-    // [real-only feature] The CrysFFT fast paths fold real fields on the
-    // physical sub-grid; complex fields always use the full-grid reduced basis.
-    if constexpr (std::is_same_v<T, double>)
-    {
-        reset_crysfft();
-        if (dim_ == 3)
-            init_crysfft();
-    }
-
-    // The CrysFFT maps above are snapshots: freeze the physical basis
-    sg->mark_in_use();
 }
 
 template <typename T>
@@ -207,13 +192,13 @@ void CpuSolverPseudoBase<T>::init_crysfft()
         throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
 
     // The Boltzmann tables of the steps of each block's monomer type and contour step
-    // (not of every combination: a recursive 3m table holds 16 physical-grid arrays)
+    // (not of every combination: a recursive 3m table holds 16 physical-grid arrays),
+    // which update_laplacian_operator() builds for the cell
     const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
     for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
         for (const Block& block : molecules->get_polymer(p).get_blocks())
             for (double coeff : crysfft_block_coeffs(block.monomer_type, mapping.get_ds_index(block.contour_length)))
                 crysfft_boltz_.try_emplace(coeff);
-    update_crysfft_tables();
 }
 
 //------------------------------------------------------------------------------
@@ -632,41 +617,70 @@ void CpuSolverPseudoBase<T>::accumulate_stress_periodic(
             return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[negative_k_idx[i]];
     };
 
+    // One pass over the modes, with the sums in local variables; the cross terms only for
+    // non-orthogonal boxes (see the note in compute_single_segment_stress), as on the CUDA side
     if (DIM == 3)
     {
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_xx[i];  // V₁₁
-            stress[1] += coeff * kk_yy[i];  // V₂₂
-            stress[2] += coeff * kk_zz[i];  // V₃₃
-        }
-        // Cross terms only for non-orthogonal boxes (see the note in compute_single_segment_stress)
-        if (!is_orthogonal)
+        T v11{0.0}, v22{0.0}, v33{0.0}, v12{0.0}, v13{0.0}, v23{0.0};
+        if (is_orthogonal)
         {
             for (int i = 0; i < M_COMPLEX; ++i)
             {
                 const T coeff = kernel(i);
-                stress[3] += coeff * kk_xy[i];  // V₁₂ (→ dH/dγ)
-                stress[4] += coeff * kk_xz[i];  // V₁₃ (→ dH/dβ)
-                stress[5] += coeff * kk_yz[i];  // V₂₃ (→ dH/dα)
+                v11 += coeff * kk_xx[i];
+                v22 += coeff * kk_yy[i];
+                v33 += coeff * kk_zz[i];
             }
+        }
+        else
+        {
+            for (int i = 0; i < M_COMPLEX; ++i)
+            {
+                const T coeff = kernel(i);
+                v11 += coeff * kk_xx[i];
+                v22 += coeff * kk_yy[i];
+                v33 += coeff * kk_zz[i];
+                v12 += coeff * kk_xy[i];  // → dH/dγ
+                v13 += coeff * kk_xz[i];  // → dH/dβ
+                v23 += coeff * kk_yz[i];  // → dH/dα
+            }
+        }
+        stress[0] += v11;
+        stress[1] += v22;
+        stress[2] += v33;
+        if (!is_orthogonal)
+        {
+            stress[3] += v12;
+            stress[4] += v13;
+            stress[5] += v23;
         }
     }
     else if (DIM == 2)
     {
-        for (int i = 0; i < M_COMPLEX; ++i)
-        {
-            const T coeff = kernel(i);
-            stress[0] += coeff * kk_xx[i];  // V₁₁
-            stress[1] += coeff * kk_yy[i];  // V₂₂
-        }
-        // Cross term only for non-orthogonal boxes (as in 3D and on the CUDA side)
-        if (!is_orthogonal)
+        T v11{0.0}, v22{0.0}, v12{0.0};
+        if (is_orthogonal)
         {
             for (int i = 0; i < M_COMPLEX; ++i)
-                stress[2] += kernel(i) * kk_xy[i];  // V₁₂ (stored in index 2 for 2D)
+            {
+                const T coeff = kernel(i);
+                v11 += coeff * kk_xx[i];
+                v22 += coeff * kk_yy[i];
+            }
         }
+        else
+        {
+            for (int i = 0; i < M_COMPLEX; ++i)
+            {
+                const T coeff = kernel(i);
+                v11 += coeff * kk_xx[i];
+                v22 += coeff * kk_yy[i];
+                v12 += coeff * kk_xy[i];
+            }
+        }
+        stress[0] += v11;
+        stress[1] += v22;
+        if (!is_orthogonal)
+            stress[2] += v12;  // V₁₂ (stored in index 2 for 2D)
     }
     else if (DIM == 1)
     {
@@ -785,37 +799,29 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // ============================================================================
         const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
 
-        // Expand reduced basis → full grid. Per-thread work arrays: this function
-        // is called from OpenMP parallel regions (block loops in compute_stress),
-        // so no shared scratch space may be used here.
+        // Expand reduced basis → full grid (real fields: the factory refuses complex
+        // fields with a space group). Per-thread work arrays: this function is called
+        // from OpenMP parallel regions (block loops in compute_stress), so no shared
+        // scratch space may be used here.
         T* q_1_full = q_1;
         T* q_2_full = q_2;
-        std::vector<T>& q_full_1_local = work.pair_1;
-        std::vector<T>& q_full_2_local = work.pair_2;
-        if (space_group_ != nullptr)
+        if constexpr (std::is_same<T, double>::value)
         {
-            const int M_full = cb->get_total_grid();
-            if (static_cast<int>(q_full_1_local.size()) != M_full)
+            if (space_group_ != nullptr)
             {
-                q_full_1_local.resize(M_full);
-                q_full_2_local.resize(M_full);
-            }
-            if constexpr (std::is_same<T, double>::value)
-            {
+                std::vector<T>& q_full_1_local = work.pair_1;
+                std::vector<T>& q_full_2_local = work.pair_2;
+                const int M_full = cb->get_total_grid();
+                if (static_cast<int>(q_full_1_local.size()) != M_full)
+                {
+                    q_full_1_local.resize(M_full);
+                    q_full_2_local.resize(M_full);
+                }
                 space_group_->from_reduced_basis(q_1, q_full_1_local.data(), 1);
                 space_group_->from_reduced_basis(q_2, q_full_2_local.data(), 1);
+                q_1_full = q_full_1_local.data();
+                q_2_full = q_full_2_local.data();
             }
-            else // complex<double>: expand as 2 interleaved real fields
-            {
-                space_group_->from_reduced_basis(
-                    reinterpret_cast<const double*>(q_1),
-                    reinterpret_cast<double*>(q_full_1_local.data()), 2);
-                space_group_->from_reduced_basis(
-                    reinterpret_cast<const double*>(q_2),
-                    reinterpret_cast<double*>(q_full_2_local.data()), 2);
-            }
-            q_1_full = q_full_1_local.data();
-            q_2_full = q_full_2_local.data();
         }
 
         // Transform to Fourier space and accumulate Σ_k kernel(k) v_i v_j

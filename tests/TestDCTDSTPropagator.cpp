@@ -10,40 +10,33 @@
  ******************************************************************************/
 
 /**
- * @file TestDST2Propagator.cpp
- * @brief Test DST-2 based pseudo-spectral propagator with absorbing boundaries.
+ * @file TestDCTDSTPropagator.cpp
+ * @brief One pseudo-spectral step with reflecting (DCT-2) and absorbing (DST-2) boundaries.
  *
- * This test verifies that the propagator solver produces results matching
- * the analytical DST-2 diffusion calculation from devel/DFT/diffusion_pseudo_dst.ipynb.
- *
- * The test uses:
- * - 1D domain with L=4.0, N=12 grid points
- * - Absorbing boundary conditions (Dirichlet BC, u=0 at boundaries)
+ * The propagator solver must give the analytical DCT-2 and DST-2 diffusion of a
+ * Gaussian:
+ * - 1D domain with L=4.0, N=12 grid points (cell-centred)
+ * - Reflecting boundary conditions (Neumann BC), then absorbing ones (Dirichlet
+ *   BC, u=0 at the boundaries)
  * - Zero potential field (w=0)
- * - Homopolymer (A block)
- * - Gaussian initial condition centered at L/2
+ * - Single homopolymer block of one step (ds=0.1, b=1.0)
+ * - Gaussian initial condition (sigma=0.5) centered at L/2
  *
- * Tests are run on all available platforms (CPU-FFTW, CUDA) with both
- * standard and memory-saving modes.
+ * Tests are run on all available platforms with both standard and
+ * memory-saving modes.
  *
- * The DST-2 pseudo-spectral method for the diffusion equation:
+ * The pseudo-spectral method for the diffusion equation:
  *     dq/ds = (b^2/6) nabla^2 q - w*q
  *
- * With w=0 and absorbing BC, the solution is:
+ * With w=0 the solution is:
  *     q_hat(k, s+ds) = q_hat(k, s) * exp(-b^2/6 * k^2 * ds)
  *
- * where k = n*pi/L for the DST-2 transform.
+ * where q_hat are the DCT-2 (reflecting) or DST-2 (absorbing) coefficients,
+ * k = n*pi/L for the DCT-2 and k = (n+1)*pi/L for the DST-2. The expected values
+ * are this step computed independently of the library.
  *
- * NOTE: Unlike reflecting BC (DCT-2), absorbing BC (DST-2) does NOT conserve
- * mass. The field "leaks out" at the boundaries where u=0 is enforced.
- *
- * Expected values from notebook (devel/DFT/diffusion_pseudo_dst.ipynb):
- *
- * Initial condition (Gaussian, sigma=0.5, centered at L/2):
- * q_init = [0.0012038599948282, 0.01110899653824231, 0.06572852861653045, ...]
- *
- * After one step (ds=0.1, b=1.0):
- * q_out = [0.00229854560729656, 0.01772114433056498, 0.08504620746747918, ...]
+ * Reflecting walls conserve the mass; absorbing walls do not: the field "leaks
+ * out" at the boundaries where u=0 is enforced.
  */
 
 #include <cstdlib>
@@ -73,7 +66,7 @@ const double ds = 0.1;
 const double sigma = 0.5;
 const double b = 1.0;
 
-// Expected values from notebook (full precision)
+// Expected values (full precision)
 const std::vector<double> expected_q_init = {
     0.0012038599948282,  0.01110899653824231, 0.06572852861653045,
     0.2493522087772961,  0.6065306597126334,  0.9459594689067654,
@@ -81,33 +74,50 @@ const std::vector<double> expected_q_init = {
     0.06572852861653053, 0.01110899653824231, 0.00120385999482821
 };
 
-// After one step with DST-2 (absorbing BC)
-// Note: Mass decreases slightly due to absorption at boundaries
-const std::vector<double> expected_q_out = {
-    0.00229854560729656, 0.01772114433056498, 0.08504620746747918,
-    0.27580273305699987, 0.6042552886190555,  0.8944009714708175,
-    0.8944009714708175,  0.6042552886190556,  0.2758027330570002,
-    0.08504620746747932, 0.01772114433056499, 0.00229854560729657
+/// The walls of one case and the step they give
+struct WallCase
+{
+    std::string name;                   ///< "DCT-2" or "DST-2"
+    std::string boundary;               ///< "reflecting" or "absorbing"
+    std::vector<double> expected_q_out; ///< q after one step
+};
+
+const std::vector<WallCase> wall_cases = {
+    {"DCT-2", "reflecting", {
+        0.00265976695175955, 0.01771721116200349, 0.0850483724745189,
+        0.27580183068075836, 0.6042556834496476,  0.894400857827608,
+        0.894400857827608,   0.6042556834496476,  0.2758018306807586,
+        0.085048372474519,   0.01771721116200349, 0.00265976695175955
+    }},
+    // The mass decreases slightly through the absorbing walls
+    {"DST-2", "absorbing", {
+        0.00229854560729656, 0.01772114433056498, 0.08504620746747918,
+        0.27580273305699987, 0.6042552886190555,  0.8944009714708175,
+        0.8944009714708175,  0.6042552886190556,  0.2758027330570002,
+        0.08504620746747932, 0.01772114433056499, 0.00229854560729657
+    }},
 };
 
 /**
- * Run DST-2 propagator tests for a specific platform and memory mode.
+ * Run the step of one wall case for a specific platform and memory mode.
  *
- * @param platform Platform name ("cuda" or "cpu-fftw")
+ * @param wall Reflecting (DCT-2) or absorbing (DST-2) walls
+ * @param platform Platform name ("cuda", "cpu-fftw" or "cpu-mkl")
  * @param reduce_memory Enable memory-saving mode
  * @return 0 on success, -1 on failure
  */
-int run_tests(const std::string& platform, bool reduce_memory)
+int run_tests(const WallCase& wall, const std::string& platform, bool reduce_memory)
 {
     std::cout << std::fixed << std::setprecision(17);
 
     std::cout << "\n============================================================" << std::endl;
+    std::cout << wall.name << " (" << wall.boundary << " BC)" << std::endl;
     std::cout << "Platform: " << platform << std::endl;
     std::cout << "Memory saving mode: " << (reduce_memory ? "ON" : "OFF") << std::endl;
     std::cout << "============================================================" << std::endl;
 
     // Create factory
-    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
+    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
     factory->display_info();
 
     // Staggered grid (half-sample symmetric)
@@ -141,23 +151,16 @@ int run_tests(const std::string& platform, bool reduce_memory)
     }
     std::cout << "]" << std::endl;
 
-    // Verify initial condition matches notebook
+    // Verify the initial condition against the expected values
     double init_error = 0.0;
     for (int i = 0; i < N; ++i)
     {
         init_error = max_or_nan(init_error, std::abs(q_init[i] - expected_q_init[i]));
     }
-    std::cout << "  Init error vs notebook: " << std::scientific << init_error << std::fixed << std::endl;
+    std::cout << "  Init error: " << std::scientific << init_error << std::fixed << std::endl;
 
     // Zero potential field
     std::vector<double> w_zero(N, 0.0);
-
-    //=======================================================================
-    // Test: Homopolymer with DST-2 Absorbing BC
-    //=======================================================================
-    std::cout << "\n------------------------------------------------------------" << std::endl;
-    std::cout << "Test: Homopolymer Propagator with Absorbing BC" << std::endl;
-    std::cout << "------------------------------------------------------------" << std::endl;
 
     // Create molecules for homopolymer
     std::map<std::string, double> bond_lengths = {{"A", b}};
@@ -175,9 +178,9 @@ int run_tests(const std::string& platform, bool reduce_memory)
     std::cout << "  A block length: " << ds << " (1 step)" << std::endl;
     std::cout << "  Initial condition: Gaussian at vertex 0" << std::endl;
 
-    // Create computation box with absorbing BC
+    // Create computation box with the walls of the case
     std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(
-        {N}, {L}, {"absorbing", "absorbing"});
+        {N}, {L}, {wall.boundary, wall.boundary});
 
     // Create propagator optimizer and solver
     auto optimizer = std::make_unique<PropagatorComputationOptimizer>(molecules.get(), false);
@@ -204,13 +207,13 @@ int run_tests(const std::string& platform, bool reduce_memory)
         sum_out += q_out[i];
     std::cout << "  sum(q_out) = " << sum_out << std::endl;
 
-    // Compare with expected values from notebook
+    // Compare with the expected values
     double max_error = 0.0;
     for (int i = 0; i < N; ++i)
     {
-        { const double d = std::abs(q_out[i] - expected_q_out[i]); if (std::isnan(d) || d > max_error) max_error = d; }  // a NaN stays
+        max_error = max_or_nan(max_error, std::abs(q_out[i] - wall.expected_q_out[i]));
     }
-    std::cout << "\nMax error vs notebook: " << std::scientific << max_error << std::fixed << std::endl;
+    std::cout << "\nMax error against the expected values: " << std::scientific << max_error << std::fixed << std::endl;
 
     // Verify symmetry
     double sym_error = 0.0;
@@ -220,7 +223,7 @@ int run_tests(const std::string& platform, bool reduce_memory)
     }
     std::cout << "Symmetry error: " << std::scientific << sym_error << std::fixed << std::endl;
 
-    // Check mass (NOT conserved for absorbing BC)
+    // The mass: conserved with reflecting walls, decreasing through absorbing ones
     double initial_mass = 0.0;
     for (int i = 0; i < N; ++i)
         initial_mass += q_init[i] * dx;
@@ -229,28 +232,29 @@ int run_tests(const std::string& platform, bool reduce_memory)
     for (int i = 0; i < N; ++i)
         final_mass += q_out[i] * dx;
 
-    double mass_ratio = final_mass / initial_mass;
-    std::cout << "\nMass (NOT conserved for absorbing BC):" << std::endl;
+    std::cout << "\nMass:" << std::endl;
     std::cout << "  Initial mass: " << initial_mass << std::endl;
     std::cout << "  Final mass:   " << final_mass << std::endl;
-    std::cout << "  Mass ratio: " << mass_ratio << " (expected ~0.9998)" << std::endl;
+    bool mass_ok;
+    if (wall.boundary == "reflecting")
+    {
+        double mass_error = std::abs(final_mass - initial_mass) / initial_mass;
+        std::cout << "  Relative error: " << std::scientific << mass_error << std::fixed << std::endl;
+        mass_ok = mass_error < 1e-6;
+    }
+    else
+    {
+        double mass_ratio = final_mass / initial_mass;
+        std::cout << "  Mass ratio: " << mass_ratio << " (expected ~0.9998)" << std::endl;
+        mass_ok = (mass_ratio > 0.99) && (mass_ratio < 1.0);
+    }
 
-    // Test passes if error is small and mass ratio is reasonable
-    // For absorbing BC, mass should decrease slightly
     // The initial condition and the q(x) = q(L-x) symmetry are exact up to round-off
-    bool test_passed = (max_error < 1e-6) && (mass_ratio > 0.99) && (mass_ratio < 1.0)
+    bool test_passed = mass_ok && (max_error < 1e-6)
                        && (init_error <= 1e-12) && (sym_error <= 1e-12);
-    std::cout << "\nTest: " << (test_passed ? "PASSED" : "FAILED") << std::endl;
-
-    //=======================================================================
-    // Summary
-    //=======================================================================
-    std::cout << "\n------------------------------------------------------------" << std::endl;
-    std::cout << "SUMMARY for " << platform;
+    std::cout << "\nTest (Homopolymer " << wall.name << ") for " << platform;
     if (reduce_memory) std::cout << " (memory-saving)";
-    std::cout << std::endl;
-    std::cout << "------------------------------------------------------------" << std::endl;
-    std::cout << "  Test (Homopolymer DST-2): " << (test_passed ? "PASSED" : "FAILED") << std::endl;
+    std::cout << ": " << (test_passed ? "PASSED" : "FAILED") << std::endl;
 
     return test_passed ? 0 : -1;
 }
@@ -260,7 +264,7 @@ int main()
     try
     {
         std::cout << "============================================================" << std::endl;
-        std::cout << "Test: DST-2 Propagator with Absorbing Boundaries" << std::endl;
+        std::cout << "Test: DCT-2 and DST-2 Propagator with Reflecting and Absorbing Boundaries" << std::endl;
         std::cout << "============================================================" << std::endl;
         std::cout << "Testing on all available platforms with standard and" << std::endl;
         std::cout << "memory-saving modes." << std::endl;
@@ -277,22 +281,20 @@ int main()
             std::cout << p << " ";
         std::cout << std::endl;
 
-        // Run tests on each platform with both memory modes
-        for (const std::string& platform : platforms)
+        // Run each wall case on each platform with both memory modes
+        for (const WallCase& wall : wall_cases)
         {
-            // Test with standard memory mode
-            test_count++;
-            if (run_tests(platform, false) == 0)
-                pass_count++;
-            else
-                result = -1;
-
-            // Test with memory-saving mode
-            test_count++;
-            if (run_tests(platform, true) == 0)
-                pass_count++;
-            else
-                result = -1;
+            for (const std::string& platform : platforms)
+            {
+                for (bool reduce_memory : {false, true})
+                {
+                    test_count++;
+                    if (run_tests(wall, platform, reduce_memory) == 0)
+                        pass_count++;
+                    else
+                        result = -1;
+                }
+            }
         }
 
         //=======================================================================

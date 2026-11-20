@@ -1,24 +1,11 @@
 /**
  * @file MklCrysFFTRecursive3m.cpp
- * @brief MKL implementation of recursive crystallographic FFT (2x2y2z).
+ * @brief Recursive crystallographic FFT (2x2y2z) over the real FFT of MKL.
  */
 
 #include "MklCrysFFTRecursive3m.h"
-#include "AlignedScratch.h"
 #include "MklDftiLayout.h"
 #include "MklStatusCheck.h"
-#include <algorithm>
-
-namespace {
-
-constexpr size_t kAlignment = 64;
-
-inline size_t align_up(size_t value, size_t alignment)
-{
-    return ((value + alignment - 1) / alignment) * alignment;
-}
-
-}  // namespace
 
 //------------------------------------------------------------------------------
 // Constructor
@@ -26,12 +13,11 @@ inline size_t align_up(size_t value, size_t alignment)
 MklCrysFFTRecursive3m::MklCrysFFTRecursive3m(
     std::array<int, 3> nx_logical,
     std::array<double, 9> translational_part)
-    : Base(nx_logical, translational_part)
+    : CrysFFTRecursive3mBase(nx_logical, translational_part)
 {
     try
     {
         init_fft_plans();
-        generate_twiddle_factors();
     }
     catch (...)
     {
@@ -84,78 +70,14 @@ void MklCrysFFTRecursive3m::init_fft_plans()
 }
 
 //------------------------------------------------------------------------------
-// Apply FFT with a folded table (Boltzmann factors or stress multiplier)
+// The real FFT of the physical grid
 //------------------------------------------------------------------------------
-void MklCrysFFTRecursive3m::apply_with_table(
-    const double* table, const double* q_in, double* q_out) const
+void MklCrysFFTRecursive3m::forward(const double* q, std::complex<double>* spectrum) const
 {
-    // The two spectra of this thread, from 64-byte boundaries (AlignedScratch); MKL runs
-    // out of place on the caller's fields and keeps q_in
-    thread_local AlignedScratch spectrum_1, spectrum_2;
-    std::complex<double>* step1 = reinterpret_cast<std::complex<double>*>(spectrum_1.get(2 * static_cast<size_t>(M_physical_)));
-    std::complex<double>* step2 = reinterpret_cast<std::complex<double>*>(spectrum_2.get(2 * static_cast<size_t>(M_physical_)));
+    mkl_dfti_check(DftiComputeForward(plan_forward_, const_cast<double*>(q), spectrum), "DftiComputeForward (3m)");
+}
 
-    // Forward r2c FFT
-    mkl_dfti_check(DftiComputeForward(plan_forward_, const_cast<double*>(q_in), step1), "DftiComputeForward (3m)");
-
-    const int Nx2 = nx_physical_[0];
-    const int Ny2 = nx_physical_[1];
-    const int Nz2 = nx_physical_[2];
-    // Pad the packed z count for vectorization, but clamp to the row stride
-    // Nz2 so the loop never overruns the Nx2*Ny2*Nz2-sized buffers. The clamp
-    // still covers the packed range [0, Nz2/2] for any Nz2 >= 2.
-    const size_t Nz_qua = std::min(
-        align_up(static_cast<size_t>(Nz2 / 2 + 1), kAlignment / 8),
-        static_cast<size_t>(Nz2));
-
-    // The real parts of the eight folded octants, then their imaginary parts
-    std::array<const double*, 8> k_re, k_im;
-    for (int i = 0; i < 8; ++i)
-    {
-        k_re[i] = table + i * table_stride_;
-        k_im[i] = table + (8 + i) * table_stride_;
-    }
-
-    for (int ix = 0; ix < Nx2; ++ix)
-    {
-        for (int iy = 0; iy < Ny2; ++iy)
-        {
-            const size_t base_shift = static_cast<size_t>(ix * Ny2 + iy) * Nz2;
-            const std::complex<double>* src000 = step1 + base_shift;
-            const std::complex<double>* src110 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const std::complex<double>* src010 = step1 + (static_cast<size_t>(ix) * Ny2 + (Ny2 - iy) % Ny2) * Nz2;
-            const std::complex<double>* src100 = step1 + (static_cast<size_t>((Nx2 - ix) % Nx2) * Ny2 + iy) * Nz2;
-            std::complex<double>* dst = step2 + base_shift;
-
-            for (size_t iz = 0; iz < Nz_qua; ++iz)
-            {
-                size_t idx = base_shift + iz;
-                double src000_re = src000[iz].real();
-                double src000_im = src000[iz].imag();
-                double src110_re = src110[iz].real();
-                double src110_im = src110[iz].imag();
-                double src010_re = src010[iz].real();
-                double src010_im = src010[iz].imag();
-                double src100_re = src100[iz].real();
-                double src100_im = src100[iz].imag();
-
-                double dst_re
-                    = src000_re * k_re[0][idx] - src000_im * k_im[7][idx]
-                    + src110_re * k_re[6][idx] - src110_im * k_im[1][idx]
-                    + src010_re * k_re[2][idx] - src010_im * k_im[5][idx]
-                    + src100_re * k_re[4][idx] - src100_im * k_im[3][idx];
-
-                double dst_im
-                    = src000_re * k_im[0][idx] + src000_im * k_re[7][idx]
-                    + src110_re * k_im[6][idx] + src110_im * k_re[1][idx]
-                    + src010_re * k_im[2][idx] + src010_im * k_re[5][idx]
-                    + src100_re * k_im[4][idx] + src100_im * k_re[3][idx];
-
-                dst[iz] = std::complex<double>(dst_re, dst_im);
-            }
-        }
-    }
-
-    // Backward c2r FFT
-    mkl_dfti_check(DftiComputeBackward(plan_backward_, step2, q_out), "DftiComputeBackward (3m)");
+void MklCrysFFTRecursive3m::backward(std::complex<double>* spectrum, double* q) const
+{
+    mkl_dfti_check(DftiComputeBackward(plan_backward_, spectrum, q), "DftiComputeBackward (3m)");
 }

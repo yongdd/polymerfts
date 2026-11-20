@@ -68,6 +68,8 @@ private:
     // MKL DFTI descriptors
     DFTI_DESCRIPTOR_HANDLE hand_forward_ = nullptr;   ///< Forward (r2c or c2c) transform
     DFTI_DESCRIPTOR_HANDLE hand_backward_ = nullptr;  ///< Backward (c2r or c2c) transform
+    int total_grid_;                                  ///< Total real grid size
+    int total_complex_grid_;                          ///< Total complex grid size
 
     /// Free the DFTI descriptors (also after a failed construction); idempotent.
     void release();
@@ -98,6 +100,14 @@ public:
      * @param rdata Output: real array
      */
     void backward(double *cdata, T *rdata) override;
+
+    /**
+     * @brief rdata = r_factor · backward(k_factor · cdata) (see FFT<T>).
+     *
+     * Multiplies cdata by k_factor in place, runs backward() and multiplies
+     * rdata by r_factor.
+     */
+    void backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor) override;
 };
 
 #endif
