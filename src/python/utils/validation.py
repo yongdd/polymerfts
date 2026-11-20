@@ -433,6 +433,8 @@ def validate_system_params(params: Dict[str, Any]) -> None:
         raise ValidationError("'polymers' must be a non-empty list")
     total_volume_fraction = 0.0
     for i, polymer in enumerate(polymers):
+        if isinstance(polymer, dict):
+            _refuse_unknown_keys(f"polymers[{i}]", polymer, POLYMER_KEYS)
         if not isinstance(polymer, dict) or "blocks" not in polymer or \
                 ("volume_fraction" in polymer) == ("chemical_potential" in polymer):
             raise ValidationError(f"polymers[{i}] must be a dict with 'volume_fraction' and 'blocks' (or, in "
@@ -456,6 +458,8 @@ def validate_system_params(params: Dict[str, Any]) -> None:
             raise ValidationError(f"polymers[{i}]['blocks'] must be a non-empty list")
         for j, block in enumerate(polymer["blocks"]):
             name = f"polymers[{i}].blocks[{j}]"
+            if isinstance(block, dict):
+                _refuse_unknown_keys(name, block, BLOCK_KEYS)
             if not isinstance(block, dict) or not isinstance(block.get("type"), str) or "length" not in block:
                 raise ValidationError(f"'{name}' needs 'type' and 'length'")
             _finite_number(block["length"], name + ".length", positive=True)
@@ -592,8 +596,7 @@ _SYSTEM_KEYS = {"nx", "lx", "angles", "bc", "ds", "chain_model", "segment_length
 _LANGEVIN_KEYS = {"langevin", "recording", "verbose_level"}
 METHOD_KEYS = {
     "SCFT": _SYSTEM_KEYS | {"optimizer", "relax_cell", "max_iter", "tolerance", "stress_scale", "crystal_system",
-                           "space_group", "axis_ordering", "electrostatics", "polymer_figure_dir",
-                           "fts_consistent_energy"},
+                           "space_group", "axis_ordering", "electrostatics", "polymer_figure_dir"},
     "L-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"saddle", "compressor", "wtmd"},
     "CL-FTS": _SYSTEM_KEYS | _LANGEVIN_KEYS | {"dynamic_stabilization", "electrostatics"},
 }
@@ -602,13 +605,16 @@ _UNREAD_KEY_HINTS = {"mask": "impenetrable regions are available through Propaga
                      "gibbs_ensemble": "a Gibbs-ensemble input runs with GibbsEnsemble(params)"}
 # The options of an earlier release that no method reads any more: ignored with one warning that says why,
 # until a later release refuses them
-_RETIRED_KEYS = {"stress_interval": "SCFT computes the stress in every iteration of the cell relaxation"}
+_RETIRED_KEYS = {"stress_interval": "SCFT computes the stress in every iteration of the cell relaxation",
+                 "fts_consistent_energy": "the SCFT free energy does not depend on the field means, and the fields "
+                                          "of an incompressible run have zero means"}
 
 # The keys that each option section takes, with the names of normalize_params. A method refuses a key
 # that a section it reads does not take (check_section_keys), as it refuses a top-level key that no
 # method reads: a misspelled option would otherwise keep its default. A new option of a section needs
 # its entry here. The entries of a section (the point ions of electrostatics, the boxes of
-# gibbs_ensemble) are checked with their section
+# gibbs_ensemble) are checked with their section, the entries of polymers and of their blocks with
+# POLYMER_KEYS and BLOCK_KEYS (validate_system_params)
 SECTION_KEYS = {
     "langevin": {"dt", "nbar", "max_step", "integrator"},
     "recording": {"dir", "checkpoint_interval", "sample_interval", "statistics_save_interval", "pressure",
@@ -623,6 +629,20 @@ SECTION_KEYS = {
                        "screening_length", "fixed_charge"},
     "gibbs_ensemble": {"boxes", "cycles", "cycle_steps", "exchange_rate", "skip_steps"},
 }
+# The keys of an entry of 'polymers' and of an entry of its 'blocks': a misspelled multiplicity would
+# otherwise build one arm, a misspelled initial_conditions a free chain
+POLYMER_KEYS = {"volume_fraction", "chemical_potential", "blocks", "initial_conditions"}
+BLOCK_KEYS = {"type", "length", "v", "u", "multiplicity", "monomer_fractions"}
+
+
+def _refuse_unknown_keys(label, keys, allowed) -> None:
+    """A key of `keys` that `allowed` does not hold raises ValidationError naming the option or entry
+    `label`, the key, the closest allowed key and the allowed keys."""
+    unknown = sorted(str(key) for key in keys if key not in allowed)
+    if unknown:
+        close = difflib.get_close_matches(unknown[0], allowed, n=1)
+        hint = f" (did you mean '{close[0]}'?)" if close else ""
+        raise ValidationError(f"'{label}' has unknown keys: {unknown}{hint}; it takes " + ", ".join(sorted(allowed)))
 
 
 def check_section_keys(params: Dict[str, Any], sections) -> None:
@@ -630,15 +650,8 @@ def check_section_keys(params: Dict[str, Any], sections) -> None:
     raises ValidationError naming it, the closest valid key and the keys of the section. A section that
     is not a dict is left to the checks of its options."""
     for section in sections:
-        options = params.get(section)
-        if not isinstance(options, dict):
-            continue
-        unknown = sorted(str(key) for key in options if key not in SECTION_KEYS[section])
-        if unknown:
-            close = difflib.get_close_matches(unknown[0], SECTION_KEYS[section], n=1)
-            hint = f" (did you mean '{close[0]}'?)" if close else ""
-            raise ValidationError(f"'{section}' has unknown keys: {unknown}{hint}; it takes "
-                                  + ", ".join(sorted(SECTION_KEYS[section])))
+        if isinstance(params.get(section), dict):
+            _refuse_unknown_keys(section, params[section], SECTION_KEYS[section])
 
 
 def check_method_keys(params: Dict[str, Any], method: str) -> None:
@@ -894,7 +907,7 @@ def _reject_grand_canonical(params: Dict[str, Any], method: str) -> None:
 
 
 def validate_electrostatics(params: Dict[str, Any]) -> None:
-    """Charges, coupling and electroneutrality of the CL-FTS 'electrostatics' input."""
+    """Charges, coupling and electroneutrality of the 'electrostatics' input of SCFT and CL-FTS."""
     electrostatics = params["electrostatics"]
     if not isinstance(electrostatics, dict):
         raise ValidationError("'electrostatics' must be a dict or None")

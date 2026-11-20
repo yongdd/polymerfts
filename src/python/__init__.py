@@ -5,16 +5,6 @@ import os as _os
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 _os.environ.setdefault("OMP_STACKSIZE", "1G")
 
-# Package version. The pip/conda metadata is authoritative when the package
-# was installed through pip (pyproject.toml); the fallback constant covers
-# the plain 'make install' path, which ships no dist metadata. Keep the
-# fallback in sync with CMakeLists.txt / pyproject.toml.
-try:
-    from importlib.metadata import version as _dist_version
-    __version__ = _dist_version("polymerfts")
-except Exception:
-    __version__ = "0.10.0"
-
 # Windows does not search PATH or an RPATH for the libraries of an extension
 # module: the spglib library that _core links lives in the spglib package.
 import sys as _sys
@@ -42,6 +32,11 @@ for _stream in (_sys.stdout, _sys.stderr):
 
 # Core C++ bindings (re-export all for user convenience)
 from ._core import *
+from . import _core
+
+# Package version: that of the native module imported (CMakeLists.txt), not of whichever polymerfts
+# distribution is installed
+__version__ = _core.build_info["code_version"]
 
 # High-level Python classes
 from .theory.symmetric_formulation import SymmetricPolymerTheory

@@ -190,13 +190,6 @@ class SCFT:
         self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
         self.tolerance = params.get("tolerance", 1e-8)     # stop when the self-consistency error is below this
 
-        # The fields of an incompressible run have zero means (the free energy, computed from
-        # the monomer fields, does not depend on them); fts_consistent_energy, which pinned
-        # them to the saddle point, has no effect any more
-        if "fts_consistent_energy" in params:
-            print("Warning: 'fts_consistent_energy' has no effect: the free energy does not depend on the "
-                  "field means, and incompressible fields have zero means.")
-
     def _create_space_group(self, params, angles):
         """The space group of the input, with the physical basis that the cell allows."""
         if params["space_group"].get("hall_number") is not None:

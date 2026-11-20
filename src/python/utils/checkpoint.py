@@ -223,9 +223,9 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         # An input of an earlier release could hold keys that no release read in saddle or compressor,
         # which are refused now (SECTION_KEYS): its checkpoint compares without them
         for section in ("saddle", "compressor"):
-            if isinstance(stored.get(section), dict) and isinstance(current.get(section), dict):
+            if isinstance(stored.get(section), dict):
                 stored[section] = {key: value for key, value in stored[section].items()
-                                   if key in current[section] or key in SECTION_KEYS[section]}
+                                   if key in SECTION_KEYS[section]}
         # Version 1 predates extensions and always used LM without callbacks.
         if version == 1:
             stored.setdefault("extensions", {"integrator": {"name": "lm", "settings": {}}, "callbacks": {}})

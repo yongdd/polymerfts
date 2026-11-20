@@ -12,8 +12,9 @@ neutral system, and `axis_ordering` in L-FTS and CL-FTS, which would read the sh
 `angles` in another order than SCFT ([Axis Ordering](#axis-ordering)). A top-level key that no method
 reads, such as a misspelled key, raises `ValidationError` naming the key and the closest valid one. So
 does a key that a section the method reads does not take (in `langevin`, `recording`, `saddle`,
-`compressor`, `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics` and `gibbs_ensemble`): its
-error also lists the keys of the section, which the tables below give.
+`compressor`, `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics` and `gibbs_ensemble`), or
+that an entry of `polymers` or of its `blocks` does not take: its error also lists the keys of the section
+or entry, which the tables below give.
 
 A top-level key given the value `None` (`null` or `~` in YAML) is the same as an absent key: the method
 uses its default, or reports a required key as missing. A keyword override of `from_file` given as `None`
@@ -636,8 +637,9 @@ even when their values are equal.
 | `recording.sf_computing_period` | `recording.sample_interval` |
 | `recording.sf_recording_period` | `recording.statistics_save_interval` |
 
-Every method ignores `stress_interval`, an option of earlier releases, with one
-warning: SCFT computes the stress in every iteration of the box relaxation.
+Every method ignores `stress_interval` and `fts_consistent_energy`, options of earlier
+releases, with one warning: SCFT computes the stress in every iteration of the box
+relaxation, and its free energy does not depend on the field means.
 
 Version-1 and version-2 checkpoints written with earlier names can be resumed
 using current parameter names. The stored settings hash is verified before

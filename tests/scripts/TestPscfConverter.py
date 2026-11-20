@@ -156,11 +156,13 @@ def test_skewed_2d_fixed_angle_relaxation_is_not_changed():
     assert TOOL['prepare_export'](result(p))[2] == 'oblique'
 
 
-@pytest.mark.parametrize('key', ('initial_conditions', 'grafting_points'))
-def test_grafting_and_custom_propagators_are_not_dropped(key):
+@pytest.mark.parametrize('key, message', (('initial_conditions', 'initial propagator conditions'),
+                                          ('grafting_points', r"has unknown keys: \['grafting_points'\]")))
+def test_grafting_and_custom_propagators_are_not_dropped(key, message):
+    # grafting_points, the argument of PropagatorSolver.add_polymer, is not a key of a polymer entry
     p = params()
     p['polymers'][0][key] = {0: 'G'}
-    with pytest.raises(ValueError, match='initial propagator conditions'):
+    with pytest.raises(ValueError, match=message):
         TOOL['prepare_export'](result(p))
 
 

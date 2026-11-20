@@ -7,9 +7,9 @@ completion, random copolymers, no modification of the user's dictionary,
 and ValidationError for invalid input. The top-level keys: a key given as None
 is absent, the options of other methods are ignored with one warning at the
 caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
-an option of an earlier release (stress_interval) is ignored with one warning,
-and a key that no method reads is refused, as is a key that a section of the
-method does not take.
+an option of an earlier release (stress_interval, fts_consistent_energy) is
+ignored with one warning, and a key that no method reads is refused, as is a key
+that a section of the method, a polymer or a block does not take.
 """
 
 import sys
@@ -646,6 +646,17 @@ def main():
                            f"{cls.__name__} with '{section}.{key}'", message)
     ok &= expect_ignored(CLFTS, {**clfts_params(), "saddle": {"unknown_key": 1}},
                          "CLFTS with an unknown key in the L-FTS section 'saddle'", "saddle (L-FTS")
+    # And a key that a polymer or a block does not take: a misspelled multiplicity would build one arm,
+    # a misspelled initial_conditions a free chain
+    for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
+        given = copy.deepcopy(params); given["polymers"][0]["initial_condition"] = {0: "G"}
+        ok &= expect_error(cls, given, f"{cls.__name__} with 'polymers[0].initial_condition'",
+                           "'polymers[0]' has unknown keys: ['initial_condition'] (did you mean 'initial_conditions'?); "
+                           "it takes blocks, chemical_potential, initial_conditions, volume_fraction")
+        given = copy.deepcopy(params); given["polymers"][0]["blocks"][1]["multiplicty"] = 3
+        ok &= expect_error(cls, given, f"{cls.__name__} with 'polymers[0].blocks[1].multiplicty'",
+                           "'polymers[0].blocks[1]' has unknown keys: ['multiplicty'] (did you mean 'multiplicity'?); "
+                           "it takes length, monomer_fractions, multiplicity, type, u, v")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
@@ -679,14 +690,16 @@ def main():
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")
     params = clfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
-    # The retired stress_interval: every method ignores it, whatever its value, with one warning
+    # The retired stress_interval and fts_consistent_energy: every method ignores them, whatever their
+    # value, with one warning
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            build(cls, {**params, "stress_interval": "fast"})
-        if [str(w.message).split(":")[0] for w in caught] != ["'stress_interval' is ignored"]:
-            print(f"FAILED: {cls.__name__} with stress_interval warned {[str(w.message) for w in caught]}")
-            ok = False
+        for key in ("stress_interval", "fts_consistent_energy"):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                build(cls, {**params, key: "fast"})
+            if [str(w.message).split(":")[0] for w in caught] != [f"'{key}' is ignored"]:
+                print(f"FAILED: {cls.__name__} with {key} warned {[str(w.message) for w in caught]}")
+                ok = False
     ok &= check_none_keys()
     ok &= check_ignored_keys()
 
