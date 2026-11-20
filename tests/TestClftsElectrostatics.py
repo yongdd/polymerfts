@@ -30,7 +30,8 @@
    unscreened runs keep their earlier form. Screened estimators: with a net charge, the recorded
    S_ij of a polyampholyte (completed by psi, without the psi term at k = 0) and the charge
    structure function (zero at k = 0) equal a recomputation with (k^2 + kappa^2)/E from the
-   saved state.
+   saved state, also with canonical point ions and an asymmetric fixed charge, whose charge psi
+   measures as well.
 """
 import json
 import os
@@ -44,7 +45,7 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError, NumericalError
 from polymerfts.utils.checkpoint import validate_checkpoint, _measurement_key
-from fts_checks import exact_restart, quiet, silenced
+from fts_checks import cpu_platform, exact_restart, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -60,7 +61,7 @@ def parameters(directory, steps=6, electrostatics=True):
                                                                 {"type": "B", "length": 0.5}]},
                      {"volume_fraction": PHI_C, "blocks": [{"type": "C", "length": 0.05}]}],
         "smearing": {"type": "gaussian", "a_int": {"A": 0.15, "B": 0.15, "C": 0.2}},
-        "platform": next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu")),
+        "platform": cpu_platform(),
         "langevin": {"nbar": 1e4, "dt": 0.5, "max_step": steps},
         "recording": {"dir": str(directory), "checkpoint_interval": 3, "sample_interval": 1,
                       "statistics_save_interval": 6},
@@ -577,19 +578,33 @@ def screened_measurements(root):
     # Polyampholyte E-K-E-K without chi, valences -1 and +0.6 (net charge), screened: its E-K mode has
     # no field, so psi completes S_ij, with (k^2 + kappa^2)/E; one sample per file, recomputed from the
     # saved state of the same step. At k = 0 the psi term is left out of S_ij (kappa^2 psi(0)/E would add
-    # the net charge), and the charge structure function is zero
-    params = parameters(root / "screened_measured", steps=2)
+    # the net charge), and the charge structure function is zero. A second run adds canonical Na+ Cl- point
+    # ions and an asymmetric fixed charge, which psi measures as well: the recomputation removes their
+    # charge from the probe of S_ij and adds it to the charge density c(-k)
+    screened_run(root / "screened_measured", {})
+    x, y = np.meshgrid(np.arange(NX[0]) / NX[0], np.arange(NX[1]) / NX[1], indexing="ij")
+    fixed = (0.05 * np.cos(2 * np.pi * x) + 0.02 * np.sin(2 * np.pi * y) - 0.01).ravel()
+    ions = {"Na": {"valence": 1.0, "concentration": 0.02, "smearing_length": 0.12},
+            "Cl": {"valence": -1.0, "concentration": 0.03, "smearing_length": 0.15}}
+    screened_run(root / "screened_ions_fixed", {"ions": ions, "fixed_charge": fixed})
+
+
+def screened_run(directory, others):
+    """The screened polyampholyte of screened_measurements with the electrostatics options others: two steps,
+    recomputed from the saved state of the second."""
+    params = parameters(directory, steps=2)
     params.update(segment_lengths={"E": 1.0, "K": 1.0}, chi_n={}, smearing={"type": "gaussian", "a_int": 0.15},
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": t, "length": 0.25} for t in "EKEK"]}])
-    params["electrostatics"] = {"charges": {"E": -1.0, "K": 0.6}, "coupling": 300.0, "screening_length": 0.3}
+    params["electrostatics"] = {"charges": {"E": -1.0, "K": 0.6}, "coupling": 300.0, "screening_length": 0.3,
+                                **others}
     params["recording"].update(checkpoint_interval=1, sample_interval=1, statistics_save_interval=1)
     with silenced():
         sim = CLFTS(params, random_seed=5)
         sim.run(initial_fields={"E": np.zeros(int(np.prod(NX))), "K": np.zeros(int(np.prod(NX)))})
     n_grid, types = int(np.prod(NX)), ["E", "K"]
     assert sim.mpt.aux_fields_dropped_idx and sim.structure_functions.psi_probe is not None
-    fields = mat(root / "screened_measured", "fields_000002.mat")
-    measured = mat(root / "screened_measured", "structure_function_000002.mat")
+    fields = mat(directory, "fields_000002.mat")
+    measured = mat(directory, "structure_function_000002.mat")
     w_aux = np.reshape(fields["w_aux"], (2, n_grid))
     psi_k = np.reshape(fields["psi_k_real"] + 1j * fields["psi_k_imag"], NX) / n_grid
     psi = np.reshape(fields["psi_real"] + 1j * fields["psi_imag"], NX)
@@ -599,8 +614,18 @@ def screened_measurements(root):
     rate = (k_sq + 1 / 0.3 ** 2) / 300.0
     gamma = np.exp(-0.15 ** 2 * k_sq / 2)
     z = np.array([-1.0, 0.6])
+    # The charge that is not on the chains: the smeared point ions at the saved psi and the fixed charge
+    other_charge = np.zeros(NX, np.complex128)
+    if others:
+        sim.electrostatics.psi = psi
+        ion_charge = np.reshape(sim.electrostatics.ion_charge(), NX)
+        assert np.max(np.abs(ion_charge)) > 1e-3
+        other_charge += ion_charge + np.reshape(others["fixed_charge"], NX)
+    other_k = np.fft.fftn(other_charge) / n_grid
+    other_mk = np.conj(np.fft.fftn(np.conj(other_charge))) / n_grid
 
     # mu_i from the fields with lambda != 0, completed along u = z - P z by ((k^2 + kappa^2)/E) psi(k) - z.mu
+    # without the charge that is not on the chains
     phi_mk, mu = {}, {}
     for i, m in enumerate(types):
         phi = np.reshape(fields["phi_" + m + "_real"] + 1j * fields["phi_" + m + "_imag"], NX)
@@ -609,7 +634,7 @@ def screened_measurements(root):
                     for k in range(2) if not np.isclose(sim.mpt.eigenvalues[k], 0.0))
     kept = sim.mpt.matrix_a[:, [k for k in range(2) if not np.isclose(sim.mpt.eigenvalues[k], 0.0)]]
     u = z - kept @ kept.T @ z / 2
-    probe = rate * psi_k
+    probe = rate * psi_k - other_k
     probe[0, 0] = 0.0
     probe = probe - sum(z[i] * mu[m] for i, m in enumerate(types))
     mu = {m: mu[m] + u[i] / (u @ u) * probe for i, m in enumerate(types)}
@@ -617,16 +642,17 @@ def screened_measurements(root):
         for j in types[a:]:
             recorded = measured[f"structure_function_{i}_{j}_real"] + 1j * measured[f"structure_function_{i}_{j}_imag"]
             expected = norm * mu[i] * phi_mk[j] / gamma
-            assert np.max(np.abs(recorded - expected)) < 1e-10 * np.max(np.abs(expected)), f"screened S_{i}{j}"
+            assert np.max(np.abs(recorded - expected)) < 1e-10 * np.max(np.abs(expected)), f"{directory.name}: S_{i}{j}"
 
     # Charge structure function: the mixed and the field-field forms with (k^2 + kappa^2)/E
-    charge_mk = gamma * sum(z[i] * phi_mk[m] for i, m in enumerate(types))
+    charge_mk = gamma * sum(z[i] * phi_mk[m] for i, m in enumerate(types)) + other_mk
     mixed = rate * norm * psi_k * charge_mk
     field_field = rate ** 2 * (norm * psi_k * psi_mk + 1.0 / rate)
     mixed[0, 0] = field_field[0, 0] = 0.0
     for form, expected in (("mixed", mixed), ("field_field", field_field)):
         recorded = measured[f"charge_structure_function_{form}_real"] + 1j * measured[f"charge_structure_function_{form}_imag"]
-        assert np.max(np.abs(recorded - expected)) < 1e-10 * np.max(np.abs(expected)), f"screened charge S, {form} form"
+        assert np.max(np.abs(recorded - expected)) < 1e-10 * np.max(np.abs(expected)), \
+            f"{directory.name}: charge S, {form} form"
 
 
 def main():

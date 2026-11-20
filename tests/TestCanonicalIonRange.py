@@ -17,7 +17,7 @@ from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT
 from polymerfts.theory.electrostatics import _point_ion
-from fts_checks import python_platform, quiet
+from fts_checks import cpu_platform, quiet
 
 
 def parameters(directory, platform, shift, steps=3):
@@ -111,7 +111,7 @@ def trajectory(root, platform):
 
 def main():
     shifted_weights()
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_canonical_ions_") as directory:
         root = Path(directory)
         uniform_operators(root / "operators", platform)

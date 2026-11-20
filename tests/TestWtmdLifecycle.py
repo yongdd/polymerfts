@@ -1,11 +1,14 @@
 """WTMD state across fresh runs, manual continuations, checkpoint restarts and a bias set on sim.wtmd.
 
-Every key of the input "wtmd" reaches WTMD, built directly and by LFTS. A fresh run (from step 1) keeps
-the bias and statistics the object holds, also a bias set on sim.wtmd before the first run or between two
-runs, and drops the samples an earlier run left pending. The updates of the bias keep U' the derivative
-of U. The WTMD state is Python: the first CPU platform runs the simulations.
+Every key of the input "wtmd" reaches WTMD, built directly and by LFTS, which prints a non-integer ell
+as it is. A fresh run (from step 1) keeps the bias and statistics the object holds, also a bias set on
+sim.wtmd before the first run or between two runs, and drops the samples an earlier run left pending.
+The drift a step records is that of the forces with the bias. The updates of the bias keep U' the
+derivative of U. The WTMD state is Python: the first CPU platform runs the simulations.
 """
+import contextlib
 import copy
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -19,7 +22,7 @@ from scipy.io import loadmat
 from polymerfts import LFTS
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.utils.checkpoint import validate_checkpoint
-from fts_checks import compare_files, python_platform, quiet
+from fts_checks import compare_files, cpu_platform, quiet
 
 
 def state(wtmd):
@@ -89,7 +92,11 @@ def input_keys(root, platform):
     check_input(quiet(WTMD, WTMD_INPUT, [4, 4, 4], [1.3, 1.7, 2.1], 17.0, np.array([-15.0, 0.0]), [0]), "WTMD")
     params = parameters(root / "input_keys", platform)
     params["wtmd"] = dict(WTMD_INPUT)
-    check_input(quiet(LFTS, params, random_seed=1).wtmd, "LFTS")
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        sim = LFTS(params, random_seed=1)
+    check_input(sim.wtmd, "LFTS")
+    assert "WTMD enabled: l=2.5," in printed.getvalue()
 
 
 def parameters(directory, platform, steps=2):
@@ -200,8 +207,11 @@ def checkpoint_restart(root, platform):
 
 
 def preset_bias(root, platform):
-    """A bias set on sim.wtmd before the first run is used by that run and kept by a later fresh run."""
-    sim = quiet(LFTS, parameters(root / "preset", platform, 2), random_seed=5)
+    """A bias set on sim.wtmd before the first run is used by that run and kept by a later fresh run.
+    The drift that a step records is that of the forces with the bias."""
+    accepted = []
+    sim = quiet(LFTS, parameters(root / "preset", platform, 2), random_seed=5,
+                callbacks={"accepted": accepted.append})
     unbiased = quiet(LFTS, parameters(root / "unbiased", platform, 2), random_seed=5)
     bins = sim.wtmd.bins
     sim.wtmd.u = np.linspace(0.0, 2.0, bins) / sim.wtmd.CV
@@ -217,6 +227,15 @@ def preset_bias(root, platform):
     np.testing.assert_array_equal(first["wtmd_unscaled_up"], preset["up"])
     assert np.any(first["w_A"] != loadmat(checkpoint(unbiased, 2), squeeze_me=True)["w_A"]), \
         "The run did not feel the preset bias"
+    # Step 2 starts from the fields that step 1 accepted
+    w_aux, phi = accepted[0]["w_aux"], dict(accepted[0]["phi"])
+    real = sim.mpt.aux_fields_real_idx
+    forces = sim.mpt.compute_func_deriv(w_aux, sim.smearing.apply_to_dict(phi), real)
+    bias = np.zeros_like(forces)
+    quiet(sim.wtmd.add_bias, w_aux, bias)
+    drift = np.max(np.abs((forces + bias) * sim.dt_scaling[real, None]))
+    assert abs(drift - np.max(np.abs(forces * sim.dt_scaling[real, None]))) > 1e-6 * drift, "bias without effect"
+    assert abs(accepted[1]["drift_max"] - drift) <= 1e-12 * drift, (accepted[1]["drift_max"], drift)
     # A later fresh run keeps the preset bias, not its two pending samples, and repeats the first run
     sim.random_bg.state = rng
     quiet(sim.run, fields())
@@ -293,7 +312,7 @@ def main():
     constructor_state()
     bias_updates()
     print("[PASS] WTMD constructor state, fresh start and the derivative of the bias")
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_wtmd_lifecycle_") as directory:
         root = Path(directory)
         input_keys(root, platform)
@@ -305,7 +324,8 @@ def main():
         bias_at_intermediate_fields(root, platform)
         samples_of_the_fields_before_the_step(root, platform)
         print(f"[PASS] {platform}: WTMD input keys, fresh runs, manual continuation, checkpoint restart, "
-              "preset bias, a bias set between runs, the bias of intermediate forces and the fields of the samples")
+              "preset bias and its drift, a bias set between runs, the bias of intermediate forces and the fields of "
+              "the samples")
     return 0
 
 

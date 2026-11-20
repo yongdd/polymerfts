@@ -24,7 +24,7 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, SCFT, ValidationError
 from polymerfts.utils.checkpoint import RunRecord, extension_state, pair_suffix
 from polymerfts.utils.common import atomic_savemat
-from fts_checks import exact_restart, input_of, python_platform, silenced
+from fts_checks import cpu_platform, exact_restart, input_of, silenced
 
 
 def read_mat(path):
@@ -167,7 +167,7 @@ def check_clfts_aux(root, platform):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_pair_records_") as directory:
         root = Path(directory)
         previous = Path.cwd()

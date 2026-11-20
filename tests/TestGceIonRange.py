@@ -19,7 +19,7 @@ from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT, NumericalError, ValidationError
 from polymerfts.utils.checkpoint import validate_checkpoint
-from fts_checks import python_platform, quiet
+from fts_checks import cpu_platform, quiet
 
 
 NX, LX = [4], [2.0]
@@ -209,7 +209,7 @@ def true_overflow_rejected(root, platform):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_gce_ion_range_") as directory:
         root = Path(directory)
         uniform_operators(root / "uniform", platform)

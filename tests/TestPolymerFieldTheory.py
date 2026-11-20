@@ -48,6 +48,8 @@ import warnings
 import numpy as np
 from polymerfts.theory.symmetric_formulation import SymmetricPolymerTheory
 
+from cuda_part import cpu_platform
+
 n_pass = 0
 n_fail = 0
 
@@ -186,11 +188,9 @@ def test_saddle_point_model(chi0):
 def test_singular_hamiltonian():
     """Absolute H is independent of uniform potentials in an absent mode."""
     from polymerfts import _core
-    platforms = _core.PlatformSelector.avail_platforms()
-    if not platforms:
+    if not _core.PlatformSelector.avail_platforms():
         return
-    platform = next((p for p in platforms if p.startswith("cpu")), platforms[0])
-    fac = _core.PlatformSelector.create_factory(platform, False, "real")
+    fac = _core.PlatformSelector.create_factory(cpu_platform(), False, "real")
     cases = [(["A", "B", "C"], {"A,B": 10.0, "A,C": ac, "B,C": 40.0}, None, [.3, .4, .3])
              for ac in (10.0, 10.001)]
     cases.append((["A", "B"], {"A,B": -200.0}, 100.0, [.3, .7]))

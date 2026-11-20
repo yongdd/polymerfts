@@ -22,7 +22,7 @@ import yaml
 from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector
 from cuda_part import cuda_part_missing
 from polymerfts.utils.common import input_hash, json_ready, mat_ready, settings_json
-from fts_checks import compressible_parameters, exact_restart, python_platform, quiet
+from fts_checks import compressible_parameters, cpu_platform, exact_restart, quiet
 
 
 def scalar_encodings():
@@ -128,7 +128,7 @@ def fts_restart(root, platform):
 
 def main():
     scalar_encodings()
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_numpy_scalars_") as directory:
         root = Path(directory)
         scft_outputs(root / "scft", platform)

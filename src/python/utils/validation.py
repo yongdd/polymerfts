@@ -1113,8 +1113,8 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
     recording = params.get("recording")
     if not isinstance(recording, dict) or "dir" not in recording:
         raise ValidationError("The Gibbs ensemble needs 'recording.dir' for its boxes and history")
-    _integer(recording.get("sample_interval", 1), "recording.sample_interval")
-    if gibbs["cycle_steps"] % recording.get("sample_interval", 1) != 0:
+    _integer(recording.get("sample_interval"), "recording.sample_interval")
+    if gibbs["cycle_steps"] % recording["sample_interval"] != 0:
         raise ValidationError("'gibbs_ensemble.cycle_steps' must be a multiple of 'recording.sample_interval'")
     if any(str(b).lower() != "periodic" for b in params.get("bc") or []):
         raise ValidationError("The Gibbs ensemble needs periodic boxes (the osmotic pressure)")

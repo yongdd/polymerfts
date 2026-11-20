@@ -4,9 +4,9 @@
 Two homopolymers A and B (discrete chains, N = 20) on 4x4 grids:
 1. Input: grand-canonical polymers, volume fractions that do not sum to 1, a cell of its own for a
    box, a missing or invalid cell, a phase without volume, a species absent from a box, a charged box
-   that is not neutral, skip_steps >= cycle_steps, a zero sample interval, point ions of continuous
-   chains without n_segments and a negative seed are rejected. A box without a volume takes that of
-   the cell.
+   that is not neutral, skip_steps >= cycle_steps, a missing or zero sample interval, point ions of
+   continuous chains without n_segments and a negative seed are rejected. A box without a volume takes
+   that of the cell.
 2. Mean-field limit (nbar 1e28) of the symmetric blend at chi N = 3: the boxes reach the
    Flory-Huggins binodal ln(phi/(1 - phi)) = chi N (2 phi - 1).
 3. Mean-field limit with charged A chains (one charge per chain), Cl- counterions and Na+ Cl- salt
@@ -36,9 +36,12 @@ Two homopolymers A and B (discrete chains, N = 20) on 4x4 grids:
    from its runs; a continuation without them, and with other verbosity and memory options,
    reproduces the uninterrupted run, a continuation may change the platform, and the histories of
    earlier versions continue with the input that wrote them.
+9. Samples of every second step and skip_steps 5, as the examples sample: the averages of each box hold
+   the samples after the first five steps of each cycle, and its chemical potentials, pressure and
+   exchange potentials are those of the columns of its dH file, with a grand-canonical ion listed
+   before the canonical ones.
 """
 
-import copy
 import json
 import os
 import tempfile
@@ -140,6 +143,8 @@ def inputs(root):
     expect_validation_error(lambda: GibbsEnsemble(params), "positive amount in both boxes")
     params = parameters(root / "inputs", 2)
     params["recording"]["sample_interval"] = 0
+    expect_validation_error(lambda: GibbsEnsemble(params), "'recording.sample_interval' must be an integer")
+    params["recording"].pop("sample_interval")
     expect_validation_error(lambda: GibbsEnsemble(params), "'recording.sample_interval' must be an integer")
     params = parameters(root / "inputs", 2, charge=0.05, ions=salt())
     params["chain_model"] = "continuous"
@@ -364,15 +369,41 @@ def restart(root):
     expect_validation_error(lambda: charged(2, salt()).continue_run(), "input differs")
 
 
+def sampled_averages(root):
+    """Samples of every second step and skip_steps 5: each box averages the samples after the first five
+    steps of a cycle, the columns of its dH file. The grand-canonical K comes before the canonical Na and Cl
+    in the input, and so in the columns of the point ions."""
+    ions = {"K": {"valence": 1.0, "chemical_potential": np.log(N * 0.005), "smearing_length": 0.1}, **salt()}
+    params = parameters(root / "sampled", 2, nbar=1e4, charge=0.05, ions=ions)
+    params["electrostatics"]["screening_length"] = 0.5
+    params["recording"]["sample_interval"] = 2
+    params["gibbs_ensemble"]["skip_steps"] = 5
+    gibbs = quiet(lambda: GibbsEnsemble(params, random_seed=3))
+    quiet(gibbs.run)
+    kept = len(range(6, 21, 2))   # the samples at the steps 6, 8, ..., 20 of a cycle of 20 steps
+    for cycle in gibbs.history["cycles"]:
+        for b, box in enumerate(cycle["boxes"]):
+            data = loadmat(root / "sampled" / f"box{b}" / f"dH_{cycle['last_step']:06d}.mat", squeeze_me=True)
+            # Columns: the polymers A and B, then the point ions K, Na and Cl
+            mu = np.reshape(np.real(data["chemical_potential_history_real"]), (-1, 5))
+            pressure = np.real(data["pressure_history_real"])
+            assert len(mu) == len(pressure) == 10 and box["samples"] == kept, (len(mu), box["samples"])
+            mu, pressure = mu[-kept:].mean(axis=0), pressure[-kept:].mean()
+            np.testing.assert_allclose(box["chemical_potentials"], mu, rtol=1e-14, atol=0)
+            np.testing.assert_allclose(box["pressure"], pressure, rtol=1e-14, atol=0)
+            exchange = np.concatenate([mu[:2] - gibbs.alphas * pressure, mu[3:]])
+            np.testing.assert_allclose(box["exchange_potentials"], exchange, rtol=1e-14, atol=1e-14)
+
+
 def input_keys(root):
     """The options of other methods in the input: one warning, at the line that builds the ensemble, and
     none from its runs. The boxes and the hash of the history leave them out, so that a continuation
     may drop them, and so does the hash with the keys that the boxes take from the cycles (max_step, the
     recording directory and intervals, the volume fractions of the polymers) and with the verbosity,
     platform and memory options, which a continuation may change or drop; a key given as None is absent.
-    A history written before, whose hash holds every key but gibbs_ensemble and max_step, or every key
-    but those and the keys of the cycles, continues with the input that wrote it, takes the hash without
-    those keys, and refuses an input that changes one of them."""
+    A history written before, whose hash holds every key but gibbs_ensemble and max_step, continues with
+    the input that wrote it, takes the hash without those keys, and refuses an input that changes one of
+    them."""
     def make(directory, cycles, **extra):
         params = parameters(directory, cycles, nbar=1e4)
         params.update(extra)
@@ -419,18 +450,6 @@ def input_keys(root):
     quiet(make(root / "keys_full", 3).continue_run)
     history = json.loads(path.read_text())
     assert len(history["cycles"]) == 3 and history["settings"]["input_hash"] == full.settings()["input_hash"]
-    # A history written until 2026-11-19, whose hash holds the verbosity, platform and memory options too
-    template = copy.deepcopy(template)
-    for key in ("dir", "checkpoint_interval", "statistics_save_interval"):
-        template["recording"].pop(key)
-    for polymer in template["polymers"]:
-        polymer.pop("volume_fraction")
-    history["settings"]["input_hash"] = input_hash(json_ready(template))
-    path.write_text(json.dumps(history))
-    expect_validation_error(make(root / "keys_full", 4, verbose_level=1).continue_run, "input differs")
-    quiet(make(root / "keys_full", 4).continue_run)
-    history = json.loads(path.read_text())
-    assert len(history["cycles"]) == 4 and history["settings"]["input_hash"] == full.settings()["input_hash"]
 
 
 def snapped_parameters(directory, cycles, platform):
@@ -590,7 +609,7 @@ def main():
         root = Path(tmp)
         for name, check in (("inputs", inputs), ("mobility", mobility), ("blend binodal", blend), ("charged coexistence", charged),
                             ("Donnan coexistence", donnan), ("tie line", tie_line), ("restart", restart),
-                            ("input keys", input_keys)):
+                            ("sampled averages", sampled_averages), ("input keys", input_keys)):
             check(root)
             print(f"[PASS] {name}")
         for platform in PlatformSelector.avail_platforms():

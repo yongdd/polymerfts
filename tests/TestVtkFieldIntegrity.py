@@ -11,7 +11,7 @@ import numpy as np
 
 from polymerfts import PropagatorSolver, save_vtk
 from TestSaveVtk import read_vtk
-from fts_checks import python_platform
+from fts_checks import cpu_platform
 
 
 def field_names(root):
@@ -69,7 +69,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts_vtk_integrity_") as directory:
         root = Path(directory)
         field_names(root)
-        small_shear(root, python_platform())
+        small_shear(root, cpu_platform())
     return 0
 
 

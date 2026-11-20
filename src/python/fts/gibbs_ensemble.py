@@ -91,8 +91,8 @@ class GibbsEnsemble:
         (Langevin steps of each box per cycle), `exchange_rate` (default 0.2) and `skip_steps`
         (steps at the start of each cycle left out of the averages, default 0). `lx` is the cell
         of both boxes. `recording.dir` holds the boxes and the history;
-        `recording.sample_interval` sets the samples of the averages. The volume fractions of
-        `polymers` are not used.
+        `recording.sample_interval` (required) sets the samples of the averages. The volume
+        fractions of `polymers` are not used.
     random_seed : int, optional
         Seed of the noise of both boxes in all cycles; drawn and recorded if omitted.
     """
@@ -117,7 +117,7 @@ class GibbsEnsemble:
         self.exchange_rate = float(gibbs.get("exchange_rate", 0.2))
         self.skip_steps = int(gibbs.get("skip_steps", 0))
         self.directory = str(params["recording"]["dir"])
-        self.sample_interval = int(params["recording"].get("sample_interval", 1))
+        self.sample_interval = int(params["recording"]["sample_interval"])
         self.random_seed = int(np.random.SeedSequence().entropy % (2 ** 63)) if random_seed is None else int(random_seed)
 
         # Species that move between the boxes: the polymers, then the canonical point ions
@@ -183,20 +183,18 @@ class GibbsEnsemble:
                 "random_seed": self.random_seed, "ion_names": self.point_ion_names,
                 "effective_block_lengths": [list(lengths) for lengths in self.block_lengths]}
 
-    def _hashed_input(self, legacy=None):
+    def _hashed_input(self, legacy=False):
         """The keys of the input that CL-FTS reads without those that box_params sets (langevin.max_step,
         the directory, the intervals and the pressure of the recording and the volume fractions of the
-        polymers) and those that a continuation may change (CONTINUATION_KEYS). Earlier histories hashed
-        more keys (legacy): those written before 2026-11-18 all but max_step ("all"), those written until
-        2026-11-19 all but the keys that box_params sets ("cycle keys")."""
+        polymers) and those that a continuation may change (CONTINUATION_KEYS). Histories written before
+        2026-11-18 hashed all keys but max_step (legacy)."""
         template = copy.deepcopy(self._clfts_input())
         template["langevin"].pop("max_step", None)
-        if legacy != "all":
+        if not legacy:
             for key in ("dir", "checkpoint_interval", "statistics_save_interval", "pressure"):
                 template["recording"].pop(key, None)
             for polymer in template["polymers"]:
                 polymer.pop("volume_fraction", None)
-        if legacy is None:
             for key in self.CONTINUATION_KEYS:
                 template.pop(key, None)
         return template
@@ -258,9 +256,6 @@ class GibbsEnsemble:
     def _seed(self, cycle, b):
         return int(np.random.SeedSequence([self.random_seed, cycle, b]).generate_state(1, dtype=np.uint64)[0] % (2 ** 63))
 
-    def _box_directory(self, b):
-        return os.path.join(self.directory, f"box{b}")
-
     def _write_history(self):
         path = os.path.join(self.directory, self.HISTORY)
         text = json.dumps(json_ready(self.history), indent=1, allow_nan=False)
@@ -300,8 +295,7 @@ class GibbsEnsemble:
         current = json.loads(json.dumps(json_ready(self.settings())))
         # A history written by an earlier version hashed more keys: it continues with the input that wrote
         # it, and its history takes the hash without them
-        if stored.get("input_hash") in [input_hash(json_ready(self._hashed_input(legacy)))
-                                        for legacy in ("all", "cycle keys")]:
+        if stored.get("input_hash") == input_hash(json_ready(self._hashed_input(legacy=True))):
             stored["input_hash"] = self.history["settings"]["input_hash"] = current["input_hash"]
         stored_lengths = stored.pop("effective_block_lengths", None)
         effective_lengths = current.pop("effective_block_lengths")
@@ -353,7 +347,7 @@ class GibbsEnsemble:
         """One cycle of box b; returns its state and the averages of its operators."""
         params = self.box_params(b, self.amounts[b], cycle)
         first_step = cycle * self.cycle_steps + 1
-        directory = self._box_directory(b)
+        directory = params["recording"]["dir"]
         os.makedirs(directory, exist_ok=True)
         monomer_types = sorted(params["segment_lengths"])
         w_saddle, psi_saddle = self._homogeneous_fields(params)

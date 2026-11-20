@@ -37,7 +37,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat, savemat
 from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
-from fts_checks import exact_restart, quiet, recording_dir
+from fts_checks import cpu_platform, exact_restart, quiet, recording_dir
 
 NX, LX = [8, 6, 7], [1.6, 1.3, 1.45]
 Z_A = 0.2
@@ -53,7 +53,7 @@ def parameters(directory, lx=LX, charged=True, screening_length=None, smearing="
         "segment_lengths": {"A": 1.0, "B": 1.3, "C": 1.0}, "chi_n": {"A,B": 9.0, "B,C": 2.0}, "zeta_n": ZETA_N,
         "polymers": [{"volume_fraction": 1 - PHI_C, "blocks": [{"type": "A", "length": 0.3}, {"type": "B", "length": 0.7}]},
                      {"volume_fraction": PHI_C, "blocks": [{"type": "C", "length": 0.05}]}],
-        "platform": next(p for p in PlatformSelector.avail_platforms() if p.startswith("cpu")),
+        "platform": cpu_platform(),
         "langevin": {"nbar": NBAR, "dt": 0.5, "max_step": steps},
         "recording": {"dir": str(directory), "checkpoint_interval": 1, "sample_interval": 1,
                       "statistics_save_interval": 2, "pressure": True},

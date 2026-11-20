@@ -23,7 +23,7 @@ from polymerfts import SCFT, LFTS, CLFTS
 from polymerfts.utils.checkpoint import pair_suffix
 from polymerfts.utils.common import atomic_savemat, input_hash
 from polymerfts.utils.mat_fields import decode_mat_fields
-from fts_checks import compare_files, exact_restart, python_platform, quiet
+from fts_checks import compare_files, cpu_platform, exact_restart, quiet
 
 
 MARKER = "polymerfts_mat_keys_json"
@@ -272,7 +272,7 @@ def main():
         root = Path(directory)
         check_encoding(root)
         # The key encoding is Python: one platform runs the writers and restarts
-        platform = python_platform()
+        platform = cpu_platform()
         for label, name in NAMES:
             output = root / label
             check_scft(output / "scft", platform, name)

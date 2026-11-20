@@ -18,7 +18,7 @@ from scipy.io import loadmat
 
 from polymerfts import SCFT, NumericalError
 from polymerfts.utils.common import check_partition_functions
-from fts_checks import python_platform, quiet
+from fts_checks import cpu_platform, quiet
 
 
 def check_guard_policy():
@@ -121,7 +121,7 @@ def check_scft(root, platform, model, reduced):
 
 def main():
     check_guard_policy()
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_scft_") as directory:
         root = Path(directory)
         for model in ("continuous", "discrete"):

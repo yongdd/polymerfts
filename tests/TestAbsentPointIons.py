@@ -15,7 +15,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, SCFT
-from fts_checks import compare_files, exact_restart, python_platform, quiet
+from fts_checks import compare_files, cpu_platform, exact_restart, quiet
 
 
 PSI_ZERO_Q = 1j * np.array([0.0, 0.0, np.pi, -np.pi])
@@ -164,7 +164,7 @@ def mean_field_underflow(root, platform):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_absent_ions_") as directory:
         root = Path(directory)
         absent_observables(root, platform)

@@ -181,7 +181,7 @@ class LFTS:
                 fourier=self.prop_solver.fourier if self._periodic_box else None,
                 verbose_level=params["verbose_level"],
             )
-            print("WTMD enabled: l=%d, sigma_psi=%.4f, dT=%.4f, kc=%.4f, exchange_idx=%d, langevin_idx=%d" % (
+            print("WTMD enabled: l=%g, sigma_psi=%.4f, dT=%.4f, kc=%.4f, exchange_idx=%d, langevin_idx=%d" % (
                 wtmd.l, wtmd.sigma_psi, wtmd.dT, wtmd.kc, wtmd.exchange_idx, wtmd.langevin_idx))
             return wtmd
         return None
@@ -225,7 +225,7 @@ class LFTS:
         check_partition_once(self, lambda: self.mpt.to_monomer_fields_dict(w_aux))
         return phi, elapsed_time
 
-    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux, record):
+    def save_simulation_data(self, path, w_aux, phi, langevin_step, normal_noise_prev, record):
         """Save L-FTS simulation checkpoint data to MATLAB file.
 
         Saves the current state of the simulation including fields, concentrations,
@@ -235,8 +235,9 @@ class LFTS:
         ----------
         path : str
             Output file path (should end with '.mat').
-        w : ndarray
-            Current monomer potential fields, shape (M, total_grid).
+        w_aux : ndarray
+            Current auxiliary fields, shape (M, total_grid); the file holds them and their
+            monomer potential fields.
         phi : dict
             Current monomer concentration fields, {monomer_type: array}.
         langevin_step : int
@@ -244,8 +245,6 @@ class LFTS:
         normal_noise_prev : ndarray
             Previous Langevin noise (needed for Leimkuhler-Matthews method),
             shape (R, total_grid) where R is number of real auxiliary fields.
-        w_aux : ndarray
-            The auxiliary fields of w, shape (M, total_grid).
         record : RunRecord
             The measurements of the run since its last statistics file.
         """
@@ -254,6 +253,7 @@ class LFTS:
         mdic = fields_data(self, w_aux, langevin_step, normal_noise_prev, record)
 
         # Add w fields to the dictionary
+        w = self.mpt.to_monomer_fields(w_aux)
         for i, name in enumerate(self.monomer_types):
             mdic["w_" + name] = w[i]
         
@@ -446,10 +446,9 @@ class LFTS:
 
             # Save simulation data
             if langevin_step % self.recording["checkpoint_interval"] == 0:
-                w = self.mpt.to_monomer_fields(w_aux)
                 self.save_simulation_data(
                     path=os.path.join(self.recording["dir"], "fields_%06d.mat" % (langevin_step)),
-                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux,
+                    w_aux=w_aux, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev,
                     record=record)
 
         print("Cumulative failed saddle-point solves: %d times" % self.run_status["saddle_failures"])

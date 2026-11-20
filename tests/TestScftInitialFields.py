@@ -19,7 +19,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import SCFT, ValidationError
-from fts_checks import python_platform, quiet
+from fts_checks import cpu_platform, quiet
 
 
 def parameters(platform, group=False):
@@ -164,7 +164,7 @@ def check_branch(platform, group, permute):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     for group, permute in ((False, False), (False, True), (True, False), (True, True)):
         check_branch(platform, group, permute)
     return 0
