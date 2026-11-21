@@ -17,7 +17,7 @@ from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, PlatformSelector, SCFT, ValidationError
 from polymerfts.utils.validation import (net_polymer_charge, open_charges, point_ion_concentrations,
                                    polymer_block_lengths, validate_scft_params)
-from cuda_part import cuda_part_missing
+from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
 
@@ -282,8 +282,7 @@ def check_native_length_agreement(platform):
 
 if __name__ == "__main__":
     platforms = PlatformSelector.avail_platforms()
-    if platforms:
-        check_native_length_agreement(next((name for name in platforms if name.startswith("cpu")), platforms[0]))
+    check_native_length_agreement(cpu_platform())
     check_invalid_discrete_length()
     for platform in platforms:
         for name, ds, segments, chi_n, polymers, mean, mu, shifted in cases():

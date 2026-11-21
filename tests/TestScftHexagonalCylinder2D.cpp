@@ -100,7 +100,7 @@ int main()
         std::vector<std::string> avail_platforms = PlatformSelector::avail_platforms();
         for (std::string platform : avail_platforms)
         {
-            std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
+            std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
             factory->display_info();
 
             // Create computation box with hexagonal angles

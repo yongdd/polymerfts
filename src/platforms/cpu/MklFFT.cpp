@@ -120,21 +120,21 @@ void MklRealFFT::backward(std::complex<double>* modes, double* samples) const
 template <typename T, int DIM>
 MklFFT<T, DIM>::MklFFT(std::array<int, DIM> nx)
 {
-    int total_grid = 1;
+    total_grid_ = 1;
     for (int d = 0; d < DIM; ++d)
-        total_grid *= nx[d];
+        total_grid_ *= nx[d];
 
     // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
     if constexpr (std::is_same<T, double>::value)
-        this->set_sizes(total_grid, total_grid / nx[DIM - 1] * (nx[DIM - 1] / 2 + 1), true);
+        total_complex_grid_ = total_grid_ / nx[DIM - 1] * (nx[DIM - 1] / 2 + 1);
     else
-        this->set_sizes(total_grid, total_grid, true);
+        total_complex_grid_ = total_grid_;
 
     try
     {
         // The backward transform includes the 1/N of the FFT<T> interface
         create_descriptors(std::vector<int>(nx.begin(), nx.end()), std::is_same<T, double>::value,
-                           1.0 / static_cast<double>(total_grid), hand_forward_, hand_backward_);
+                           1.0 / static_cast<double>(total_grid_), hand_forward_, hand_backward_);
     }
     catch (std::exception& exc)
     {
@@ -179,6 +179,21 @@ void MklFFT<T, DIM>::backward(double *cdata, T *rdata)
 {
     mkl_dfti_check(DftiComputeBackward(hand_backward_, reinterpret_cast<std::complex<double>*>(cdata), rdata),
                    "DftiComputeBackward (periodic)");
+}
+
+template <typename T, int DIM>
+void MklFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
+{
+    if (k_factor != nullptr)
+    {
+        std::complex<double>* modes = reinterpret_cast<std::complex<double>*>(cdata);
+        for (int i = 0; i < total_complex_grid_; ++i)
+            modes[i] *= k_factor[i];
+    }
+    backward(cdata, rdata);
+    if (r_factor != nullptr)
+        for (int i = 0; i < total_grid_; ++i)
+            rdata[i] *= r_factor[i];
 }
 
 // Explicit template instantiations

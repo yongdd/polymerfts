@@ -52,8 +52,9 @@
  * two DCT objects of the Pmmm engine alone take 0.8), and must be less than two
  * full-grid fields; turning the flag on, which takes the stress to the full
  * grid, and calling prepare_stress() again must add at least two full-grid
- * fields per stream (the full-grid input and output of the reduced basis,
- * besides the transforms' work and the cuFFT work area; seven to eleven in all). A solver that allocated
+ * fields per stream (the full grid of the reduced basis and the spectra of two
+ * fields, besides the stress workspace, the transforms' work and the cuFFT work
+ * area; about five to seven in all). A solver that allocated
  * the full-grid work for the fast path as well would hold that much per stream
  * with the flag off and add nothing.
  */
@@ -80,6 +81,7 @@
 #include "PropagatorComputation.h"
 #include "PropagatorComputationOptimizer.h"
 #include "SpaceGroup.h"
+#include "TestCudaPart.h"
 
 struct Case
 {
@@ -109,7 +111,7 @@ struct Computation
 static Computation create(const Case& c, const std::vector<double>& lx, bool p1 = false, double b_B = 1.3)
 {
     Computation s;
-    s.factory = PlatformSelector::create_factory_real("cuda", false);
+    s.factory = PlatformSelector::create_factory<double>("cuda", false);
     s.sg = p1 ? std::make_unique<SpaceGroup>(c.nx, "P1", 1) : std::make_unique<SpaceGroup>(c.nx, c.sg_symbol, c.sg_hall);
     if (!p1 && c.basis == "m3")       s.sg->enable_m3_physical_basis();
     if (!p1 && c.basis == "pmmm")     s.sg->enable_pmmm_physical_basis();
@@ -186,35 +188,16 @@ static bool change_cell(Computation& s, const std::vector<double>& lx)
     return same;
 }
 
-#ifdef _WIN32
-// The CRT environment that getenv reads; an empty value removes the variable
-static void set_env(const char* name, const char* value) { _putenv_s(name, value); }
-static void unset_env(const char* name) { _putenv_s(name, ""); }
-#else
-static void set_env(const char* name, const char* value) { setenv(name, value, 1); }
-static void unset_env(const char* name) { unsetenv(name); }
-#endif
-
 /// Device bytes held by a computation of the case with n_streams streams (OMP_NUM_THREADS when it is
 /// created) and bond length b_B after compute() and compute_stress()
 static long long device_bytes(const Case& c, int n_streams, double b_B)
 {
-    const char* previous = std::getenv("OMP_NUM_THREADS");
-    const std::string saved = previous ? previous : "";
-    set_env("OMP_NUM_THREADS", std::to_string(n_streams).c_str());
+    ScopedStreams streams(std::to_string(n_streams).c_str());
     const long long start = CudaDeviceMemory::counters().live_bytes.load();
-    long long bytes = 0;
-    {
-        Computation s = create(c, c.lx, /*p1=*/false, b_B);
-        compute(s);
-        s.computation->compute_stress();
-        bytes = CudaDeviceMemory::counters().live_bytes.load() - start;
-    }
-    if (previous)
-        set_env("OMP_NUM_THREADS", saved.c_str());
-    else
-        unset_env("OMP_NUM_THREADS");
-    return bytes;
+    Computation s = create(c, c.lx, /*p1=*/false, b_B);
+    compute(s);
+    s.computation->compute_stress();
+    return CudaDeviceMemory::counters().live_bytes.load() - start;
 }
 
 /// The tables of a second bond length add the same bytes with one stream and with four

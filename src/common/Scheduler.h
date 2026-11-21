@@ -26,7 +26,7 @@
  * ```
  *
  * @see PropagatorComputationOptimizer for propagator dependency analysis
- * @see ComputationContinuous for the concurrent execution of a group
+ * @see ComputationContinuous and ComputationDiscrete for the concurrent execution of a group
  */
 
 #ifndef SCHEDULER_H_
@@ -102,7 +102,8 @@ public:
      * @param n_streams   Number of parallel streams available
      *
      * @note The CPU computes up to OMP_NUM_THREADS propagators at once (default 4), each
-     *       on one thread; CUDA uses up to 4 streams. Reduced memory uses one stream.
+     *       on one thread; CUDA uses up to 4 streams. The full-storage computations use the
+     *       schedule; reduced memory computes one propagator at a time without one.
      */
     Scheduler(const std::map<std::string, ComputationEdge, ComparePropagatorKey>& propagators, int n_streams);
 

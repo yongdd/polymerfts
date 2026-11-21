@@ -39,8 +39,6 @@
 #include "ComputationBox.h"
 #include "FFT.h"
 
-class SpaceGroup;
-
 /**
  * @brief Work arrays W of each calling thread, owned by a solver and released with it.
  *
@@ -89,10 +87,11 @@ public:
  * **Common Usage Pattern:**
  *
  * @code
- * // Create solver (via derived class)
- * CpuSolver<double>* solver = new CpuSolverPseudoRQM4<double>(cb, molecules);
+ * // Create solver (via derived class), with the tables of the cell; space_group may be nullptr
+ * std::unique_ptr<CpuSolver<double>> solver =
+ *     std::make_unique<CpuSolverPseudoRQM4<double>>(cb, molecules, space_group, FFTBackend::FFTW);
  *
- * // Tables of the cell (after set_space_group(), and when the cell changes)
+ * // Tables of a new cell
  * solver->update_laplacian_operator();
  *
  * // Update when fields change
@@ -149,18 +148,6 @@ public:
     void set_force_off_diagonal_stress(bool force) { force_off_diagonal_stress_ = force; }
 
     /**
-     * @brief Set space group for reduced basis operations.
-     *
-     * When set, propagator input/output uses reduced basis and the solver
-     * internally handles expand/reduce around FFT operations.
-     *
-     * Default implementation does nothing (for solvers that don't support space groups).
-     *
-     * @param sg Space group pointer (nullptr to disable reduced basis)
-     */
-    virtual void set_space_group(SpaceGroup* /*sg*/) {}
-
-    /**
      * @brief Update Laplacian operator for changed box dimensions.
      *
      * Called when box size changes (e.g., during stress relaxation).
@@ -200,8 +187,8 @@ public:
      *
      *     q(r, s+ds) = Propagator[ q(r, s), w(r) ]
      *
-     * When space_group is set on the solver, input/output are in reduced basis
-     * and the solver handles expand/reduce around FFT operations internally.
+     * With a space group (given to the constructor), input/output are in its reduced
+     * basis and the solver handles expand/reduce around FFT operations internally.
      *
      * @param q_in        Input propagator at contour s (size n_grid or n_basis)
      * @param q_out       Output propagator at contour s+ds (size n_grid or n_basis)
@@ -230,8 +217,8 @@ public:
      *
      * where B^(1/2) is the half-bond convolution with ĝ^(1/2)(k) = exp(-b²|k|²ds/12).
      *
-     * When space_group is set on the solver, input/output are in reduced basis
-     * and the solver handles expand/reduce around FFT operations internally.
+     * With a space group (given to the constructor), input/output are in its reduced
+     * basis and the solver handles expand/reduce around FFT operations internally.
      *
      * @param q_in        Input propagator (size n_grid or n_basis)
      * @param q_out       Output propagator (size n_grid or n_basis)

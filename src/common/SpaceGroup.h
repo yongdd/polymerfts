@@ -64,7 +64,6 @@ private:
 
     // Irreducible-basis snapshot (full space group) for enforcing symmetry
     int n_irreducible_full_{0};
-    std::vector<int> reduced_basis_indices_full_;
     std::vector<int> full_to_reduced_map_full_;
     std::vector<int> orbit_counts_full_;
     std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index (empty without a physical basis)
@@ -72,7 +71,6 @@ private:
     // Physical basis flags
     PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
     mutable bool in_use_{false};  ///< set once a computation box or solver holds this group
-    int z_mirror_shift_{0};
 
     /// Initialize space group from Hall number.
     void initialize(std::vector<int> nx, int hall_number);
@@ -344,7 +342,6 @@ public:
      */
     void enable_z_mirror_physical_basis();
     bool using_z_mirror_physical_basis() const { return physical_basis_ == PhysicalBasis::ZMirror; }
-    int get_z_mirror_shift() const { return z_mirror_shift_; }
 
 };
 

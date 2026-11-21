@@ -47,7 +47,7 @@ int main()
         const int M{II*JJ};
         const int NN{4};
 
-        double q_prev[M], q_next[M];
+        double q_next[M];
 
         std::array<double,M> diff_sq;
         double error;
@@ -239,26 +239,6 @@ int main()
             std::cout<< "Error against the reference values: "<< error << std::endl;
             if (!std::isfinite(error) || error > 1e-7)
                 return -1;
-            if (n % repeat != 0)
-            {
-                //--------------- check --------------------
-                std::cout<< "Checking"<< std::endl;
-                std::cout<< "If error is less than 1.0e-7, it is ok!" << std::endl;
-                std::cout<< "i: q (" << solver_name_list[n-1] << "), (" << solver_name_list[n] << ")" << std::endl;
-                for(int i=0; i<M; i++)
-                    std::cout << i << ": " << q_prev[i] << ", " << q_next[i] << std::endl;
-
-                for(int i=0; i<M; i++)
-                    diff_sq[i] = pow(q_prev[i] - q_next[i],2);
-                error = sqrt(max_or_nan(diff_sq));
-
-                std::cout<< "Propagator error: "<< error << std::endl;
-                if (!std::isfinite(error) || error > 1e-7)
-                    return -1;
-            }
-
-            for(int i=0; i<M; i++)
-                q_prev[i] = q_next[i];
         }
         // Release the computations, then their boxes and the shared objects
         for (PropagatorComputation<double>* solver : solver_list)

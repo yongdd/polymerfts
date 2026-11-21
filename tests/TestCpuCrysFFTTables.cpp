@@ -27,6 +27,11 @@
  *    recursive 3m); ObliqueZ has none and refuses to build one. Each engine
  *    reports which (has_multipliers()).
  * 4. A table of another size is refused.
+ * 5. The z work arrays of the MKL ObliqueZ engine, which every engine on a thread
+ *    shares, fit each grid just transformed: 24x24x24, then 16x16x64 and
+ *    32x32x16, which have the same Nx*Ny*Nz but need 4352 and 5120 spectrum
+ *    values. An undersized array would only show as heap corruption, which need
+ *    not crash.
  *
  * "Equal" means a relative difference of at most 1e-14 (the thread and fresh
  * engine results run the same plans on other scratch arrays).
@@ -182,6 +187,29 @@ bool check_engine(const std::string& name, const Make& make, std::array<double, 
     return ok;
 }
 
+#ifdef USE_CPU_MKL
+/// 5. The z work arrays of this thread after a diffusion of the MKL ObliqueZ engine of grid nx
+bool check_mkl_z_work(const std::array<int, 3>& nx, const std::array<double, 6>& cell, std::mt19937_64& rng)
+{
+    const MklCrysFFTObliqueZ engine(nx);
+    std::vector<double> table;
+    engine.build_boltzmann(table, cell, 0.004);
+    std::normal_distribution<double> normal(0.0, 5.0);
+    std::vector<double> q(engine.get_M_physical());
+    for (double& v : q)
+        v = normal(rng);
+    diffused(engine, q, table);
+
+    const std::array<size_t, 2> sizes = MklCrysFFTObliqueZ::thread_z_work_sizes();
+    const size_t need_real = static_cast<size_t>(nx[0]) * nx[1] * (nx[2] / 2);
+    const size_t need_freq = static_cast<size_t>(nx[0]) * nx[1] * (nx[2] / 4 + 1);
+    const std::string grid = std::to_string(nx[0]) + "x" + std::to_string(nx[1]) + "x" + std::to_string(nx[2]);
+    return check("MKL ObliqueZ", "z work arrays of " + grid + ": " + std::to_string(sizes[0]) + " real, "
+                 + std::to_string(sizes[1]) + " complex (need " + std::to_string(need_real) + ", "
+                 + std::to_string(need_freq) + ")", sizes[0] >= need_real && sizes[1] >= need_freq);
+}
+#endif
+
 }  // namespace
 
 int main()
@@ -210,6 +238,9 @@ int main()
                            orthorhombic, true, rng);
         ok &= check_engine("MKL ObliqueZ", [&] { return std::make_unique<MklCrysFFTObliqueZ>(nx_hex); },
                            hexagonal, false, rng);
+        for (const std::array<int, 3>& grid : {std::array<int, 3>{24, 24, 24}, std::array<int, 3>{16, 16, 64},
+                                               std::array<int, 3>{32, 32, 16}})
+            ok &= check_mkl_z_work(grid, hexagonal, rng);
 #endif
         std::cout << (ok ? "TestCpuCrysFFTTables passed" : "TestCpuCrysFFTTables FAILED") << std::endl;
         return ok ? 0 : -1;

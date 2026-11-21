@@ -406,13 +406,6 @@ void CudaComputationBackend<T>::set_zero(int stream, BackendArray<T>* a)
 }
 
 template <typename T>
-void CudaComputationBackend<T>::copy(int stream, BackendArray<T>* dst, BackendArray<T>* src)
-{
-    CUDA_CHECK(cudaMemcpyAsync(raw(dst), raw(src), sizeof(T)*n_basis,
-                                    cudaMemcpyDeviceToDevice, streams[stream]));
-}
-
-template <typename T>
 template <typename Source>
 void CudaComputationBackend<T>::multiply_sources(
     int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources)

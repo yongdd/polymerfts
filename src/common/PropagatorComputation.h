@@ -105,9 +105,9 @@ constexpr double PARTITION_TOLERANCE = 1e-7;
  *
  * **Parallel Computation:**
  *
- * For branched polymers, independent propagators are computed in parallel
- * using the schedule from PropagatorComputationOptimizer. On CUDA, this
- * uses multiple streams for concurrent kernel execution.
+ * With full storage, independent propagators are computed concurrently in the
+ * groups of a Scheduler: one OpenMP thread each on the CPU, one stream each on
+ * CUDA. With reduced memory they are computed one at a time.
  *
  * @see ComputationContinuous, ComputationDiscrete and the ComputationReduceMemory
  *      classes for implementations (platform neutral, see ComputationBackend)
@@ -235,10 +235,11 @@ public:
         std::map<std::string, const T*> q_init = {}) = 0;
 
     /**
-     * @brief Advance a single propagator step.
+     * @brief Advance a propagator by one step of block (v, u).
      *
-     * Computes q_out = exp(-ds*L/2) exp(-ds*w) exp(-ds*L/2) q_init
-     * where L is the Laplacian operator.
+     * One step of the numerical method with the fields and the cell of the last
+     * compute_propagators(): for continuous chains one contour step ds of the
+     * block, for discrete chains one bond and segment, q_out = exp(-w ds) (g * q_init).
      *
      * @param q_init      Input propagator at contour position s
      * @param q_out       Output propagator at contour position s+ds
@@ -246,7 +247,7 @@ public:
      * @param v           Starting vertex of the block
      * @param u           Ending vertex of the block
      *
-     * @note Used internally by compute_propagators() and for testing.
+     * @note A hook for tests and debugging; compute_propagators() does not call it.
      */
     virtual void advance_propagator_single_segment(T* q_init, T *q_out, int p, int v, int u) = 0;
 
@@ -258,15 +259,16 @@ public:
      *
      * @pre compute_propagators() must be called first.
      *
-     * @note Uses Simpson's rule for accurate contour integration.
+     * @note Continuous chains integrate the contour with Simpson's rule; discrete
+     *       chains sum over the segments.
      */
     virtual void compute_concentrations() = 0;
 
     /**
      * @brief Compute stress tensor from propagators.
      *
-     * Computes d(ln Q)/d(L) for box relaxation optimization.
-     * Results stored internally; retrieve with get_stress().
+     * Computes the lattice-parameter derivatives of each polymer for box
+     * relaxation (dq_dl); retrieve their sum with get_stress() or get_stress_gce().
      *
      * @pre compute_propagators() must be called first.
      */
@@ -300,7 +302,7 @@ public:
      * @param polymer Polymer index
      * @param v       Starting vertex of edge
      * @param u       Ending vertex of edge
-     * @param n       Contour index (0 to n_segment)
+     * @param n       Contour index (continuous chains 0 to n_segment, discrete chains 1 to n_segment)
      *
      * @note Returns q(r,s) propagating from vertex v toward u at step n.
      */
@@ -339,7 +341,7 @@ public:
     /**
      * @brief Get solvent partition function.
      * @param s Solvent index
-     * @return Q_s = (1/V) ∫ exp(-w(r)) dr
+     * @return Q_s = (1/V) ∫ exp(-w(r) ds) dr, with the global contour step ds
      */
     virtual T get_solvent_partition(int s) = 0;
 
@@ -351,9 +353,11 @@ public:
     virtual void get_solvent_concentration(int s, T *phi) = 0;
 
     /**
-     * @brief Get stress vector for all polymers combined.
+     * @brief Get the lattice-parameter derivatives of H for all polymers combined.
      *
-     * @return Vector of {d(ln Q)/dLx, d(ln Q)/dLy, d(ln Q)/dLz}
+     * @return [dH/dL₁, dH/dL₂, dH/dL₃, dH/dγ, dH/dβ, dH/dα]; for 2D
+     *         [dH/dL₁, dH/dL₂, dH/dγ, 0, 0, 0], for 1D only index 0
+     *         (see docs/theory/StressTensor.md)
      *
      * @pre compute_stress() must be called first.
      */

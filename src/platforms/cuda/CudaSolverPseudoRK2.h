@@ -64,31 +64,19 @@ class CudaCrysFFTBase;
  *
  * **Memory per Stream:**
  *
- * - d_q_work: real-space workspace of advance_propagator() on the full grid (M); the
- *   spectra go to the base's scratch (d_qk_ or d_rk_1_), which the stress shares
+ * None of its own: the step runs in its full-grid output, and the spectra go to the
+ * base's scratch (d_qk_ or d_rk_1_), which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
 {
 private:
     using Base = CudaSolverPseudoBase<T>;
-    using Base::cb; using Base::molecules; using Base::pseudo;
-    using Base::n_streams; using Base::is_periodic_; using Base::streams;
-
-    using Base::space_group_; using Base::d_reduced_basis_indices_; using Base::d_full_to_reduced_map_;
-    using Base::n_basis_; using Base::d_q_full_in_; using Base::d_q_full_out_;
-    using Base::use_crysfft_; using Base::crysfft_identity_map_;
-    using Base::crysfft_physical_size_;
-    using Base::d_crysfft_phys_to_reduced_; using Base::d_crysfft_reduced_to_phys_;
-    using Base::crysfft_; using Base::d_crysfft_in_; using Base::d_crysfft_out_;
+    using Base::cb; using Base::pseudo;
+    using Base::is_periodic_; using Base::streams;
+    using Base::use_crysfft_;
     using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
-
-    /// @name Workspace Arrays (per stream)
-    /// @{
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_work[MAX_STREAMS];            ///< Real-space workspace (M)
-    /// @}
-
+    using Base::d_qk_; using Base::d_rk_1_;
 
 public:
     /**
@@ -105,7 +93,7 @@ public:
     CudaSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
                            SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
 
-    /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
+    /// Destructor.
     ~CudaSolverPseudoRK2();
 
     /**
@@ -133,7 +121,6 @@ public:
     void advance_propagator_half_bond_step(
         const int, CuDeviceData<T> *, CuDeviceData<T> *, std::string) override {};
 
-    void allocate_work(int n_field, bool full_grid) override;
     /// CrysFFT steps of a block: full steps only
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {

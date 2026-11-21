@@ -9,6 +9,7 @@
 
 #include "ComputationContinuous.h"
 #include "PropagatorCode.h"
+#include "Scheduler.h"
 #include "SimpsonRule.h"
 
 template <typename T>
@@ -32,13 +33,16 @@ ComputationContinuous<T>::ComputationContinuous(
                 propagator[key][n] = this->backend->allocate();
         }
 
-        // The jobs of the scheduler: the propagator, its contour step and the sources of a junction
-        for (const auto& parallel_job : this->sc->get_schedule())
+        // The jobs of the scheduler: the propagator, its contour step and the sources of a junction.
+        // A job points to the key and edge of the optimizer, which outlive the scheduler.
+        const auto& propagators = this->propagator_computation_optimizer->get_computation_propagators();
+        Scheduler scheduler(propagators, this->n_streams);
+        for (const auto& parallel_job : scheduler.get_schedule())
         {
             std::vector<Job>& jobs = schedule.emplace_back();
-            for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
+            for (const auto& [job_key, n_segment_from, n_segment_to] : parallel_job)
             {
-                const ComputationEdge& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
+                const auto& [key, edge] = *propagators.find(job_key);
                 std::vector<std::pair<BackendArray<T>*, double>> sources;
                 for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
                     sources.push_back({propagator.at(sub_key)[sub_n_segment], sub_n_repeated});

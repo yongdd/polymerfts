@@ -862,6 +862,7 @@ class PropagatorSolver:
         self._initialize_solver()
         self._computation_box.set_lattice_parameters(lx, angles)
         self.lx = list(lx)
+        self.angles = list(angles)
         self.update_laplacian_operator()
 
     def get_lx(self) -> List[float]:

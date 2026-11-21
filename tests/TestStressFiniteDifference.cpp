@@ -191,20 +191,11 @@ std::vector<T> smooth_field(const std::vector<int>& nx, std::mt19937& engine)
     }
 }
 
-template <typename T>
-std::unique_ptr<AbstractFactory<T>> create_factory(const std::string& platform, bool reduce_memory)
-{
-    if constexpr (std::is_same_v<T, double>)
-        return PlatformSelector::create_factory_real(platform, reduce_memory);
-    else
-        return PlatformSelector::create_factory_complex(platform, reduce_memory);
-}
-
 // Checks one row on one platform; prints each parameter and returns whether all pass
 template <typename T>
 bool check_stress(const StressCase& c, const std::string& platform)
 {
-    std::unique_ptr<AbstractFactory<T>> factory = create_factory<T>(platform, c.reduce_memory);
+    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<T>(platform, c.reduce_memory);
     // The solver is built in another cell and moved to the checked cell below
     std::vector<double> lx_start = c.lx, angles_start = c.angles;
     for (double& l : lx_start)

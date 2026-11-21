@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-SCFT options: angle relaxation, axis_ordering, the retired stress_interval, the field-residual projector and tied
-lengths.
+SCFT options: angle relaxation, axis_ordering, the field-residual projector, tied lengths and the retired
+stress_interval.
 
 1. Angle relaxation (Oblique2D): hexagonal cylinders started from gamma = 100 deg
    relax to gamma = 120 deg with a = b. The angles enter the optimizer in radians,
    the unit of their residual -dH/dgamma; until 2026-10 they entered in degrees,
    which made the angle steps 57 times smaller (1493 iterations here with
    cpu-mkl, 1544 with cpu-fftw, instead of about 240). The check requires fewer
-   than 600 iterations.
+   than 600 iterations. PropagatorSolver.angles follows the relaxed cell (until
+   2026-11 it kept the starting angles).
 2. axis_ordering: a run whose nx, lx, bc and initial fields are given in the
    order ["b", "a"] reproduces the run in the standard order (results are in the
    standard order). Until 2026-10 the initial fields and the boundary conditions
@@ -16,10 +17,6 @@ lengths.
    given in three other axis orders reproduces the standard run: its angles move
    with the axes. The four runs agree step by step, so 10 iterations show it (with
    the angles not moved: dF 1.6-1.9e-2).
-   stress_interval: the stress is computed in every iteration of the cell
-   relaxation; a given stress_interval (the option of earlier releases that computed
-   it every few iterations) is ignored with one warning, also through from_file, and
-   the run is that of the input without it, bit for bit.
 3. Free energy: the full CE value from the monomer fields does not change when
    the field means are moved to the saddle point (the fields of L-FTS), 1e-10.
    Subtracting the ideal mixing term gives the field-theoretic Hamiltonian with
@@ -60,6 +57,10 @@ lengths.
    stopped at max_iter before convergence does not warn). Until
    2026-10 the test took the norm of the separate stresses, so this run ended at
    max_iter unconverged.
+8. stress_interval: the stress is computed in every iteration of the cell
+   relaxation; a given stress_interval (the option of earlier releases that computed
+   it every few iterations) is ignored with one warning at the line of the caller,
+   also through from_file (TestParams checks that every method ignores it).
 """
 
 import os
@@ -121,6 +122,8 @@ def test_angle_relaxation():
     gamma = calc.prop_solver.get_angles_degrees()[2]
     check(calc.error_level < 1e-8 and abs(gamma - 120.0) < 1e-4 and abs(lx[0] - lx[1]) < 1e-6 * lx[0] and calc.iter < 600,
           f"Oblique2D from 100 deg: gamma {gamma:.6f}, a {lx[0]:.6f}, b {lx[1]:.6f}, {calc.iter} iterations")
+    check(np.allclose(calc.prop_solver.angles, calc.prop_solver.get_angles_degrees(), rtol=0, atol=1e-10),
+          f"PropagatorSolver.angles {calc.prop_solver.angles} follows the relaxed cell")
 
 
 def test_axis_ordering():
@@ -186,26 +189,16 @@ def test_axis_ordering_3d():
 
 
 def test_stress_interval():
-    """A given stress_interval is ignored with one warning at the line of the caller, also through from_file,
-    and the run is that of the input without it."""
-    nx = 64
-    wave = 5.0 * np.cos(2 * np.pi * np.arange(nx) / nx)
-    params = base([nx], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
-    params["max_iter"] = 30
-    results = []
+    """A given stress_interval is ignored with one warning at the line of the caller, also through from_file."""
+    params = base([64], [5.0], {"A,B": 25.0}, [("A", 0.35), ("B", 0.65)], True)
     for given in ({}, {"stress_interval": 4}):
         with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(io.StringIO()):
             warnings.simplefilter("always")
-            calc = scft.SCFT(params={**params, **given})
-            result = calc.run(initial_fields={"A": wave, "B": -wave}, return_result=True)
-        results.append(result)
+            scft.SCFT(params={**params, **given})
         warned = [w for w in caught if "'stress_interval' is ignored" in str(w.message)]
         check(len(warned) == len(given) and len(caught) == len(given)
               and all(Path(w.filename).resolve() == Path(__file__).resolve() for w in warned),
               f"input {given}: {len(warned)} warning(s) about stress_interval, at the line of the caller")
-    check(results[0].free_energy == results[1].free_energy and results[0].lx == results[1].lx,
-          f"stress_interval 4 is ignored: the run is that of the input without it (F {results[1].free_energy:.12f}, "
-          f"L {results[1].lx[0]:.10f})")
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "params.json"
         path.write_text(json.dumps({**params, "stress_interval": "adaptive"}))
@@ -391,12 +384,12 @@ def main():
     test_angle_relaxation()
     test_axis_ordering()
     test_axis_ordering_3d()
-    test_stress_interval()
     test_free_energy()
     test_field_residual()
     test_singular_chi()
     test_polymer_figures()
     test_tied_lengths()
+    test_stress_interval()
     print(f"\n{n_pass} passed, {n_fail} failed")
     sys.exit(0 if n_fail == 0 else 1)
 

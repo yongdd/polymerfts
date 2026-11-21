@@ -95,7 +95,7 @@
  *
  * @example
  * @code
- * CpuSolverPseudoDiscrete<double> solver(cb, molecules);
+ * CpuSolverPseudoDiscrete<double> solver(cb, molecules, space_group, FFTBackend::FFTW);
  * solver.update_dw(w_fields);
  *
  * // Full segment step
@@ -141,9 +141,10 @@ public:
      *
      * @param cb        Computation box defining the grid and BCs
      * @param molecules Molecules container with monomer types
-     * @param backend   FFT backend to use (FFTW, default: FFTW)
+     * @param space_group Space group of the reduced basis of the propagators (nullptr: full grid)
+     * @param backend   FFT backend to use (FFTW or MKL)
      */
-    CpuSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, FFTBackend backend = FFTBackend::FFTW);
+    CpuSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
     /// Destructor. Frees exp_dw arrays.
     ~CpuSolverPseudoDiscrete();

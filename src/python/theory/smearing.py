@@ -280,13 +280,15 @@ class Smearing:
             result[slot] = np.sum(weight * derivative)
         return result
 
-    def lattice_derivatives_k_sq(self):
+    def lattice_derivatives_k_sq(self, angles=True):
         """∂(k²)/∂θ on the grid for each lattice parameter, keyed by its stress slot.
 
         k² = 4π² mᵀ g⁻¹ m with g_ab = L_a L_b cos θ_ab gives
         ∂k²/∂θ = -4π² uᵀ (∂g/∂θ) u, u = g⁻¹ m. At alias ties (Brillouin-zone
         boundary) the derivative is averaged over the tied representatives, which is
-        the symmetric derivative of the minimum over the aliases.
+        the symmetric derivative of the minimum over the aliases. An orthogonal box
+        gives the lengths only with angles=False (its angles stay at 90 degrees), and
+        always with walls.
         """
         angle_slots = {2: {(0, 1): 2}, 3: {(0, 1): 3, (0, 2): 4, (1, 2): 5}}.get(self.dim, {})
         L = np.array(self.lx, dtype=np.float64)
@@ -298,8 +300,7 @@ class Smearing:
             # walls keeps its angles at 90 degrees (no angle derivatives).
             k = np.array([np.ravel(k_grid) for k_grid in np.meshgrid(*self._k_axes, indexing="ij")])
             derivatives = {a: -2 * k[a] ** 2 / L[a] for a in range(self.dim)}
-            if not self.periodic:
-                derivatives.update({slot: np.zeros(self.n_grid) for slot in angle_slots.values()})
+            if not self.periodic or not angles:
                 return derivatives
             # The Nyquist planes m_a = -N_a/2 of the even axes: index N_a/2 in the order of np.fft.fftfreq
             # (the last index of the last axis on the half spectrum)
@@ -410,9 +411,9 @@ class Smearing:
         """backward(values(k) · forward(field)) with the Fourier transform of the simulation.
 
         values is given on the grid of k_sq, the coefficient shape of the transform; its multiplier
-        is stored once under key (until set_box). A transform of real fields takes the real and the imaginary part of a complex
-        field one after the other (values is real and even in k). Returns None without a
-        transform, where NumPy/SciPy transform instead.
+        is stored once under key (until set_box). A transform of real fields takes the real and the
+        imaginary part of a complex field one after the other (values is real and even in k).
+        Returns None without a transform, where NumPy/SciPy transform instead.
         """
         transform = self._transform
         if transform is None:

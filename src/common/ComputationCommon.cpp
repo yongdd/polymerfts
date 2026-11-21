@@ -76,8 +76,6 @@ ComputationCommon<T>::ComputationCommon(
 
         for (int s = 0; s < molecules->get_n_solvent_types(); s++)
             phi_solvent.push_back(backend->allocate());
-
-        sc = std::make_unique<Scheduler>(propagator_computation_optimizer->get_computation_propagators(), n_streams);
     }
     catch (std::exception& exc)
     {
@@ -96,7 +94,6 @@ ComputationCommon<T>::~ComputationCommon()
 template <typename T>
 void ComputationCommon<T>::release()
 {
-    sc.reset();
     phi_block_iterators.clear();
     if (backend != nullptr)
     {

@@ -71,7 +71,7 @@ int main()
             {
                 for(bool aggregate_propagator_computation : aggregate_propagator_computations)
                 {
-                    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory_real(platform, reduce_memory);
+                    std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
                     // factory->display_info();
 
                     // Create instances and assign to the variables of base classes for the dynamic binding

@@ -17,7 +17,8 @@
  * All input/output arrays are device pointers (CuDeviceData<T>).
  * No host-device transfers occur within solver methods. With a space group,
  * which the solvers take in their constructors with the backend's device index
- * maps, the propagators are in its reduced basis.
+ * maps, the propagators are in its reduced basis: the base class expands them to
+ * the full grid around the steps, reduces the results back and multiplies the mask.
  *
  * @see CudaSolverPseudoRQM4 for continuous chain pseudo-spectral
  * @see CudaSolverPseudoDiscrete for discrete chain pseudo-spectral
@@ -52,6 +53,10 @@ class SpaceGroup;  // Forward declaration
  * Like CpuSolver, stores precomputed exp(-w·ds) factors in GPU memory:
  * - d_exp_dw: Full segment Boltzmann factor (per ds_index for local ds support)
  * - d_exp_dw_half: Half segment Boltzmann factor (per ds_index)
+ *
+ * **Shared context:** the computation box, the molecules, the backend's streams,
+ * the space group with the backend's index maps, and the full-grid buffers of a
+ * reduced-basis run, with the expansion, reduction and mask around the steps.
  */
 template <typename T>
 class CudaSolver
@@ -87,7 +92,7 @@ public:
     bool force_off_diagonal_stress_ = false;
 
     /// Virtual destructor.
-    virtual ~CudaSolver() {};
+    virtual ~CudaSolver() = default;
 
     /**
      * @brief Set the force-off-diagonal-stress flag (see force_off_diagonal_stress_).
@@ -157,25 +162,74 @@ public:
     virtual void prepare_stress() {}
 
 protected:
+    ComputationBox<T>* cb;                   ///< Computation box
+    Molecules* molecules;                    ///< Molecules container
+    int n_streams;                           ///< Number of parallel streams
+    cudaStream_t streams[MAX_STREAMS] = {};  ///< CUDA stream per stream index (the backend's)
+
+    /// @name Space group (reduced basis)
+    /// With a space group the propagators, fields and mask are in its reduced basis: the
+    /// steps expand their input to the full grid and reduce their result back.
+    /// @{
+    SpaceGroup* space_group_;                ///< nullptr without a space group
+    const int* d_reduced_basis_indices_;     ///< Device map reduced -> full index (lent by the backend; nullptr without a group)
+    const int* d_full_to_reduced_map_;       ///< Device map full -> reduced index (lent by the backend; nullptr without a group)
+    int n_basis_;                            ///< Values of a propagator: the reduced basis, or the full grid without a group
+    /// The full grid of a step, per stream (provide_full_grid()): the input expanded from
+    /// the reduced basis, which a step turns into its result in place
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_[MAX_STREAMS];
+    /// A second full grid per stream, for steps that cannot run in place (the rs bonds)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out_[MAX_STREAMS];
+    /// @}
+
+    /**
+     * @brief The shared context of a solver.
+     *
+     * @param cb                      Computation box
+     * @param molecules               Molecules container
+     * @param n_streams               Number of parallel streams
+     * @param streams                 The backend's CUDA streams
+     * @param space_group             Space group of the reduced basis, or nullptr (real fields only)
+     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend; nullptr without a group)
+     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend; nullptr without a group)
+     */
+    CudaSolver(ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
+               SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
+
+    /// With a space group, allocate d_q_full_ and, with separate_output, d_q_full_out_ for
+    /// every stream unless they are; nothing without a group
+    void provide_full_grid(bool separate_output);
+
+    /// d_q itself without a space group; otherwise its expansion from the reduced basis into
+    /// d_full, by default d_q_full_[STREAM]
+    CuDeviceData<T>* expand_to_full_grid(int STREAM, CuDeviceData<T>* d_q, CuDeviceData<T>* d_full = nullptr);
+
+    /// Where a step writes its full-grid result: d_q_out itself without a space group,
+    /// otherwise d_q_full_[STREAM], whose expanded input the step reads before it writes
+    CuDeviceData<T>* full_grid_output(int STREAM, CuDeviceData<T>* d_q_out);
+
+    /// Store the full-grid result d_full in d_q_out, reduced to the basis with a space group
+    /// (d_full is d_q_out without one), then multiply the mask
+    void store_full_grid(int STREAM, const CuDeviceData<T>* d_full, CuDeviceData<T>* d_q_out, const double* d_q_mask);
+
+    /// d_q *= mask in the basis of the propagators; nothing for nullptr
+    void multiply_mask(int STREAM, CuDeviceData<T>* d_q, const double* d_q_mask);
+
     /**
      * @brief The Boltzmann factors of the fields at every contour step, the body of update_dw().
      *
      * d_exp_dw[ds] = exp(-factor·ds·w) and, if with_half, d_exp_dw_half[ds] =
-     * exp(-factor_half·ds·w), n_table values each; then waits for the device.
+     * exp(-factor_half·ds·w) at every contour step of the chains; then waits for the device.
+     * Tables on the full grid take the fields of a space group expanded from the reduced
+     * basis, staged in the table written last.
      *
-     * @param d_w               Fields by monomer type (device), in the basis of the propagators
-     * @param mapping           Contour steps of the chains (ds of each ds index)
-     * @param n_table           Values of a table: the full grid, or the reduced basis on the CrysFFT path
-     * @param d_full_to_reduced nullptr when the fields come in the basis of the tables; otherwise
-     *                          they come in the reduced basis of a space group and are expanded to
-     *                          the full grid of the tables through this map (device), staged in the
-     *                          table written last
-     * @param with_half         Also d_exp_dw_half
-     * @param factor            Factor of ds in d_exp_dw
-     * @param factor_half       Factor of ds in d_exp_dw_half
+     * @param d_w                  Fields by monomer type (device), in the basis of the propagators
+     * @param reduced_basis_tables The tables are in the reduced basis (the CrysFFT steps), not on the full grid
+     * @param with_half            Also d_exp_dw_half
+     * @param factor               Factor of ds in d_exp_dw
+     * @param factor_half          Factor of ds in d_exp_dw_half
      */
-    void compute_exp_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w,
-                        const ContourLengthMapping& mapping, int n_table, const int* d_full_to_reduced,
+    void compute_exp_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w, bool reduced_basis_tables,
                         bool with_half, double factor, double factor_half);
 };
 #endif

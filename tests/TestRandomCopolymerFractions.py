@@ -20,7 +20,7 @@ import numpy as np
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError
 from polymerfts.theory.chains import process_random_copolymer
 from polymerfts.utils.validation import validate_system_params
-from fts_checks import input_of, python_platform, quiet
+from fts_checks import cpu_platform, input_of, quiet
 
 
 def parameters(platform, fractions, directory, model="continuous", cls=SCFT):
@@ -144,7 +144,7 @@ def check_fts_constructors(platform, directory):
 def main():
     with tempfile.TemporaryDirectory(prefix="polymerfts-random-fractions-") as scratch:
         directory = Path(scratch)
-        platform = python_platform()
+        platform = cpu_platform()
         check_rejected(platform, directory)
         check_scft(platform, directory)
         check_fts_constructors(platform, directory)

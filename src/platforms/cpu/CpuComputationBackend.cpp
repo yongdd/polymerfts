@@ -28,35 +28,30 @@ CpuComputationBackend<T>::CpuComputationBackend(
     n_basis = cb->get_n_basis();
     n_streams = std::min(this->n_streams_from_env(/*default_n_streams=*/4), max_n_streams);
 
+    // The solver of the method with the tables of the cell; with a space group it
+    // expands and reduces around its full-grid steps
     switch (method_info.id)
     {
     case NumericalMethodId::PS:
-        solver = std::make_unique<CpuSolverPseudoDiscrete<T>>(cb, molecules, fft_backend);
+        solver = std::make_unique<CpuSolverPseudoDiscrete<T>>(cb, molecules, space_group, fft_backend);
         break;
     case NumericalMethodId::RS:
-        solver = std::make_unique<CpuSolverRealSpaceDiscrete<T>>(cb, molecules);
+        solver = std::make_unique<CpuSolverRealSpaceDiscrete<T>>(cb, molecules, space_group);
         break;
     case NumericalMethodId::RQM4:
-        solver = std::make_unique<CpuSolverPseudoRQM4<T>>(cb, molecules, fft_backend);
+        solver = std::make_unique<CpuSolverPseudoRQM4<T>>(cb, molecules, space_group, fft_backend);
         break;
     case NumericalMethodId::RK2:
-        solver = std::make_unique<CpuSolverPseudoRK2<T>>(cb, molecules, fft_backend);
+        solver = std::make_unique<CpuSolverPseudoRK2<T>>(cb, molecules, space_group, fft_backend);
         break;
     case NumericalMethodId::CNADI2:
-        // The factory rejects this combination first (validate_numerical_method);
-        // without a solver the calls below would dereference null
+        // The factory rejects this combination first (validate_numerical_method)
         if constexpr (std::is_same_v<T, double>)
-            solver = std::make_unique<CpuSolverCNADI>(cb, molecules);
+            solver = std::make_unique<CpuSolverCNADI>(cb, molecules, space_group);
         else
             throw_with_line_number("The cn-adi2 method is only available for real fields.");
         break;
     }
-
-    // The solver expands/reduces around its FFTs when a space group is set
-    // (the owning member releases the solver if this throws)
-    if (space_group != nullptr)
-        solver->set_space_group(space_group);
-    solver->update_laplacian_operator();
 }
 
 template <typename T>
@@ -186,12 +181,6 @@ template <typename T>
 void CpuComputationBackend<T>::set_zero(int, BackendArray<T>* a)
 {
     std::fill(raw(a), raw(a) + n_basis, T(0.0));
-}
-
-template <typename T>
-void CpuComputationBackend<T>::copy(int, BackendArray<T>* dst, BackendArray<T>* src)
-{
-    std::copy(raw(src), raw(src) + n_basis, raw(dst));
 }
 
 template <typename T>

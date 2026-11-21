@@ -162,20 +162,12 @@ public:
      *
      * @param cb            Computation box with boundary conditions
      * @param molecules     Molecules container with monomer types
+     * @param space_group   Space group of the reduced basis of q_in/q_out (nullptr: full grid);
+     *                      the solver expands and reduces around its finite-difference steps
      */
-    CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules);
+    CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules, SpaceGroup* space_group);
 
     ~CpuSolverCNADI() override = default;
-
-    /**
-     * @brief Set space group for reduced basis operations.
-     *
-     * When set, q_in/q_out are in reduced basis and the solver expands/reduces
-     * internally around finite-difference operations.
-     *
-     * @param sg Space group pointer (nullptr to disable)
-     */
-    void set_space_group(SpaceGroup* sg) override { space_group_ = sg; }
 
     /**
      * @brief Update finite difference coefficients.

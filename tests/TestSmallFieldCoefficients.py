@@ -16,7 +16,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import numpy as np
 
 from polymerfts import CLFTS, LFTS
-from fts_checks import compressible_parameters, python_platform, quiet
+from fts_checks import compressible_parameters, cpu_platform, quiet
 
 
 def energy(sim, fields):
@@ -121,7 +121,7 @@ def dynamics(root, platform):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_small_coefficients_") as directory:
         root = Path(directory)
         quadratic_and_gradient(root, platform)

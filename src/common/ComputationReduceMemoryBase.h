@@ -8,17 +8,19 @@
  * the one the propagator computation produced, bit for bit.
  *
  * Checkpoints: the start of every propagator, the segments other propagators
- * start from, the start of every scheduled job, every checkpoint_interval
- * segments, and the segments of the partition functions. The derived class
- * adds the ones specific to its chain model. The interval is
- * ⌈2√(total segments)⌉, which balances the checkpoints against the
- * recomputation workspace.
+ * start from, every checkpoint_interval segments, and the segments of the
+ * partition functions. The derived class adds the ones specific to its chain
+ * model. The interval is ⌈2√(total segments)⌉, which balances the checkpoints
+ * against the recomputation workspace.
  *
  * Work fields: q_recal (up to checkpoint_interval segments of one
  * propagator, no more than the longest block needs), q_work and q_right
  * (two each).
  *
- * Propagators are computed one at a time on stream 0.
+ * Propagators are computed whole, one at a time on stream 0, in the order of
+ * the optimizer's map: by height, so that each comes after the propagators it
+ * depends on. The concentrations, the stress or both come from one walk along
+ * each block (compute_blocks() of the derived class).
  *
  * @see ComputationReduceMemoryContinuous, ComputationReduceMemoryDiscrete
  */
@@ -65,6 +67,9 @@ protected:
     /// Contour step index used to advance propagator key (discrete chains: 0).
     virtual int propagator_ds_index(const std::string& key) const = 0;
 
+    /// The concentrations, the stress or both, in one walk along each block.
+    virtual void compute_blocks(bool with_concentrations, bool with_stress) = 0;
+
     /// Allocate the checkpoint (key, n) if it does not exist yet.
     void add_checkpoint(const std::string& key, int n);
     CheckpointArray<T>* checkpoint_at(const std::string& key, int n);
@@ -103,6 +108,10 @@ protected:
 
 public:
     virtual ~ComputationReduceMemoryBase();
+
+    void compute_concentrations() override;
+    void compute_stress() override;
+    void compute_concentrations_and_stress() override;
 };
 
 #endif

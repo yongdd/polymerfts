@@ -3,9 +3,9 @@
  * @brief Platform-neutral base of the propagator computation classes.
  *
  * Holds what every chain model and storage mode shares: the platform backend,
- * the propagator scheduler, the block and solvent concentrations, the fields
- * kept for the solvents, and the accessors that read them. The derived classes
- * own the propagator storage and the compute_* algorithms.
+ * the block and solvent concentrations, the fields kept for the solvents, and
+ * the accessors that read them. The derived classes own the propagator storage,
+ * the order of the propagators and the compute_* algorithms.
  *
  * @see ComputationBackend for the platform interface
  * @see ComputationContinuous for the continuous-chain computation
@@ -32,7 +32,6 @@
 #include "NumericalMethods.h"
 #include "PropagatorComputation.h"
 #include "PropagatorComputationOptimizer.h"
-#include "Scheduler.h"
 
 /**
  * @brief Carries an exception out of an OpenMP parallel loop.
@@ -77,7 +76,6 @@ class ComputationCommon : public PropagatorComputation<T>
 protected:
     NumericalMethodInfo numerical_method;            ///< The numerical method (check_stress_supported())
     std::unique_ptr<ComputationBackend<T>> backend;  ///< Platform operations
-    std::unique_ptr<Scheduler> sc;                   ///< Order in which the propagators are computed
     int n_streams;                   ///< Number of propagators computed concurrently
 
     /// Unnormalized segment-product integral of each block; getters apply the

@@ -210,7 +210,7 @@ q(\mathbf{r}, 0) = q_{\text{init}}[\text{name}](\mathbf{r})
 
 ### Discrete Chains
 
-Discrete chains start at $`q(\mathbf{r}, 1)`$: at a free end or grafting point it is the value above times $`e^{-w(\mathbf{r})\Delta s}`$; at a junction the product is taken over the half-bond states $`q_i(\mathbf{r}, N_i + 1/2)`$ of the branches and followed by a half-bond step and $`e^{-w(\mathbf{r})\Delta s}`$; an aggregated sum is formed from junction values (then a half-bond step and $`e^{-w(\mathbf{r})\Delta s}`$) or from sliced segments (then a full bond step) (`ComputationDiscrete::compute_propagators`).
+Discrete chains start at $`q(\mathbf{r}, 1)`$: at a free end or grafting point it is the value above times $`e^{-w(\mathbf{r})\Delta s}`$; at a junction the product is taken over the half-bond states $`q_i(\mathbf{r}, N_i + 1/2)`$ of the branches and followed by a half-bond step and $`e^{-w(\mathbf{r})\Delta s}`$; an aggregated sum is formed from sliced segments (the optimizer slices at segment 1 or later) and followed by a full bond step (`ComputationDiscrete::compute_propagators`).
 
 ---
 
@@ -277,7 +277,7 @@ struct ComputationEdge {
     int max_n_segment;  // Number of contour steps
     std::string monomer_type;
     std::vector<std::tuple<std::string, int, double>> deps;  // (key, n_segment, n_repeated)
-    int height;         // Height of the propagator in the dependency tree (used by the scheduler)
+    int height;         // Height of the propagator in the dependency tree (orders the map; used by the scheduler)
     std::set<int> junction_ends;  // Indices where additional half-bond-step computation
                                   // is required (discrete chains)
 };
@@ -299,11 +299,11 @@ propagator and the times where a job starts or ends are local to it.
 ## 6. Execution
 
 The schedule is executed once for both platforms, in `ComputationContinuous::compute_propagators`
-and `ComputationDiscrete::compute_propagators` (`src/common`). The constructor of each computation
-resolves the jobs of `sc->get_schedule()` once into its own `schedule` of `Job` entries: the key, the
-`ComputationEdge`, the propagator storage, the segment range and the sources of a junction or an
-aggregation. The propagators of one group run concurrently on OpenMP threads; thread `i` passes
-stream index `i` to the backend, which runs the work on that OpenMP thread (CPU) or queues it on
+and `ComputationDiscrete::compute_propagators` (`src/common`). The constructor of each of these
+full-storage computations builds a `Scheduler` and resolves the jobs of its schedule once into its
+own `schedule` of `Job` entries: the key, the `ComputationEdge`, the propagator storage, the segment
+range and the sources of a junction or an aggregation. The propagators of one group run concurrently
+on OpenMP threads; thread `i` passes stream index `i` to the backend, which runs the work on that OpenMP thread (CPU) or queues it on
 CUDA stream `i` (GPU). After each group the backend synchronizes, so the next group sees every
 propagator it depends on.
 
@@ -331,7 +331,9 @@ Number of streams:
 
 - CPU: `OMP_NUM_THREADS` when it is set, otherwise 4.
 - CUDA: `min(OMP_NUM_THREADS, MAX_STREAMS)` when `OMP_NUM_THREADS` is set, otherwise `MAX_STREAMS` (= 4, defined in `CudaCommon.h`).
-- Reduce-memory mode: one stream; the propagators are computed one at a time in schedule order.
+- Reduce-memory mode: one stream and no schedule; each propagator is computed whole, one at a time,
+  in the order of the optimizer's map, which sorts by height, so every propagator follows the ones it
+  depends on.
 
 ---
 

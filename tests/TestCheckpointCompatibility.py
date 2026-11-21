@@ -32,7 +32,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import CLFTS, LFTS
-from fts_checks import compare_files, python_platform, quiet
+from fts_checks import compare_files, cpu_platform, quiet
 
 DATA = Path(__file__).resolve().parent / "data" / "old_checkpoints"
 SEED = 11
@@ -113,7 +113,7 @@ def check(cls, platform, root, chain_model="continuous", release=False):
 
 
 def main():
-    platform = python_platform()
+    platform = cpu_platform()
     with tempfile.TemporaryDirectory(prefix="polymerfts_old_checkpoints_") as directory:
         for cls in (LFTS, CLFTS):
             check(cls, platform, Path(directory))

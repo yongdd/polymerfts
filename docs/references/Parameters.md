@@ -12,8 +12,9 @@ neutral system, and `axis_ordering` in L-FTS and CL-FTS, which would read the sh
 `angles` in another order than SCFT ([Axis Ordering](#axis-ordering)). A top-level key that no method
 reads, such as a misspelled key, raises `ValidationError` naming the key and the closest valid one. So
 does a key that a section the method reads does not take (in `langevin`, `recording`, `saddle`,
-`compressor`, `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics` and `gibbs_ensemble`): its
-error also lists the keys of the section, which the tables below give.
+`compressor`, `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics` and `gibbs_ensemble`), or
+that an entry of `polymers` or of its `blocks` does not take: its error also lists the keys of the section
+or entry, which the tables below give.
 
 A top-level key given the value `None` (`null` or `~` in YAML) is the same as an absent key: the method
 uses its default, or reports a required key as missing. A keyword override of `from_file` given as `None`
@@ -535,7 +536,7 @@ The checkpoints store $`\psi`$ and its random-number stream, and a continuation 
 
 When `True`:
 - Stores only checkpoints every ~$`2\sqrt{N_{tot}}`$ contour steps, i.e. ~$`\sqrt{N_{tot}}/2`$ checkpoints per propagator (where $`N_{tot}`$ is the total number of contour steps)
-- Reduces the memory that grows with the grid and the number of contour steps: for `examples/block_copolymer/scft/Gyroid.py` (AB diblock, $`ds = 0.01`$) the GPU memory of the process on an A10 falls from 332 to 254 MiB on its 32³ grid and from 1064 to 420 MiB on a 64³ grid, of which about 236 MiB is the CUDA context. The CUDA checkpoints are kept in pinned host memory, which raises the host memory at 64³ from 298 to 494 MiB. On cpu-mkl the peak host memory at 64³ falls from 783 to 448 MiB
+- Reduces the memory that grows with the grid and the number of contour steps: for `examples/block_copolymer/scft/Gyroid.py` (AB diblock, $`ds = 0.01`$) the GPU memory of the process on an A10 falls from 324 to 252 MiB on its 32³ grid and from 1002 to 390 MiB on a 64³ grid, of which about 232 MiB is the CUDA context. The CUDA checkpoints are kept in pinned host memory, which raises the host memory at 64³ from 270 to 463 MiB. On cpu-mkl the peak host memory at 64³ falls from 762 to 423 MiB
 - Increases computation time by 2-4x
 
 `reduce_memory=True` works with every chain model and with space-group symmetry, including **discrete chains combined with a space group**, on both CPU and CUDA (see [SpaceGroup.md](../theory/SpaceGroup.md)).
@@ -636,8 +637,9 @@ even when their values are equal.
 | `recording.sf_computing_period` | `recording.sample_interval` |
 | `recording.sf_recording_period` | `recording.statistics_save_interval` |
 
-Every method ignores `stress_interval`, an option of earlier releases, with one
-warning: SCFT computes the stress in every iteration of the box relaxation.
+Every method ignores `stress_interval` and `fts_consistent_energy`, options of earlier
+releases, with one warning: SCFT computes the stress in every iteration of the box
+relaxation, and its free energy does not depend on the field means.
 
 Version-1 and version-2 checkpoints written with earlier names can be resumed
 using current parameter names. The stored settings hash is verified before

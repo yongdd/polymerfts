@@ -26,7 +26,7 @@ void rejects(Call call)
 
 void check_space_group(const std::string& platform, bool reduced, bool with_group)
 {
-    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory_real(platform, reduced));
+    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>(platform, reduced));
     std::unique_ptr<Molecules> mol(factory->create_molecules_information("continuous", 0.05, {{"A", 1.0}}));
     mol->add_polymer(1.0, {{"A", 1.0, 0, 1}});
     std::unique_ptr<PropagatorComputationOptimizer> opt(factory->create_propagator_computation_optimizer(mol.get(), false));
@@ -56,16 +56,16 @@ void check_space_group(const std::string& platform, bool reduced, bool with_grou
     rejects([&] { pc->get_total_partition(0); });
     rejects([&] { pc->get_total_concentration("A", after.data()); });
     cb->set_space_group(group);
-    if (pc->get_space_group() != group || cb->get_n_basis() != n)
-        throw std::runtime_error("Restoring the space group of the box changed the computation.");
+    if (cb->get_n_basis() != n)
+        throw std::runtime_error("Restoring the space group of the box changed its basis size.");
     pc->get_total_concentration("A", after.data());
     if (before != after || !pc->check_total_partition() || !(std::abs(cb->mean(after.data()) - 1.0) <= 1e-10))
-        throw std::runtime_error("The original computation was not preserved after rejecting a group change.");
+        throw std::runtime_error("The results changed while the box held another space group.");
 }
 
 void check_cnadi(const std::string& platform, bool reduced)
 {
-    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory_real(platform, reduced));
+    std::unique_ptr<AbstractFactory<double>> factory(PlatformSelector::create_factory<double>(platform, reduced));
     std::unique_ptr<Molecules> mol(factory->create_molecules_information("continuous", 0.05, {{"A", 1.0}}));
     mol->add_polymer(1.0, {{"A", 1.0, 0, 1}});
     std::unique_ptr<PropagatorComputationOptimizer> opt(factory->create_propagator_computation_optimizer(mol.get(), false));

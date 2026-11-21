@@ -41,12 +41,12 @@
 // Constructor
 //------------------------------------------------------------------------------
 template <typename T>
-CpuSolverPseudoRQM4<T>::CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, FFTBackend backend)
+CpuSolverPseudoRQM4<T>::CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend)
 {
     try
     {
         // Initialize shared components (FFT, Pseudo, etc.)
-        this->init_shared(cb, molecules, backend);
+        this->init_shared(cb, molecules, space_group, backend);
 
         const int M = cb->get_total_grid();
 

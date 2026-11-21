@@ -1,8 +1,8 @@
 """Checks and inputs shared by the Python tests of simulation runs.
 
 quiet() calls a function without what it prints, and silenced() discards what a with block
-prints. python_platform() picks the one platform that runs a test of a fix made in Python
-(cpu_platform() of cuda_part).
+prints. cpu_platform() (of cuda_part) picks the one platform that runs a test of a fix made in
+Python.
 compare_files() compares a file that two runs wrote key by key. exact_restart() checks that a
 run continued from the checkpoint of a shorter run ends where the uninterrupted run ends, bit for
 bit on the same backend. expect_error() expects an exception. The inputs that several tests run:
@@ -41,10 +41,6 @@ def quiet(function, *args, **kwargs):
     """function(*args, **kwargs) with its printed output discarded."""
     with silenced():
         return function(*args, **kwargs)
-
-
-# The one platform that runs a test of a fix made in Python
-python_platform = cpu_platform
 
 
 def expect_error(call, kind):

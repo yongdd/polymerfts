@@ -2,13 +2,13 @@ name: Build and Test
 
 on:
   push:
-    branches: [ main, devel ]
+    branches: [ devel ]
   pull_request:
     branches: [ main, devel ]
 
-# One run per commit: pushes are grouped by commit, so the merge commit that main and
-# devel both receive is tested once (the later push takes the run over); a pull request
-# is grouped by its ref, so a new push to it cancels the superseded run
+# Pushes run on devel only: main receives only merge commits that devel already holds.
+# A push run is grouped by its commit; a pull request is grouped by its ref, so a new
+# push to it cancels the superseded run
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true

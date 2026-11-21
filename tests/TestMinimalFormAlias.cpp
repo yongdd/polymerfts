@@ -13,9 +13,11 @@
  * Near-tie cells, whose shortest period lies off the axes and whose even grids
  * hold modes tied exactly with an alias, check the early exit of the search
  * against the brute force, with the form summed in another order by the caller.
- * On cells of two components (an axis orthogonal to the other two) the loops
- * over every mode, which search each component's modes once, must give the
- * per-mode least aliases and tied-alias moments to the bit.
+ * On cells of two components (an axis orthogonal to the other two) the least
+ * aliases and the tie counts, which combine the ties of each component, must
+ * match the brute force too, and the loops over every mode, which search each
+ * component's modes once, must give the per-mode least aliases and tied-alias
+ * moments to the bit.
  */
 
 #include <algorithm>
@@ -332,6 +334,23 @@ int main()
                 "tie count wrong %ld\n", near_tie.modes, near_tie.tied, near_tie.wrong_min, near_tie.odd,
                 near_tie.wrong_ties);
     ok &= (near_tie.tied > 0 && near_tie.wrong_min == 0 && near_tie.odd == 0 && near_tie.wrong_ties == 0);
+
+    // 5) Two-component cells (an axis orthogonal to the other two) against the brute force
+    Stats two_components;
+    bool all_two_components = true;
+    auto check_two_components = [&](const std::array<int, 3>& n, const IndexMetric& g) {
+        all_two_components &= AliasSearch(n, g).n_components == 2;
+        check_grid(n, g, false, two_components);
+    };
+    check_two_components({12, 12, 8}, metric_of(4.0, 4.0, 3.0, 90 * deg, 90 * deg, 120 * deg));
+    check_two_components({9, 9, 7}, metric_of(4.0, 4.0, 3.0, 90 * deg, 90 * deg, 120 * deg));
+    check_two_components({10, 8, 12}, metric_of(3.0, 3.1, 2.0, 90 * deg, 105 * deg, 90 * deg));
+    check_two_components({4, 16, 6}, metric_of(4.0, 4.0, 1.0, 90 * deg, 90 * deg, 120 * deg));
+    std::printf("two-component cells: %ld modes (%ld tied), least form wrong %ld, f(m) != f(-m) %ld, "
+                "tie count wrong %ld\n", two_components.modes, two_components.tied, two_components.wrong_min,
+                two_components.odd, two_components.wrong_ties);
+    ok &= (all_two_components && two_components.tied > 0 && two_components.wrong_min == 0 && two_components.odd == 0
+           && two_components.wrong_ties == 0);
 
     ok &= check_separable_thin_cells();
     ok &= check_component_grid_loops();

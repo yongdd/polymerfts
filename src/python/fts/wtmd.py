@@ -70,7 +70,6 @@ class WTMD:
         self.lx = lx
         self._fourier = fourier
         self.M = nx[0] * nx[1] * nx[2]
-        self.Mk = nx[0] * nx[1] * (nx[2] // 2 + 1)
 
         # Cell volume and metric (angles [alpha, beta, gamma] in degrees; None: orthogonal)
         cos_a, cos_b, cos_g = np.cos(np.deg2rad(angles)) if angles is not None else (0.0, 0.0, 0.0)

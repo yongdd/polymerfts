@@ -20,11 +20,7 @@
 template <typename T>
 void check_integrand(const std::string& platform, bool reduced_basis)
 {
-    std::unique_ptr<AbstractFactory<T>> factory;
-    if constexpr (std::is_same_v<T, double>)
-        factory = PlatformSelector::create_factory_real(platform, false);
-    else
-        factory = PlatformSelector::create_factory_complex(platform, false);
+    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<T>(platform, false);
 
     const std::vector<int> nx = {8, 8, 8};
     SpaceGroup group(nx, "Im-3m", 529);

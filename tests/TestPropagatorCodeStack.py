@@ -72,11 +72,11 @@ def check_branch_keys(factory):
 def child(mode):
     import faulthandler
     from polymerfts import PlatformSelector
-    from fts_checks import python_platform
+    from fts_checks import cpu_platform
 
     faulthandler.enable()
     # The optimizer is platform-neutral; this test allocates no solver or grid.
-    factory = PlatformSelector.create_factory(python_platform(), False, "real")
+    factory = PlatformSelector.create_factory(cpu_platform(), False, "real")
     count = COUNT
     ds = 1.0 / (2.5 * count)
     molecules = factory.create_molecules_information("continuous", ds, {"A": 1.0, "B": 1.0})

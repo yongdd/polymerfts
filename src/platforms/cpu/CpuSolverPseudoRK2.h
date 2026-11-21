@@ -71,7 +71,7 @@
  * @example
  * @code
  * // Create solver
- * CpuSolverPseudoRK2<double> solver(cb, molecules);
+ * CpuSolverPseudoRK2<double> solver(cb, molecules, space_group, FFTBackend::FFTW);
  *
  * // Update for new fields
  * solver.update_dw(w_fields);
@@ -99,11 +99,12 @@ public:
      *
      * @param cb        Computation box defining the grid and BCs
      * @param molecules Molecules container with monomer types
-     * @param backend   FFT backend to use (FFTW, default: FFTW)
+     * @param space_group Space group of the reduced basis of the propagators (nullptr: full grid)
+     * @param backend   FFT backend to use (FFTW or MKL)
      *
      * @note Supports the FFTW and MKL backends.
      */
-    CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, FFTBackend backend = FFTBackend::FFTW);
+    CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
     /// Destructor. Frees exp_dw arrays.
     ~CpuSolverPseudoRK2();

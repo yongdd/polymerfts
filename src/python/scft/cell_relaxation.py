@@ -213,18 +213,16 @@ class CellRelaxation:
 
     def _lattice_derivatives(self, w, phi):
         """stress() once the propagators have computed their stress (PropagatorSolver.compute_stress)."""
-        dim = self.prop_solver.dim
         stress = np.array(self.prop_solver.get_stress())
         if self.smearing.enabled:
             es = self.electrostatics
             felt = w if es is None else [w[i] + es.charges[m] * es.psi for i, m in enumerate(self.monomer_types)]
-            dk_sq = self.smearing.lattice_derivatives_k_sq()
+            # The angles of an orthogonal box do not vary unless the crystal system lets them
+            dk_sq = self.smearing.lattice_derivatives_k_sq(angles=bool(self.angle_stress_indices)
+                                                           or not self.smearing.orthogonal)
             smearing_stress = self.smearing.stress(felt, [phi[m] for m in self.monomer_types], dk_sq)
             if es is not None:
                 smearing_stress += es.stress(dk_sq)
-            # The angles of an orthogonal box do not vary unless the crystal system lets them
-            if self.smearing.orthogonal and not self.angle_stress_indices:
-                smearing_stress[dim:] = 0.0
             stress += smearing_stress[:len(stress)]
         return stress
 

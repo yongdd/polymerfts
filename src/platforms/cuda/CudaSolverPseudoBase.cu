@@ -195,26 +195,15 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     int max_fft_batch,
     bool with_exp_dw_half,
     bool complex_requires_periodic)
+    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
 {
-    this->cb = cb;
-    this->molecules = molecules;
-    this->n_streams = n_streams;
     this->dim_ = cb->get_dim();
     this->max_fft_batch_ = max_fft_batch;
 
-    for(int i=0; i<n_streams; i++)
-    {
-        this->streams[i] = streams[i];
-    }
     // The device buffers, cuFFT plans and transform objects are owning members,
     // released automatically (also when a constructor throws)
     for(int i=0; i<MAX_STREAMS; i++)
         temp_storage_bytes[i] = 0;
-    // The solver expands/reduces around its full-grid transforms when a space group is set
-    space_group_ = space_group;
-    d_reduced_basis_indices_ = d_reduced_basis_indices;
-    d_full_to_reduced_map_ = d_full_to_reduced_map;
-    n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : 0;
     use_crysfft_ = false;
     crysfft_mode_ = CudaCrysFFTMode::None;
     crysfft_identity_map_ = false;
@@ -361,61 +350,6 @@ template <typename T>
 void CudaSolverPseudoBase<T>::fft_backward(int stream, cuDoubleComplex* d_in, CuDeviceData<T>* d_out, int batch)
 {
     CUFFT_CHECK(cufft_exec_backward(plan_bak_[stream][batch - 1], d_in, d_out));
-}
-
-template <typename T>
-CuDeviceData<T>* CudaSolverPseudoBase<T>::expand_to_full_grid(int STREAM, CuDeviceData<T>* d_q_in)
-{
-    if (space_group_ == nullptr)
-        return d_q_in;
-    // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-    if constexpr (!std::is_same_v<T, double>)
-    {
-        throw_with_line_number("Space group reduced basis is only supported for real fields.");
-    }
-    else
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            d_q_full_in_[STREAM], d_q_in, d_full_to_reduced_map_, cb->get_total_grid());
-        CUDA_CHECK_LAUNCH();
-        return d_q_full_in_[STREAM];
-    }
-}
-
-template <typename T>
-CuDeviceData<T>* CudaSolverPseudoBase<T>::full_grid_output(int STREAM, CuDeviceData<T>* d_q_out)
-{
-    return (space_group_ != nullptr) ? d_q_full_out_[STREAM].get() : d_q_out;
-}
-
-template <typename T>
-void CudaSolverPseudoBase<T>::store_full_grid(
-    int STREAM, CuDeviceData<T>* d_full, CuDeviceData<T>* d_q_out, const double* d_q_mask)
-{
-    if (space_group_ != nullptr)
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            d_q_out, d_full, d_reduced_basis_indices_, n_basis_);
-        CUDA_CHECK_LAUNCH();
-    }
-    // The mask is stored in the basis of d_q_out, so it applies after the reduction
-    multiply_mask(STREAM, d_q_out, d_q_mask);
-}
-
-template <typename T>
-void CudaSolverPseudoBase<T>::multiply_mask(int STREAM, CuDeviceData<T>* d_q, const double* d_q_mask)
-{
-    if (d_q_mask == nullptr)
-        return;
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    const int n = (space_group_ != nullptr) ? n_basis_ : cb->get_total_grid();
-    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q, d_q, d_q_mask, 1.0, n);
-    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
@@ -681,67 +615,51 @@ void CudaSolverPseudoBase<T>::provide_work()
             for (auto& [monomer_type, table] : by_type)
                 provide(table, n_field);
 
-    const bool full_grid = full_grid_path();
-    if (full_grid)
+    if (full_grid_path())
     {
-        // Transforms, stress workspace and reduced-basis expansion buffers of the full grid
+        // Transforms, spectral scratch and reduced-basis expansion buffer of the full grid,
+        // with the stress workspace from the first prepare_stress() on
         init_fft();
         const int M_COMPLEX = total_complex_grid();
+        // The second spectrum of the scratch holds the RQM4 half step (a batch of two) or the
+        // second propagator of the stress: RK2 and discrete chains, whose steps transform one
+        // field, hold it only from the first prepare_stress() on
+        const size_t n_spectra = (max_fft_batch_ == 2 || stress_basis_) ? 2 : 1;
         for (int i = 0; i < n_streams; i++)
         {
-            provide(d_q_multi[i], M_COMPLEX);
-            provide(d_stress_partial_[i], 6*STRESS_MAX_BLOCKS);
-            // The spectral scratch of the steps and the stress: the spectra of two fields
-            // (periodic BC; complex fields gather q2(-k) for the stress apart), or the DCT/DST
-            // coefficients of two fields, of the real and imaginary parts interleaved for
-            // complex fields
+            if (stress_basis_)
+            {
+                provide(d_q_multi[i], M_COMPLEX);
+                provide(d_stress_partial_[i], 6*STRESS_MAX_BLOCKS);
+            }
+            // The spectral scratch of the steps and the stress: the spectra of the fields
+            // (periodic BC; complex fields gather q2(-k) for the stress apart), or their DCT/DST
+            // coefficients, of the real and imaginary parts interleaved for complex fields
             if (is_periodic_)
             {
-                provide(d_qk_[i], 2*static_cast<size_t>(M_COMPLEX));
+                // The second spectrum comes with the first stress: the larger buffer is allocated
+                // before the steps' one is released, so a failed allocation leaves the steps theirs
+                const size_t qk_size = n_spectra*static_cast<size_t>(M_COMPLEX);
+                if (d_qk_[i].size() != qk_size)
+                    d_qk_[i] = CudaDeviceBuffer<cuDoubleComplex>(qk_size);
                 if constexpr (std::is_same<T, std::complex<double>>::value)
-                    provide(d_qk_conj_[i], M_COMPLEX);
+                    if (stress_basis_)
+                        provide(d_qk_conj_[i], M_COMPLEX);
             }
             else
             {
                 const size_t rk_size = (sizeof(T) / sizeof(double)) * static_cast<size_t>(M_COMPLEX);
                 provide(d_rk_1_[i], rk_size);
-                provide(d_rk_2_[i], rk_size);
-            }
-            if (space_group_ != nullptr)
-            {
-                provide(d_q_full_in_[i], M);
-                provide(d_q_full_out_[i], M);
+                if (n_spectra == 2)
+                    provide(d_rk_2_[i], rk_size);
             }
         }
+        // One full grid per stream: the steps work in place in the expanded input
+        this->provide_full_grid(/*separate_output=*/false);
         if (!pseudo_current_)
             update_pseudo();
     }
-    allocate_work(n_field, full_grid);
-}
-
-template <typename T>
-void CudaSolverPseudoBase<T>::update_dw_impl(
-    const std::map<std::string, const CuDeviceData<T>*>& d_w,
-    bool with_half, double factor, double factor_half)
-{
-    try{
-        // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-        if constexpr (!std::is_same_v<T, double>)
-        {
-            if (space_group_ != nullptr)
-                throw_with_line_number("Space group reduced basis is only supported for real fields.");
-        }
-        // The tables of the steps: the reduced basis on the CrysFFT path, otherwise the full
-        // grid, into which the full-grid path of a space group expands the fields
-        const bool expand = space_group_ != nullptr && !use_crysfft_;
-        this->compute_exp_dw(d_w, molecules->get_contour_length_mapping(),
-                             use_crysfft_ ? n_basis_ : cb->get_total_grid(),
-                             expand ? d_full_to_reduced_map_ : nullptr, with_half, factor, factor_half);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    allocate_work(n_field);
 }
 
 //------------------------------------------------------------------------------
@@ -980,15 +898,15 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         const int* _d_negative_k_idx = pseudo->get_negative_frequency_mapping();
 
         // The transforms take the full grid: with a space group (no CrysFFT fast path)
-        // each propagator is expanded from the reduced basis into d_q_full_in_, which
+        // each propagator is expanded from the reduced basis into d_q_full_, which
         // its transform reads before the next expansion (both run on this stream)
         if (is_periodic_)
         {
             // Periodic BC: forward FFT of both propagators
             cuDoubleComplex* qk_1 = d_qk_[STREAM].get();
             cuDoubleComplex* qk_2 = qk_1 + M_COMPLEX;
-            fft_forward(STREAM, this->expand_to_full_grid(STREAM, d_q_1), qk_1);
-            fft_forward(STREAM, this->expand_to_full_grid(STREAM, d_q_2), qk_2);
+            fft_forward(STREAM, expand_to_full_grid(STREAM, d_q_1), qk_1);
+            fft_forward(STREAM, expand_to_full_grid(STREAM, d_q_2), qk_2);
 
             // [type-specific algorithm] Real fields store the Hermitian half-spectrum, so the
             // conjugate product is formed directly; complex fields need the -k index map.
@@ -1010,9 +928,9 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
             // Non-periodic BC: use CudaFFT (DCT/DST). The coefficients are real for real
             // fields; for complex fields those of the real and imaginary parts come as
             // complex pairs, whose product needs no conjugate (the basis functions are real).
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(this->expand_to_full_grid(STREAM, d_q_1)),
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(expand_to_full_grid(STREAM, d_q_1)),
                                          d_rk_1_[STREAM], streams[STREAM]);
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(this->expand_to_full_grid(STREAM, d_q_2)),
+            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(expand_to_full_grid(STREAM, d_q_2)),
                                          d_rk_2_[STREAM], streams[STREAM]);
 
             // Multiply the coefficients

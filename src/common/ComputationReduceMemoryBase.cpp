@@ -24,12 +24,6 @@ ComputationReduceMemoryBase<T>::ComputationReduceMemoryBase(
 {
     try
     {
-        // Every scheduled job starts from a stored segment
-        for (const auto& parallel_job : this->sc->get_schedule())
-            for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
-                if (n_segment_from >= first_segment)
-                    add_checkpoint(key, n_segment_from);
-
         int total_n_segment = 0;
         int max_n_segment_right = 0;
         for (const auto& [key, phi] : this->phi_block)
@@ -82,6 +76,24 @@ void ComputationReduceMemoryBase<T>::free_storage()
         q_work[i]  = nullptr;
         q_right[i] = nullptr;
     }
+}
+
+template <typename T>
+void ComputationReduceMemoryBase<T>::compute_concentrations()
+{
+    compute_blocks(true, false);
+}
+
+template <typename T>
+void ComputationReduceMemoryBase<T>::compute_stress()
+{
+    compute_blocks(false, true);
+}
+
+template <typename T>
+void ComputationReduceMemoryBase<T>::compute_concentrations_and_stress()
+{
+    compute_blocks(true, true);
 }
 
 template <typename T>

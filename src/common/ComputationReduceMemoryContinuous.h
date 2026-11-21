@@ -33,31 +33,25 @@ template <typename T>
 class ComputationReduceMemoryContinuous : public ComputationReduceMemoryBase<T>
 {
 private:
-    /// A job of the scheduler with what it reads, resolved once: the schedule and the
-    /// checkpoints are fixed after construction, and keys grow with the size of a polymer
+    /// A propagator with what it reads, resolved once: the checkpoints are fixed after
+    /// construction, and keys grow with the size of a polymer
     struct Job
     {
         const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
-        const ComputationEdge* edge;  ///< Its monomer type and dependencies
-        int n_segment_from;           ///< The job computes q(n_segment_from+1) .. q(n_segment_to)
-        int n_segment_to;
+        const ComputationEdge* edge;  ///< Its monomer type, dependencies and max_n_segment
         int ds_index;                 ///< Contour step of the propagator
         std::vector<std::pair<CheckpointArray<T>*, double>> sources;  ///< (q_i, n_i) of a junction or aggregation
-        std::vector<CheckpointArray<T>*> checkpoints;  ///< Checkpoint of q(n_segment_from + i), or nullptr
-
-        /// The checkpoint of q(n), n = n_segment_from..n_segment_to, or nullptr
-        CheckpointArray<T>* checkpoint(int n) const { return checkpoints[n - n_segment_from]; }
+        std::vector<CheckpointArray<T>*> checkpoints;  ///< Checkpoint of q(n), or nullptr
     };
-    std::vector<std::vector<Job>> schedule;  ///< The scheduler's jobs, computed one at a time
+    /// The propagators one at a time, each after the ones it depends on (the optimizer's order)
+    std::vector<Job> jobs;
 
     /// One segment per polymer for its partition function: (polymer, key, n, key†, n_aggregated)
     std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 
-    /// The concentrations, the stress or both, in one walk along each block.
-    void compute_blocks(bool with_concentrations, bool with_stress);
-
 protected:
     int propagator_ds_index(const std::string& key) const override;
+    void compute_blocks(bool with_concentrations, bool with_stress) override;
 
 public:
     ComputationReduceMemoryContinuous(ComputationBox<T>* cb, Molecules* molecules,
@@ -68,9 +62,6 @@ public:
     void compute_propagators(std::map<std::string, const T*> w_input,
                              std::map<std::string, const T*> q_init = {}) override;
     void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
-    void compute_concentrations() override;
-    void compute_stress() override;
-    void compute_concentrations_and_stress() override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;
     std::vector<double> compute_partition_errors() override;
 };

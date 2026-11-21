@@ -117,23 +117,29 @@ def test_gce(platform, reduced):
     fac = _core.PlatformSelector.create_factory(platform, reduced, "real")
     rng = np.random.default_rng(33)
     w = {m: rng.normal(0, 5, 16) for m in "AB"}
+    # The diblock of molecules(), and a star whose three identical A arms are one block with
+    # n_repeated 3: the fugacity weight of a block counts all its copies, mean Σφ = z Q α
+    diblock = [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]]
+    star = [["A", 0.4, 0, i] for i in (1, 2, 3)] + [["B", 0.3, 0, 4]]
     for model in ("continuous", "discrete"):
-        results = []
-        for fraction in (0.0, 1.0):
-            mol = molecules(fac, model, fraction)
-            opt = fac.create_propagator_computation_optimizer(mol, True)
-            cb = fac.create_computation_box([16], [4.0])
-            pc = fac.create_propagator_computation(cb, mol, opt, "")
-            pc.compute_propagators(w)
-            pc.compute_concentrations()
-            assert pc.check_total_partition()
-            canonical = sum(pc.get_total_concentration(m) for m in "AB")
-            assert abs(np.mean(canonical) - fraction) < 1e-10
-            total = sum(pc.get_total_concentration_gce(2.0, 0, m) for m in "AB")
-            assert np.all(np.isfinite(total))
-            assert abs(np.mean(total) - 2.0*pc.get_total_partition(0)) < 1e-9
-            results.append(total)
-        np.testing.assert_allclose(*results, rtol=0, atol=1e-10)
+        for blocks, alpha in ((diblock, 1.0), (star, 1.5)):
+            results = []
+            for fraction in (0.0, 1.0):
+                mol = fac.create_molecules_information(model, 0.05, {"A": 1.0, "B": 1.0})
+                mol.add_polymer(fraction, blocks)
+                opt = fac.create_propagator_computation_optimizer(mol, True)
+                cb = fac.create_computation_box([16], [4.0])
+                pc = fac.create_propagator_computation(cb, mol, opt, "")
+                pc.compute_propagators(w)
+                pc.compute_concentrations()
+                assert pc.check_total_partition()
+                canonical = sum(pc.get_total_concentration(m) for m in "AB")
+                assert abs(np.mean(canonical) - fraction) < 1e-10
+                total = sum(pc.get_total_concentration_gce(2.0, 0, m) for m in "AB")
+                assert np.all(np.isfinite(total))
+                assert abs(np.mean(total) - 2.0*alpha*pc.get_total_partition(0)) < 1e-9, (model, alpha)
+                results.append(total)
+            np.testing.assert_allclose(*results, rtol=0, atol=1e-10)
 
 
 def test_input_lists(platform, reduced):

@@ -331,23 +331,21 @@ class CLFTS:
             raise NumericalError("Non-finite intermediate CLFTS force", self.mpt.to_monomer_fields_dict(fields[:M]))
         return force
 
-    def save_simulation_data(self, path, w, phi, langevin_step, normal_noise_prev, w_aux, record):
+    def save_simulation_data(self, path, w_aux, phi, langevin_step, normal_noise_prev, record):
         """Save CL-FTS simulation checkpoint data to MATLAB file.
 
         Parameters
         ----------
         path : str
             Output file path.
-        w : numpy.ndarray
-            Monomer potential fields.
+        w_aux : numpy.ndarray
+            Auxiliary fields; the file holds them and their monomer potential fields.
         phi : dict
             Concentration fields.
         langevin_step : int
             Current Langevin step number.
         normal_noise_prev : numpy.ndarray
             Previous noise array for Leimkuhler-Matthews integration.
-        w_aux : numpy.ndarray
-            The auxiliary fields of w.
         record : RunRecord
             The measurements of the run since its last statistics file.
         """
@@ -356,6 +354,7 @@ class CLFTS:
         mdic["zeta_n"] = self.zeta_n
 
         # Add w fields to the dictionary (complex values)
+        w = self.mpt.to_monomer_fields(w_aux)
         for i, name in enumerate(self.monomer_types):
             mdic["w_" + name + "_real"] = np.real(w[i])
             mdic["w_" + name + "_imag"] = np.imag(w[i])
@@ -602,10 +601,9 @@ class CLFTS:
 
             # Save simulation data
             if langevin_step % self.recording["checkpoint_interval"] == 0:
-                w = self.mpt.to_monomer_fields(w_aux)
                 self.save_simulation_data(
                     path=os.path.join(self.recording["dir"], "fields_%06d.mat" % langevin_step),
-                    w=w, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev, w_aux=w_aux,
+                    w_aux=w_aux, phi=phi, langevin_step=langevin_step, normal_noise_prev=normal_noise_prev,
                     record=record
                 )
 

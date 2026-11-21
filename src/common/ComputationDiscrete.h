@@ -19,8 +19,9 @@
  * each of them. The propagators that meet there are stored half a bond past
  * their last segment, q(r, n+1/2) = g^(1/2) * q(r, n), in
  * propagator_half_steps[key][n] for every n in the optimizer's junction_ends;
- * propagator_half_steps[key][0] holds the junction value a propagator starts
- * from.
+ * propagator_half_steps[key][0] of a junction propagator holds the junction
+ * value it starts from. An aggregated propagator starts from a sum of
+ * segments (the optimizer slices to at least one segment).
  *
  * The class is platform neutral: the grid work goes through a
  * ComputationBackend, which the platform factories (CpuFactory, CudaFactory)
@@ -61,8 +62,7 @@ private:
         BackendArray<T>** q_half;     ///< propagator_half_steps[key]
         int n_segment_from;           ///< The job computes the segments n_segment_from+1 .. n_segment_to
         int n_segment_to;
-        /// (q_i, n_i) of an aggregation (half-bond states at a junction, else segments) or of a
-        /// junction (half-bond states)
+        /// (q_i, n_i) of an aggregation (segments) or of a junction (half-bond states)
         std::vector<std::pair<BackendArray<T>*, double>> sources;
     };
     std::vector<std::vector<Job>> schedule;  ///< The scheduler's groups of concurrent jobs

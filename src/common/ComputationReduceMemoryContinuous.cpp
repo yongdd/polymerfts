@@ -49,19 +49,14 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
         current_p++;
     }
 
-    // The jobs of the scheduler, with the checkpoints they start from, store and join
-    for (const auto& parallel_job : this->sc->get_schedule())
+    // The propagators, with the checkpoints they store and join
+    for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
     {
-        std::vector<Job>& jobs = schedule.emplace_back();
-        for (const auto& [key, n_segment_from, n_segment_to] : parallel_job)
-        {
-            const ComputationEdge& edge = this->propagator_computation_optimizer->get_computation_propagator(key);
-            std::vector<std::pair<CheckpointArray<T>*, double>> sources;
-            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-                sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
-            jobs.push_back({&key, &edge, n_segment_from, n_segment_to, PropagatorCode::get_ds_index_from_key(key),
-                            std::move(sources), this->stored_segments(this->checkpoint, key, n_segment_from, n_segment_to)});
-        }
+        std::vector<std::pair<CheckpointArray<T>*, double>> sources;
+        for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
+            sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
+        jobs.push_back({&key, &edge, PropagatorCode::get_ds_index_from_key(key), std::move(sources),
+                        this->stored_segments(this->checkpoint, key, 0, edge.max_n_segment)});
     }
 }
 
@@ -78,42 +73,34 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
 {
     this->set_fields(w_input, q_init);
 
-    // The propagators one at a time, in the scheduler's order
-    for (const std::vector<Job>& parallel_jobs : schedule)
+    // The propagators one at a time
+    for (const Job& job : jobs)
     {
-        for (const Job& job : parallel_jobs)
+        const std::string& key = *job.key;
+
+        // q(r, 0)
+        if (job.edge->deps.size() == 0)
         {
-            const std::string& key = *job.key;
+            if (key[0] == '{')  // grafting point
+                this->backend->copy_from_host(0, this->q_work[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
+            else                // free chain end
+                this->backend->set_unity(0, this->q_work[0]);
+        }
+        else if (key[0] == '[')  // aggregated propagators
+            this->backend->junction_sum(0, this->q_work[0], job.sources);
+        else if (key[0] == '(')  // junction of branches
+            this->backend->junction_product(0, this->q_work[0], job.sources);
+        this->backend->apply_mask(0, this->q_work[0]);
+        this->backend->store_checkpoint(0, job.checkpoints[0], this->q_work[0]);
 
-            // q(r, n_segment_from)
-            if (job.n_segment_from == 0)
-            {
-                if (job.edge->deps.size() == 0)
-                {
-                    if (key[0] == '{')  // grafting point
-                        this->backend->copy_from_host(0, this->q_work[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
-                    else                // free chain end
-                        this->backend->set_unity(0, this->q_work[0]);
-                }
-                else if (key[0] == '[')  // aggregated propagators
-                    this->backend->junction_sum(0, this->q_work[0], job.sources);
-                else if (key[0] == '(')  // junction of branches
-                    this->backend->junction_product(0, this->q_work[0], job.sources);
-                this->backend->apply_mask(0, this->q_work[0]);
-                this->backend->store_checkpoint(0, job.checkpoint(0), this->q_work[0]);
-            }
-            else
-                this->backend->load_checkpoint(0, this->q_work[0], job.checkpoint(job.n_segment_from));
-
-            // q(r, n+1) from q(r, n), keeping the checkpointed segments
-            int cur = 0;
-            for (int n = job.n_segment_from; n < job.n_segment_to; n++)
-            {
-                this->backend->advance_propagator(0, this->q_work[cur], this->q_work[1-cur], job.edge->monomer_type, job.ds_index);
-                cur = 1-cur;
-                if (CheckpointArray<T>* stored = job.checkpoint(n+1))
-                    this->backend->store_checkpoint(0, stored, this->q_work[cur]);
-            }
+        // q(r, n+1) from q(r, n), keeping the checkpointed segments
+        int cur = 0;
+        for (int n = 0; n < job.edge->max_n_segment; n++)
+        {
+            this->backend->advance_propagator(0, this->q_work[cur], this->q_work[1-cur], job.edge->monomer_type, job.ds_index);
+            cur = 1-cur;
+            if (CheckpointArray<T>* stored = job.checkpoints[n+1])
+                this->backend->store_checkpoint(0, stored, this->q_work[cur]);
         }
     }
     this->backend->synchronize();
@@ -148,24 +135,6 @@ void ComputationReduceMemoryContinuous<T>::advance_propagator_single_segment(T* 
 }
 
 template <typename T>
-void ComputationReduceMemoryContinuous<T>::compute_concentrations()
-{
-    compute_blocks(true, false);
-}
-
-template <typename T>
-void ComputationReduceMemoryContinuous<T>::compute_stress()
-{
-    compute_blocks(false, true);
-}
-
-template <typename T>
-void ComputationReduceMemoryContinuous<T>::compute_concentrations_and_stress()
-{
-    compute_blocks(true, true);
-}
-
-template <typename T>
 void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentrations, bool with_stress)
 {
     this->check_box_space_group();
@@ -194,8 +163,9 @@ void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentratio
             if (N_RIGHT > 0)
             {
                 // φ = Σ_n c_n q(N_LEFT-n) q†(n) and the stress Σ_n c_n σ(q(N_LEFT-n), q†(n)),
-                // Simpson's rule over the segments of the block. Every segment contributes
-                // to the stress, the chain ends included (see ComputationContinuous).
+                // Simpson's rule over the segments of the block; the getters normalize φ for
+                // the requested ensemble. Every segment contributes to the stress, the chain
+                // ends included (see ComputationContinuous).
                 const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
                 this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
                     [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>*)
@@ -213,7 +183,6 @@ void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentratio
                 this->scale_by_contour_step(stress, key_right);
             }
             stress_of_block.push_back(stress);
-            // Getters normalize the concentration integral for the requested ensemble.
         }
         this->backend->synchronize();
 

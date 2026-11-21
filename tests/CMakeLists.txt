@@ -85,12 +85,7 @@ SET(BASIC_TESTS
     TestPartitionFunctionCheck
 
     # CPU FFT (all types)
-    TestCpuFFT1D
-    TestCpuFFT1DComplex
-    TestCpuFFT2D
-    TestCpuFFT2DComplex
-    TestCpuFFT3D
-    TestCpuFFT3DComplex
+    TestCpuFFT
     TestCpuFFTAddressIndependence
     TestCpuMakhoulTransform
     TestSimulationBox
@@ -101,8 +96,7 @@ SET(BASIC_TESTS
     # CUDA FFT & utilities
     TestCudaFFTMixedBC
     TestCudaMakhoulTransform
-    TestCudaDCT
-    TestCudaDST
+    TestCudaDCTDST
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
@@ -120,8 +114,7 @@ SET(BASIC_TESTS
     TestCrankNicolson1D
     TestCrankNicolson2D
     TestCrankNicolson3D
-    TestDCT2Propagator
-    TestDST2Propagator
+    TestDCTDSTPropagator
     TestPseudoLinearContinuous3D
     TestPseudoLinearDiscrete3D
     TestRealSpaceLinearContinuous3D
@@ -165,7 +158,7 @@ SET(NUMERICAL_TESTS
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
     TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
     TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
-    TestPartitionIntegrand
+    TestPartitionIntegrand TestConcentrationsAndStress TestCrankNicolson1D TestCrankNicolson2D TestCrankNicolson3D
     # Stress, SCFT and propagators
     TestStressFiniteDifference TestStressSpaceGroup TestStressComplexPlatforms
     TestScft3D TestScftCompressible TestScftHexagonalCylinder2D TestScftOptions TestSpaceGroupPhases TestCrysFFTM3SmallGrid
@@ -299,7 +292,7 @@ IF(POLYMERFTS_BUILD_CUDA)
 
         # Several CUDA tests use FFTW as the CPU reference (#include <fftw3.h>
         # without a USE_CPU_FFTW guard); they cannot build without it.
-        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT|CudaDCT|CudaDST") AND NOT BUILD_CPU_FFTW_LIB)
+        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT|CudaDCTDST") AND NOT BUILD_CPU_FFTW_LIB)
             CONTINUE()
         ENDIF()
 

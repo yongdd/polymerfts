@@ -10,10 +10,13 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Installation and platforms
 
-- CI builds the package with MKL alone on Linux, checks that `cpu-mkl` is its only platform and
-  runs the whole test suite (2026-11-18, the whole suite since 2026-11-19, so that the numerical
-  tests run on cpu-mkl too). Pushes of one commit to `main` and `devel` share one run, and the script
-  tests without the package run inside the Linux CPU job instead of a job of their own.
+- CI builds the package with MKL alone on Linux, checks that `cpu-mkl` is its only platform and runs
+  the whole test suite (2026-11-18, the whole suite since 2026-11-19, so that the numerical tests
+  run on cpu-mkl too). Pushes run CI on `devel` only (2026-11-21): `main` receives only merge
+  commits that `devel` already holds, and a second push of the same commit left a cancelled run on
+  it. The script tests without the package run inside the Linux CPU job instead of a job of their
+  own.
+- The package classifiers list Python 3.13 with 3.11-3.15 (2026-11-21).
 - `import polymerfts` sets `OMP_NUM_THREADS=1` and `OMP_STACKSIZE=1G` unless they are set, before
   NumPy and the native module load (2026-11-18). Since 0.10.0 `scft`, `lfts` and `clfts` set them
   after libgomp had read its environment, so they had no effect: the CPU Fourier transforms used every
@@ -444,6 +447,31 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- Python interface changes of 2026-11-21:
+  A key that an entry of `polymers` or of its `blocks` does not take raises `ValidationError` with
+  the message of the section keys (`validation.POLYMER_KEYS` and `BLOCK_KEYS`): a misspelled
+  `multiplicity` built a plain block and a misspelled `initial_conditions` a free chain, without a
+  word. `fts_consistent_energy` is ignored with one warning by every method, as `stress_interval`;
+  SCFT printed a line about it and L-FTS and CL-FTS listed it as an SCFT option.
+  `polymerfts.__version__` is the version of the native module that was imported
+  (`_core.build_info`), not that of whichever polymerfts distribution is installed.
+  `LFTS/CLFTS.save_simulation_data(path, w_aux, phi, langevin_step, normal_noise_prev, record)`
+  computes the monomer fields from `w_aux`; its `w` argument is gone. `GibbsEnsemble` requires
+  `recording.sample_interval` in its own input check (the message is unchanged); `WTMD.Mk` is
+  removed. Gibbs histories written between 3824309f and 7e8996a5 (development versions, never
+  released) no longer continue; histories of released versions continue as before.
+- C++ interface changes of 2026-11-21: `PlatformSelector::create_factory<T>(platform,
+  reduce_memory)` holds the platform dispatch once and replaces `create_factory_real` and
+  `create_factory_complex`; `ComputationBackend::copy` and
+  `SpaceGroup::get_z_mirror_shift()` (`z_mirror_half_grid_shift()` stays) are removed; the
+  `Scheduler` belongs to the full-storage computations, and the reduced-memory computations compute
+  each propagator whole, one at a time in height order. `CudaSolver<T>` holds the context every CUDA
+  solver shares (box, molecules, streams, space group and its maps, the full grids of a
+  reduced-basis run with the expansion, reduction and mask around the steps); `compute_exp_dw()`
+  takes no mapping arguments and `CudaSolverPseudoBase::update_dw_impl()` is gone. The CPU solvers
+  take the space group in their constructors, as the CUDA solvers do, and build their tables once
+  (`CpuSolver::set_space_group()` is removed); one recursive 3m CrysFFT class runs over the real
+  transform of each library; `FFT<T>` holds no state (`MklFFT` has its own `backward_with_factors`).
 - Python interface changes of 2026-11-19:
   A key that an option section does not take (`langevin`, `recording`, `saddle`, `compressor`,
   `wtmd`, `optimizer`, `space_group`, `smearing`, `electrostatics`, `gibbs_ensemble`) raises
@@ -465,9 +493,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   and the native factories (discrete chains took `ps` for `rqm4`, `rk2` or `cn-adi2`).
   A Gibbs-ensemble continuation may change `verbose_level`, `platform`, `reduce_memory` and
   `aggregate_propagator_computation`, as a CL-FTS continuation may; histories written by earlier
-  versions continue with the input that wrote them. An L-FTS or CL-FTS checkpoint whose input held
-  keys that no release read in `saddle` or `compressor` continues without them; a Gibbs history of
-  such an input, which stores only a hash of it, cannot continue.
+  versions continue with the input that wrote them (those of 3824309f..7e8996a5 only until
+  2026-11-21). An L-FTS or CL-FTS checkpoint whose input held keys that no release read in `saddle`
+  or `compressor` continues without them; a Gibbs history of such an input, which stores only a
+  hash of it, cannot continue.
   `LFTS/CLFTS.save_simulation_data` takes `w_aux` and the `RunRecord` of the run as required
   arguments. Parameters.md states that `sim.wtmd.u`, `up` and `I1` hold U, U′ and I₁ divided by CV,
   while the WTMD statistics files and checkpoints store them times CV.
@@ -837,6 +866,17 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- `PropagatorSolver.angles` follows `set_lattice_parameters` (2026-11-21); after an SCFT angle
+  relaxation it gave the starting angles.
+- The console line of WTMD prints a non-integer `ell` as given (`l=2.5`, was `l=2`; 2026-11-21).
+- The `Lamellar` tutorial labels the axes of its initial-field plot, the plane x = 0, as z and y
+  (2026-11-21); they read x and y. It draws a Matplotlib slice of φ_A instead of a Plotly
+  isosurface and points to the analysis notebooks, so no tutorial needs Plotly; the tutorial
+  README names the requirements (`pip install "polymerfts[jupyter]"`). QuickStart replaces its
+  stale listing of the converted imports by one example and a `grep` check.
+- QuickStart and Parameters.md give the `reduce_memory` figures of the current code (2026-11-21,
+  measured again on an A10): Gyroid.py at 64³ takes 1002 MiB of GPU memory with full storage and
+  390 MiB with `reduce_memory` (1064 and 420 MiB were written for the code of 2026-10-21).
 - `plot_wtmd_chib_AB.ipynb` prints phase areas that sum P(Ψ) times the bin width (2026-11-19); they
   added up to 1/dψ (the ordered fraction was right).
 - `load_config` reads YAML and JSON files as UTF-8 under every locale (2026-11-18): under a Windows
@@ -1138,6 +1178,31 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- Performance work of 2026-11-21 (review 10). Results are bitwise unchanged:
+  - Reduced memory with discrete chains keeps no checkpoint at the segment where a junction branch
+    ends; a junction reads only the half-bond states. A discrete bottlebrush (64³, `reduce_memory`,
+    aggregation) needs 16 % less host memory on cpu-mkl and 20 % less pinned memory on CUDA, where
+    `compute_propagators` is 7 % faster (A10).
+  - The CPU solvers build the stress basis of their Pseudo tables at the first stress, as CUDA does:
+    runs without a stress (L-FTS without pressure, CL-FTS, SCFT without `relax_cell`) need 53 MB
+    (real) and 106 MB (complex) less peak memory at 128³ (cpu-mkl, `reduce_memory`).
+  - The SCFT smearing stress of an orthogonal cell without free angles no longer computes the angle
+    derivatives and zeroes them, and mean-field electrostatics transforms the ion densities once per
+    field.
+  - CUDA: the solvers keep no per-stream work buffers that hold copies or are never written (the
+    RQM4 full step stays in its batch buffer, the RK2 step runs in its output, the two CN-ADI 3D
+    sweeps share one intermediate, a space group needs one full grid per stream for the
+    pseudo-spectral and CN-ADI steps), and the stress workspace (for `rk2` and `ps` also the second
+    spectrum, which only the stress reads) exists only from the first stress on. At 128³ with 4
+    streams (A10) runs with a stress need 64 MiB less device memory with `rqm4` and `rk2` (128 MiB
+    with a P-1 group; `ps` 64 MiB with P-1 and unchanged without a group, as are the `rqm4` wall
+    path, the m3 CrysFFT and `rs`), and runs without a stress 64-384 MiB less (`rqm4` 104, `rk2`
+    168, `ps` 104, complex `ps` 384, `cn-adi2` 64-128 MiB).
+  - CPU: FftwFFT multiplies the bond factor into the coefficients a propagator step gives up and
+    runs the complex-to-real transform on them instead of on a thread-local copy (cpu-fftw `rk2`
+    steps 6-8 % faster on one thread and 10-13 % on four at 96³-128³), and the stress of a
+    non-orthogonal cell is accumulated in one pass (hexagonal 64³ 5 %, 2D oblique 256² 10 % faster
+    on cpu-mkl with four threads).
 - Performance work of 2026-11-19 (review 9). Results are bitwise unchanged:
   - With `reduce_memory`, the concentrations and the stress come from one recomputation of the
     propagators instead of two: an SCFT iteration with cell relaxation is 26-31 % faster (64³, rqm4
@@ -1363,6 +1428,33 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
   Python loop over the grid (2026-11-16).
 
 ### Tests
+
+- Tests changed 2026-11-21 (review 10): `TestClftsElectrostatics` checks the screened S_ij and
+  charge structure functions in a second short run with canonical point ions and an asymmetric fixed
+  charge (sign and conjugate errors of their terms passed before); `TestComputationSafety` checks the
+  grand-canonical concentrations of a star with three identical arms, so a fugacity weight that
+  misses the copies of a block fails; `TestGibbsEnsemble` checks which samples enter the averages
+  with `sample_interval` 2 and `skip_steps`, and the ion columns with a grand-canonical ion listed
+  first; `TestWtmdLifecycle` checks that the recorded L-FTS drift includes the WTMD bias and the
+  printed ℓ; `TestMinimalFormAlias` checks four two-component cells against the brute-force alias
+  search, and the per-mode and grid alias loops share one tie-combination routine;
+  `TestOpenMPDefaults` checks the stack size that libgomp took (OMP_DISPLAY_ENV), not only the
+  environment; `TestParams` checks unknown polymer and block keys and the retired
+  `fts_consistent_energy`; `TestScftOptions` checks `PropagatorSolver.angles` after an angle
+  relaxation and no longer runs two relaxations for the `stress_interval` warning. `TestTutorials`
+  calls the frame function of every animation but draws no frame (62 → 32 s on an A10).
+  `TestConcentrationsAndStress` and `TestCrankNicolson1D/2D/3D` carry the `numerical` label too.
+  The test alias `python_platform` is gone (`cpu_platform`). `TestCudaDCTDST` replaces `TestCudaDCT`
+  and `TestCudaDST` (the same cases in one parameterized test, 381 instead of 1411 lines; the round
+  trip runs on CUDA too), and `TestCudaDeviceBuffer` and `TestCudaCrysTablesAllocation` use the
+  `ScopedStreams` of `TestCudaPart.h`. `tests/scripts/TestVersionNumbers` checks that
+  pyproject.toml, CMakeLists.txt (whose number `polymerfts.__version__` reports), the conda recipe
+  and CITATION.cff give the same version. `TestCpuFFT` replaces the six `TestCpuFFT{1D,2D,3D}` and
+  `Complex` tests with their stored values and adds an O(N²) DFT on even and odd grids;
+  `TestDCTDSTPropagator` replaces `TestDCT2Propagator` and `TestDST2Propagator`; the MKL ObliqueZ
+  work-array check runs in `TestCpuCrysFFTTables`, so CPU-only builds run it; `TestCrankNicolson1D/2D/3D`
+  compare every solver with their stored references only, not also with the solver checked before it,
+  which the references imply.
 
 Tests new since 0.10.0:
 - Tests added 2026-11-19: `TestConcentrationsAndStress` (the combined call against the two calls,
@@ -1665,16 +1757,16 @@ Tests that check more or differently than in 0.10.0:
   Pmmm 1.5x, where the former baseline gave 3.1x and 2.0x).
 
 Test helpers: `tests/fts_checks.py` holds what the Python tests of simulation runs share: `quiet`
-and `silenced`, which discard printed output; `python_platform`, the one platform that runs a test
-of a fix made in Python (the first CPU platform, else CUDA); `compare_files`, which compares the
-key sets of two MAT files both ways and their values bit for bit or to a relative tolerance;
-`exact_restart`, which checks a run continued from the checkpoint of a shorter one against the
-uninterrupted run (random state, partition check and recorded files); and the inputs that several
-tests run. With `tests/cuda_part.py` and `tests/TestCudaPart.h`, a test that runs on every platform
-fails in a CUDA build without a visible device instead of passing without its CUDA part. CTest runs
-the Python tests with `PYTHONDONTWRITEBYTECODE=1`, so that they write no `tests/__pycache__`. CI
-runs `tests/scripts` a second time after each build, with the built package, so that the script
-tests that need polymerfts run too (2026-11-17); on Linux it sets
+and `silenced`, which discard printed output; `cpu_platform` (of tests/cuda_part.py), the one
+platform that runs a test of a fix made in Python (the first CPU platform, else CUDA);
+`compare_files`, which compares the key sets of two MAT files both ways and their values bit for bit
+or to a relative tolerance; `exact_restart`, which checks a run continued from the checkpoint of a
+shorter one against the uninterrupted run (random state, partition check and recorded files); and
+the inputs that several tests run. With `tests/cuda_part.py` and `tests/TestCudaPart.h`, a test that
+runs on every platform fails in a CUDA build without a visible device instead of passing without its
+CUDA part. CTest runs the Python tests with `PYTHONDONTWRITEBYTECODE=1`, so that they write no
+`tests/__pycache__`. CI runs `tests/scripts` a second time after each build, with the built package,
+so that the script tests that need polymerfts run too (2026-11-17); on Linux it sets
 `POLYMERFTS_SCRIPT_TEST_PLATFORM=cpu-mkl`, so that the imported PSCF scripts of
 `TestPscfScriptIntegration`, which were skipped there, run as well.
 

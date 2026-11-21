@@ -14,7 +14,7 @@
  * - d_boltz_bond_half: exp(-b²|k|²ds/12) for half steps
  *     - Continuous chains: half-step diffusion
  *     - Discrete chains: half-bond function ĝ^(1/2)(k)
- * - d_fourier_basis_*: Weighted wavenumbers for stress calculation
+ * - d_fourier_basis_*: stress basis, v⊗v of the deformation vector v of each mode
  * - d_negative_k_idx: Index mapping for Hermitian symmetry
  *
  * **Stress Array Convention (Voigt Notation):**
@@ -69,11 +69,13 @@
  *     - Continuous: half-step diffusion
  *     - Discrete: half-bond function ĝ^(1/2)(k) for chain ends
  *
- * **Fourier Basis:**
+ * **Stress Basis:**
  *
- * Weighted wavenumbers for stress calculation:
- * - d_fourier_basis_x = kx² × weight
- * - Used in ∂H/∂Lx calculation
+ * v⊗v of the deformation vector v = 2π g⁻¹ m of each mode, with the mode's weight
+ * in the sum over the spectrum (see Pseudo), when update() computes it
+ * (with_stress_basis):
+ * - d_fourier_basis_x = v₁², _y = v₂², _z = v₃²
+ * - d_fourier_basis_xy = v₁v₂, _xz = v₁v₃, _yz = v₂v₃ (periodic boxes)
  */
 template <typename T>
 class CudaPseudo : public Pseudo<T>

@@ -201,6 +201,8 @@ Keep each simulation class readable from top to bottom:
   a method warns about the keys of other methods and refuses keys no method reads.
   A new option inside a section (`langevin`, `recording`, `wtmd`, ...) also needs
   its entry in `SECTION_KEYS`: a method refuses keys its sections do not take.
+  A new key of a `polymers` entry or of its `blocks` also needs its entry in
+  `POLYMER_KEYS` or `BLOCK_KEYS`.
 - Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.

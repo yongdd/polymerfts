@@ -10,7 +10,9 @@ inline. As in TestExamples, the LFTS and CLFTS classes are wrapped: a run stops
 after at most MAX_STEP Langevin steps, and its checkpoint interval is cut to that
 number of steps, so the cells after it find a fields file. A notebook that runs its
 own Langevin loop is shortened by the text replacements in SHORTENED, which must
-each match once.
+each match once. An animation calls its frame function for every frame, but draws
+no frame: encoding the frames would take half of the run time and tests nothing of
+polymerfts.
 """
 
 import json
@@ -31,9 +33,10 @@ MAX_STEP = 5
 SHORTENED = {"tutorials/LangevinFieldTheoreticSimulation/NaiveLFTS.ipynb": [("nsteps = 200 ", "nsteps = 5 ")]}
 
 DRIVER = r"""
-import copy, json, sys, warnings
+import copy, json, numbers, sys, types, warnings
 warnings.simplefilter("error", UserWarning)
 warnings.filterwarnings("ignore", message=".*non-interactive", category=UserWarning)
+import matplotlib.animation
 import polymerfts
 
 max_step = int(sys.argv[2])
@@ -56,6 +59,16 @@ def wrap(cls):
 
 for cls in (polymerfts.LFTS, polymerfts.CLFTS):
     wrap(cls)
+
+
+def frames_only(fig, func, frames=None, **kwargs):
+    # In place of FuncAnimation: the frame function runs for every frame, nothing is drawn
+    for frame in (range(frames) if isinstance(frames, numbers.Integral) else frames):
+        func(frame)
+    return types.SimpleNamespace(to_jshtml=lambda *args, **kwargs: "")
+
+
+matplotlib.animation.FuncAnimation = frames_only
 
 namespace = {"__name__": "__main__"}
 for number, code in enumerate(json.load(sys.stdin), 1):

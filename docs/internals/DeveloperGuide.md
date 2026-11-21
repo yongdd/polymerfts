@@ -149,17 +149,17 @@ The classes each platform provides (the computation classes above them are share
 
 // Create factory for a specific platform ("cpu-fftw", "cpu-mkl", or "cuda")
 std::unique_ptr<AbstractFactory<double>> factory =
-    PlatformSelector::create_factory_real("cuda", reduce_memory);
+    PlatformSelector::create_factory<double>("cuda", reduce_memory);
 
 // For complex-valued field theories
 std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
-    PlatformSelector::create_factory_complex("cuda", reduce_memory);
+    PlatformSelector::create_factory<std::complex<double>>("cuda", reduce_memory);
 ```
 
 **Notes:**
 
 - The only recognized platform strings are `"cpu-fftw"`, `"cpu-mkl"`, and `"cuda"`; any other name (including `"auto"`) throws `Could not find platform '...'`. Automatic platform selection (GPU for 2D/3D, CPU for 1D) is implemented purely in the Python layer, in `PropagatorSolver._auto_platform` (`src/python/theory/propagator_solver.py`); `scft.py`, `lfts.py` and `clfts.py` create the solver with `chain_solver` (`src/python/theory/chains.py`), which just passes `platform="auto"` through to `PropagatorSolver`. It is not in C++.
-- The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory_real`/`create_factory_complex` (`src/pybind11/polymerfts_core.cpp`).
+- The Python binding exposes a static `PlatformSelector.create_factory(platform_name, reduce_memory, type)` (with `type` = `"real"` or `"complex"`) that dispatches to `create_factory<double>`/`create_factory<std::complex<double>>` (`src/pybind11/polymerfts_core.cpp`).
 
 ### Factory Methods
 
@@ -246,10 +246,10 @@ PropagatorComputation<T>                      [Abstract Base]
 ├── check_total_partition(tolerance)
 └── update_laplacian_operator()               [pure virtual]
         │
-        └── ComputationCommon<T>              [backend, scheduler, φ storage, getters, solvents]
+        └── ComputationCommon<T>              [backend, φ storage, getters, solvents]
             │
-            ├── ComputationContinuous<T>      full storage; RQM4, RK2 or CN-ADI2
-            ├── ComputationDiscrete<T>        full storage; bond convolution and half bonds
+            ├── ComputationContinuous<T>      full storage, scheduler groups; RQM4, RK2 or CN-ADI2
+            ├── ComputationDiscrete<T>        full storage, scheduler groups; bond convolution and half bonds
             │
             └── ComputationReduceMemoryBase<T> [checkpoints and recomputation]
                 ├── ComputationReduceMemoryContinuous<T>
@@ -285,11 +285,12 @@ a `cn-adi2` or `rs` computation keeps its box orthogonal while it exists
 (`ComputationBox::hold_orthogonal_cell()`).
 
 **Who does what.** The computation classes decide *what* is computed and in
-*which order*: the scheduler's groups of propagators, the initial condition of
+*which order*: the scheduler's groups of propagators (full storage) or one
+propagator at a time in height order (reduced memory), the initial condition of
 each propagator (free end, grafting point, junction product, aggregated sum),
 which segment pairs enter the concentration and stress integrals and with
 which weights, and the normalization. Their loops read top to bottom in the
-order the work happens. The constructors resolve each job of the schedule once
+order the work happens. The constructors resolve each job once
 (its propagator storage or checkpoints, contour step and junction sources), so
 `compute_propagators()` looks up no propagator keys, which grow with the size of a polymer.
 Every operation on grid data goes through
@@ -381,14 +382,19 @@ CpuSolver<T>                                  [Abstract Base]
             └── compute_single_segment_stress(): Σ q₁ (dG/dL q₂), the kernel of one axis differentiated
 ```
 
-The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base, whose
-`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver;
+Every CPU solver takes the space group (`nullptr` for the full grid) in its constructor
+and builds the tables of the cell there; `update_laplacian_operator()` rebuilds them for a
+new cell.
+
+The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base. It holds what
+every CUDA solver shares: the computation box, the molecules, the backend's streams, and the
+space group with the backend's index maps, which every solver takes in its constructor, and
+the full-grid buffers of a reduced-basis run with the expansion, reduction and mask around
+the steps (`expand_to_full_grid()`, `full_grid_output()`, `store_full_grid()`); its
+`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver.
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the
-three pseudo-spectral solvers share -- it uses the computation box and the backend's streams,
-and owns the `Pseudo` helper, the stress reduction workspace, the space-group work buffers
-and the CrysFFT fast path --
-and implements `update_laplacian_operator()` and the shared `update_dw_impl()`. Every CUDA
-solver takes the space group and the backend's index maps in its constructor. It also owns the spectral transforms: cuFFT plans for periodic boundaries
+three pseudo-spectral solvers share -- the `Pseudo` helper, the stress reduction workspace
+and the CrysFFT fast path -- and implements `update_laplacian_operator()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
 constructor argument; the plans of a stream share one work area) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
@@ -403,9 +409,14 @@ tables exist only for a path that uses them (`provide_work()` with the derived s
 `allocate_work()`, called at the end of the derived constructors through `init_path()` and
 again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
-Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them.
+Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them, and the stress
+workspace (for RK2 and discrete chains also the second spectrum, which only the stress reads)
+exists only from the first `prepare_stress()` on. The steps reuse what they have
+read: the RK2 step runs in its output, and with a space group the pseudo-spectral and CN-ADI
+steps work in place in one full grid per stream (the rs bonds, which cannot run in place,
+take a second).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
-their real-space work buffers and `update_dw()`/`advance_propagator()`;
+`update_dw()`/`advance_propagator()` (RQM4 also the buffers of its full and half steps);
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
 bond of discrete chains on the grid. The non-periodic DCT/DST
 objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
@@ -659,7 +670,7 @@ When adding new computational features, you must implement them for both platfor
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
 | Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section, polymer and block | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`, `POLYMER_KEYS`, `BLOCK_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -670,7 +681,7 @@ operation is a new `ComputationBackend` operation implemented by both backends.
 Who owns whom:
 
 - `PropagatorSolver` (Python) holds the box, the molecules, the optimizer and the computation; the bindings keep the arguments of each object alive while it exists.
-- A computation owns its backend, the scheduler, the concentration fields and the propagator storage; the backend is deleted last.
+- A computation owns its backend, the concentration fields and the propagator storage; the backend is deleted last.
 - A backend owns its solver, and on CUDA the streams and scratch buffers.
 - A solver owns its transforms, its `Pseudo` tables, its CrysFFT objects (one per stream on CUDA, one for all threads on the CPU), their k-space tables (one per coefficient for all streams or threads) and its Boltzmann factors.
 
@@ -690,7 +701,7 @@ that throw need no cleanup code:
   `create_without_work_area(bytes, cufftMakePlanMany, ...)` makes a plan without a work area of its
   own, so that the plans of one stream, which never run at the same time, share one);
 - host arrays: `std::vector`; owned objects (solvers, transforms, CrysFFT engines,
-  `Pseudo`, the scheduler, the backend): `std::unique_ptr`.
+  `Pseudo`, the backend): `std::unique_ptr`.
 
 Raw pointers are lent, never owned. The factory functions (`create_computation_box`,
 `create_propagator_computation`, ...) return `std::unique_ptr`, which the Python bindings

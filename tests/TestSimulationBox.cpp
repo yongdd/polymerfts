@@ -31,11 +31,7 @@
 template <typename T>
 void check_overflow_grid(const std::string& platform)
 {
-    std::unique_ptr<AbstractFactory<T>> factory;
-    if constexpr (std::is_same_v<T, double>)
-        factory = PlatformSelector::create_factory_real(platform, false);
-    else
-        factory = PlatformSelector::create_factory_complex(platform, false);
+    std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<T>(platform, false);
     // Exercise the C++ constructors directly, without the Python size guard.
     for (const bool angles : {false, true})
     {
@@ -61,7 +57,7 @@ void check_overflow_grid(const std::string& platform)
 // 1e-8 degrees is 1.7e-10 rad (refused)
 void check_absent_axis_angles(const std::string& platform)
 {
-    auto factory = PlatformSelector::create_factory_real(platform, false);
+    auto factory = PlatformSelector::create_factory<double>(platform, false);
     auto accepted = [&](std::vector<int> nx, std::vector<double> lx, std::vector<double> angles) {
         try
         {
@@ -189,7 +185,7 @@ int main()
             check_overflow_grid<double>(platform);
             check_overflow_grid<std::complex<double>>(platform);
             check_absent_axis_angles(platform);
-            auto factory = PlatformSelector::create_factory_real(platform, false);
+            auto factory = PlatformSelector::create_factory<double>(platform, false);
             std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box({1,2,2}, {4.5,3.5,2.5}, {});
             if (!check_host_reductions(*cb))
                 return -1;

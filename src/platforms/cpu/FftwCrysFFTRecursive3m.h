@@ -1,8 +1,8 @@
 /**
  * @file FftwCrysFFTRecursive3m.h
- * @brief FFTW implementation of recursive crystallographic FFT (2x2y2z).
+ * @brief Recursive crystallographic FFT (2x2y2z) over the real FFT of FFTW.
  *
- * @see CrysFFTRecursive3mBase for common functionality
+ * @see CrysFFTRecursive3mBase for the algorithm
  * @see MklCrysFFTRecursive3m for MKL implementation
  */
 
@@ -12,12 +12,9 @@
 #include <fftw3.h>
 #include "CrysFFTRecursive3mBase.h"
 
-class FftwCrysFFTRecursive3m : public CrysFFTRecursive3mBase<FftwCrysFFTRecursive3m>
+class FftwCrysFFTRecursive3m : public CrysFFTRecursive3mBase
 {
 private:
-    using Base = CrysFFTRecursive3mBase<FftwCrysFFTRecursive3m>;
-    friend Base;
-
     fftw_plan plan_forward_ = nullptr;
     fftw_plan plan_backward_ = nullptr;
 
@@ -26,16 +23,17 @@ private:
     /// Destroy the plans (also after a failed construction); idempotent.
     void release();
 
+    /// The plans run on the caller's fields when they have the alignment of the planning
+    /// arrays (the r2c transform keeps its input), and otherwise on a copy.
+    void forward(const double* q, std::complex<double>* spectrum) const override;
+    void backward(std::complex<double>* spectrum, double* q) const override;
+
 public:
     explicit FftwCrysFFTRecursive3m(
         std::array<int, 3> nx_logical,
         std::array<double, 9> translational_part = {0,0,0, 0,0,0, 0,0,0});
 
     ~FftwCrysFFTRecursive3m();
-
-    /// q_out = F^-1[ table F[q_in] ] with a table of build_boltzmann() or
-    /// build_multiplier() (16 arrays, table_stride_ values apart); q_in is kept.
-    void apply_with_table(const double* table, const double* q_in, double* q_out) const;
 };
 
 #endif  // FFTW_CRYS_FFT_RECURSIVE_3M_H_

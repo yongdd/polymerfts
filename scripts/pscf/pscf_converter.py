@@ -378,7 +378,7 @@ def prepare_export(source, field_source=None, lattice=None):
             raise ValueError(f"w_{name} must contain one finite real value per grid point.")
         fields.append(field.astype(float).reshape(params["nx"]))
     for polymer in params["polymers"]:
-        if any(polymer.get(key) is not None for key in ("initial_conditions", "grafting_points")):
+        if polymer.get("initial_conditions") is not None:
             raise ValueError("Grafted chains and custom initial propagator conditions are not supported by this PSCF export.")
         if "chemical_potential" in polymer:
             raise ValueError("Grand-canonical polymers (chemical_potential) are not supported by this canonical PSCF export.")

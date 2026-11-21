@@ -52,7 +52,7 @@ Include compositional fluctuations beyond mean-field theory.
 | # | Tutorial | Description |
 |---|----------|-------------|
 | 1 | `NaiveLFTS.ipynb` | Step-by-step L-FTS implementation (educational) |
-| 2 | `Lamellar.ipynb` | Production L-FTS with structure functions |
+| 2 | `Lamellar.ipynb` | L-FTS of a lamellar phase with the `lfts` module; draws a slice of the A concentration and points to the analysis notebooks |
 
 ## API Levels
 
@@ -129,9 +129,8 @@ The potential field affects chain statistics through:
 ## Requirements
 
 - Python 3.11+
-- NumPy, Matplotlib
 - `polymerfts` installed from a wheel (see [Installation](../docs/getting-started/Installation.md))
-- Jupyter notebook or JupyterLab
+- NumPy, SciPy, Matplotlib and Jupyter (notebook or JupyterLab, with IPython): the Conda environment of the Installation guide includes them, and `python -m pip install "polymerfts[jupyter]"` adds them to another environment that has the wheel installed
 
 ## Environment Setup
 
@@ -161,7 +160,8 @@ jupyter notebook
 ```
 
 `ctest --test-dir build -R TestTutorials` runs the code cells of every notebook against the
-build, with at most 5 Langevin steps in each L-FTS run.
+build, with at most 5 Langevin steps in each L-FTS run; an animation calls its frame function for
+every frame but draws no frame.
 
 ## Additional Resources
 

@@ -59,7 +59,7 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
                               /*complex_requires_periodic=*/true)
 {
     try{
-        // The CrysFFT objects and the work buffers (allocate_work()) of the path the space group chooses
+        // The CrysFFT objects and the work buffers of the path the space group chooses
         this->init_path();
     }
     catch(std::exception& exc)
@@ -71,26 +71,28 @@ template <typename T>
 CudaSolverPseudoRQM4<T>::~CudaSolverPseudoRQM4() = default;
 
 template <typename T>
-void CudaSolverPseudoRQM4<T>::allocate_work(int n_field, bool)
+void CudaSolverPseudoRQM4<T>::allocate_work(int n_field)
 {
+    // The full-grid steps with periodic BC transform the full step and the first half
+    // step in one batch, and the full step stays in the first half of the batch
+    const bool batched = !use_crysfft_ && is_periodic_;
     const int M = cb->get_total_grid();
     for(int i=0; i<n_streams; i++)
     {
-        // The full step and the two half steps (both paths)
-        provide(d_q_step_1_one[i], n_field);
+        // The two half steps (both paths), and the full step outside the batch
         provide(d_q_step_2_one[i], n_field);
-        // The full-grid steps with periodic BC transform the full step and the first
-        // half step in one batch
-        if (!use_crysfft_ && is_periodic_)
+        if (batched)
             provide(d_q_step_1_two[i], 2*static_cast<size_t>(M));
+        else
+            provide(d_q_step_1_one[i], n_field);
     }
 }
 
 template <typename T>
 void CudaSolverPseudoRQM4<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
-    // exp(-w ds/2) for the full step and exp(-w ds/4) for the half step
-    this->update_dw_impl(d_w, true, 0.5, 0.25);
+    // exp(-w ds/2) for the full step and exp(-w ds/4) for the half step, in the basis of the steps
+    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/use_crysfft_, true, 0.5, 0.25);
 }
 // Advance propagator using RQM4
 template <typename T>
@@ -162,6 +164,9 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
         CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
 
+        // The full step: the first half of the batch (periodic BC), or d_q_step_1_one
+        CuDeviceData<T> *d_full_step = is_periodic_ ? d_q_step_1_two[STREAM].get() : d_q_step_1_one[STREAM].get();
+
         // The last factor exp(-w*ds/4) of the two half steps (with the FFT
         // normalization) is applied inside the Richardson combination below
         double half_step_scale = 1.0;
@@ -195,10 +200,10 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
             fft_backward(STREAM, d_qk_[STREAM], d_q_step_1_two[STREAM], 2);
             CUDA_CHECK_LAUNCH();
 
-            // step 1/2: Evaluate exp(-w*ds/2) in real space
+            // step 1/2: Evaluate exp(-w*ds/2) in real space (in place)
             // step 1/4: Evaluate exp(-w*ds/2) in real space
             ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_step_1_one[STREAM], (d_q_step_1_two[STREAM].get() + 0), _d_exp_dw,
+                d_full_step, d_full_step, _d_exp_dw,
                 d_q_step_2_one[STREAM], (d_q_step_1_two[STREAM].get() + M), _d_exp_dw, 1.0/static_cast<double>(M), M);
             CUDA_CHECK_LAUNCH();
 
@@ -278,7 +283,7 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
         // factor exp(-w*ds/4) (and the FFT normalization) here
         ker_multi_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             fft_out, 4.0/3.0, d_q_step_2_one[STREAM], _d_exp_dw_half, half_step_scale,
-            -1.0/3.0, d_q_step_1_one[STREAM], M);
+            -1.0/3.0, d_full_step, M);
         CUDA_CHECK_LAUNCH();
 
         // Reduce to the basis (with a space group) and multiply the mask

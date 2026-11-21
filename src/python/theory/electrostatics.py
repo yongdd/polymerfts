@@ -605,7 +605,7 @@ class MeanFieldElectrostatics:
 
     def _forget_ions(self):
         """The point ions of a new ψ or box are computed when they are needed (ion_densities)."""
-        self._ion_densities = self._ion_log_partitions = None
+        self._ion_densities = self._ion_densities_k = self._ion_log_partitions = None
 
     def set_response(self, response):
         """The response D(k) = -∂c(k)/∂ψ(k) of the homogeneous state (coefficient shape) for the residual."""
@@ -619,7 +619,8 @@ class MeanFieldElectrostatics:
 
     def ion_densities(self):
         """Densities c_s(r) of the point ions and the logarithms ln Q_s of their partition functions for ψ,
-        computed once per ψ (one list each, one entry per ion)."""
+        computed once per ψ (one list each, one entry per ion), with the transforms of the densities
+        (_ion_densities_k), which the charge density and the stress use."""
         if self._ion_densities is None:
             densities, log_partitions = [], []
             for ion in self.ions:
@@ -628,6 +629,7 @@ class MeanFieldElectrostatics:
                 densities.append(density)
                 log_partitions.append(float(log_q))
             self._ion_densities, self._ion_log_partitions = densities, log_partitions
+            self._ion_densities_k = [self._fourier.forward(density) for density in densities]
         return self._ion_densities, self._ion_log_partitions
 
     def charge_density(self, phi_smeared):
@@ -637,9 +639,9 @@ class MeanFieldElectrostatics:
             if z != 0.0:
                 c = c + z * phi_smeared[name]
         if self.ions:
-            densities, _ = self.ion_densities()
-            charge_k = sum(ion["valence"] * ion["gamma"] * self._fourier.forward(density)
-                           for ion, density in zip(self.ions, densities))
+            self.ion_densities()
+            charge_k = sum(ion["valence"] * ion["gamma"] * density_k
+                           for ion, density_k in zip(self.ions, self._ion_densities_k))
             c = c + self._fourier.backward(charge_k)
         return c
 
@@ -732,8 +734,8 @@ class MeanFieldElectrostatics:
         weight = -0.5 * np.abs(psi_k) ** 2 / n ** 2 / self.coupling
         if self.ions:
             densities, _ = self.ion_densities()
-            for ion, density in zip(self.ions, densities):
-                density_k = np.ravel(coefficients(density))
+            for ion, density, density_k in zip(self.ions, densities, self._ion_densities_k):
+                density_k = np.ravel(coefficients(density, density_k))
                 weight = weight + ion["valence"] * np.real(np.conj(density_k) * psi_k) \
                     * (-0.5 * ion["smearing_length"] ** 2 * np.ravel(ion["gamma"])) / n ** 2
         for slot, derivative in dk_sq.items():

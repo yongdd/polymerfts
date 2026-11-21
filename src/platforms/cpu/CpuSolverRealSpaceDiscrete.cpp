@@ -125,8 +125,9 @@ void pass_contiguous(const T* in, T* out, int n, long lines, const RealSpaceBond
 }  // namespace
 
 template <typename T>
-CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules)
-    : cb(cb), molecules(molecules)
+CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules,
+                                                          SpaceGroup* space_group)
+    : cb(cb), molecules(molecules), space_group_(space_group)
 {
     try
     {
@@ -146,14 +147,6 @@ CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb,
     {
         throw_without_line_number(exc.what());
     }
-}
-
-template <typename T>
-void CpuSolverRealSpaceDiscrete<T>::set_space_group(SpaceGroup* sg)
-{
-    if (sg != nullptr && !std::is_same_v<T, double>)
-        throw_with_line_number("Space groups need real fields.");
-    space_group_ = sg;
 }
 
 template <typename T>
