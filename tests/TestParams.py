@@ -9,7 +9,8 @@ is absent, the options of other methods are ignored with one warning at the
 caller's line without checking them, L-FTS and CL-FTS refuse axis_ordering,
 an option of an earlier release (stress_interval, fts_consistent_energy) is
 ignored with one warning, and a key that no method reads is refused, as is a key
-that a section of the method, a polymer or a block does not take.
+that a section of the method, a polymer, a block or a point ion does not take. SCFT
+refuses an axis_ordering that does not name each axis of nx once.
 """
 
 import sys
@@ -527,6 +528,11 @@ def main():
         print("FAILED: mean concentrations", calc.mean_concentrations())
         ok = False
 
+    # ---- axis_ordering names each axis of nx once
+    for ordering in (["a", "a", "c"], ["a", "b"], ["a", "b", "c", "d"], "abc", ["a", "b", 3]):
+        params = scft_parameters(); params["axis_ordering"] = ordering
+        ok &= expect_error(SCFT, params, f"axis_ordering {ordering!r}", "'axis_ordering' must name each of the axes")
+
     # ---- crystal systems are checked against the dimension
     params = scft_parameters(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["crystal_system"] = "Cubic"
     ok &= expect_error(SCFT, params, "Cubic for a 2D box", "not valid for a 2D box")
@@ -657,6 +663,15 @@ def main():
         ok &= expect_error(cls, given, f"{cls.__name__} with 'polymers[0].blocks[1].multiplicty'",
                            "'polymers[0].blocks[1]' has unknown keys: ['multiplicty'] (did you mean 'multiplicity'?); "
                            "it takes length, monomer_fractions, multiplicity, type, u, v")
+    # So is a key that a point ion of electrostatics does not take (TestGibbsEnsemble checks the boxes of
+    # the Gibbs ensemble)
+    ions = {"Na": {"valence": 1.0, "concentration": 0.0, "smearing_length": 0.1, "valance": 1.0}}
+    for cls, params in ((SCFT, scft_parameters()), (CLFTS, clfts_params())):
+        given = {**params, "smearing": {"type": "gaussian", "a_int": 0.1},
+                 "electrostatics": {"charges": {"A": 0.0}, "coupling": 10.0, "n_segments": 50, "ions": ions}}
+        ok &= expect_error(cls, given, f"{cls.__name__} with 'electrostatics.ions.Na.valance'",
+                           "'electrostatics.ions.Na' has unknown keys: ['valance'] (did you mean 'valence'?); "
+                           "it takes chemical_potential, concentration, smearing_length, valence")
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False

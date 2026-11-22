@@ -504,6 +504,6 @@ Note: The reduction factor (32x) is less than the number of symmetry operations 
 
 - `src/common/SpaceGroup.h` / `src/common/SpaceGroup.cpp`: SpaceGroup implementation
 - `src/pybind11/polymerfts_core.cpp`: Python bindings
-- `src/python/scft/scft.py`: Integration with SCFT simulations
+- `src/python/scft/grid.py`: Integration with SCFT simulations (the space group and the bases of the fields)
 - International Tables for Crystallography, Vol. A (2016)
 - spglib documentation: https://spglib.github.io/spglib/

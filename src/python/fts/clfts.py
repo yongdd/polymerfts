@@ -22,12 +22,12 @@ from .thermodynamics import ThermodynamicOperators
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..theory.chains import (read_chains, chain_solver, chain_fields, solve_chains, check_partition_once,
-                             prepare_run)
+                             prepare_run, chain_hamiltonian)
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
 from .structure_functions import ClftsStructureFunctions
 from ..theory.electrostatics import Electrostatics
-from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
+from ..utils.validation import (with_overrides, validate_clfts_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values, previous_noise_values)
 from ..utils.common import (
@@ -41,6 +41,7 @@ from ..utils.common import (
 )
 from ..utils.checkpoint import (
     RunRecord,
+    save_statistics,
     fields_data,
     load_checkpoint,
     recording_run_status,
@@ -101,8 +102,8 @@ class CLFTS:
     def __init__(self, params, random_seed=None, *, integrator=None, callbacks=None):
         """Initialize the Complex Langevin FTS simulation."""
 
-        # Validate input parameters (a copy with the current names; same checks as SCFT and LFTS)
-        params = validate_lfts_params(params, complex_fields=True)
+        # Validate input parameters (a copy with the current names)
+        params = validate_clfts_params(params)
 
         # Compressibility parameter; complex Langevin needs a finite one (default: high compressibility)
         self.zeta_n = params.get("zeta_n", 100.0)
@@ -111,7 +112,7 @@ class CLFTS:
         self.monomer_types, self.segment_lengths, self.polymers, self.chi_n, self.random_fraction = read_chains(params)
 
         # Multimonomer polymer field theory
-        self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, self.zeta_n)
+        self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, zeta_n=self.zeta_n)
 
         # Complex-valued propagator solver (complex Langevin fields) with the polymers. Grand-canonical
         # polymers (chemical_potential βμ_p) get the volume fraction 0: their chains, e^(βμ_p) Q_p per
@@ -125,55 +126,36 @@ class CLFTS:
                                    np.exp(self.polymer_chemical_potentials))
         self.grand_canonical = [p for p, polymer in enumerate(self.polymers) if "chemical_potential" in polymer]
         self.canonical_fraction = sum(polymer.get("volume_fraction", 0.0) for polymer in self.polymers)
-        self.prop_solver.display_platform_info()
 
-        # (C++ class) Computation box; molecules, optimizer and propagator computation
-        # are used through prop_solver
+        # Computation box as a public attribute (this creates the C++ objects)
         self.cb = self.prop_solver.computation_box
 
-        # Standard deviation of normal noise of Langevin dynamics
-        langevin_sigma = calculate_sigma(
-            params["langevin"]["nbar"],
-            params["langevin"]["dt"],
-            np.prod(params["nx"]),
-            self.prop_solver.get_volume()
-        )
+        # Display factory info
+        self.prop_solver.display_platform_info()
 
+        # Settings of the run: the Langevin step with the standard deviation of its noise, the scaling
+        # dt_scaling[i] of dH/dw_aux[i], the dynamical stabilization, what is printed and what is recorded
+        self.params = params
+        self.chain_model = params["chain_model"]
+        self.ds = params["ds"]
+        self.langevin = params["langevin"].copy()
+        self.langevin["sigma"] = calculate_sigma(params["langevin"]["nbar"], params["langevin"]["dt"],
+                                                 np.prod(params["nx"]), self.prop_solver.get_volume())
+        self.dt_scaling = self.mpt.dt_scaling()
         # Dynamical stabilization constant for complex Langevin simulations
         # This prevents runaway solutions ("hot spots") by adding iαds·Im[W-] to exchange field forces.
         # "dynamic_stabilization" is the combined coefficient αds (as in Willis & Matsen 2024);
         # normalize_params has renamed its alias "alpha_ds", kept for compatibility with reference codes.
         # Typical values: 0.01-0.1 for N̄ ≥ 10^5 (Willis & Matsen 2024)
         self.alpha_ds = params.get("dynamic_stabilization", 0.0)
-
-        # dH/dw_aux[i] is scaled by dt_scaling[i]
-        self.dt_scaling = self.mpt.dt_scaling()
+        self.verbose_level = params["verbose_level"]
+        self.recording = params["recording"].copy()
 
         # Random bit generator of the noise (random_seed None: non-reproducible)
         self.random_bg = np.random.PCG64(random_seed)
         self.random = np.random.Generator(self.random_bg)
 
-        display_system(self, params["chain_model"])
-
-        print("Invariant Polymerization Index (N_Ref): %d" % (params["langevin"]["nbar"]))
-        print("Langevin Sigma: %f" % (langevin_sigma))
-        print("Scaling factor of delta tau N for each field:", self.dt_scaling)
-        print("Dynamical stabilization constant: %f" % (self.alpha_ds))
-        print("Random Number Generator:", self.random_bg.state)
-
-        self.prop_solver.display_statistics()
-
-        # Save internal variables
-        self.params = params
-        self.chain_model = params["chain_model"]
-        self.ds = params["ds"]
-        self.langevin = params["langevin"].copy()
-        self.langevin.update({"sigma": langevin_sigma})
-
-        self.verbose_level = params["verbose_level"]
-        self.recording = params["recording"].copy()
-
-        # Initialize smearing (must be after self.cb is set)
+        # Smearing of the interactions
         self.smearing = smearing_of(params, self.prop_solver)
         self._periodic_box = all(b == "periodic" for b in self.prop_solver.bc_lower)   # S(k) transforms with fftn
 
@@ -185,10 +167,19 @@ class CLFTS:
         for p in self.grand_canonical:
             print("Polymer %d: grand canonical, chemical potential %g" % (p, self.polymer_chemical_potentials[p]))
 
-
         # Structure functions and thermodynamic operators
         self.structure_functions = ClftsStructureFunctions(self)
         self.thermodynamics = ThermodynamicOperators(self)
+
+        display_system(self, params["chain_model"])
+
+        print("Invariant Polymerization Index (N_Ref): %d" % (params["langevin"]["nbar"]))
+        print("Langevin Sigma: %f" % (self.langevin["sigma"]))
+        print("Scaling factor of delta tau N for each field:", self.dt_scaling)
+        print("Dynamical stabilization constant: %f" % (self.alpha_ds))
+        print("Random Number Generator:", self.random_bg.state)
+
+        self.prop_solver.display_statistics()
 
         # With recording.concentrations, the means over all steps of the concentrations of the monomer
         # types and point ions go into the statistics files
@@ -197,6 +188,8 @@ class CLFTS:
         if self.record_concentrations:
             self.concentration_names = self.monomer_types + (
                 [ion["name"] for ion in self.electrostatics.ions] if self.electrostatics is not None else [])
+
+        # The metadata of the files, and the integrator and the callbacks (docs/internals/Extensions.md)
         self.metadata = simulation_metadata(self, random_seed)
         initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks)
         self._prepare_integrator()
@@ -284,10 +277,10 @@ class CLFTS:
                 raise ValidationError(f"The integrator '{self.integrator.name}' (linear_response) needs a periodic box")
             self.integrator = copy.deepcopy(self.integrator)
             self._joint_psi = self.electrostatics is not None and self.electrostatics.coupling > 0
-            self.integrator.set_linear_response(symmetric_jacobian(self, force_jacobian(self)), dt=self.langevin["dt"],
-                                                mobility=self._integrated_mobility(),
-                                                noise_direction=self._integrated_noise_direction(),
-                                                fourier=self.prop_solver.fourier)
+            mobility, direction = self._integrated_mobility(), self._integrated_noise_direction()
+            jacobian = symmetric_jacobian(self, force_jacobian(self, self._joint_psi), direction, mobility)
+            self.integrator.set_linear_response(jacobian, dt=self.langevin["dt"], mobility=mobility,
+                                                noise_direction=direction, fourier=self.prop_solver.fourier)
 
     def _integrated_mobility(self):
         """Mobilities of the fields the integrator advances: dt_scaling, and that of ψ when joint."""
@@ -468,9 +461,12 @@ class CLFTS:
         record.restore(_restart_data, start_langevin_step)
 
         # Summaries of this run printed at the end: the distribution of the largest drift of every
-        # step for each auxiliary field and ψ, and |Q_s|/<|e^(-u_s)|> of the single-site species
+        # step for each auxiliary field and ψ, and |Q_s|/<|e^(-u_s)|> of the single-site species, which
+        # the statistics files name
         n_ratios = len(self.thermodynamics.partition_ratio_species)
         ratio_summary = PartitionRatioSummary(self.thermodynamics.partition_ratio_species)
+        statistics_species = ({"partition_ratio_species_json": json.dumps(self.thermodynamics.partition_ratio_species)}
+                              if n_ratios else {})
         kinds = {i: "real" for i in self.mpt.aux_fields_real_idx} | {i: "imaginary" for i in self.mpt.aux_fields_imag_idx}
         tail_labels = [f"auxiliary field {i} ({kinds.get(i, 'dropped')})" for i in range(M)]
         drift_tail = DriftTailSummary(tail_labels + (["psi"] if self.electrostatics is not None else []))
@@ -548,8 +544,7 @@ class CLFTS:
                 psi_force = es.force(charge_density)
 
             # Hamiltonian of the updated fields
-            total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
-            hamiltonian = self._hamiltonian(w_aux, phi_for_force, total_partitions)
+            hamiltonian, total_partitions = self._hamiltonian(w_aux, phi_for_force)
             if not np.isfinite(hamiltonian):
                 raise NumericalError(f"Non-finite Hamiltonian at step {langevin_step}", self.mpt.to_monomer_fields_dict(w_aux))
             self.run_status["last_completed_step"] = langevin_step
@@ -586,14 +581,7 @@ class CLFTS:
 
             # Statistics files: H and dH/dχN, then S(k) and the mean concentrations
             if langevin_step % self.recording["statistics_save_interval"] == 0:
-                mdic = record.statistics()
-                mdic["simulation_metadata_json"] = json.dumps(self.metadata)
-                if n_ratios:
-                    mdic["partition_ratio_species_json"] = json.dumps(self.thermodynamics.partition_ratio_species)
-                atomic_savemat(os.path.join(self.recording["dir"], "dH_%06d.mat" % langevin_step), mdic,
-                               long_field_names=True, do_compression=True)
-                self.structure_functions.save(langevin_step, record)
-                record.clear(langevin_step + 1)
+                save_statistics(self, langevin_step, record, statistics_species)
 
             # Observe an accepted state before saving its callback/integrator state.
             notify_callbacks(self, langevin_step, w_aux, phi, hamiltonian, drift_max,
@@ -684,15 +672,15 @@ class CLFTS:
                                      self.mpt.to_monomer_fields_dict(proposed[:M]))
         return proposed[:M].copy()
 
-    def _hamiltonian(self, w_aux, phi_smeared, total_partitions):
-        """H of the fields, with the electrostatic and grand-canonical terms."""
-        hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                   include_const_term=True, phi=phi_smeared)
+    def _hamiltonian(self, w_aux, phi_smeared):
+        """H of the fields, with the electrostatic and grand-canonical terms; returns H and the partition
+        functions of the chains."""
+        hamiltonian, total_partitions = chain_hamiltonian(self, w_aux, phi_smeared)
         if self.electrostatics is not None:
             hamiltonian += self.electrostatics.hamiltonian()
         if self.grand_canonical:
             hamiltonian += self.thermodynamics.grand_canonical_hamiltonian(total_partitions)
-        return hamiltonian
+        return hamiltonian, total_partitions
 
     def _print_progress(self, langevin_step, h_deriv, total_partitions, hamiltonian, error_level_array, psi_force):
         """One line per step: mass error, partition functions, H, error levels and the Poisson residual of ψ."""

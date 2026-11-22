@@ -3,9 +3,8 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Callable, Union
 
-from .. import _core
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import chain_solver
+from ..theory.chains import chain_solver, partition_functions
 from ..utils.validation import (with_overrides, validate_scft_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values)
@@ -15,6 +14,7 @@ from ..utils.common import (
     check_partition_functions,
 )
 from .cell_relaxation import CellRelaxation
+from .grid import FieldGrid
 from .scft_results import (SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results,
                            ion_chemical_potentials, chemical_potentials)
 from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
@@ -46,6 +46,8 @@ class SCFT:
         Grid, box and integrals (C++).
     mpt : SymmetricPolymerTheory
         Monomer <-> auxiliary field transformations.
+    grid : FieldGrid
+        The axis order of the input, the space group (also sg) and the bases of the fields.
     phi, w, free_energy, free_energy_absolute, error_level, iter
         Set by run(): concentrations {type: array}, fields (M, n_grid),
         relative and full CE free energies, final error and iteration count.
@@ -60,53 +62,10 @@ class SCFT:
     Complete scripts: examples/block_copolymer/scft/ (Lamella3D.py, Gyroid.py, phases/),
     examples/blend/scft/ and examples/charged/scft/.
     """
-    @staticmethod
-    def _apply_axis_ordering(params):
-        """Reorder nx/lx/bc/angles in ``params`` (in place) from the user's axis ordering
-        to the standard [a, b, c]. Returns (axis_ordering, perm); both None when the
-        option is absent. perm[i] is the position of standard axis i in the user's arrays.
-        """
-        axis_ordering = params.get("axis_ordering", None)
-        if axis_ordering is None:
-            return None, None
-        dim = len(params["nx"])
-        labels = ["a", "b", "c"][:dim]
-        if len(axis_ordering) != dim:
-            raise ValueError(f"axis_ordering length ({len(axis_ordering)}) must match dimension ({dim})")
-        if sorted(axis_ordering) != labels:
-            raise ValueError(f"axis_ordering must contain exactly {labels}, got {axis_ordering}")
-        perm = [axis_ordering.index(label) for label in labels]
-        params["nx"] = [params["nx"][perm[i]] for i in range(dim)]
-        params["lx"] = [params["lx"][perm[i]] for i in range(dim)]
-        bc = params.get("bc", None)
-        if bc is not None and len(bc) == 2 * dim:
-            # bc = [low, high] of each axis in the order of nx
-            params["bc"] = [bc[2 * perm[i] + side] for i in range(dim) for side in (0, 1)]
-        angles = params.get("angles", None)
-        if angles is not None and dim == 3:
-            # angles = [alpha, beta, gamma] are the angles between axes (b,c), (a,c), (a,b);
-            # the new angle between axes i and j is the old angle between perm[i] and perm[j]
-            angle_index = {(1, 2): 0, (0, 2): 1, (0, 1): 2}
-            params["angles"] = [angles[angle_index[tuple(sorted((perm[i], perm[j])))]]
-                                for (i, j) in ((1, 2), (0, 2), (0, 1))]
-        print(f"Axis ordering: {axis_ordering} -> reordered to [a, b, c]")
-        print(f"  nx: {params['nx']}, lx: {params['lx']}")
-        if params.get("bc", None) is not None:
-            print(f"  bc: {params['bc']}")
-        if params.get("angles", None) is not None:
-            print(f"  angles: {params['angles']}")
-        return axis_ordering, perm
-
     def __init__(self, params):
 
         # Validate input parameters (a copy with the current names)
         params = validate_scft_params(params)
-
-        # Handle axis ordering (convert user ordering to standard [a, b, c]); this
-        # rewrites nx/lx/bc/angles in `params`, so the key is dropped from the copy that
-        # save_results() writes as "initial_params" (it must not be applied twice)
-        self.axis_ordering, self._axis_perm = self._apply_axis_ordering(params)
-        params.pop("axis_ordering", None)
 
         # Compressibility parameter (None: incompressible)
         self.zeta_n = params.get("zeta_n", None)
@@ -119,9 +78,6 @@ class SCFT:
         if params.get("polymer_figure_dir") is not None:
             draw_polymer_architectures(self.polymers, params["ds"], self.segment_lengths,
                                        directory=params["polymer_figure_dir"])
-
-        # Lattice angles [alpha, beta, gamma] in degrees
-        angles = params.get("angles", None)
 
         # Multimonomer polymer field theory
         self.mpt = SymmetricPolymerTheory(self.monomer_types, self.chi_n, zeta_n=self.zeta_n)
@@ -144,8 +100,13 @@ class SCFT:
         projected_chi = self.matrix_q_perp @ self.matrix_chi @ self.matrix_q_perp
         self.pressure_kappa = max(np.max(np.abs(np.linalg.eigvalsh(projected_chi))), 1.0)/2
 
-        # Create space group object early (before PropagatorSolver) if specified
-        self.sg = self._create_space_group(params, angles) if params.get("space_group", None) is not None else None
+        # The grid of the fields (grid.py): nx, lx, bc and angles of the input in the standard axis order
+        # [a, b, c] (axis_ordering), and the space group with its basis, before the solver that works in it
+        self.grid = FieldGrid(self, params)
+        self.axis_ordering, self.sg = self.grid.axis_ordering, self.grid.sg
+
+        # Lattice angles [alpha, beta, gamma] in degrees
+        angles = params.get("angles", None)
 
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
         self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg)
@@ -165,11 +126,14 @@ class SCFT:
         if params.get("electrostatics") is not None:
             self._setup_electrostatics(params)
 
-        # The lattice parameters that vary with relax_cell, and the size of the optimizer
+        # The lattice parameters that vary with relax_cell
         self.cell = CellRelaxation(self, params, angles)
-        n_var = self.cell.n_variables
 
-        # Anderson mixing (C++ class) for the saddle-point iteration
+        # Anderson mixing (C++ class) for the saddle-point iteration of one vector: the fields (in the
+        # working basis of the grid), ψ with electrostatics and the lattice parameters that relax
+        n_var = M * self.grid.n_irreducible + self.cell.n_parameters
+        if self.electrostatics is not None:
+            n_var += self.prop_solver.n_grid
         optimizer = params["optimizer"]
         self.field_optimizer = self.prop_solver.create_anderson_mixing(n_var,
             optimizer["max_hist"],     # maximum number of history
@@ -190,63 +154,12 @@ class SCFT:
         self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
         self.tolerance = params.get("tolerance", 1e-8)     # stop when the self-consistency error is below this
 
-    def _create_space_group(self, params, angles):
-        """The space group of the input, with the physical basis that the cell allows."""
-        if params["space_group"].get("hall_number") is not None:
-            sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"], params["space_group"]["hall_number"])
-        else:
-            sg = _core.SpaceGroup(params["nx"], params["space_group"]["symbol"])
-
-        # The cell must belong to the crystal system of the space group. Otherwise
-        # the symmetry operations are not isometries of the box and the run would
-        # silently converge to a constrained, unphysical state. The native check
-        # (SpaceGroup::check_cell) is the one the computation box applies later.
-        # `angles` (reordered by axis_ordering) is None for an orthogonal cell.
-        lx_sg = [float(v) for v in params["lx"]]
-        angles_sg = [float(v) for v in angles] if angles is not None else [90.0, 90.0, 90.0]
-        try:
-            sg.check_cell(lx_sg, angles_sg)
-        except RuntimeError as exc:
-            raise ValidationError(str(exc)) from None
-        if (sg.get_crystal_system() == "Trigonal" and not sg.uses_hexagonal_axes()
-                and params.get("relax_cell", False)):
-            # a = b = c and alpha = beta = gamma would have to vary together
-            raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
-                                  "use the hexagonal-axes setting of the space group.")
-
-        # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
-        # test of the box, and keeps them during box relaxation). With all three at 90 degrees: m3 where
-        # the recursive 3m CrysFFT pays off on the grid (SpaceGroup.m3_crysfft_feasible: even sizes,
-        # nz/2 >= 8 and translations that fold onto the grid), else Pmmm, else the irreducible basis.
-        # With alpha and beta at 90 degrees and gamma free or fixed at another angle (hexagonal groups,
-        # trigonal groups on hexagonal axes, whose hybrid grid is cell-centered along z, and monoclinic
-        # groups with the unique axis c): z-mirror. Otherwise the irreducible basis. A basis that does
-        # not apply to the group or the grid raises RuntimeError, and the next one is tried; other
-        # exceptions are real bugs and propagate.
-        alpha, beta, gamma = sg.fixed_angles()
-        bases = []
-        if alpha == beta == gamma == 90.0:
-            if sg.m3_crysfft_feasible():
-                bases.append(sg.enable_m3_physical_basis)
-            bases.append(sg.enable_pmmm_physical_basis)
-        elif alpha == beta == 90.0:
-            bases.append(sg.enable_z_mirror_physical_basis)
-        for enable in bases:
-            try:
-                enable()
-                break
-            except RuntimeError:
-                pass
-        sg.display_info()
-        return sg
-
     def _setup_electrostatics(self, params):
         """The Poisson equation for ψ and what it needs of the input."""
         # A fixed charge is given in the axis order of nx, like the initial fields
-        if self._axis_perm is not None and params["electrostatics"].get("fixed_charge") is not None:
-            params["electrostatics"]["fixed_charge"] = self._to_standard_axes(params["electrostatics"]["fixed_charge"])
-        self.electrostatics = MeanFieldElectrostatics(params["electrostatics"], self.monomer_types, self.smearing,
-                                                      reference_segments(params), fourier=self.prop_solver.fourier,
+        if params["electrostatics"].get("fixed_charge") is not None:
+            params["electrostatics"]["fixed_charge"] = self.grid.to_standard_axes(params["electrostatics"]["fixed_charge"])
+        self.electrostatics = MeanFieldElectrostatics(self, params["electrostatics"], reference_segments(params),
                                                       ion_concentrations=point_ion_concentrations(params),
                                                       open_charges=open_charges(params))
         es = self.electrostatics
@@ -319,8 +232,8 @@ class SCFT:
             - 'phi' : float
                 Time (seconds) for concentration integration.
         """
-        # Field optimizer operates on irreducible grid when space group is set.
-        w_reduced = w if self.sg is None else self.sg.irreducible_to_reduced(w)
+        # The fields of the optimizer (in the irreducible basis with a space group) in the basis of the solver
+        w_reduced = self.grid.to_solver_basis(w)
 
         # The fields of the chains: charged types feel w_i + z_i ψ with the current ψ
         w_input = chain_fields(self, w_reduced)
@@ -328,32 +241,10 @@ class SCFT:
             self.electrostatics.add_potential(w_input)
 
         phi, elapsed_time = solve_chains(self, w_input, q_init, stress=stress)
-        check_partition_once(self, lambda: self._full_grid_fields(w))
+        check_partition_once(self, lambda: self.grid.full_grid_fields(w))
 
-        # Convert concentrations back to irreducible grid for optimizer.
-        if self.sg is not None:
-            phi = {name: self.sg.reduced_to_irreducible(phi[name]) for name in phi}
-
-        return phi, elapsed_time
-
-    def _to_standard_axes(self, field):
-        """Transpose a full-grid array given in the user's axis order (axis_ordering) to [a, b, c]."""
-        user_nx = [0] * len(self._axis_perm)
-        for i, axis in enumerate(self._axis_perm):
-            user_nx[axis] = self.prop_solver.nx[i]
-        return np.ravel(np.transpose(np.reshape(np.asarray(field), user_nx), self._axis_perm))
-
-    def _to_full_grid(self, field: np.ndarray) -> np.ndarray:
-        """Expand a field of the working basis to the full grid (a copy without a space group)."""
-        if self.sg is None:
-            return np.array(field, dtype=np.float64)
-        # self.w and self.phi are stored in the irreducible basis. With a physical
-        # basis the reduced ordering differs even when the sizes coincide (mmm
-        # orthorhombic groups with the m3 basis), so the conversion is gated on
-        # the basis, not on the sizes.
-        if self.sg.physical_basis_name() != "irreducible":
-            field = self.sg.irreducible_to_reduced(field)
-        return self.sg.from_reduced_basis(field)
+        # The concentrations in the basis of the optimizer
+        return self.grid.to_working_basis(phi), elapsed_time
 
     def save_results(self, path):
         """Saves the results to a MATLAB, JSON or YAML file, by the extension of path (scft_results.py)."""
@@ -368,8 +259,7 @@ class SCFT:
     # =========================================================================
 
     def _pin_field_means(self, w):
-        """Normalize the field means in place (mean() works in the reduced basis
-        when a space group is set).
+        """Normalize the field means in place (in the working basis of the grid).
 
         Compressible systems have no gauge freedom: the means are always pinned to the
         saddle point, mean(w_i) = sum_j chi_ij mean(phi_j) + xi with
@@ -383,7 +273,7 @@ class SCFT:
             phi_mean = self.mean_concentrations()
             target = self.matrix_chi @ phi_mean + self.zeta_n * (np.sum(phi_mean) - 1.0)
         for i in range(len(self.monomer_types)):
-            w[i] += target[i] - self.prop_solver.mean(w[i], basis="irreducible")
+            w[i] += target[i] - self.grid.mean(w[i])
 
     def compute_chemical_potentials(self, w=None, partition_functions=None):
         """Restore the saddle-point field means and return beta mu per chain.
@@ -406,7 +296,7 @@ class SCFT:
             target += self.zeta_n * (np.sum(phi_mean) - 1.0)
         # A field on the full grid (SCFTResult.w with a space group): the mean of its grid points
         means = [float(np.mean(field)) if self.sg is not None and np.size(field) == self.prop_solver.total_grid
-                 else self.prop_solver.mean(field, basis="irreducible") for field in w]
+                 else self.grid.mean(field) for field in w]
         shift = target - np.array(means)
         mu = []
         for p in range(self.prop_solver.get_n_polymer_types()):
@@ -422,40 +312,6 @@ class SCFT:
                     field_shift += block.n_copies * block.contour_length * fraction * shift[self.monomer_types.index(monomer)]
             mu.append(float(np.log(concentration) - np.log(partition_functions[p]) + field_shift))
         return mu
-
-    def _polymer_charge(self):
-        """Net charge Σ_i z_i <φ_i> of the polymers and the mean fixed charge, per segment."""
-        es = self.electrostatics
-        fixed = 0.0 if es.fixed_charge is None else float(np.mean(es.fixed_charge))
-        return fixed + float(sum(es.charges[m] * phi for m, phi in zip(self.monomer_types, self.mean_concentrations())))
-
-    def _charge_response(self, psi0, q_init=None):
-        """Response D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state with the uniform ψ₀.
-
-        The uniform fields do not couple different modes of the transform (Fourier modes, or the
-        cosine modes of a box with walls), so central differences of the charge density for a
-        kick of ψ at one grid point, divided by the transform of the kick (nonzero at every mode),
-        give D(k) at all k from two computations of the propagators. The uniform fields w = 0
-        suffice: a uniform field does not change the concentrations of canonical chains.
-        Grafted chains (q_init) are not homogeneous; D(k) then only approximates the response,
-        which is enough for the preconditioner of the residual (its zero is the Poisson equation),
-        and a negative estimate is set to zero.
-        """
-        es, n_grid = self.electrostatics, self.prop_solver.n_grid
-        w = np.zeros((len(self.monomer_types), n_grid))
-        epsilon = 1e-3
-        charges = []
-        for sign in (1.0, -1.0):
-            psi = np.full(n_grid, psi0)
-            psi[0] += sign * epsilon
-            es.psi = psi
-            phi, _ = self.compute_concentrations(w, q_init=q_init)
-            charges.append(es.charge_density(self.smearing.apply_to_dict(phi)))
-        kick = np.zeros(n_grid)
-        kick[0] = 2.0 * epsilon
-        fourier = self.prop_solver.fourier
-        response = -np.real(fourier.forward(charges[0] - charges[1]) / fourier.forward(kick))
-        return response if q_init is None else np.maximum(response, 0.0)
 
     def run(
         self,
@@ -538,8 +394,13 @@ class SCFT:
             if initial_psi.size != self.prop_solver.n_grid:
                 raise ValidationError("initial_psi must hold one real, finite value per grid point")
 
-        # Reject invalid input before resetting the optimizer or changing the run state.
-        w, q_init = self._initial_fields(initial_fields, q_init)
+        # Reject invalid input before resetting the optimizer or changing the run state: the initial fields
+        # in the working basis of the grid with the field means of the saddle point, and the propagators
+        # that grafted chains start from
+        initial_fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.total_grid)
+        w = self.grid.initial_fields(initial_fields)
+        q_init = self.grid.initial_propagators(q_init)
+        self._pin_field_means(w)
 
         # Assign large initial value for the energy and error
         energy_total = 1.0e20
@@ -552,9 +413,9 @@ class SCFT:
         print("iteration, mass error, total_partitions, energy_total, error_level", end="")
         print(", box size" if self.relax_cell else "")
 
-        # ---- 1. Initial fields and ψ ----
+        # ---- 1. Initial fields and ψ (the Poisson equation, electrostatics.py) ----
         es = self.electrostatics
-        energy_electrostatic_homogeneous = 0.0 if es is None else self._start_psi(initial_psi, q_init)
+        energy_electrostatic_homogeneous = 0.0 if es is None else es.start(initial_psi, q_init)
 
         # Check the partition consistency on the first field of this run
         self._partition_checked = False
@@ -579,7 +440,7 @@ class SCFT:
 
             # Free energy: the reported one is relative to the homogeneous state; thermodynamic
             # transforms and comparisons across compositions use the full F
-            total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
+            total_partitions = partition_functions(self)
             energy_absolute = self._free_energy(w, phi_array, total_partitions)
             energy_total = energy_absolute - self.free_energy_homogeneous
 
@@ -587,15 +448,15 @@ class SCFT:
             w_diff = self._field_residual(w, phi_array)
             psi_diff = None if es is None else es.residual(es.charge_density(phi_smeared))
             if not np.all(np.isfinite(w_diff)) or (psi_diff is not None and not np.all(np.isfinite(psi_diff))):
-                raise NumericalError(f"Non-finite SCFT residual at iteration {iter}", self._full_grid_fields(w))
+                raise NumericalError(f"Non-finite SCFT residual at iteration {iter}", self.grid.full_grid_fields(w))
             old_error_level = error_level
             field_error_level = self._error_level(w, w_diff, psi_diff)
-            mass_error = self.prop_solver.mean(phi_diff, basis="irreducible")
+            mass_error = self.grid.mean(phi_diff)
 
             # With relax_cell, the stress along the lattice parameters that relax counts towards the error
             error_level = field_error_level + self.cell.stress_error(w, phi)
             if not np.isfinite(error_level):
-                raise NumericalError(f"Non-finite SCFT error level at iteration {iter}", self._full_grid_fields(w))
+                raise NumericalError(f"Non-finite SCFT error level at iteration {iter}", self.grid.full_grid_fields(w))
 
             # Print this iteration
             self._print_iteration(iter, mass_error, total_partitions, energy_total, error_level)
@@ -619,7 +480,7 @@ class SCFT:
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)
         check_partition_functions(self.prop_solver, f"the end of the SCFT iteration ({iter} iterations)",
-                                  lambda: self._full_grid_fields(w))
+                                  lambda: self.grid.full_grid_fields(w))
 
         # Print iteration timing
         time_iter_total = time.time() - time_iter_start
@@ -643,90 +504,6 @@ class SCFT:
 
         # Return SCFTResult if requested
         return scft_result(self) if return_result else None
-
-    def _initial_fields(self, initial_fields, q_init):
-        """The initial fields as the working array of shape (M, n_grid), and the initial propagators."""
-        M = len(self.monomer_types)
-        initial_fields = initial_field_values(initial_fields, self.monomer_types, self.prop_solver.total_grid)
-
-        # With axis_ordering the arrays are given in the axis order of nx and lx and are
-        # transposed to the standard [a, b, c] order (the results are in that order)
-        if self._axis_perm is not None:
-            initial_fields = {m: self._to_standard_axes(f) for m, f in initial_fields.items()}
-        q_init = self._initial_propagators(q_init)
-
-        # With a space group the fields are symmetrized and converted to the irreducible basis.
-        if self.sg is not None:
-            w_full = np.zeros([M, self.prop_solver.total_grid], dtype=np.float64)
-            for i in range(M):
-                w_full[i,:] = np.reshape(initial_fields[self.monomer_types[i]], self.prop_solver.total_grid)
-            w_full = self.sg.symmetrize(w_full)
-            w = self.sg.to_reduced_basis(w_full)
-            w = self.sg.reduced_to_irreducible(w)
-        else:
-            w = np.zeros([M, self.prop_solver.n_grid], dtype=np.float64)
-            for i in range(M):
-                w[i,:] = np.reshape(initial_fields[self.monomer_types[i]], self.prop_solver.n_grid)
-
-        self._pin_field_means(w)
-        return w, q_init
-
-    def _initial_propagators(self, q_init):
-        """Prepare graft profiles without changing them or the caller's arrays.
-
-        Full-grid inputs follow axis_ordering and are converted to the solver's
-        active reduced basis after checking the full space-group symmetry.
-        Existing reduced inputs already use the standard solver basis, even with
-        axis_ordering; their full-grid expansion must have the same symmetry.
-        If both sizes coincide, the full-grid interpretation wins.
-        Unlike an initial field guess, a graft profile defines the model, so it
-        must not be silently averaged over symmetry orbits.
-        """
-        if q_init is None:
-            return None
-        prepared = {}
-        full_size, reduced_size = self.prop_solver.total_grid, self.prop_solver.n_grid
-        for label, values in q_init.items():
-            profile = finite_values(values, f"q_init[{label!r}]")
-            is_full = profile.size == full_size
-            if is_full:
-                if self._axis_perm is not None:
-                    profile = self._to_standard_axes(profile)
-            elif self.sg is None or profile.size != reduced_size:
-                sizes = (f"{full_size} full-grid or {reduced_size} reduced-basis values"
-                         if self.sg is not None else f"{full_size} grid values")
-                raise ValidationError(f"q_init[{label!r}] needs {sizes}, got {profile.size}")
-            if self.sg is not None:
-                full_profile = profile if is_full else self.sg.from_reduced_basis(profile)
-                symmetric = self.sg.symmetrize(full_profile)
-                tolerance = 1e-12 * np.max(np.abs(full_profile))
-                if not np.allclose(full_profile, symmetric, rtol=0.0, atol=tolerance):
-                    raise ValidationError(f"q_init[{label!r}] must have the symmetry of 'space_group'")
-                if is_full:
-                    profile = self.sg.to_reduced_basis(profile)
-            prepared[label] = profile
-        return prepared
-
-    def _start_psi(self, initial_psi, q_init):
-        """ψ: the Newton residual of the Poisson equation needs the charge response of the homogeneous
-        state (MeanFieldElectrostatics), which also gives the initial ψ. Returns the electrostatic
-        free energy of the homogeneous state."""
-        es = self.electrostatics
-        # The kernels of the current box, which may have changed since the last run
-        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
-        es.set_box()
-        psi0, energy_electrostatic_homogeneous = es.homogeneous(self._polymer_charge())
-        es.set_response(self._charge_response(psi0, q_init))
-        if initial_psi is None:
-            es.psi = np.full(self.prop_solver.n_grid, psi0)
-        else:
-            if self._axis_perm is not None:
-                initial_psi = self._to_standard_axes(initial_psi)
-            psi = np.array(np.reshape(initial_psi, self.prop_solver.n_grid), dtype=np.float64)
-            if es.zero_uniform_mode:
-                psi -= np.mean(psi)
-            es.psi = psi
-        return energy_electrostatic_homogeneous
 
     def _homogeneous_state(self, energy_electrostatic_homogeneous):
         """The chain densities and the free energy of the homogeneous state."""
@@ -755,10 +532,10 @@ class SCFT:
         for i in range(M):
             for j in range(i+1, M):
                 if self.matrix_chi[i, j] != 0.0:
-                    energy_total += self.matrix_chi[i, j]*self.prop_solver.mean(phi_array[i]*phi_array[j], basis="irreducible")
-            energy_total -= self.prop_solver.mean(w[i]*phi_array[i], basis="irreducible")
+                    energy_total += self.matrix_chi[i, j]*self.grid.mean(phi_array[i]*phi_array[j])
+            energy_total -= self.grid.mean(w[i]*phi_array[i])
         if self.zeta_n is not None:
-            energy_total += 0.5*self.zeta_n*self.prop_solver.mean((np.sum(phi_array, axis=0) - 1.0)**2, basis="irreducible")
+            energy_total += 0.5*self.zeta_n*self.grid.mean((np.sum(phi_array, axis=0) - 1.0)**2)
         if es is not None:
             energy_total += es.free_energy()
         return energy_total
@@ -784,7 +561,7 @@ class SCFT:
 
         # Keep the level of functional derivatives
         for i in range(M):
-            w_diff[i] -= self.prop_solver.mean(w_diff[i], basis="irreducible")
+            w_diff[i] -= self.grid.mean(w_diff[i])
         return w_diff
 
     def _error_level(self, w, w_diff, psi_diff):
@@ -794,19 +571,15 @@ class SCFT:
         error_level = 0.0
         error_normal = 1.0  # add 1.0 to prevent divergence
         for i in range(M):
-            error_level += self.prop_solver.inner_product(w_diff[i], w_diff[i], basis="irreducible")
-            error_normal += self.prop_solver.inner_product(w[i], w[i], basis="irreducible")
+            error_level += self.grid.inner_product(w_diff[i], w_diff[i])
+            error_normal += self.grid.inner_product(w[i], w[i])
         if es is not None:
             # The uniform ψ₀ (Donnan potential) shifts with the chemical potentials of the
             # ions, so the scale of ψ is that of its variation
-            psi_variation = es.psi - self.prop_solver.mean(es.psi, basis="irreducible")
-            error_level += self.prop_solver.inner_product(psi_diff, psi_diff, basis="irreducible")
-            error_normal += self.prop_solver.inner_product(psi_variation, psi_variation, basis="irreducible")
+            psi_variation = es.psi - self.grid.mean(es.psi)
+            error_level += self.grid.inner_product(psi_diff, psi_diff)
+            error_normal += self.grid.inner_product(psi_variation, psi_variation)
         return np.sqrt(error_level/error_normal)
-
-    def _full_grid_fields(self, w):
-        """The fields w (M, n) of the working basis as {monomer type: array on the full grid}, as SCFTResult.w."""
-        return {name: self._to_full_grid(w[i]) for i, name in enumerate(self.monomer_types)}
 
     def _print_iteration(self, iter, mass_error, total_partitions, energy_total, error_level):
         print("%8d %12.3E " % (iter, mass_error), end=" [ ")
@@ -822,20 +595,19 @@ class SCFT:
             print("] %15.9f %15.7E " % (energy_total, error_level))
 
     def _next_fields(self, w, w_diff, psi_diff, old_error_level, error_level):
-        """Simple and Anderson mixing of the fields (irreducible basis with a space group), ψ and the cell."""
+        """Simple and Anderson mixing of one vector: the fields (in the working basis of the grid), ψ and,
+        with relax_cell, the lattice parameters that relax (cell_relaxation.py)."""
         M, es = len(self.monomer_types), self.electrostatics
-        # Calculate new fields using simple and Anderson mixing, ψ after the fields
-        # Note: w and w_diff are in irreducible basis when space group is set
-        fields, fields_diff = w.flatten(), w_diff.flatten()
+        psi, psi_diff = (es.psi, psi_diff) if es is not None else (np.array([]), np.array([]))
+        current = np.concatenate((w.flatten(), psi, self.cell.parameters()))
+        residual = np.concatenate((w_diff.flatten(), psi_diff, self.cell.residual()))
+        new = self.field_optimizer.calculate_new_fields(current, residual, old_error_level, error_level)
+
+        # The new cell, fields and ψ
+        self.cell.apply(new[w.size + psi.size:])
+        w = np.reshape(new[:w.size], (M, -1))
         if es is not None:
-            fields, fields_diff = np.concatenate((fields, es.psi)), np.concatenate((fields_diff, psi_diff))
-        if self.relax_cell:
-            fields = self.cell.update(fields, fields_diff, old_error_level, error_level)
-        else:
-            fields = self.field_optimizer.calculate_new_fields(fields, fields_diff, old_error_level, error_level)
-        w = np.reshape(fields[:w.size], (M, -1))
-        if es is not None:
-            psi = np.array(fields[w.size:])
+            psi = np.array(new[w.size:w.size + psi.size])
             if es.zero_uniform_mode:
                 psi -= np.mean(psi)
             es.psi = psi

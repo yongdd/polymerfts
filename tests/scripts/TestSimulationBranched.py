@@ -43,7 +43,7 @@ def test_branched_export(mode, shape, tmp_path, monkeypatch):
     if mode == "SCFT":
         CHECKS["VALIDATION"]["validate_scft_params"](params)
     else:
-        CHECKS["VALIDATION"]["validate_lfts_params"](params, complex_fields=mode == "CL-FTS")
+        CHECKS["VALIDATION"]["validate_clfts_params" if mode == "CL-FTS" else "validate_lfts_params"](params)
     assert params["polymers"][0]["blocks"] == expected
     assert params["polymers"][1]["blocks"] == [{"type": "C", "length": 1}]
     assert set(calls["fields"]) == {"A", "B", "C"}

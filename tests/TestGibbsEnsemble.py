@@ -3,9 +3,9 @@
 
 Two homopolymers A and B (discrete chains, N = 20) on 4x4 grids:
 1. Input: grand-canonical polymers, volume fractions that do not sum to 1, a cell of its own for a
-   box, a missing or invalid cell, a phase without volume, a species absent from a box, a charged box
-   that is not neutral, skip_steps >= cycle_steps, a missing or zero sample interval, point ions of
-   continuous chains without n_segments and a negative seed are rejected. A box without a volume takes
+   box, a misspelled key of a box, a missing or invalid cell, a phase without volume, a species absent
+   from a box, a charged box that is not neutral, skip_steps >= cycle_steps, a missing or zero sample
+   interval, point ions of continuous chains without n_segments and a negative seed are rejected. A box without a volume takes
    that of the cell.
 2. Mean-field limit (nbar 1e28) of the symmetric blend at chi N = 3: the boxes reach the
    Flory-Huggins binodal ln(phi/(1 - phi)) = chi N (2 phi - 1).
@@ -117,6 +117,10 @@ def inputs(root):
     params = parameters(root / "inputs", 2)
     params["gibbs_ensemble"]["boxes"][0]["lx"] = [1.0, 1.0]
     expect_validation_error(lambda: GibbsEnsemble(params), "'lx' is the cell of both boxes")
+    params = parameters(root / "inputs", 2)
+    params["gibbs_ensemble"]["boxes"][1]["volumes"] = 1.0
+    expect_validation_error(lambda: GibbsEnsemble(params), "'gibbs_ensemble.boxes[1]' has unknown keys: ['volumes'] "
+                            "(did you mean 'volume'?); it takes ion_concentrations, volume, volume_fractions")
     params = parameters(root / "inputs", 2)
     params.pop("lx")
     expect_validation_error(lambda: GibbsEnsemble(params), "Missing required parameter: 'lx'")

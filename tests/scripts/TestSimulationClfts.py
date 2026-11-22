@@ -30,7 +30,7 @@ def test_clfts_parameters_and_dispatch(smearing, expected, tmp_path, monkeypatch
     assert "simulation = clfts.CLFTS(params=params, random_seed=12345)" in script
     calls = CHECKS["execute_export"](form, tmp_path, monkeypatch)
     params = calls["params"]
-    CHECKS["VALIDATION"]["validate_lfts_params"](params, complex_fields=True)
+    CHECKS["VALIDATION"]["validate_clfts_params"](params)
     assert params["zeta_n"] == 100
     assert params["dynamic_stabilization"] == .01
     assert params["langevin"] == {"max_step": 100000, "dt": 1, "nbar": 100000}
@@ -45,7 +45,7 @@ def test_clfts_ignores_inactive_solver_controls(tmp_path, monkeypatch):
                 compressor="", a_int="", k_int="", dk_int="",
                 zeta_n="0", dynamic_stabilization="0")
     calls = CHECKS["execute_export"](form, tmp_path, monkeypatch)
-    CHECKS["VALIDATION"]["validate_lfts_params"](calls["params"], complex_fields=True)
+    CHECKS["VALIDATION"]["validate_clfts_params"](calls["params"])
     assert calls["params"]["dynamic_stabilization"] == 0
     assert calls["params"]["zeta_n"] == 0
     assert "smearing" not in calls["params"]
@@ -120,7 +120,7 @@ def test_clfts_structured_mixture(tmp_path, monkeypatch):
     form = model_checks["values"]()
     form.update(mode="CL-FTS", dynamic_stabilization="0.005", smearing="gaussian")
     calls = CHECKS["execute_export"](form, tmp_path, monkeypatch)
-    CHECKS["VALIDATION"]["validate_lfts_params"](calls["params"], complex_fields=True)
+    CHECKS["VALIDATION"]["validate_clfts_params"](calls["params"])
     assert set(calls["fields"]) == {"A", "B", "C"}
     assert calls["params"]["dynamic_stabilization"] == .005
     assert calls["params"]["smearing"] == {"type": "gaussian", "a_int": .02}

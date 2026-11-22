@@ -3,8 +3,9 @@
 read_chains() reads the input and chain_solver() creates the PropagatorSolver of the chains.
 chain_fields() and solve_chains() give the concentrations of the monomer types in given fields, with
 what SCFT, LFTS and CLFTS have in common; each of them adds to this what is its own, such as the
-electrostatic potential or the grand-canonical chains. prepare_run() starts a run of LFTS or CLFTS: it
-draws the chains and gives the auxiliary fields of the first step.
+electrostatic potential or the grand-canonical chains. partition_functions() gives the Q_p of the chains
+and chain_hamiltonian() the Hamiltonian of the auxiliary fields. prepare_run() starts a run of LFTS or
+CLFTS: it draws the chains and gives the auxiliary fields of the first step.
 """
 
 import copy
@@ -203,6 +204,21 @@ def solve_chains(sim, w_input, q_init=None, stress=False):
             phi[monomer_type] += phi[random_polymer_name] * fraction
     elapsed_time["phi"] = time.time() - time_phi_start
     return phi, elapsed_time
+
+
+def partition_functions(sim):
+    """The single-chain partition functions Q_p of the last computed propagators, one per polymer."""
+    return [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
+
+
+def chain_hamiltonian(sim, w_aux, phi_smeared):
+    """H of the auxiliary fields w_aux of L-FTS or CL-FTS (with its constant term), from their smeared
+    concentrations and the partition functions of the chains, which the last computation of the
+    propagators gave; returns H and the partition functions."""
+    total_partitions = partition_functions(sim)
+    hamiltonian = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, total_partitions, sim.cb,
+                                              include_const_term=True, phi=phi_smeared)
+    return hamiltonian, total_partitions
 
 
 def check_partition_once(sim, fields):

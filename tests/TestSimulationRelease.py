@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A simulation frees its solver as soon as it is dropped.
 
-The objects of a simulation (sim.saddle, sim.cell, sim.thermodynamics, sim.structure_functions)
-point back to it. With strong references every simulation would be a cycle, kept alive with its
+The objects of a simulation (sim.saddle, sim.cell, sim.grid, sim.electrostatics of SCFT,
+sim.thermodynamics, sim.structure_functions) point back to it. With strong references every simulation would be a cycle, kept alive with its
 propagators and FFT plans, on the GPU too, until the cyclic garbage collector happens to run; that
 collector counts Python objects and does not see native memory, so a sweep of simulations would
 pile them up. The check runs with the collector off, so only reference counting can free a solver.
@@ -34,9 +34,13 @@ def recording(root):
             "statistics_save_interval": 1}
 
 
-def scft(platform, relax_cell=True):
-    return SCFT({**CHAINS, "platform": platform, "relax_cell": relax_cell, "max_iter": 2, "tolerance": 1e-3,
-                 "optimizer": {"name": "am", "max_hist": 5, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1}})
+def scft(platform, relax_cell=True, charges=False):
+    params = {**CHAINS, "platform": platform, "relax_cell": relax_cell, "max_iter": 2, "tolerance": 1e-3,
+              "optimizer": {"name": "am", "max_hist": 5, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1}}
+    if charges:
+        params["electrostatics"] = {"charges": {"A": 0.2, "B": -0.2}, "coupling": 100.0}
+        params["smearing"] = {"type": "gaussian", "a_int": 0.2}
+    return SCFT(params)
 
 
 def lfts(root, platform, compressor):
@@ -61,6 +65,7 @@ def main():
     platform = platforms[0]
     with tempfile.TemporaryDirectory(prefix="polymerfts_release_") as root:
         cases = {"SCFT": lambda: scft(platform), "SCFT, fixed cell": lambda: scft(platform, False),
+                 "SCFT, charges": lambda: scft(platform, charges=True),
                  "LFTS, am": lambda: lfts(root, platform, "am"), "LFTS, lr": lambda: lfts(root, platform, "lr"),
                  "LFTS, lram": lambda: lfts(root, platform, "lram"), "CLFTS": lambda: clfts(root, platform),
                  "CLFTS, etd": lambda: clfts(root, platform, "etd"),

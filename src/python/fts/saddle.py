@@ -12,6 +12,7 @@ import numpy as np
 
 from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
+from ..theory.chains import chain_hamiltonian
 from ..utils.common import check_partition_functions
 from ..utils.validation import ValidationError, SaddlePointError, NumericalError
 
@@ -151,13 +152,17 @@ class SaddlePointSearch:
     as the input allows. first_point() finds that of the initial fields, advance() takes one Langevin
     step of the real fields and finds the saddle point of the result, and evaluate_force() gives the
     forces at the intermediate fields of a step. `compressor` is Anderson mixing, LR or LRAM, `settings`
-    the input "saddle" and `iterations` the number of compressor iterations of the run.
+    the input "saddle" and `iterations` the number of compressor iterations of the run. A search that
+    does not converge goes on max_retries times from where it stopped ("retry", the failure_policy by
+    default), stops the run ("abort") or draws the Langevin step again ("resample").
     """
 
     def __init__(self, sim, params):
         self.sim = weakref.proxy(sim)   # no cycle: a dropped simulation frees its solver at once
         self.settings = params["saddle"].copy()
-        self.mpt, self.smearing, self.wtmd = sim.mpt, sim.smearing, sim.wtmd
+        self.failure_policy = self.settings.get("failure_policy", "retry")
+        self.max_retries = self.settings.get("max_retries", 5)
+        self.mpt, self.smearing = sim.mpt, sim.smearing
         self.prop_solver, self.cb = sim.prop_solver, sim.cb
         self.monomer_types, self.zeta_n = sim.monomer_types, sim.zeta_n
         self.iterations = 0
@@ -240,8 +245,8 @@ class SaddlePointSearch:
 
         # Retrying the solver must not select the Langevin noise by convergence: only "resample" draws
         # the step again, each time from the state of the integrator before the step
-        resample = self.settings.get("failure_policy", "retry") == "resample"
-        draws = self.settings.get("max_retries", 5) + 1 if resample else 1
+        resample = self.failure_policy == "resample"
+        draws = self.max_retries + 1 if resample else 1
         integrator_state = extension_object_state(self.sim.integrator)
         for draw in range(draws):
             noise = self.sim.random.normal(0.0, self.sim.langevin["sigma"], [R, self.prop_solver.n_grid])
@@ -279,9 +284,7 @@ class SaddlePointSearch:
         real = self.mpt.aux_fields_real_idx
         trial[real] = checked_fields(fields, trial[real])
         _, phi_smeared, _, _ = self.solve_with_retries(trial, f"an intermediate saddle point of step {langevin_step}")
-        force = self.mpt.compute_func_deriv(trial, phi_smeared, real)
-        if self.wtmd is not None:
-            self.wtmd.add_bias(trial, force)
+        force, _ = self.sim.forces(trial, phi_smeared)
         if not np.all(np.isfinite(force)):
             raise NumericalError("Non-finite intermediate LFTS force", self.mpt.to_monomer_fields_dict(trial))
         return force
@@ -295,8 +298,8 @@ class SaddlePointSearch:
         the saddle point in the errors: a Hamiltonian that is not finite raises NumericalError, which names
         a partition function that is not positive as its cause, and a search that fails SaddlePointError.
         """
-        retries = self.settings.get("max_retries", 5)
-        if not retry or self.settings.get("failure_policy", "retry") == "abort":
+        retries = self.max_retries
+        if not retry or self.failure_policy == "abort":
             retries = 0
         for attempt in range(retries + 1):
             phi, phi_smeared, hamiltonian, iterations, error_level = self.solve(w_aux)
@@ -356,10 +359,7 @@ class SaddlePointSearch:
             # There is no saddle search, but the run still needs the concentrations and H of this state.
             phi, _ = self.sim.compute_concentrations(w_aux)
             phi_smeared = self.smearing.apply_to_dict(phi)
-            total_partitions = [self.prop_solver.get_partition_function(p)
-                                for p in range(self.prop_solver.get_n_polymer_types())]
-            hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                      include_const_term=True, phi=phi_smeared)
+            hamiltonian, _ = chain_hamiltonian(self.sim, w_aux, phi_smeared)
             return phi, phi_smeared, hamiltonian, 0, 0.0
 
         # Assign large initial value for error
@@ -402,9 +402,7 @@ class SaddlePointSearch:
             # Hamiltonian on the last iteration (every iteration when verbose_level == 2)
             is_last = error_level < self.settings["tolerance"] or saddle_iter == self.settings["max_iter"]
             if self.sim.verbose_level == 2 or is_last:
-                total_partitions = [self.prop_solver.get_partition_function(p) for p in range(self.prop_solver.get_n_polymer_types())]
-                hamiltonian = self.mpt.compute_hamiltonian(self.prop_solver.molecules, w_aux, total_partitions, self.cb,
-                                                          include_const_term=True, phi=phi_smeared)
+                hamiltonian, total_partitions = chain_hamiltonian(self.sim, w_aux, phi_smeared)
 
             # Print iteration # and error levels
             if self.sim.verbose_level == 2 or (self.sim.verbose_level == 1 and is_last):

@@ -1,7 +1,8 @@
 """What a Langevin run saves and restores: its status, measurements, checkpoints and the state of extensions.
 
 recording_run_status() keeps the status of a run in run_status.json, from its start to its end. RunRecord
-holds what a run has measured since its last statistics file. checkpoint_data() writes the settings and
+holds what a run has measured since its last statistics file, which save_statistics() writes.
+checkpoint_data() writes the settings and
 measurements of a checkpoint, and validate_checkpoint() checks a checkpoint before a continuation
 changes any state. The extension functions capture and restore the state of an integrator and of
 callbacks.
@@ -12,13 +13,14 @@ import copy
 import hashlib
 import itertools
 import json
+import os
 import warnings
 from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat
 
-from .common import atomic_write_json, fields_hash, input_hash, json_ready, mat_ready, settings_json
+from .common import atomic_savemat, atomic_write_json, fields_hash, input_hash, json_ready, mat_ready, settings_json
 from .mat_fields import decode_mat_fields
 from .validation import _rename_parameter, normalize_params, ValidationError, SaddlePointError, SECTION_KEYS
 
@@ -42,8 +44,8 @@ def checkpoint_settings(sim):
         "extensions": extension_settings(sim),
     }
     if hasattr(sim, "saddle"):
-        result["saddle"] = {**sim.saddle.settings, "failure_policy": sim.saddle.settings.get("failure_policy", "retry"),
-                            "max_retries": sim.saddle.settings.get("max_retries", 5)}
+        result["saddle"] = {**sim.saddle.settings, "failure_policy": sim.saddle.failure_policy,
+                            "max_retries": sim.saddle.max_retries}
         result["compressor"] = sim.params["compressor"]
         result["wtmd"] = None if sim.wtmd is None else sim.wtmd.settings()
     else:
@@ -186,6 +188,10 @@ def pair_suffix(pair):
 
 
 def validate_checkpoint(sim, data, *, allow_legacy=False):
+    """Checks the checkpoint `data` of sim before a continuation changes any state: its format, the settings
+    it was written with, the state of the run, the pending measurements and the fields, then the state of
+    ψ and of WTMD. A missing or invalid entry raises ValidationError. A legacy checkpoint (no format
+    version) is accepted with allow_legacy, unverified."""
     version = data.get("checkpoint_format_version", 0)
     if isinstance(version, (bool, np.bool_)) or not isinstance(version, (int, np.integer)):
         raise ValidationError("Checkpoint format version must be an integer")
@@ -208,138 +214,10 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
     if version not in (1, 2):
         raise ValidationError(f"Unsupported checkpoint format version {version}")
     try:
-        stored = json.loads(str(data["checkpoint_settings_json"]))
-        if input_hash(stored) != str(data["checkpoint_settings_hash"]):
-            raise ValidationError("Checkpoint settings hash does not match its contents")
-        # Verify the original settings hash before translating names. Earlier checkpoints have legacy
-        # block keys and flat recording-period keys
-        stored = normalize_params(stored)
-        _rename_parameter(stored, "sf_computing_period", "sample_interval")
-        _rename_parameter(stored, "sf_recording_period", "statistics_save_interval")
-        # The pseudo-spectral method of discrete chains was recorded as "discrete" before it was named "ps"
-        if stored.get("numerical_method") == "discrete":
-            stored["numerical_method"] = "ps"
-        current = checkpoint_settings(sim)
-        # An input of an earlier release could hold keys that no release read in saddle or compressor,
-        # which are refused now (SECTION_KEYS): its checkpoint compares without them
-        for section in ("saddle", "compressor"):
-            if isinstance(stored.get(section), dict):
-                stored[section] = {key: value for key, value in stored[section].items()
-                                   if key in SECTION_KEYS[section]}
-        # Version 1 predates extensions and always used LM without callbacks.
-        if version == 1:
-            stored.setdefault("extensions", {"integrator": {"name": "lm", "settings": {}}, "callbacks": {}})
-        # JSON distinguishes 15 from 15.0; effective numerical settings do not.
-        different = [key for key in current if current[key] != stored.get(key)]
-        if different:
-            raise ValidationError("Incompatible checkpoint settings: " + ", ".join(different))
-        if version == 2:
-            state = json.loads(str(data["extension_state_json"]))
-            if not isinstance(state, dict) or set(state) != {"integrator", "callbacks"} or not isinstance(state["callbacks"], dict):
-                raise ValidationError("Invalid extension checkpoint state")
-            if set(state["callbacks"]) != set(sim.callbacks):
-                raise ValidationError("Checkpoint callback state does not match registered callbacks")
-            if not isinstance(state["integrator"], dict) or not all(isinstance(value, dict) for value in state["callbacks"].values()):
-                raise ValidationError("Each extension checkpoint state must be a dictionary")
-            json.dumps(state, allow_nan=False)
-        stored_basis = np.asarray(data["matrix_a"])
-        if stored_basis.size != sim.mpt.matrix_a.size or not np.allclose(
-                stored_basis.reshape(sim.mpt.matrix_a.shape), sim.mpt.matrix_a, rtol=1e-12, atol=1e-12):
-            raise ValidationError("Incompatible checkpoint auxiliary-field basis")
-        step = data["langevin_step"]
-        if isinstance(step, (bool, np.bool_)) or not isinstance(step, (int, np.integer)) or step < 0:
-            raise ValidationError("Checkpoint step must be a nonnegative integer")
-        if step > sim.langevin["max_step"]:
-            raise ValidationError("Checkpoint step exceeds langevin.max_step or is negative")
-        for key in ("simulation_metadata_json", "run_status_json"):
-            if key in data:
-                value = json.loads(str(data[key]))
-                if not isinstance(value, dict):
-                    raise ValidationError(f"Checkpoint '{key}' must describe a dictionary")
-                if key == "run_status_json":
-                    if value.get("last_completed_step") != step:
-                        raise ValidationError("Checkpoint run status does not match its step")
-                    for counter in ("saddle_failures", "noise_resamples"):
-                        count = value.get(counter, 0)
-                        if type(count) is not int or count < 0:
-                            raise ValidationError(f"Invalid checkpoint run counter '{counter}'")
-        n_fields = len(sim.monomer_types)
-        for key in ("w_aux", "normal_noise_prev"):
-            if key not in data or not np.all(np.isfinite(data[key])):
-                raise ValidationError(f"Checkpoint has missing or non-finite '{key}'")
-            if np.iscomplexobj(data[key]) and (key == "normal_noise_prev" or sim.prop_solver.field_type == "real"):
-                raise ValidationError(f"Checkpoint '{key}' must be real")
-        if np.size(data["w_aux"]) != n_fields * sim.prop_solver.n_grid:
-            raise ValidationError("Checkpoint auxiliary field shape is incompatible")
-        if "record_sample_count" not in data or "rng_state_json" not in data:
-            raise ValidationError("Checkpoint is missing measurement or RNG state")
-        n_noise = n_fields if sim.prop_solver.field_type == "complex" else len(sim.mpt.aux_fields_real_idx)
-        if np.size(data["normal_noise_prev"]) != n_noise * sim.prop_solver.n_grid:
-            raise ValidationError("Checkpoint noise shape is incompatible")
-        rng = np.random.PCG64(0)
-        rng.state = json.loads(str(data["rng_state_json"]))
-        count = data["record_sample_count"]
-        if isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 0:
-            raise ValidationError("Invalid checkpoint sample count")
-        for key in ["record_H_history", "record_drift_history"] + [_measurement_key("dH", key) for key in sim.chi_n]:
-            if np.size(data[key]) != count or not np.all(np.isfinite(data[key])):
-                raise ValidationError(f"Invalid checkpoint measurement '{key}'")
-        if np.iscomplexobj(data["record_drift_history"]) or np.any(data["record_drift_history"] < 0):
-            raise ValidationError("Checkpoint drift magnitudes must be real and nonnegative")
-        # The drifts of every step since the last statistics file, or since the first step of a run
-        # continued by hand or from a checkpoint without the record (record_drift_step_start).
-        # Checkpoints of earlier versions lack the record, whose continued runs record from the restart on
-        pending_steps = step % sim.recording["statistics_save_interval"]
-        if "record_drift_step_start" in data:
-            first = data["record_drift_step_start"]
-            if (isinstance(first, (bool, np.bool_)) or not isinstance(first, (int, np.integer))
-                    or not step - pending_steps < first <= step + 1):
-                raise ValidationError("Invalid checkpoint measurement 'record_drift_step_start'")
-            pending_steps = step + 1 - int(first)
-        for key, per_step in (("record_drift_step_history", n_fields), ("record_psi_drift_step_history", 1)):
-            if key in data:
-                values = np.atleast_1d(np.asarray(data[key]))
-                if (np.size(values) != pending_steps * per_step or np.iscomplexobj(values)
-                        or not np.all(np.isfinite(values)) or np.any(values < 0)):
-                    raise ValidationError(f"Invalid checkpoint measurement '{key}'")
-        # Partition ratios of the same steps, in [0, 1]; NaN for the steps of a checkpoint without them
-        if "record_partition_ratio_step_history" in data:
-            values = np.atleast_1d(np.asarray(data["record_partition_ratio_step_history"]))
-            n_ratios = len(sim.thermodynamics.partition_ratio_species) if hasattr(sim, "thermodynamics") else 0
-            if (np.size(values) != pending_steps * n_ratios or np.iscomplexobj(values)
-                    or np.any(values < 0) or np.any(values > 1)):
-                raise ValidationError("Invalid checkpoint measurement 'record_partition_ratio_step_history'")
-        # Pending chemical potentials and pressures (absent in checkpoints of earlier versions or
-        # of runs without them; continue_run then records NaN for those samples, which later
-        # checkpoints keep). A species without chains has the chemical potential -inf
-        n_columns = sim.thermodynamics.n_chemical_potentials if hasattr(sim, "thermodynamics") else 0
-        for key, per_sample in (("record_chemical_potential_history", n_columns), ("record_pressure_history", 1),
-                                ("record_number_density_history", n_columns)):
-            if key in data:
-                values = np.atleast_1d(np.asarray(data[key]))
-                if np.size(values) != count * per_sample or np.any(np.isposinf(np.real(values))):
-                    raise ValidationError(f"Invalid checkpoint measurement '{key}'")
-        # Pending sums of recording.concentrations and their number of steps, absent in checkpoints
-        # of runs without them
-        for name in getattr(sim, "concentration_names", []):
-            key = _measurement_key("sf", "concentration_" + name)
-            if key in data and (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))):
-                raise ValidationError(f"Invalid checkpoint concentration sum '{name}'")
-        key = _measurement_key("sf", "concentration steps")
-        if key in data and (np.size(data[key]) != 1 or not np.all(np.isfinite(data[key])) or np.any(np.real(data[key]) < 0)):
-            raise ValidationError("Invalid checkpoint measurement 'concentration steps'")
-        for monomer in sim.monomer_types:
-            names = [kind + monomer + suffix for kind in ("w_", "phi_") for suffix in
-                     (("",) if sim.prop_solver.field_type == "real" else ("_real", "_imag"))]
-            for name in names:
-                if np.size(data[name]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[name])) or np.iscomplexobj(data[name]):
-                    raise ValidationError(f"Invalid checkpoint field '{name}'")
-        sf_size = int(np.prod(sim.prop_solver.nx)) if sim.prop_solver.field_type == "complex" else int(
-            np.prod(sim.prop_solver.nx[:-1])) * (sim.prop_solver.nx[-1] // 2 + 1)
-        for pair in itertools.combinations_with_replacement(sim.monomer_types, 2):
-            name = _measurement_key("sf", ",".join(pair))
-            if np.size(data[name]) != sf_size or not np.all(np.isfinite(data[name])):
-                raise ValidationError(f"Invalid checkpoint structure function '{name}'")
+        _check_settings(sim, data, version)
+        step = _check_state(sim, data)
+        count = _check_measurements(sim, data, step)
+        _check_fields(sim, data)
         # ψ, its noise stream, the pending drifts of ψ and the charge structure sums (Electrostatics.checkpoint_data)
         if getattr(sim, "electrostatics", None) is not None:
             sim.electrostatics.validate_checkpoint(data, count)
@@ -348,6 +226,160 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
             sim.wtmd.validate_checkpoint(data, sim.chi_n)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValidationError(f"Invalid checkpoint: {exc}") from exc
+
+
+def _check_settings(sim, data, version):
+    """The settings of the checkpoint against those of sim (checkpoint_settings), and the state of the extensions."""
+    stored = json.loads(str(data["checkpoint_settings_json"]))
+    if input_hash(stored) != str(data["checkpoint_settings_hash"]):
+        raise ValidationError("Checkpoint settings hash does not match its contents")
+    # Verify the original settings hash before translating names. Earlier checkpoints have legacy
+    # block keys and flat recording-period keys
+    stored = normalize_params(stored)
+    _rename_parameter(stored, "sf_computing_period", "sample_interval")
+    _rename_parameter(stored, "sf_recording_period", "statistics_save_interval")
+    # The pseudo-spectral method of discrete chains was recorded as "discrete" before it was named "ps"
+    if stored.get("numerical_method") == "discrete":
+        stored["numerical_method"] = "ps"
+    current = checkpoint_settings(sim)
+    # An input of an earlier release could hold keys that no release read in saddle or compressor,
+    # which are refused now (SECTION_KEYS): its checkpoint compares without them
+    for section in ("saddle", "compressor"):
+        if isinstance(stored.get(section), dict):
+            stored[section] = {key: value for key, value in stored[section].items()
+                               if key in SECTION_KEYS[section]}
+    # Version 1 predates extensions and always used LM without callbacks.
+    if version == 1:
+        stored.setdefault("extensions", {"integrator": {"name": "lm", "settings": {}}, "callbacks": {}})
+    # JSON distinguishes 15 from 15.0; effective numerical settings do not.
+    different = [key for key in current if current[key] != stored.get(key)]
+    if different:
+        raise ValidationError("Incompatible checkpoint settings: " + ", ".join(different))
+    if version == 2:
+        state = json.loads(str(data["extension_state_json"]))
+        if not isinstance(state, dict) or set(state) != {"integrator", "callbacks"} or not isinstance(state["callbacks"], dict):
+            raise ValidationError("Invalid extension checkpoint state")
+        if set(state["callbacks"]) != set(sim.callbacks):
+            raise ValidationError("Checkpoint callback state does not match registered callbacks")
+        if not isinstance(state["integrator"], dict) or not all(isinstance(value, dict) for value in state["callbacks"].values()):
+            raise ValidationError("Each extension checkpoint state must be a dictionary")
+        json.dumps(state, allow_nan=False)
+
+
+def _check_state(sim, data):
+    """The basis of the auxiliary fields, the step and status of the run, the auxiliary fields, the previous
+    noise and the random-number state; returns the step."""
+    stored_basis = np.asarray(data["matrix_a"])
+    if stored_basis.size != sim.mpt.matrix_a.size or not np.allclose(
+            stored_basis.reshape(sim.mpt.matrix_a.shape), sim.mpt.matrix_a, rtol=1e-12, atol=1e-12):
+        raise ValidationError("Incompatible checkpoint auxiliary-field basis")
+    step = data["langevin_step"]
+    if isinstance(step, (bool, np.bool_)) or not isinstance(step, (int, np.integer)) or step < 0:
+        raise ValidationError("Checkpoint step must be a nonnegative integer")
+    if step > sim.langevin["max_step"]:
+        raise ValidationError("Checkpoint step exceeds langevin.max_step or is negative")
+    for key in ("simulation_metadata_json", "run_status_json"):
+        if key in data:
+            value = json.loads(str(data[key]))
+            if not isinstance(value, dict):
+                raise ValidationError(f"Checkpoint '{key}' must describe a dictionary")
+            if key == "run_status_json":
+                if value.get("last_completed_step") != step:
+                    raise ValidationError("Checkpoint run status does not match its step")
+                for counter in ("saddle_failures", "noise_resamples"):
+                    count = value.get(counter, 0)
+                    if type(count) is not int or count < 0:
+                        raise ValidationError(f"Invalid checkpoint run counter '{counter}'")
+    n_fields = len(sim.monomer_types)
+    for key in ("w_aux", "normal_noise_prev"):
+        if key not in data or not np.all(np.isfinite(data[key])):
+            raise ValidationError(f"Checkpoint has missing or non-finite '{key}'")
+        if np.iscomplexobj(data[key]) and (key == "normal_noise_prev" or sim.prop_solver.field_type == "real"):
+            raise ValidationError(f"Checkpoint '{key}' must be real")
+    if np.size(data["w_aux"]) != n_fields * sim.prop_solver.n_grid:
+        raise ValidationError("Checkpoint auxiliary field shape is incompatible")
+    if "record_sample_count" not in data or "rng_state_json" not in data:
+        raise ValidationError("Checkpoint is missing measurement or RNG state")
+    n_noise = n_fields if sim.prop_solver.field_type == "complex" else len(sim.mpt.aux_fields_real_idx)
+    if np.size(data["normal_noise_prev"]) != n_noise * sim.prop_solver.n_grid:
+        raise ValidationError("Checkpoint noise shape is incompatible")
+    rng = np.random.PCG64(0)
+    rng.state = json.loads(str(data["rng_state_json"]))
+    return step
+
+
+def _check_measurements(sim, data, step):
+    """The measurements of the run since its last statistics file (RunRecord.checkpoint_arrays) at the
+    checkpoint step; returns their number of samples."""
+    n_fields = len(sim.monomer_types)
+    count = data["record_sample_count"]
+    if isinstance(count, (bool, np.bool_)) or not isinstance(count, (int, np.integer)) or count < 0:
+        raise ValidationError("Invalid checkpoint sample count")
+    for key in ["record_H_history", "record_drift_history"] + [_measurement_key("dH", key) for key in sim.chi_n]:
+        if np.size(data[key]) != count or not np.all(np.isfinite(data[key])):
+            raise ValidationError(f"Invalid checkpoint measurement '{key}'")
+    if np.iscomplexobj(data["record_drift_history"]) or np.any(data["record_drift_history"] < 0):
+        raise ValidationError("Checkpoint drift magnitudes must be real and nonnegative")
+    # The drifts of every step since the last statistics file, or since the first step of a run
+    # continued by hand or from a checkpoint without the record (record_drift_step_start).
+    # Checkpoints of earlier versions lack the record, whose continued runs record from the restart on
+    pending_steps = step % sim.recording["statistics_save_interval"]
+    if "record_drift_step_start" in data:
+        first = data["record_drift_step_start"]
+        if (isinstance(first, (bool, np.bool_)) or not isinstance(first, (int, np.integer))
+                or not step - pending_steps < first <= step + 1):
+            raise ValidationError("Invalid checkpoint measurement 'record_drift_step_start'")
+        pending_steps = step + 1 - int(first)
+    for key, per_step in (("record_drift_step_history", n_fields), ("record_psi_drift_step_history", 1)):
+        if key in data:
+            values = np.atleast_1d(np.asarray(data[key]))
+            if (np.size(values) != pending_steps * per_step or np.iscomplexobj(values)
+                    or not np.all(np.isfinite(values)) or np.any(values < 0)):
+                raise ValidationError(f"Invalid checkpoint measurement '{key}'")
+    # Partition ratios of the same steps, in [0, 1]; NaN for the steps of a checkpoint without them
+    if "record_partition_ratio_step_history" in data:
+        values = np.atleast_1d(np.asarray(data["record_partition_ratio_step_history"]))
+        n_ratios = len(sim.thermodynamics.partition_ratio_species) if hasattr(sim, "thermodynamics") else 0
+        if (np.size(values) != pending_steps * n_ratios or np.iscomplexobj(values)
+                or np.any(values < 0) or np.any(values > 1)):
+            raise ValidationError("Invalid checkpoint measurement 'record_partition_ratio_step_history'")
+    # Pending chemical potentials and pressures (absent in checkpoints of earlier versions or
+    # of runs without them; continue_run then records NaN for those samples, which later
+    # checkpoints keep). A species without chains has the chemical potential -inf
+    n_columns = sim.thermodynamics.n_chemical_potentials if hasattr(sim, "thermodynamics") else 0
+    for key, per_sample in (("record_chemical_potential_history", n_columns), ("record_pressure_history", 1),
+                            ("record_number_density_history", n_columns)):
+        if key in data:
+            values = np.atleast_1d(np.asarray(data[key]))
+            if np.size(values) != count * per_sample or np.any(np.isposinf(np.real(values))):
+                raise ValidationError(f"Invalid checkpoint measurement '{key}'")
+    # Pending sums of recording.concentrations and their number of steps, absent in checkpoints
+    # of runs without them
+    for name in getattr(sim, "concentration_names", []):
+        key = _measurement_key("sf", "concentration_" + name)
+        if key in data and (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))):
+            raise ValidationError(f"Invalid checkpoint concentration sum '{name}'")
+    key = _measurement_key("sf", "concentration steps")
+    if key in data and (np.size(data[key]) != 1 or not np.all(np.isfinite(data[key])) or np.any(np.real(data[key]) < 0)):
+        raise ValidationError("Invalid checkpoint measurement 'concentration steps'")
+    return count
+
+
+def _check_fields(sim, data):
+    """The fields w and the concentrations φ of each monomer type (real and imaginary parts in CL-FTS) and
+    the pending sums of the structure functions: their sizes and finite values."""
+    for monomer in sim.monomer_types:
+        names = [kind + monomer + suffix for kind in ("w_", "phi_") for suffix in
+                 (("",) if sim.prop_solver.field_type == "real" else ("_real", "_imag"))]
+        for name in names:
+            if np.size(data[name]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[name])) or np.iscomplexobj(data[name]):
+                raise ValidationError(f"Invalid checkpoint field '{name}'")
+    sf_size = int(np.prod(sim.prop_solver.nx)) if sim.prop_solver.field_type == "complex" else int(
+        np.prod(sim.prop_solver.nx[:-1])) * (sim.prop_solver.nx[-1] // 2 + 1)
+    for pair in itertools.combinations_with_replacement(sim.monomer_types, 2):
+        name = _measurement_key("sf", ",".join(pair))
+        if np.size(data[name]) != sf_size or not np.all(np.isfinite(data[name])):
+            raise ValidationError(f"Invalid checkpoint structure function '{name}'")
 
 
 class RunRecord:
@@ -445,6 +477,19 @@ class RunRecord:
                 array[:] = np.asarray(data[key]).reshape(array.shape)
         # A restored record ends at the step before this run's first step
         self.first_step = first_step - len(self.lists.get("drift_step_history", []))
+
+
+def save_statistics(sim, langevin_step, record, extra=None):
+    """The statistics file dH_<step>.mat of the measurements of `record` (RunRecord.statistics) with the
+    metadata of the run and the entries of `extra`, then the files of the structure functions; the record
+    starts the next file."""
+    data = record.statistics()
+    data["simulation_metadata_json"] = json.dumps(sim.metadata)
+    data.update(extra or {})
+    atomic_savemat(os.path.join(sim.recording["dir"], "dH_%06d.mat" % langevin_step), data,
+                   long_field_names=True, do_compression=True)
+    sim.structure_functions.save(langevin_step, record)
+    record.clear(langevin_step + 1)
 
 
 def initialize_extensions(sim, integrator, callbacks):

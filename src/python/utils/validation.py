@@ -564,11 +564,13 @@ def _validate_smearing(params: Dict[str, Any], complex_fields: bool) -> None:
             raise ValidationError("Per-type 'smearing.a_int' does not support random copolymers")
         for name, a_int in smearing["a_int"].items():
             _finite_number(a_int, f"smearing.a_int.{name}", nonnegative=True)
+    elif kind == "gaussian":
+        _finite_number(smearing.get("a_int"), "smearing.a_int", nonnegative=True)
     else:
-        keys = ("a_int",) if kind == "gaussian" else ("k_int", "dk_int")
-        for key in keys:
-            _finite_number(smearing.get(key, 5.0 if key == "dk_int" else None), "smearing." + key,
-                           positive=key != "a_int", nonnegative=key == "a_int")
+        # dk_int has its default in smearing.py
+        _finite_number(smearing.get("k_int"), "smearing.k_int", positive=True)
+        if "dk_int" in smearing:
+            _finite_number(smearing["dk_int"], "smearing.dk_int", positive=True)
 
 
 def _numerical_method(params: Dict[str, Any]) -> tuple:
@@ -612,9 +614,9 @@ _RETIRED_KEYS = {"stress_interval": "SCFT computes the stress in every iteration
 # The keys that each option section takes, with the names of normalize_params. A method refuses a key
 # that a section it reads does not take (check_section_keys), as it refuses a top-level key that no
 # method reads: a misspelled option would otherwise keep its default. A new option of a section needs
-# its entry here. The entries of a section (the point ions of electrostatics, the boxes of
-# gibbs_ensemble) are checked with their section, the entries of polymers and of their blocks with
-# POLYMER_KEYS and BLOCK_KEYS (validate_system_params)
+# its entry here. The entries of polymers and of their blocks are checked with POLYMER_KEYS and
+# BLOCK_KEYS (validate_system_params), the point ions of electrostatics with ION_KEYS
+# (validate_electrostatics) and the boxes of gibbs_ensemble with GIBBS_BOX_KEYS (validate_gibbs_params)
 SECTION_KEYS = {
     "langevin": {"dt", "nbar", "max_step", "integrator"},
     "recording": {"dir", "checkpoint_interval", "sample_interval", "statistics_save_interval", "pressure",
@@ -633,16 +635,20 @@ SECTION_KEYS = {
 # otherwise build one arm, a misspelled initial_conditions a free chain
 POLYMER_KEYS = {"volume_fraction", "chemical_potential", "blocks", "initial_conditions"}
 BLOCK_KEYS = {"type", "length", "v", "u", "multiplicity", "monomer_fractions"}
+# The keys of a point ion of 'electrostatics.ions' and of a box of 'gibbs_ensemble.boxes'
+ION_KEYS = {"valence", "concentration", "chemical_potential", "smearing_length"}
+GIBBS_BOX_KEYS = {"volume", "volume_fractions", "ion_concentrations"}
 
 
-def _refuse_unknown_keys(label, keys, allowed) -> None:
+def _refuse_unknown_keys(label, keys, allowed, note="") -> None:
     """A key of `keys` that `allowed` does not hold raises ValidationError naming the option or entry
-    `label`, the key, the closest allowed key and the allowed keys."""
+    `label`, the key, the closest allowed key and the allowed keys, followed by `note`."""
     unknown = sorted(str(key) for key in keys if key not in allowed)
     if unknown:
         close = difflib.get_close_matches(unknown[0], allowed, n=1)
         hint = f" (did you mean '{close[0]}'?)" if close else ""
-        raise ValidationError(f"'{label}' has unknown keys: {unknown}{hint}; it takes " + ", ".join(sorted(allowed)))
+        raise ValidationError(f"'{label}' has unknown keys: {unknown}{hint}; it takes " + ", ".join(sorted(allowed))
+                              + (f"; {note}" if note else ""))
 
 
 def check_section_keys(params: Dict[str, Any], sections) -> None:
@@ -745,9 +751,19 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
     _integer(optimizer.get("max_hist"), "optimizer.max_hist", minimum=0)
     for key in ("start_error", "mix_min", "mix_init"):
         _finite_number(optimizer.get(key), "optimizer." + key, nonnegative=True)
-    _finite_number(params.get("tolerance", 1e-8), "tolerance", positive=True)
-    _finite_number(params.get("stress_scale", 1), "stress_scale", positive=True)
-    _integer(params.get("max_iter", 2000), "max_iter")
+    # The defaults are those of scft.py and cell_relaxation.py
+    for key in ("tolerance", "stress_scale"):
+        if key in params:
+            _finite_number(params[key], key, positive=True)
+    if "max_iter" in params:
+        _integer(params["max_iter"], "max_iter")
+    # The axes of nx, lx, bc and angles in the input (SCFT reorders them to [a, b, c], scft/grid.py)
+    axis_ordering = params.get("axis_ordering")
+    labels = ["a", "b", "c"][:len(params["nx"])]
+    if axis_ordering is not None and (not isinstance(axis_ordering, (list, tuple))
+                                      or sorted(str(axis) for axis in axis_ordering) != labels):
+        raise ValidationError(f"'axis_ordering' must name each of the axes {labels} once, in the order of "
+                              f"'nx', got {axis_ordering!r}")
     # A crystal system given without a space group exists in the dimension (a group fixes its own)
     crystal_system = params.get("crystal_system")
     valid_systems = [name for name, row in CRYSTAL_SYSTEMS.items() if len(params["nx"]) in row["dims"]]
@@ -770,28 +786,28 @@ def validate_scft_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return params
 
 
-def _check_langevin_keys(params: Dict[str, Any], complex_fields: bool) -> None:
-    """The top-level keys of an L-FTS input, or of a CL-FTS input with complex_fields (check_method_keys),
-    after two keys that would change the system there, which are refused rather than ignored:
-    'axis_ordering' of SCFT reorders the shared nx, lx, bc and angles (the same input would build another
-    grid), and 'electrostatics' defines the Hamiltonian of the charges, which L-FTS, without an
-    electrostatic potential, would drop and simulate a neutral system."""
-    method = "CL-FTS" if complex_fields else "L-FTS"
+def _check_langevin_keys(params: Dict[str, Any], method: str) -> None:
+    """The top-level keys of an input of method, "L-FTS" or "CL-FTS" (check_method_keys), after two keys
+    that would change the system there, which are refused rather than ignored: 'axis_ordering' of SCFT
+    reorders the shared nx, lx, bc and angles (the same input would build another grid), and
+    'electrostatics' defines the Hamiltonian of the charges, which L-FTS, without an electrostatic
+    potential, would drop and simulate a neutral system."""
     if "axis_ordering" in params:
         raise ValidationError(f"'axis_ordering' is supported in SCFT only: it reorders the shared 'nx', 'lx', 'bc' "
                               f"and 'angles', which {method} reads in the order given; give them in the order "
                               "[a, b, c] and remove it")
-    if not complex_fields and "electrostatics" in params:
+    if method == "L-FTS" and "electrostatics" in params:
         raise ValidationError("'electrostatics' is supported in SCFT and CL-FTS only: L-FTS has no "
                               "electrostatic potential and would simulate a neutral system; remove it")
     check_method_keys(params, method)
 
 
-def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dict[str, Any]:
-    """Validate the options of L-FTS, or of CL-FTS with complex_fields, before constructing numerical
-    objects; returns the copy with the names of normalize_params that the simulation uses."""
+def _validate_langevin_params(params: Dict[str, Any], method: str) -> Dict[str, Any]:
+    """The checks that L-FTS and CL-FTS (method) share, up to their own options: the keys, the system, the
+    monomer pairs of the files, langevin, recording and verbose_level. Returns the copy with the names of
+    normalize_params."""
     params = normalize_params(params)
-    _check_langevin_keys(params, complex_fields)
+    _check_langevin_keys(params, method)
     validate_system_params(params)
     # The files name the measurements of a monomer pair by the two names joined with '_'
     # (structure_function_A_B, dH_history_A_B, I1_A_B), which must differ for distinct pairs
@@ -820,79 +836,106 @@ def validate_lfts_params(params: Dict[str, Any], *, complex_fields=False) -> Dic
     _integer(params.get("verbose_level"), "verbose_level", minimum=0)
     if params["verbose_level"] > 2:
         raise ValidationError("'verbose_level' must be 0, 1 or 2")
+    return params
 
-    if complex_fields:
-        # CL-FTS: all fields fluctuate (no saddle point). A non-integer multiplicity raises complex
-        # propagators to a real power, which has no unique value
-        for i, polymer in enumerate(params["polymers"]):
-            for j, block in enumerate(polymer["blocks"]):
-                if not float(block.get("multiplicity", 1)).is_integer():
-                    raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer in CL-FTS "
-                                          f"(complex fields), got {block['multiplicity']!r}")
-        for i, polymer in enumerate(params["polymers"]):
-            if "chemical_potential" in polymer and (polymer.get("initial_conditions") or _has_random_copolymer(
-                    {"polymers": [polymer]})):
-                raise ValidationError(f"polymers[{i}]: grand-canonical polymers cannot be grafted or random copolymers")
-        if "dynamic_stabilization" in params:
-            _finite_number(params["dynamic_stabilization"], "dynamic_stabilization", nonnegative=True)
-        # The smearing (with one length per monomer type), before the charges that it smears
-        _validate_smearing(params, complex_fields=True)
-        if "electrostatics" in params:
-            validate_electrostatics(params)
-    else:
-        # L-FTS: the saddle point of the imaginary fields with its compressor, and WTMD. It writes the
-        # auxiliary fields as w_aux next to the fields w_<type>
-        if "aux" in params["segment_lengths"]:
-            raise ValidationError("L-FTS writes the auxiliary fields as 'w_aux': rename the monomer type 'aux'")
-        for key in ("pressure", "concentrations"):
-            if recording.get(key):
-                raise ValidationError(f"'recording.{key}' is supported in CL-FTS only")
-        _reject_grand_canonical(params, "L-FTS")
-        saddle = params.get("saddle")
-        if not isinstance(saddle, dict):
-            raise ValidationError("Missing required dict: 'saddle'")
-        _integer(saddle.get("max_iter"), "saddle.max_iter")
-        _finite_number(saddle.get("tolerance"), "saddle.tolerance", positive=True)
-        _integer(saddle.get("max_retries", 5), "saddle.max_retries", minimum=0)
-        if saddle.get("failure_policy", "retry") not in ("retry", "abort", "resample"):
-            raise ValidationError("saddle.failure_policy must be 'retry', 'abort' or 'resample'")
-        compressor = params.get("compressor")
-        if not isinstance(compressor, dict) or compressor.get("name") not in ("am", "lr", "lram"):
-            raise ValidationError("compressor.name must be 'am', 'lr' or 'lram'")
-        if compressor["name"] in ("am", "lram"):
-            _integer(compressor.get("max_hist"), "compressor.max_hist", minimum=0)
-            for key in ("start_error", "mix_min", "mix_init"):
-                _finite_number(compressor.get(key), "compressor." + key, nonnegative=True)
-        _validate_smearing(params, complex_fields=False)
-        wtmd = params.get("wtmd")
-        if wtmd is not None:
-            if not isinstance(wtmd, dict):
-                raise ValidationError("'wtmd' must be a dict or None")
-            for key in ("update_freq", "recording_period"):
-                _integer(wtmd.get(key, 1000 if key == "update_freq" else 100000), "wtmd." + key)
-            for key, default in (("ell", 4), ("kc", 6.02), ("delta_t", 5.0), ("sigma_psi", 0.16), ("dpsi", 1e-3)):
-                _finite_number(wtmd.get(key, default), "wtmd." + key, positive=True)
-            if wtmd.get("ell", 4) < 1:
-                raise ValidationError("wtmd.ell must be at least 1")
-            lo, hi = wtmd.get("psi_min", 0.0), wtmd.get("psi_max", 10.0)
-            _finite_number(lo, "wtmd.psi_min")
-            _finite_number(hi, "wtmd.psi_max")
-            bins = (hi - lo) / wtmd.get("dpsi", 1e-3)
-            if hi <= lo or bins < 2:
-                raise ValidationError("WTMD range must contain at least two bins")
-            # The histogram, the Gaussian kernels and the integrals of the statistics all use the bin width
-            if abs(bins - round(bins)) > 1e-9 * bins:
-                raise ValidationError(f"wtmd.dpsi must divide psi_max - psi_min into a whole number of bins "
-                                      f"(dpsi = {wtmd.get('dpsi', 1e-3)!r}, psi_max - psi_min = {hi - lo!r})")
 
-    # The propagators of grafted chains start from q_init, which only SCFT.run takes
+def _check_free_chains(params: Dict[str, Any]) -> None:
+    """The chains of L-FTS and CL-FTS are free: the propagators of grafted chains start from q_init, which
+    only SCFT.run takes. The block lengths of discrete chains are checked before a solver is built."""
     for i, polymer in enumerate(params["polymers"]):
         if polymer.get("initial_conditions"):
             raise ValidationError(f"polymers[{i}]: L-FTS and CL-FTS need free chains; grafted chains "
                                   "(initial_conditions) need q_init, which only SCFT takes")
     for polymer in params["polymers"]:
         polymer_block_lengths(params, polymer)
+
+
+def validate_lfts_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the options of L-FTS before constructing numerical objects; returns the copy with the
+    names of normalize_params that the simulation uses."""
+    params = _validate_langevin_params(params, "L-FTS")
+    # The saddle point of the imaginary fields with its compressor, and WTMD. L-FTS writes the auxiliary
+    # fields as w_aux next to the fields w_<type>
+    if "aux" in params["segment_lengths"]:
+        raise ValidationError("L-FTS writes the auxiliary fields as 'w_aux': rename the monomer type 'aux'")
+    for key in ("pressure", "concentrations"):
+        if params["recording"].get(key):
+            raise ValidationError(f"'recording.{key}' is supported in CL-FTS only")
+    _reject_grand_canonical(params, "L-FTS")
+    saddle = params.get("saddle")
+    if not isinstance(saddle, dict):
+        raise ValidationError("Missing required dict: 'saddle'")
+    _integer(saddle.get("max_iter"), "saddle.max_iter")
+    _finite_number(saddle.get("tolerance"), "saddle.tolerance", positive=True)
+    # The defaults of max_retries and failure_policy are those of saddle.py
+    if "max_retries" in saddle:
+        _integer(saddle["max_retries"], "saddle.max_retries", minimum=0)
+    if "failure_policy" in saddle and saddle["failure_policy"] not in ("retry", "abort", "resample"):
+        raise ValidationError("saddle.failure_policy must be 'retry', 'abort' or 'resample'")
+    compressor = params.get("compressor")
+    if not isinstance(compressor, dict) or compressor.get("name") not in ("am", "lr", "lram"):
+        raise ValidationError("compressor.name must be 'am', 'lr' or 'lram'")
+    if compressor["name"] in ("am", "lram"):
+        _integer(compressor.get("max_hist"), "compressor.max_hist", minimum=0)
+        for key in ("start_error", "mix_min", "mix_init"):
+            _finite_number(compressor.get(key), "compressor." + key, nonnegative=True)
+    _validate_smearing(params, complex_fields=False)
+    if params.get("wtmd") is not None:
+        validate_wtmd(params["wtmd"])
+    _check_free_chains(params)
     return params
+
+
+def validate_clfts_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the options of CL-FTS before constructing numerical objects; returns the copy with the
+    names of normalize_params that the simulation uses."""
+    params = _validate_langevin_params(params, "CL-FTS")
+    # All fields fluctuate (no saddle point). A non-integer multiplicity raises complex propagators to a
+    # real power, which has no unique value
+    for i, polymer in enumerate(params["polymers"]):
+        for j, block in enumerate(polymer["blocks"]):
+            if not float(block.get("multiplicity", 1)).is_integer():
+                raise ValidationError(f"'polymers[{i}].blocks[{j}].multiplicity' must be an integer in CL-FTS "
+                                      f"(complex fields), got {block['multiplicity']!r}")
+    for i, polymer in enumerate(params["polymers"]):
+        if "chemical_potential" in polymer and (polymer.get("initial_conditions") or _has_random_copolymer(
+                {"polymers": [polymer]})):
+            raise ValidationError(f"polymers[{i}]: grand-canonical polymers cannot be grafted or random copolymers")
+    if "dynamic_stabilization" in params:
+        _finite_number(params["dynamic_stabilization"], "dynamic_stabilization", nonnegative=True)
+    # The smearing (with one length per monomer type), before the charges that it smears
+    _validate_smearing(params, complex_fields=True)
+    if "electrostatics" in params:
+        validate_electrostatics(params)
+    _check_free_chains(params)
+    return params
+
+
+def validate_wtmd(wtmd: Dict[str, Any]) -> None:
+    """The 'wtmd' input of L-FTS, which fts/wtmd.py reads with its defaults: each option that is given, and
+    the range of the order parameter, whose bins need psi_min, psi_max and dpsi (with their defaults)
+    before the solver is built."""
+    if not isinstance(wtmd, dict):
+        raise ValidationError("'wtmd' must be a dict or None")
+    for key in ("update_freq", "recording_period"):
+        if key in wtmd:
+            _integer(wtmd[key], "wtmd." + key)
+    for key in ("ell", "kc", "delta_t", "sigma_psi"):
+        if key in wtmd:
+            _finite_number(wtmd[key], "wtmd." + key, positive=True)
+    lo, hi, dpsi = wtmd.get("psi_min", 0.0), wtmd.get("psi_max", 10.0), wtmd.get("dpsi", 1e-3)
+    _finite_number(dpsi, "wtmd.dpsi", positive=True)
+    if "ell" in wtmd and wtmd["ell"] < 1:
+        raise ValidationError("wtmd.ell must be at least 1")
+    _finite_number(lo, "wtmd.psi_min")
+    _finite_number(hi, "wtmd.psi_max")
+    bins = (hi - lo) / dpsi
+    if hi <= lo or bins < 2:
+        raise ValidationError("WTMD range must contain at least two bins")
+    # The histogram, the Gaussian kernels and the integrals of the statistics all use the bin width
+    if abs(bins - round(bins)) > 1e-9 * bins:
+        raise ValidationError(f"wtmd.dpsi must divide psi_max - psi_min into a whole number of bins "
+                              f"(dpsi = {dpsi!r}, psi_max - psi_min = {hi - lo!r})")
 
 
 def _has_random_copolymer(params):
@@ -952,9 +995,9 @@ def validate_electrostatics(params: Dict[str, Any]) -> None:
     for name, ion in ions.items():
         if not isinstance(name, str) or name in params["segment_lengths"]:
             raise ValidationError(f"Ion name {name!r} must be a string that is not a monomer type")
-        keys = set(ion) if isinstance(ion, dict) else set()
-        allowed = {"valence", "concentration", "chemical_potential", "smearing_length"}
-        if not isinstance(ion, dict) or keys - allowed or not {"valence", "smearing_length"} <= keys or \
+        if isinstance(ion, dict):
+            _refuse_unknown_keys(f"electrostatics.ions.{name}", ion, ION_KEYS)
+        if not isinstance(ion, dict) or not {"valence", "smearing_length"} <= set(ion) or \
                 ("concentration" in ion) == ("chemical_potential" in ion):
             raise ValidationError(f"'electrostatics.ions.{name}' needs 'valence', 'smearing_length' and one of "
                                   "'concentration' and 'chemical_potential' (grand canonical)")
@@ -970,7 +1013,8 @@ def validate_electrostatics(params: Dict[str, Any]) -> None:
     if counterion not in ("", None) and (counterion not in ions or "concentration" not in ions[counterion]):
         raise ValidationError(f"'electrostatics.counterion' {counterion!r} is not one of the canonical 'ions' "
                               "(with a concentration)")
-    _finite_number(electrostatics.get("psi_dt_scaling", 1.0), "electrostatics.psi_dt_scaling", positive=True)
+    if "psi_dt_scaling" in electrostatics:   # its default is that of electrostatics.py
+        _finite_number(electrostatics["psi_dt_scaling"], "electrostatics.psi_dt_scaling", positive=True)
     if electrostatics.get("screening_length") is not None:
         _finite_number(electrostatics["screening_length"], "electrostatics.screening_length", positive=True)
     # Point charges have a grid-dependent self-energy; the charges are smeared
@@ -1102,14 +1146,16 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
     check_section_keys(params, ("gibbs_ensemble",))
     # The rest is a CL-FTS input: one warning about the options of the other methods, which the boxes
     # leave out (GibbsEnsemble.box_params)
-    _check_langevin_keys({key: value for key, value in params.items() if key != "gibbs_ensemble"},
-                         complex_fields=True)
+    _check_langevin_keys({key: value for key, value in params.items() if key != "gibbs_ensemble"}, "CL-FTS")
     _integer(gibbs.get("cycles"), "gibbs_ensemble.cycles", minimum=1)
     _integer(gibbs.get("cycle_steps"), "gibbs_ensemble.cycle_steps", minimum=1)
-    _finite_number(gibbs.get("exchange_rate", 0.2), "gibbs_ensemble.exchange_rate", positive=True)
-    _integer(gibbs.get("skip_steps", 0), "gibbs_ensemble.skip_steps", minimum=0)
-    if gibbs.get("skip_steps", 0) >= gibbs["cycle_steps"]:
-        raise ValidationError("'gibbs_ensemble.skip_steps' must be smaller than 'cycle_steps'")
+    # The defaults of exchange_rate and skip_steps are those of gibbs_ensemble.py
+    if "exchange_rate" in gibbs:
+        _finite_number(gibbs["exchange_rate"], "gibbs_ensemble.exchange_rate", positive=True)
+    if "skip_steps" in gibbs:
+        _integer(gibbs["skip_steps"], "gibbs_ensemble.skip_steps", minimum=0)
+        if gibbs["skip_steps"] >= gibbs["cycle_steps"]:
+            raise ValidationError("'gibbs_ensemble.skip_steps' must be smaller than 'cycle_steps'")
     recording = params.get("recording")
     if not isinstance(recording, dict) or "dir" not in recording:
         raise ValidationError("The Gibbs ensemble needs 'recording.dir' for its boxes and history")
@@ -1146,8 +1192,9 @@ def validate_gibbs_params(params: Dict[str, Any]) -> Dict[str, Any]:
         raise ValidationError("'gibbs_ensemble.boxes' must be a list of two dicts")
     for b, box in enumerate(boxes):
         name = f"gibbs_ensemble.boxes[{b}]"
-        if not isinstance(box, dict) or set(box) - {"volume", "volume_fractions", "ion_concentrations"} or \
-                "volume_fractions" not in box:
+        if isinstance(box, dict):
+            _refuse_unknown_keys(name, box, GIBBS_BOX_KEYS, "'lx' is the cell of both boxes")
+        if not isinstance(box, dict) or "volume_fractions" not in box:
             raise ValidationError(f"'{name}' must be a dict with 'volume_fractions' and optionally 'volume' and "
                                   "'ion_concentrations'; 'lx' is the cell of both boxes")
         if "volume" in box:

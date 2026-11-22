@@ -275,7 +275,7 @@ Fddd, which has no pure mirror, ends on the standard FFT.
 | 3m physical | (Nx/2)(Ny/2)(Nz/2) | Identity (none) |
 | Z-mirror physical | Nx * Ny * (Nz/2) | Identity (none) |
 
-The solver uses the basis the `SpaceGroup` holds. SCFT (`scft.py`) enables one
+The solver uses the basis the `SpaceGroup` holds. SCFT (`scft/grid.py`) enables one
 automatically from the angles the group fixes (`SpaceGroup.fixed_angles()`): with
 α=β=γ=90° the m3 basis when the recursive 3m CrysFFT pays off
 (`SpaceGroup.m3_crysfft_feasible()`), otherwise the Pmmm basis; with α=β=90° and γ

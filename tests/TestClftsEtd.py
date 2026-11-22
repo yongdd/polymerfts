@@ -206,7 +206,7 @@ def linear():
 def jacobian(root):
     for screening_length in (None, 0.3):
         sim = quiet(lambda: CLFTS(parameters(root / "jacobian", screening_length=screening_length), random_seed=5))
-        J = force_jacobian(sim)
+        J = force_jacobian(sim, joint_psi=True)
         M, n_grid, eps = 3, int(np.prod(NX)), 1e-6
         assert J.shape == (M + 1, M + 1) + tuple(NX)
         scale, worst = np.max(np.abs(J)), 0.0
@@ -227,7 +227,7 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.0}, smearing=None,
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.3}, {"type": "B", "length": 0.7}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J, eps = force_jacobian(sim), 1e-6
+    J, eps = force_jacobian(sim, joint_psi=False), 1e-6
     worst = 0.0
     for j in range(2):
         kick = np.zeros((2, 67), dtype=complex)
@@ -244,9 +244,9 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.2},
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J = force_jacobian(sim)
-    ratio = (sim._integrated_noise_direction()[None, :] / sim._integrated_noise_direction()[:, None])[:, :, None]
-    K, K_symmetric = J * ratio, symmetric_jacobian(sim, J) * ratio
+    J, direction = force_jacobian(sim, joint_psi=False), sim._integrated_noise_direction()
+    ratio = (direction[None, :] / direction[:, None])[:, :, None]
+    K, K_symmetric = J * ratio, symmetric_jacobian(sim, J, direction, sim.dt_scaling) * ratio
     asymmetry = np.max(np.abs(K - np.swapaxes(K, 0, 1))) / np.max(np.abs(K))
     assert 1e-5 < asymmetry < 1e-3, f"asymmetry of the measured Jacobian {asymmetry:.1e}"
     assert np.max(np.abs(K_symmetric - 0.5 * (K + np.swapaxes(K, 0, 1)))) < 1e-14 * np.max(np.abs(K)), \

@@ -292,7 +292,7 @@ Without `crystal_system`, a 2D cell with `angles` is classified from γ: 120° �
 
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
-| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and full-grid `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
+| `axis_ordering` | list[str] | Order in which `nx`, `lx`, `bc` and `angles` are given, each axis once, e.g. `["b", "a", "c"]`; the code converts to the standard `[a, b, c]`. The arrays of `initial_fields` (and full-grid `q_init`) are given in the same order as `nx` and transposed too. Results (fields, concentrations, saved files with their `nx` and `lx`) are in the standard order; to pass them back as initial fields of a run with `axis_ordering`, transpose them to its order | `["a", "b", "c"]` |
 
 `LFTS` and `CLFTS` refuse `axis_ordering` with `ValidationError`: they read `nx`, `lx`, `bc` and `angles` in the order given, so that an input with `axis_ordering` would describe another grid there. An input that SCFT shares with the Langevin methods gives these keys in the standard order.
 

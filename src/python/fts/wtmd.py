@@ -16,7 +16,7 @@ import numpy as np
 from .. import _core
 from ..utils.common import atomic_savemat
 from ..utils.checkpoint import pair_suffix
-from ..utils.validation import ValidationError, _finite_number, angle_fixed_at
+from ..utils.validation import ValidationError, angle_fixed_at, validate_wtmd
 
 
 class WTMD:
@@ -49,10 +49,8 @@ class WTMD:
 
     def __init__(self, params, nx, lx, nbar, eigenvalues, real_fields_idx, angles=None, fourier=None,
                  verbose_level=1):
+        validate_wtmd(params)
         self.l = params.get("ell", 4)
-        _finite_number(self.l, "wtmd.ell", positive=True)
-        if self.l < 1:
-            raise ValidationError("wtmd.ell must be at least 1")
         self.kc = params.get("kc", 6.02)
         self.sigma_psi = params.get("sigma_psi", 0.16)
         self.dT = params.get("delta_t", 5.0)

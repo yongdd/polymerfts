@@ -17,9 +17,10 @@ class CellRelaxation:
 
     stress() computes the stress of the fields and error() its size along the lattice parameters that
     vary. In the iteration, stress_error() gives the part of the error from the stress of the fields of
-    the iteration (stress_array), update() moves the fields and the cell together, and
-    check_tied_lengths() reports a tie of the crystal system that the structure does not satisfy.
-    n_variables is the size of the optimizer.
+    the iteration (stress_array). The Anderson mixing of SCFT moves the fields and the cell together:
+    parameters() and residual() are the part of its vector that holds the n_parameters lattice parameters
+    that relax (none for a fixed cell), and apply() sets the new ones. check_tied_lengths() reports a tie
+    of the crystal system that the structure does not satisfy.
     """
 
     def __init__(self, sim, params, angles):
@@ -30,16 +31,15 @@ class CellRelaxation:
         self.stress_scale = params.get("stress_scale", 1)
         # The stress of the fields of the last iteration, in the layout of get_stress()
         self.stress_array = None
-        self.n_variables = self._choose_lattice_parameters(params, angles)
+        self._choose_lattice_parameters(params, angles)
 
     def _choose_lattice_parameters(self, params, angles):
-        """Which lattice parameters the iteration varies; returns the number of variables of the optimizer."""
+        """Which lattice parameters the iteration varies."""
         # Which lattice parameters may vary during box relaxation (table CRYSTAL_SYSTEMS, utils/validation.py)
         dim = len(params["nx"])
         if self.sg is not None:
             # The space group fixes the crystal system (and which angles vary, below)
             crystal_system = self.sg.get_crystal_system()
-            n_field_var = len(self.monomer_types) * self.sg.get_n_reduced_basis_full()
         else:
             # The user chooses; a 2D cell without "crystal_system" is classified from gamma
             if params.get("crystal_system", None) is None and dim == 2 and angles is not None and len(angles) > 0:
@@ -74,10 +74,6 @@ class CellRelaxation:
                     raise ValidationError(f"crystal_system '{crystal_system}' needs a cell with {row['cell']}; got lx = "
                                           f"{lx_given} and angles = {cell_angles} (set lx and angles to such a cell"
                                           + (", or crystal_system 'Oblique2D')" if dim == 2 else ")"))
-            n_field_var = len(self.monomer_types) * np.prod(params["nx"])
-            # ψ is iterated with the fields
-            if self.electrostatics is not None:
-                n_field_var += int(np.prod(params["nx"]))
         self.crystal_system = crystal_system
 
         row = CRYSTAL_SYSTEMS[crystal_system]
@@ -99,11 +95,8 @@ class CellRelaxation:
                 self.angles_reduced_indices = [i for i, angle in enumerate(self.sg.fixed_angles()) if angle is None]
         self.angles_full_indices = list(self.angles_reduced_indices)
 
-        # Number of variables the optimizer adjusts: the fields, plus the free box lengths and angles
-        if params["relax_cell"]:
-            n_var = n_field_var + len(self.lx_reduced_indices) + len(self.angles_reduced_indices)
-        else:
-            n_var = n_field_var
+        # Lattice parameters the optimizer adjusts with the fields: the free box lengths and angles
+        self.n_parameters = len(self.lx_reduced_indices) + len(self.angles_reduced_indices) if params["relax_cell"] else 0
 
         # A method that keeps the cell orthogonal (rs) computes no shear stress, so its angles cannot relax
         keeps_orthogonal = self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["requires_orthogonal_cell"]
@@ -130,7 +123,6 @@ class CellRelaxation:
         # of their stresses. Whether each stress vanishes is checked at the end.
         self.tied_groups = [[i for i in range(dim) if self.lx_full_indices[i] == j]
                             for j in range(len(self.lx_reduced_indices))]
-        return n_var
 
     def stress_error(self, w, phi):
         """The part of the error of an iteration from the stress (0 for a fixed cell): error() of the
@@ -141,16 +133,22 @@ class CellRelaxation:
         self.stress_array = self._lattice_derivatives(w, phi)
         return self.error(self.stress_array)
 
-    def update(self, fields, fields_diff, old_error_level, error_level):
-        """One optimizer step on the concatenated (fields, box lengths, angles)
-        vector, with the stress of the last stress_error(); fields are the flattened
-        fields (and ψ). Applies the new lattice parameters to the solver and returns
-        the new flattened fields. Length changes are limited to 10 % and angle
-        changes to 5 degrees per step.
-        """
+    def parameters(self):
+        """The lattice parameters that relax, as the optimizer iterates them: the free box lengths, then
+        the free angles in radians, the unit of their residual -dH/dθ (empty for a fixed cell)."""
+        if not self.sim.relax_cell:
+            return np.array([])
+        current_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
+        current_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices] if len(self.angles_reduced_indices) > 0 else np.array([])
+        return np.concatenate((current_lx, np.deg2rad(current_angles)))
+
+    def residual(self):
+        """The residual of parameters(), from the stress of the last stress_error(): -dH/dL of the free box
+        lengths, the averaged derivative for lengths tied by the crystal system (a = b, or a = b = c), and
+        -dH/dθ of the free angles, scaled by stress_scale (empty for a fixed cell)."""
+        if not self.sim.relax_cell:
+            return np.array([])
         stress_array = self.stress_array
-        # -dH/dL for the independent box lengths; lengths tied by the crystal
-        # system (a = b, or a = b = c) use the averaged derivative
         dlx_full = -stress_array[0:3]
         dlx_reduced = np.array([np.mean(dlx_full[group]) for group in self.tied_groups])
 
@@ -158,31 +156,26 @@ class CellRelaxation:
         # d(cos gamma)/d gamma = -sin gamma factor is already applied in the C++ compute_stress
         # post-processing), so gradient descent uses the same negative sign as for the box lengths.
         dangle = -np.asarray(stress_array)[self.angle_stress_indices]
+        return np.concatenate((self.stress_scale*dlx_reduced, self.stress_scale*dangle))
 
-        current_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
-        current_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices] if len(self.angles_reduced_indices) > 0 else np.array([])
-
-        # Angles enter the optimizer in radians, the unit of their residual -dH/dθ
-        am_current = np.concatenate((fields, current_lx, np.deg2rad(current_angles)))
-        am_diff = np.concatenate((fields_diff,
-                                 self.stress_scale*dlx_reduced,
-                                 self.stress_scale*dangle))
-        am_new = self.sim.field_optimizer.calculate_new_fields(am_current, am_diff, old_error_level, error_level)
-
-        fields = am_new[0:len(fields)]
-
+    def apply(self, values):
+        """Sets the lattice parameters `values` of the optimizer (in the layout of parameters()) to the
+        solver, the smearing and the electrostatics. Length changes are limited to 10 % and angle changes
+        to 5 degrees per step."""
+        if not self.sim.relax_cell:
+            return
         n_lx = len(self.lx_reduced_indices)
         n_angles = len(self.angles_reduced_indices)
 
         # Restricting |dLx| to be less than 10 % of Lx
-        old_lx = current_lx
-        new_lx = np.array(am_new[-(n_lx + n_angles):-(n_angles)] if n_angles > 0 else am_new[-n_lx:])
+        old_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
+        new_lx = np.array(values[:n_lx])
         new_dlx = np.clip((new_lx-old_lx)/old_lx, -0.1, 0.1)
         new_lx = (1 + new_dlx)*old_lx
 
         if n_angles > 0:
-            old_angles = current_angles
-            new_angles = np.rad2deg(np.array(am_new[-n_angles:]))
+            old_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices]
+            new_angles = np.rad2deg(np.array(values[n_lx:]))
             new_dangle = np.clip(new_angles - old_angles, -5.0, 5.0)
             new_angles = old_angles + new_dangle
 
@@ -197,7 +190,6 @@ class CellRelaxation:
         self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
         if self.electrostatics is not None:
             self.electrostatics.set_box()
-        return fields
 
     def stress(self, w, phi):
         """Lattice derivatives of the free energy at the fixed fields w (and ψ) of the last

@@ -52,6 +52,7 @@ Delaney & Fredrickson, J. Phys. Chem. B 120, 7615 (2016).
 import contextlib
 import hashlib
 import json
+import weakref
 
 import numpy as np
 
@@ -542,34 +543,34 @@ class MeanFieldElectrostatics:
 
     SCFT iterates ψ with the fields. The residual of ψ is the Poisson residual divided by its
     linear response, R(k) = [c(k) - (k² + κ²)ψ(k)/E] / [(k² + κ²)/E + D(k)], with the response
-    D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state (set_response): R is the Newton
-    step of the linearized equation, which keeps the iteration stable where E/k² is large.
+    D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state: R is the Newton step of the
+    linearized equation, which keeps the iteration stable where E/k² is large. start() measures
+    D(k) at the start of each run (set_response) and gives the initial ψ.
     Without screening the uniform mode of ψ is zero in a neutral canonical system; charged
     grand-canonical ions make it the Donnan potential. Real fields; the transforms are those of
     PropagatorSolver.fourier (Fourier modes along periodic axes, cosine modes along wall axes).
 
     Parameters
     ----------
+    sim : SCFT
+        The simulation: its monomer types (types without a charge are neutral), its smearing, which
+        supplies k² of the box (in the coefficient shape of the transform) and the coefficients of
+        the stress, PropagatorSolver.fourier of its real fields, and the concentrations that start()
+        computes.
     params : dict
         The `electrostatics` input: `charges`, `coupling` (E), and optionally `screening_length`,
         `ions`, `counterion` and `fixed_charge`.
-    monomer_types : list of str
-        Monomer types; types without a charge are neutral.
-    smearing : Smearing
-        Smearing of the simulation; supplies k² of the box (in the coefficient shape of the
-        transform) and the coefficients of the stress.
     n_segments : float or None
         Segments N of the reference chain, needed by point ions.
-    fourier : FourierTransform
-        PropagatorSolver.fourier of the simulation (real fields).
     ion_concentrations : dict
         Concentration of each canonical point ion with the counterions (validation.point_ion_concentrations).
     open_charges : bool
         A grand-canonical ion carries a charge (validation.open_charges).
     """
 
-    def __init__(self, params, monomer_types, smearing, n_segments, *, fourier, ion_concentrations, open_charges):
-        self.charges = {name: float(params["charges"].get(name, 0.0)) for name in monomer_types}
+    def __init__(self, sim, params, n_segments, *, ion_concentrations, open_charges):
+        self.sim = weakref.proxy(sim)   # no cycle: a dropped simulation frees its solver at once
+        self.charges = {name: float(params["charges"].get(name, 0.0)) for name in sim.monomer_types}
         self.coupling = float(params["coupling"])
         self.screening_length = None if params.get("screening_length") is None else float(params["screening_length"])
         self.kappa_sq = 0.0 if self.screening_length is None else 1.0 / self.screening_length ** 2
@@ -578,8 +579,8 @@ class MeanFieldElectrostatics:
         self.ions = point_ions(params, ion_concentrations)
         self.fixed_charge = (None if params.get("fixed_charge") is None
                              else np.asarray(params["fixed_charge"], dtype=np.float64).reshape(-1))
-        self._fourier = fourier
-        self._smearing = smearing
+        self._fourier = sim.prop_solver.fourier
+        self._smearing = sim.smearing
         self.response = None
         self.set_box()
 
@@ -610,6 +611,59 @@ class MeanFieldElectrostatics:
     def set_response(self, response):
         """The response D(k) = -∂c(k)/∂ψ(k) of the homogeneous state (coefficient shape) for the residual."""
         self.response = np.maximum(np.real(response), 0.0)
+
+    def start(self, initial_psi, q_init):
+        """ψ at the start of a run of SCFT: the Newton residual of the Poisson equation needs the charge
+        response of the homogeneous state, which also gives the initial ψ; initial_psi (in the axis order
+        of the input) replaces it. Returns the electrostatic free energy of the homogeneous state."""
+        sim = self.sim
+        # The kernels of the current box, which may have changed since the last run
+        self._smearing.set_box(sim.prop_solver.get_lx(), sim.prop_solver.get_angles_degrees())
+        self.set_box()
+        psi0, energy_electrostatic_homogeneous = self.homogeneous(self._polymer_charge())
+        self.set_response(self._charge_response(psi0, q_init))
+        if initial_psi is None:
+            self.psi = np.full(sim.prop_solver.n_grid, psi0)
+        else:
+            initial_psi = sim.grid.to_standard_axes(initial_psi)
+            psi = np.array(np.reshape(initial_psi, sim.prop_solver.n_grid), dtype=np.float64)
+            if self.zero_uniform_mode:
+                psi -= np.mean(psi)
+            self.psi = psi
+        return energy_electrostatic_homogeneous
+
+    def _polymer_charge(self):
+        """Net charge Σ_i z_i <φ_i> of the polymers and the mean fixed charge, per segment."""
+        fixed = 0.0 if self.fixed_charge is None else float(np.mean(self.fixed_charge))
+        return fixed + float(sum(self.charges[m] * phi for m, phi in zip(self.sim.monomer_types,
+                                                                         self.sim.mean_concentrations())))
+
+    def _charge_response(self, psi0, q_init=None):
+        """Response D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state with the uniform ψ₀.
+
+        The uniform fields do not couple different modes of the transform (Fourier modes, or the
+        cosine modes of a box with walls), so central differences of the charge density for a
+        kick of ψ at one grid point, divided by the transform of the kick (nonzero at every mode),
+        give D(k) at all k from two computations of the propagators. The uniform fields w = 0
+        suffice: a uniform field does not change the concentrations of canonical chains.
+        Grafted chains (q_init) are not homogeneous; D(k) then only approximates the response,
+        which is enough for the preconditioner of the residual (its zero is the Poisson equation),
+        and a negative estimate is set to zero.
+        """
+        sim, n_grid = self.sim, self.sim.prop_solver.n_grid
+        w = np.zeros((len(sim.monomer_types), n_grid))
+        epsilon = 1e-3
+        charges = []
+        for sign in (1.0, -1.0):
+            psi = np.full(n_grid, psi0)
+            psi[0] += sign * epsilon
+            self.psi = psi
+            phi, _ = sim.compute_concentrations(w, q_init=q_init)
+            charges.append(self.charge_density(self._smearing.apply_to_dict(phi)))
+        kick = np.zeros(n_grid)
+        kick[0] = 2.0 * epsilon
+        response = -np.real(self._fourier.forward(charges[0] - charges[1]) / self._fourier.forward(kick))
+        return response if q_init is None else np.maximum(response, 0.0)
 
     def add_potential(self, w_input):
         """Add z_i ψ to the monomer fields {type: w_i} of the charged types."""

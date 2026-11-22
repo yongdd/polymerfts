@@ -54,7 +54,7 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
-from polymerfts.utils.validation import (ValidationError, polymer_block_copies, validate_lfts_params,
+from polymerfts.utils.validation import (ValidationError, polymer_block_copies, validate_clfts_params,
                                          validate_system_params)
 from cuda_part import cuda_part_missing
 
@@ -424,7 +424,7 @@ def check_input_errors(w, platforms):
         try:
             # CL-FTS adds its integer rule to the system checks that every method shares
             if complex_fields:
-                validate_lfts_params(params, complex_fields=True)
+                validate_clfts_params(params)
             else:
                 validate_system_params(params)
             message = None
