@@ -93,7 +93,7 @@ double check_grid(FFTBackend backend, std::array<int, DIM> nx, int sine_mask, st
         bc[d] = (sine_mask >> d & 1) ? BoundaryCondition::ABSORBING : BoundaryCondition::REFLECTING;
     }
     const std::vector<int> axes(nx.begin(), nx.end());
-    const std::unique_ptr<FFT<T>> transform = createFFT<T, DIM>(nx, bc, backend);
+    const std::unique_ptr<FFT<T>> transform = createFFT<T>(axes, std::vector<BoundaryCondition>(bc.begin(), bc.end()), backend);
     FFT<T>& fft = *transform;
 
     std::normal_distribution<double> normal(0.0, 5.0);

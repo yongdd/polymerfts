@@ -122,10 +122,6 @@ public:
 class CpuSolverCNADI : public CpuSolver<double>
 {
 private:
-    ComputationBox<double>* cb;  ///< Computation box for grid/boundary info
-    Molecules *molecules;         ///< Molecules container
-    SpaceGroup* space_group_;     ///< Space group pointer (nullptr if not used)
-
     int dim_;                                    ///< Number of axes
     std::vector<int> nx_;                        ///< Grid points per axis
     std::vector<std::vector<int>> lower_;        ///< Neighbour below each position of each axis (boundary conditions applied)

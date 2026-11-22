@@ -2,7 +2,7 @@
  * @file CpuCrysFFT.h
  * @brief Interface of the CPU crystallographic FFT engines.
  *
- * An engine (CrysFFTPmmm, {Fftw,Mkl}CrysFFTRecursive3m, {Fftw,Mkl}CrysFFTObliqueZ)
+ * An engine (CrysFFTPmmm, CrysFFTObliqueZ, {Fftw,Mkl}CrysFFTRecursive3m)
  * holds the plans of one grid. The OpenMP threads of the propagator and stress
  * loops call one engine at once, each on its own thread-local scratch. The
  * k-space tables (Boltzmann factors, stress multipliers) depend only on the

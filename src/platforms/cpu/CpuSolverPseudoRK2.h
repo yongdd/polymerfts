@@ -106,9 +106,6 @@ public:
      */
     CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
-    /// Destructor. Frees exp_dw arrays.
-    ~CpuSolverPseudoRK2();
-
     /**
      * @brief Update Boltzmann factors from potential fields.
      *

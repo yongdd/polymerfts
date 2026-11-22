@@ -15,6 +15,7 @@
  */
 
 #include <iostream>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstring>
@@ -25,25 +26,47 @@
 #include "CpuSolverPseudoBase.h"
 #include "CrysFFTSelector.h"
 #include "CrysFFTBasisMapping.h"
+#include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
 #ifdef USE_CPU_FFTW
 #include "FftwCrysFFTRecursive3m.h"
-#include "FftwCrysFFTObliqueZ.h"
 #endif
 #ifdef USE_CPU_MKL
 #include "MklCrysFFTRecursive3m.h"
-#include "MklCrysFFTObliqueZ.h"
 #endif
+
+namespace
+{
+/**
+ * @brief stress[slot[c]] += Σ_i kernel(i) basis[c][i] for the NC components c, each a
+ *        sequential sum from zero in one pass over the coefficients.
+ *
+ * NC is a compile-time constant, so the sums stay in registers; the caller sums the
+ * cross terms only when it needs them (see compute_single_segment_stress).
+ */
+template <int NC, typename T, typename Kernel>
+void accumulate_dyads(int n_coeffs, Kernel&& kernel, const std::array<const double*, 6>& basis,
+                      const std::array<int, 6>& slot, std::vector<T>& stress)
+{
+    std::array<T, NC> v;
+    v.fill(T{0.0});
+    for (int i = 0; i < n_coeffs; ++i)
+    {
+        const T coeff = kernel(i);
+        for (int c = 0; c < NC; ++c)
+            v[c] += coeff * basis[c][i];
+    }
+    for (int c = 0; c < NC; ++c)
+        stress[slot[c]] += v[c];
+}
+}  // namespace
 
 //------------------------------------------------------------------------------
 // Initialize shared components
 //------------------------------------------------------------------------------
 template <typename T>
-void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group,
-                                         FFTBackend backend)
+void CpuSolverPseudoBase<T>::init_shared(FFTBackend backend)
 {
-    this->cb = cb;
-    this->molecules = molecules;
     this->fft_backend_ = backend;
 
     // Check if all BCs are periodic
@@ -70,51 +93,24 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
         }
     }
 
-    // Create FFT object using factory (handles all BCs and backends)
-    // All simulations are conducted in fixed dimensions
+    // The transform of the grid, one boundary condition per dimension (all BCs and backends)
     dim_ = cb->get_dim();
-
-    // Extract one BC per dimension and create appropriate FFT
-    if (dim_ == 3)
-    {
-        std::array<int, 3> nx_arr = {cb->get_nx(0), cb->get_nx(1), cb->get_nx(2)};
-        std::array<BoundaryCondition, 3> bc_arr = {bc_vec[0], bc_vec[2], bc_vec[4]};
-        fft_ = createFFT<T, 3>(nx_arr, bc_arr, backend);
-    }
-    else if (dim_ == 2)
-    {
-        std::array<int, 2> nx_arr = {cb->get_nx(0), cb->get_nx(1)};
-        std::array<BoundaryCondition, 2> bc_arr = {bc_vec[0], bc_vec[2]};
-        fft_ = createFFT<T, 2>(nx_arr, bc_arr, backend);
-    }
-    else if (dim_ == 1)
-    {
-        std::array<int, 1> nx_arr = {cb->get_nx(0)};
-        std::array<BoundaryCondition, 1> bc_arr = {bc_vec[0]};
-        fft_ = createFFT<T, 1>(nx_arr, bc_arr, backend);
-    }
-    else
-    {
-        throw_with_line_number("Pseudo-spectral solver supports 1D, 2D, or 3D only, got dim = "
-                               + std::to_string(dim_) + ".");
-    }
-
-    // The Fourier-space tables of every distinct contour step, one boundary condition per
-    // dimension; update_laplacian_operator() computes them for the cell
-    molecules->finalize_contour_length_mapping();
-    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-        ds_values_[ds_idx] = mapping.get_ds_from_index(ds_idx);
     std::vector<BoundaryCondition> bc_per_dim;
     for (int d = 0; d < dim_; ++d)
         bc_per_dim.push_back(bc_vec[2 * d]);
+    fft_ = createFFT<T>(cb->get_nx(), bc_per_dim, backend);
+
+    // The Fourier-space tables of every distinct contour step (the CpuSolver constructor
+    // finalized the ContourLengthMapping); update_laplacian_operator() computes them for the cell
+    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        ds_values_[ds_idx] = mapping.get_ds_from_index(ds_idx);
     pseudo = std::make_unique<Pseudo<T>>(molecules->get_bond_lengths(), bc_per_dim, cb->get_nx(), ds_values_);
 
     // With a space group the propagators live in its reduced basis, and the solver expands
     // and reduces around its full-grid steps. [real-only feature] The CrysFFT fast paths
     // fold real fields on the physical sub-grid (the factory refuses complex fields with
     // a space group).
-    space_group_ = space_group;
     if (space_group_ != nullptr)
     {
         if constexpr (std::is_same_v<T, double>)
@@ -134,22 +130,6 @@ void CpuSolverPseudoBase<T>::init_shared(ComputationBox<T>* cb, Molecules* molec
 // Space group / CrysFFT setup
 //------------------------------------------------------------------------------
 template <typename T>
-void CpuSolverPseudoBase<T>::adopt_crysfft_mapping(const CrysFFTBasisMapping& map, bool physical_basis_enabled)
-{
-    if (physical_basis_enabled)
-    {
-        // The fields already live on the physical grid: no index map needed.
-        crysfft_reduced_indices_.clear();
-        crysfft_identity_map_ = true;
-    }
-    else
-    {
-        crysfft_reduced_indices_ = map.phys_to_reduced;
-        crysfft_identity_map_ = map.identity;
-    }
-}
-
-template <typename T>
 void CpuSolverPseudoBase<T>::init_crysfft()
 {
     const auto nx = cb->get_nx();
@@ -160,7 +140,11 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     if (plan.mode == CrysFFTChoice::None)
         return;
 
-    adopt_crysfft_mapping(plan.map, plan.physical_basis);
+    // The physical-grid -> reduced-basis map, not needed when the reduced basis is the
+    // physical grid (a physical basis has the identity map, see crysfft_mapping_usable())
+    crysfft_identity_map_ = plan.map.identity;
+    if (!crysfft_identity_map_)
+        crysfft_reduced_indices_ = plan.map.phys_to_reduced;
 
     if (plan.mode == CrysFFTChoice::Recursive3m)
     {
@@ -179,14 +163,7 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     }
     else if (plan.mode == CrysFFTChoice::ObliqueZ)
     {
-#ifdef USE_CPU_MKL
-        if (fft_backend_ == FFTBackend::MKL)
-            crysfft_ = std::make_unique<MklCrysFFTObliqueZ>(nx_logical);
-#endif
-#ifdef USE_CPU_FFTW
-        if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_ = std::make_unique<FftwCrysFFTObliqueZ>(nx_logical);
-#endif
+        crysfft_ = std::make_unique<CrysFFTObliqueZ>(nx_logical, fft_backend_);
     }
     if (!crysfft_)
         throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
@@ -227,54 +204,6 @@ double CpuSolverPseudoBase<T>::get_effective_diffusion_coeff(
         throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
     double bond_length_sq = it->second * it->second;
     return bond_length_sq * ds / 6.0;
-}
-
-//------------------------------------------------------------------------------
-// update_dw() helper: fields on the grid the Boltzmann factors live on
-//------------------------------------------------------------------------------
-template <typename T>
-int CpuSolverPseudoBase<T>::expand_w_for_update_dw(
-    const std::map<std::string, const T*>& w_input,
-    std::map<std::string, std::vector<T>>& w_full_cache,
-    std::map<std::string, const T*>& w_use) const
-{
-    const int M_full = cb->get_total_grid();
-    const int M_reduced = (space_group_ != nullptr)
-        ? space_group_->get_n_reduced_basis()
-        : M_full;
-    const bool use_reduced_basis = (space_group_ != nullptr);
-    const bool use_crysfft_path = (use_crysfft() && space_group_ != nullptr);
-
-    w_full_cache.clear();
-    w_use.clear();
-    if (use_reduced_basis && !use_crysfft_path)
-    {
-        // Standard FFT path: exp_dw lives on the full grid, so expand the
-        // reduced-basis fields. [real-only feature]
-        if constexpr (std::is_same_v<T, double>)
-        {
-            for (const auto& item : w_input)
-            {
-                const std::string& monomer_type = item.first;
-                std::vector<T>& w_full = w_full_cache[monomer_type];
-                w_full.resize(M_full);
-                space_group_->from_reduced_basis(item.second, w_full.data(), 1);
-                w_use[monomer_type] = w_full.data();
-            }
-        }
-        else
-        {
-            throw_with_line_number("Space group reduced basis is only supported for real fields.");
-        }
-    }
-    else
-    {
-        // No space group (full grid), or CrysFFT path (exp_dw stays in the reduced basis)
-        for (const auto& item : w_input)
-            w_use[item.first] = item.second;
-    }
-
-    return use_crysfft_path ? M_reduced : M_full;
 }
 
 //------------------------------------------------------------------------------
@@ -435,8 +364,8 @@ bool CpuSolverPseudoBase<T>::crysfft_stress_fast_path() const
     // V₃₃ only, which is fine because the eligible crystal systems are orthogonal and
     // never optimize angles. If angle derivatives are forced (force_off_diagonal_stress_),
     // the standard path computes the cross terms instead of returning zeros for them.
-    return crysfft_ != nullptr && crysfft_->has_multipliers()
-        && space_group_ != nullptr && is_periodic_ && dim_ == 3 && cb->is_orthogonal()
+    // (An engine exists only for a space group in a 3D periodic box, see init_crysfft().)
+    return crysfft_ != nullptr && crysfft_->has_multipliers() && cb->is_orthogonal()
         && !this->force_off_diagonal_stress_;
 }
 
@@ -588,146 +517,77 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
 }
 
 template <typename T>
-void CpuSolverPseudoBase<T>::accumulate_stress_periodic(
+void CpuSolverPseudoBase<T>::accumulate_stress(
     const double* qk_1, const double* qk_2, double bond_length_sq,
     const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const
 {
-    const int DIM = dim_;
     const int M_COMPLEX = pseudo->get_total_complex_grid();
     const std::complex<double>* qk_1_complex = reinterpret_cast<const std::complex<double>*>(qk_1);
     const std::complex<double>* qk_2_complex = reinterpret_cast<const std::complex<double>*>(qk_2);
     const int* negative_k_idx = pseudo->get_negative_frequency_mapping();
 
-    // v⊗v dyad components (deformation vector v = 2π g⁻¹ m, units 1/L²)
-    const double* kk_xx = pseudo->get_fourier_basis_x();
-    const double* kk_yy = pseudo->get_fourier_basis_y();
-    const double* kk_zz = pseudo->get_fourier_basis_z();
-    const double* kk_xy = pseudo->get_fourier_basis_xy();
-    const double* kk_xz = pseudo->get_fourier_basis_xz();
-    const double* kk_yz = pseudo->get_fourier_basis_yz();
-
-    // [type-specific algorithm] Real fields store the Hermitian half-spectrum,
-    // so the conjugate product is formed directly; complex fields need the -k map.
-    auto kernel = [&](int i) -> T
+    // v⊗v dyad components (deformation vector v = 2π g⁻¹ m, units 1/L²): the diagonal ones of
+    // the box axes (periodic 1D: the Miller index is mapped to m1, so the stress is in
+    // fourier_basis_x), then the cross terms of a non-orthogonal periodic box (see the note in
+    // compute_single_segment_stress), V₁₂ stored in index 2 in 2D; walls need an orthogonal cell
+    std::array<const double*, 6> basis{};
+    std::array<int, 6> slot{};
+    int n_components = 0;
+    const std::array<const double*, 3> diagonal = {
+        pseudo->get_fourier_basis_x(), pseudo->get_fourier_basis_y(), pseudo->get_fourier_basis_z()};
+    for (int d = 0; d < dim_; ++d)
     {
-        const double boltz_factor = (boltz_bond != nullptr) ? boltz_bond[i] : 1.0;
-        if constexpr (std::is_same<T, double>::value)
-            return bond_length_sq * boltz_factor * (qk_1_complex[i] * std::conj(qk_2_complex[i])).real();
-        else
-            return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[negative_k_idx[i]];
+        basis[n_components] = diagonal[d];
+        slot[n_components++] = d;
+    }
+    if (is_periodic_ && !is_orthogonal && dim_ >= 2)
+    {
+        basis[n_components] = pseudo->get_fourier_basis_xy();   // → dH/dγ
+        slot[n_components++] = (dim_ == 2) ? 2 : 3;
+        if (dim_ == 3)
+        {
+            basis[n_components] = pseudo->get_fourier_basis_xz();   // → dH/dβ
+            slot[n_components++] = 4;
+            basis[n_components] = pseudo->get_fourier_basis_yz();   // → dH/dα
+            slot[n_components++] = 5;
+        }
+    }
+
+    // [type-specific algorithm] Periodic boxes: real fields store the Hermitian half-spectrum,
+    // so the conjugate product is formed directly; complex fields need the -k map. Walls: real
+    // DCT/DST coefficients, for complex fields those of the real and imaginary parts as complex
+    // pairs, whose product needs no conjugate (the basis functions are real). The per-mode
+    // Parseval weights are folded into the fourier_basis tables (Pseudo), so no flat factor is
+    // applied here.
+    auto accumulate = [&](auto&& kernel) {
+        switch (n_components)
+        {
+            case 1: accumulate_dyads<1, T>(M_COMPLEX, kernel, basis, slot, stress); break;
+            case 2: accumulate_dyads<2, T>(M_COMPLEX, kernel, basis, slot, stress); break;
+            case 3: accumulate_dyads<3, T>(M_COMPLEX, kernel, basis, slot, stress); break;
+            case 6: accumulate_dyads<6, T>(M_COMPLEX, kernel, basis, slot, stress); break;
+            default: throw_with_line_number("Unsupported number of stress components: " + std::to_string(n_components));
+        }
     };
-
-    // One pass over the modes, with the sums in local variables; the cross terms only for
-    // non-orthogonal boxes (see the note in compute_single_segment_stress), as on the CUDA side
-    if (DIM == 3)
+    if (is_periodic_)
     {
-        T v11{0.0}, v22{0.0}, v33{0.0}, v12{0.0}, v13{0.0}, v23{0.0};
-        if (is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                v11 += coeff * kk_xx[i];
-                v22 += coeff * kk_yy[i];
-                v33 += coeff * kk_zz[i];
-            }
-        }
-        else
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                v11 += coeff * kk_xx[i];
-                v22 += coeff * kk_yy[i];
-                v33 += coeff * kk_zz[i];
-                v12 += coeff * kk_xy[i];  // → dH/dγ
-                v13 += coeff * kk_xz[i];  // → dH/dβ
-                v23 += coeff * kk_yz[i];  // → dH/dα
-            }
-        }
-        stress[0] += v11;
-        stress[1] += v22;
-        stress[2] += v33;
-        if (!is_orthogonal)
-        {
-            stress[3] += v12;
-            stress[4] += v13;
-            stress[5] += v23;
-        }
+        accumulate([&](int i) -> T {
+            const double boltz_factor = (boltz_bond != nullptr) ? boltz_bond[i] : 1.0;
+            if constexpr (std::is_same<T, double>::value)
+                return bond_length_sq * boltz_factor * (qk_1_complex[i] * std::conj(qk_2_complex[i])).real();
+            else
+                return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[negative_k_idx[i]];
+        });
     }
-    else if (DIM == 2)
+    else
     {
-        T v11{0.0}, v22{0.0}, v12{0.0};
-        if (is_orthogonal)
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                v11 += coeff * kk_xx[i];
-                v22 += coeff * kk_yy[i];
-            }
-        }
-        else
-        {
-            for (int i = 0; i < M_COMPLEX; ++i)
-            {
-                const T coeff = kernel(i);
-                v11 += coeff * kk_xx[i];
-                v22 += coeff * kk_yy[i];
-                v12 += coeff * kk_xy[i];
-            }
-        }
-        stress[0] += v11;
-        stress[1] += v22;
-        if (!is_orthogonal)
-            stress[2] += v12;  // V₁₂ (stored in index 2 for 2D)
-    }
-    else if (DIM == 1)
-    {
-        // Periodic 1D: the Miller index is mapped to m1, so the stress is in fourier_basis_x
-        for (int i = 0; i < M_COMPLEX; ++i)
-            stress[0] += kernel(i) * kk_xx[i];
-    }
-}
-
-template <typename T>
-void CpuSolverPseudoBase<T>::accumulate_stress_nonperiodic(
-    const double* qk_1, const double* qk_2, double bond_length_sq,
-    const double* boltz_bond, std::vector<T>& stress) const
-{
-    const int DIM = dim_;
-    const int M_COMPLEX = pseudo->get_total_complex_grid();
-    const double* kk_xx = pseudo->get_fourier_basis_x();
-    const double* kk_yy = pseudo->get_fourier_basis_y();
-    const double* kk_zz = pseudo->get_fourier_basis_z();
-
-    // Real coefficients from DCT/DST; for complex fields those of the real and
-    // imaginary parts as complex pairs, whose product needs no conjugate (the
-    // basis functions are real). The per-mode Parseval weights (2 for
-    // interior modes, 1 for the DCT m=0 / DST k=n special modes, composed
-    // across dimensions) are folded into the fourier_basis tables by
-    // Pseudo::update_nonperiodic, mirroring the periodic
-    // path, so no flat factor is applied here.
-    const std::complex<double>* qk_1_complex = reinterpret_cast<const std::complex<double>*>(qk_1);
-    const std::complex<double>* qk_2_complex = reinterpret_cast<const std::complex<double>*>(qk_2);
-    auto kernel = [&](int i) -> T
-    {
-        const double boltz_factor = (boltz_bond != nullptr) ? boltz_bond[i] : 1.0;
-        if constexpr (std::is_same<T, double>::value)
-            return bond_length_sq * boltz_factor * qk_1[i] * qk_2[i];
-        else
-            return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[i];
-    };
-
-    // V₁₁, V₂₂, V₃₃ of the box axes; the cross terms are zero, since walls need an orthogonal cell
-    for (int i = 0; i < M_COMPLEX; ++i)
-    {
-        const T coeff = kernel(i);
-        stress[0] += coeff * kk_xx[i];
-        if (DIM >= 2)
-            stress[1] += coeff * kk_yy[i];
-        if (DIM == 3)
-            stress[2] += coeff * kk_zz[i];
+        accumulate([&](int i) -> T {
+            const double boltz_factor = (boltz_bond != nullptr) ? boltz_bond[i] : 1.0;
+            if constexpr (std::is_same<T, double>::value)
+                return bond_length_sq * boltz_factor * qk_1[i] * qk_2[i];
+            else
+                return bond_length_sq * boltz_factor * qk_1_complex[i] * qk_2_complex[i];
+        });
     }
 }
 
@@ -827,10 +687,7 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // Transform to Fourier space and accumulate Σ_k kernel(k) v_i v_j
         transform_forward(q_1_full, qk_1.data());
         transform_forward(q_2_full, qk_2.data());
-        if (is_periodic_)
-            accumulate_stress_periodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
-        else
-            accumulate_stress_nonperiodic(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, stress);
+        accumulate_stress(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
 
         return stress;
     }

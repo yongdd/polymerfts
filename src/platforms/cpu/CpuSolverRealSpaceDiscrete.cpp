@@ -127,19 +127,12 @@ void pass_contiguous(const T* in, T* out, int n, long lines, const RealSpaceBond
 template <typename T>
 CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules,
                                                           SpaceGroup* space_group)
-    : cb(cb), molecules(molecules), space_group_(space_group)
+    : CpuSolver<T>(cb, molecules, space_group, /*with_half=*/false)
 {
     try
     {
         if (molecules->get_model_name() != "discrete")
             throw_with_line_number("The rs method is for discrete chains.");
-
-        const int M = cb->get_total_grid();
-        molecules->finalize_contour_length_mapping();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            for (const auto& item : molecules->get_bond_lengths())
-                this->exp_dw[ds_idx][item.first].resize(M);
 
         update_laplacian_operator();
     }
@@ -189,22 +182,7 @@ template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_input)
 {
     // exp(-w ds) on the full grid (the fields come in the reduced basis with a space group)
-    const int M = cb->get_total_grid();
-    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    std::vector<T> w_full;
-    for (const auto& [monomer_type, w_in] : w_input)
-    {
-        const T* w = expanded(w_in, w_full);
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-        {
-            if (!this->exp_dw[ds_idx].contains(monomer_type))
-                throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
-            const double local_ds = mapping.get_ds_from_index(ds_idx);
-            std::vector<T>& exp_dw = this->exp_dw.at(ds_idx).at(monomer_type);
-            for (int i = 0; i < M; ++i)
-                exp_dw[i] = std::exp(-w[i] * local_ds);
-        }
-    }
+    this->compute_exp_dw(w_input, /*reduced_basis_tables=*/false, false, 1.0, 0.0);
 }
 
 template <typename T>
@@ -263,7 +241,6 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
     {
         // On the full grid; with a space group from and back to its reduced basis, where the mask is
         const int M = cb->get_total_grid();
-        const int n_basis = space_group_ != nullptr ? space_group_->get_n_reduced_basis() : M;
         const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
         WorkArrays& work = work_arrays();
         T* out = q_out;
@@ -277,7 +254,7 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
             out[i] *= exp_dw[i];
         reduced(out, q_out);
         if (q_mask != nullptr)
-            for (int i = 0; i < n_basis; ++i)
+            for (int i = 0; i < n_basis_; ++i)
                 q_out[i] *= q_mask[i];
     }
     catch (std::exception& exc)

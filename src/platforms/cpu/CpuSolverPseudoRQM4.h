@@ -111,9 +111,6 @@ public:
      */
     CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
-    /// Destructor. Frees exp_dw arrays.
-    ~CpuSolverPseudoRQM4();
-
     /**
      * @brief Update Boltzmann factors from potential fields.
      *

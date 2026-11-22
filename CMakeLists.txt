@@ -377,7 +377,6 @@ IF(BUILD_CPU_FFTW_LIB)
     ADD_LIBRARY(cpu-fftw
         src/platforms/cpu/FftwFFT.cpp
         src/platforms/cpu/FftwCrysFFTRecursive3m.cpp
-        src/platforms/cpu/FftwCrysFFTObliqueZ.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     # PUBLIC so consumers (tests, _core) inherit FFTW transitively and no
@@ -389,7 +388,6 @@ IF(BUILD_CPU_MKL_LIB)
         src/platforms/cpu/MklFFT.cpp
         src/platforms/cpu/MklRealTransform.cpp
         src/platforms/cpu/MklCrysFFTRecursive3m.cpp
-        src/platforms/cpu/MklCrysFFTObliqueZ.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     TARGET_LINK_LIBRARIES(cpu-mkl ${MKL_LIBRARIES})

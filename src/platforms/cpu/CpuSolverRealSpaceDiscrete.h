@@ -46,9 +46,10 @@ template <typename T>
 class CpuSolverRealSpaceDiscrete : public CpuSolver<T>
 {
 private:
-    ComputationBox<T>* cb;
-    Molecules* molecules;
-    SpaceGroup* space_group_;   ///< propagators in its reduced basis when set
+    using CpuSolver<T>::cb;
+    using CpuSolver<T>::molecules;
+    using CpuSolver<T>::space_group_;   ///< propagators in its reduced basis when set
+    using CpuSolver<T>::n_basis_;
 
     /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
     RealSpaceBond::Bonds bonds;

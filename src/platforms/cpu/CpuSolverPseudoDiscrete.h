@@ -146,9 +146,6 @@ public:
      */
     CpuSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
-    /// Destructor. Frees exp_dw arrays.
-    ~CpuSolverPseudoDiscrete();
-
     /**
      * @brief Update Boltzmann factors from potential fields.
      *

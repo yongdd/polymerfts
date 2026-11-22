@@ -32,12 +32,13 @@
  * (the caller gives the coefficients up, and FFTW may run on them) the values
  * of backward().
  *
- * The CrysFFT engines (recursive 3m and ObliqueZ of either library) run their
- * transforms on the caller's fields as well, MKL always and FFTW when the
- * fields have the alignment of the planning arrays; their per-thread scratch
- * starts on a 64-byte boundary. Their diffusion, and the stress multiplier of
- * the 3m engines, must give one result for every placement, keep the input
- * and give it in place too.
+ * The recursive 3m CrysFFT engines of either library run their transforms on
+ * the caller's fields as well, MKL always and FFTW when the fields have the
+ * alignment of the planning arrays; the ObliqueZ engine over the real FFT of
+ * either library reads the caller's field into its scratch; the per-thread
+ * scratch starts on a 64-byte boundary. Their diffusion, and the stress
+ * multiplier of the 3m engines, must give one result for every placement, keep
+ * the input and give it in place too.
  ******************************************************************************/
 
 #include <algorithm>
@@ -61,12 +62,13 @@
 #ifdef USE_CPU_MKL
 #include "MklFFT.h"
 #include "MklCrysFFTRecursive3m.h"
-#include "MklCrysFFTObliqueZ.h"
 #endif
 #ifdef USE_CPU_FFTW
 #include "FftwFFT.h"
 #include "FftwCrysFFTRecursive3m.h"
-#include "FftwCrysFFTObliqueZ.h"
+#endif
+#if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
+#include "CrysFFTObliqueZ.h"
 #endif
 
 #if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
@@ -207,7 +209,7 @@ bool report_in_place(const std::string& label, const std::vector<double>& source
 }
 
 // Library: MklFFT or FftwFFT; the FFTW plans also run on arrays 8 bytes off and in place
-template <template <typename, int> class Library, typename T, int DIM>
+template <template <typename> class Library, typename T, int DIM>
 bool check_grid(const std::string& library, std::array<int, DIM> nx)
 {
     constexpr bool IS_COMPLEX = std::is_same<T, std::complex<double>>::value;
@@ -233,7 +235,7 @@ bool check_grid(const std::string& library, std::array<int, DIM> nx)
     for (double& v : field)
         v = normal(rng);
 
-    Library<T, DIM> fft(nx);
+    Library<T> fft(std::vector<int>(nx.begin(), nx.end()));
     const std::string label = library + (IS_COMPLEX ? " complex " : " real ") + "periodic " + grid_name;
 
     std::vector<double> coeff(n_coeff), back(n_field);
@@ -338,8 +340,8 @@ bool check_crysfft(const std::string& label, const CpuCrysFFT& engine, const std
 }
 
 // The engines of one library on the grids of TestCpuCrysFFTTables, with an odd physical grid for 3m
-template <typename Recursive3m, typename ObliqueZ>
-bool check_crysfft_engines(const std::string& library)
+template <typename Recursive3m>
+bool check_crysfft_engines(const std::string& library, FFTBackend backend)
 {
     const double right = std::numbers::pi / 2.0;
     const std::array<double, 6> orthorhombic = {2.0, 1.7, 1.5, right, right, right};
@@ -348,12 +350,12 @@ bool check_crysfft_engines(const std::string& library)
     bool ok = true;
     ok &= check_crysfft(library + " 3m 16x12x8", Recursive3m({16, 12, 8}), orthorhombic, fftw);
     ok &= check_crysfft(library + " 3m 10x10x10", Recursive3m({10, 10, 10}), orthorhombic, fftw);
-    ok &= check_crysfft(library + " ObliqueZ 12x12x8", ObliqueZ({12, 12, 8}), hexagonal, fftw);
-    ok &= check_crysfft(library + " ObliqueZ 9x9x6", ObliqueZ({9, 9, 6}), hexagonal, fftw);
+    ok &= check_crysfft(library + " ObliqueZ 12x12x8", CrysFFTObliqueZ({12, 12, 8}, backend), hexagonal, fftw);
+    ok &= check_crysfft(library + " ObliqueZ 9x9x6", CrysFFTObliqueZ({9, 9, 6}, backend), hexagonal, fftw);
     return ok;
 }
 
-template <template <typename, int> class Library, typename T>
+template <template <typename> class Library, typename T>
 bool check_type(const std::string& library)
 {
     bool ok = true;
@@ -389,7 +391,7 @@ int main()
         ok &= check_type<MklFFT, double>("mkl");
         ok &= check_type<MklFFT, std::complex<double>>("mkl");
         std::cout << "MKL CrysFFT engines from and into the same placements" << std::endl;
-        ok &= check_crysfft_engines<MklCrysFFTRecursive3m, MklCrysFFTObliqueZ>("mkl");
+        ok &= check_crysfft_engines<MklCrysFFTRecursive3m>("mkl", FFTBackend::MKL);
 #endif
 #ifdef USE_CPU_FFTW
         std::cout << "Periodic FFTW transforms from and into arrays 0, 8, ..., 56 bytes after a 64-byte boundary"
@@ -397,7 +399,7 @@ int main()
         ok &= check_type<FftwFFT, double>("fftw");
         ok &= check_type<FftwFFT, std::complex<double>>("fftw");
         std::cout << "FFTW CrysFFT engines from and into the same placements" << std::endl;
-        ok &= check_crysfft_engines<FftwCrysFFTRecursive3m, FftwCrysFFTObliqueZ>("fftw");
+        ok &= check_crysfft_engines<FftwCrysFFTRecursive3m>("fftw", FFTBackend::FFTW);
 #endif
         std::cout << (ok ? "All placements give the same result" : "Some placements give different results")
                   << std::endl;

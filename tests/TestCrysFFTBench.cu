@@ -25,7 +25,7 @@
 #include "CudaCrysFFT.h"
 #include "CudaCrysFFTObliqueZ.h"
 #include "CudaCrysFFTRecursive3m.h"
-#include "FftwCrysFFTObliqueZ.h"
+#include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
 #include "FftwCrysFFTRecursive3m.h"
 #include "SpaceGroup.h"
@@ -577,7 +577,7 @@ int main(int argc, char** argv)
 
             std::vector<double> cpu_hex_in = h_hex_phys;
             std::vector<double> cpu_hex_out(M_hex_phys, 0.0);
-            FftwCrysFFTObliqueZ crys_cpu_hex({Nx, Ny, Nz});
+            CrysFFTObliqueZ crys_cpu_hex({Nx, Ny, Nz}, FFTBackend::FFTW);
             std::vector<double> cpu_boltz_hex;
             crys_cpu_hex.build_boltzmann(cpu_boltz_hex, cell_hex, coeff);
 
@@ -627,7 +627,7 @@ int main(int argc, char** argv)
             fftw_destroy_plan(plan_hex_bwd_cpu);
             fftw_free(freq_hex);
 
-            std::printf("ObliqueZ DCTz+FFTxy: %.4f ms/iter\n", cpu_ms_hex);
+            std::printf("ObliqueZ CrysFFT: %.4f ms/iter\n", cpu_ms_hex);
             std::printf("ObliqueZ Full FFT: %.4f ms/iter\n", cpu_ms_hex_off);
             std::printf("Speedup (ObliqueZ/off): %.3fx\n", cpu_ms_hex_off / cpu_ms_hex);
         }

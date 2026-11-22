@@ -16,10 +16,9 @@
  * **Design Decision:**
  *
  * All simulations are conducted in fixed dimensions (1D, 2D, or 3D).
- * The FFT object is stored as `std::unique_ptr<FFT<T>> fft_` which points to FftwFFT<T, DIM>
- * or MklFFT<T, DIM> (periodic, by backend and dimensionality) or MakhoulFFT<T> (walls). This avoids
- * maintaining separate fft_1d, fft_2d, fft_3d pointers when only one is ever
- * used per solver.
+ * The FFT object is stored as `std::unique_ptr<FFT<T>> fft_` which points to FftwFFT<T>
+ * or MklFFT<T> (periodic, by backend) or MakhoulFFT<T> (walls), the transform of the grid
+ * of any dimension.
  *
  * **Stress Array Convention (Voigt Notation):**
  *
@@ -62,7 +61,7 @@
  *
  * **Shared Functionality:**
  *
- * - FFT object creation/destruction with dimension dispatch
+ * - FFT object creation/destruction
  * - Forward/backward transform methods
  * - Laplacian operator updates
  * - Stress computation framework
@@ -70,7 +69,7 @@
  * **Virtual Methods:**
  *
  * Derived classes must implement:
- * - update_dw(): Different Boltzmann factor formulas
+ * - update_dw(): the factors of ds of the Boltzmann factors (CpuSolver::compute_exp_dw())
  * - advance_propagator(): Different propagation algorithms
  * - advance_propagator_half_bond_step(): Discrete-specific
  * - get_stress_boltz_bond() (optional): bond factor of the stress integrand; the base returns nullptr
@@ -94,20 +93,18 @@ protected:
     /// Work arrays of the calling thread (created on first use)
     WorkArrays& work_arrays() const { return work_arrays_.get(); }
 
-    ComputationBox<T>* cb;       ///< Computation box for grid info
-    Molecules* molecules;        ///< Molecules container
+    using CpuSolver<T>::cb;
+    using CpuSolver<T>::molecules;
+    using CpuSolver<T>::space_group_;
+    using CpuSolver<T>::n_basis_;
 
     /**
      * @brief Spectral transform object for FFT/DCT/DST (handles all BCs).
      *
-     * Points to FftwFFT<T, DIM> or MklFFT<T, DIM> (periodic) based on the selected
-     * backend, where DIM is 1, 2, or 3 based on the simulation dimension, or to
-     * MakhoulFFT<T> over the real FFT of that backend (walls).
-     * All simulations are conducted in fixed dimensions, so only one
-     * transform object is needed per solver instance.
-     *
-     * Uses an FFT<T> base class pointer to enable polymorphic calls without
-     * dimension-specific casting or backend-specific dispatch.
+     * Points to FftwFFT<T> or MklFFT<T> (periodic) based on the selected
+     * backend, or to MakhoulFFT<T> over the real FFT of that backend (walls)
+     * (createFFT()). Uses an FFT<T> base class pointer to enable polymorphic
+     * calls without backend-specific dispatch.
      */
     std::unique_ptr<FFT<T>> fft_;
 
@@ -117,11 +114,8 @@ protected:
     /// the cell when a full-grid path uses them (update_pseudo())
     std::unique_ptr<Pseudo<T>> pseudo;
 
-    bool is_periodic_;           ///< True if all BCs are periodic
-    int dim_;                    ///< Number of dimensions (1, 2, or 3)
-
-    /// Space group for reduced basis operations (nullptr if not used).
-    SpaceGroup* space_group_;
+    bool is_periodic_ = true;    ///< True if all BCs are periodic
+    int dim_ = 0;                ///< Number of dimensions (1, 2, or 3)
 
     /// The CrysFFT engine (Pmmm DCT, recursive 3m or ObliqueZ of the selected
     /// library), called by all threads at once; nullptr without one
@@ -204,23 +198,27 @@ protected:
     }
 
     /**
-     * @brief Initialize shared components in constructor.
+     * @brief The shared context of a solver (CpuSolver: the box, the molecules, the space
+     *        group and exp_dw); the derived constructor then calls init_shared().
+     *
+     * @param with_half Also exp_dw_half (RQM4)
+     */
+    CpuSolverPseudoBase(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group, bool with_half)
+        : CpuSolver<T>(cb, molecules, space_group, with_half) {}
+
+    /**
+     * @brief Initialize the shared components, from the derived constructor.
      *
      * Sets up:
      * - Boundary condition checking (is_periodic_)
      * - FFT object creation (fft_) using specified backend
      * - The contour steps (ds_values_) and the Fourier-space tables (pseudo)
-     * - With a space group, the reduced basis of the propagators and, for real
-     *   fields, the CrysFFT fast path (init_crysfft())
+     * - With a space group, for real fields, the CrysFFT fast path (init_crysfft())
      * - The tables of the cell (update_laplacian_operator())
      *
-     * @param cb Computation box
-     * @param molecules Molecules container
-     * @param space_group Space group of the reduced basis (nullptr: full grid)
      * @param backend FFT backend to use (FFTW or MKL)
      */
-    void init_shared(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group, FFTBackend backend);
-
+    void init_shared(FFTBackend backend);
 
     /**
      * @brief Get bond factor for stress computation.
@@ -248,26 +246,6 @@ protected:
     void update_crysfft_tables();
     /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
     std::array<double, 6> crysfft_cell() const;
-    /// Store the physical-grid <-> reduced-basis map of the chosen CrysFFT (see plan_crysfft()).
-    void adopt_crysfft_mapping(const CrysFFTBasisMapping& map, bool physical_basis_enabled);
-
-    // ---- update_dw() helper --------------------------------------------------
-    /**
-     * @brief Bring the update_dw() input fields onto the grid the Boltzmann factors live on.
-     *
-     * With a space group and the standard FFT path the reduced-basis fields are
-     * expanded to the full grid into `w_full_cache` (real fields only; complex
-     * fields throw). Without a space group, or on the CrysFFT path where exp_dw
-     * stays in the reduced basis, the input pointers are used as they are.
-     * `w_use` maps each monomer type to the field pointer to read, and the
-     * return value is the number of grid points each exp_dw array must hold.
-     *
-     * Serial use only: called from update_dw(), never from the OpenMP
-     * propagator loops.
-     */
-    int expand_w_for_update_dw(const std::map<std::string, const T*>& w_input,
-                               std::map<std::string, std::vector<T>>& w_full_cache,
-                               std::map<std::string, const T*>& w_use) const;
 
     // ---- compute_single_segment_stress() helpers ----------------------------
     /// True when the segment stress takes the CrysFFT fast path (an engine with stress
@@ -285,18 +263,19 @@ protected:
      * `stress` is then untouched.
      */
     bool compute_stress_crysfft(const T* q_1, const T* q_2, double bond_length_sq, std::vector<T>& stress);
-    /// Accumulate Σ_k kernel(k) v_i v_j from complex Fourier coefficients (periodic BC).
-    void accumulate_stress_periodic(const double* qk_1, const double* qk_2, double bond_length_sq,
-                                    const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
-    /// Accumulate Σ_k kernel(k) v_i² from DCT/DST coefficients (non-periodic BC, orthogonal cells; complex
-    /// pairs for complex fields).
-    void accumulate_stress_nonperiodic(const double* qk_1, const double* qk_2, double bond_length_sq,
-                                       const double* boltz_bond, std::vector<T>& stress) const;
+    /**
+     * @brief Accumulate the v⊗v dyad sums V_ij = Σ_k kernel(k) v_i v_j of the coefficients
+     *        of two propagators.
+     *
+     * Periodic boxes have complex Fourier coefficients; boxes of walls have the
+     * real DCT/DST coefficients (complex pairs for complex fields) and an
+     * orthogonal cell, so only their diagonal sums. The cross terms of a periodic
+     * box are summed only when is_orthogonal is false.
+     */
+    void accumulate_stress(const double* qk_1, const double* qk_2, double bond_length_sq,
+                           const double* boltz_bond, bool is_orthogonal, std::vector<T>& stress) const;
 
 public:
-    /// Default constructor.
-    CpuSolverPseudoBase() : is_periodic_(true), dim_(0), space_group_(nullptr) {}
-
     /// Virtual destructor. Frees the shared components (FFT, Pseudo).
     virtual ~CpuSolverPseudoBase() = default;   // fft_ and pseudo are owning members
 

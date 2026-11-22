@@ -42,26 +42,12 @@
 //------------------------------------------------------------------------------
 template <typename T>
 CpuSolverPseudoRQM4<T>::CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend)
+    : CpuSolverPseudoBase<T>(cb, molecules, space_group, /*with_half=*/true)
 {
     try
     {
         // Initialize shared components (FFT, Pseudo, etc.)
-        this->init_shared(cb, molecules, space_group, backend);
-
-        const int M = cb->get_total_grid();
-
-        // Create exp_dw vectors for each ds_index and monomer type (init_shared()
-        // finalized the ContourLengthMapping)
-        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-        {
-            for (const auto& item : molecules->get_bond_lengths())
-            {
-                std::string monomer_type = item.first;
-                this->exp_dw[ds_idx][monomer_type].resize(M);
-                this->exp_dw_half[ds_idx][monomer_type].resize(M);
-            }
-        }
+        this->init_shared(backend);
     }
     catch (std::exception& exc)
     {
@@ -72,57 +58,13 @@ CpuSolverPseudoRQM4<T>::CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *mo
 }
 
 //------------------------------------------------------------------------------
-// Destructor
-//------------------------------------------------------------------------------
-template <typename T>
-CpuSolverPseudoRQM4<T>::~CpuSolverPseudoRQM4()
-{
-    // exp_dw and exp_dw_half vectors are automatically cleaned up;
-    // the shared components (FFT, Pseudo) are owning members of the base
-}
-
-//------------------------------------------------------------------------------
 // Update dw (Boltzmann factors from field)
 //------------------------------------------------------------------------------
 template <typename T>
 void CpuSolverPseudoRQM4<T>::update_dw(std::map<std::string, const T*> w_input)
 {
-    // Fields on the grid the Boltzmann factors live on (full grid, or the
-    // reduced basis on the CrysFFT path); M_use is the size of each exp_dw array
-    std::map<std::string, std::vector<T>> w_full_cache;
-    std::map<std::string, const T*> w_use;
-    const int M_use = this->expand_w_for_update_dw(w_input, w_full_cache, w_use);
-
-    // Get unique ds values from ContourLengthMapping
-    const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-    int n_unique_ds = mapping.get_n_unique_ds();
-
-    // Compute exp_dw for each ds_index and monomer type
-    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-    {
-        double local_ds = mapping.get_ds_from_index(ds_idx);
-
-        for (const auto& item : w_use)
-        {
-            const std::string& monomer_type = item.first;
-            const T* w = item.second;
-
-            if (!this->exp_dw[ds_idx].contains(monomer_type))
-                throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
-
-            std::vector<T>& exp_dw_vec = this->exp_dw.at(ds_idx).at(monomer_type);
-            std::vector<T>& exp_dw_half_vec = this->exp_dw_half.at(ds_idx).at(monomer_type);
-
-            exp_dw_vec.resize(M_use);
-            exp_dw_half_vec.resize(M_use);
-
-            for (int i = 0; i < M_use; ++i)
-            {
-                exp_dw_vec[i] = std::exp(-w[i] * local_ds * 0.5);
-                exp_dw_half_vec[i] = std::exp(-w[i] * local_ds * 0.25);
-            }
-        }
-    }
+    // exp(-w·ds/2) and exp(-w·ds/4), in the reduced basis on the CrysFFT path
+    this->compute_exp_dw(w_input, /*reduced_basis_tables=*/this->use_crysfft(), true, 0.5, 0.25);
 }
 
 //------------------------------------------------------------------------------
@@ -135,9 +77,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
     try
     {
         const int M_full = this->cb->get_total_grid();
-        const int M_reduced = (this->space_group_ != nullptr)
-            ? this->space_group_->get_n_reduced_basis()
-            : M_full;
+        const int M_reduced = this->n_basis_;
         const int M_COMPLEX = this->pseudo->get_total_complex_grid();
 
         // For periodic BC, coefficient array is actually complex (interleaved real/imag)
@@ -146,7 +86,7 @@ void CpuSolverPseudoRQM4<T>::advance_propagator(
 
         // The CrysFFT path works on the physical grid and returns the reduced basis;
         // the other paths work on the full grid
-        const bool crysfft_path = this->use_crysfft() && this->space_group_ != nullptr;
+        const bool crysfft_path = this->use_crysfft();
         const int M_out = crysfft_path ? M_reduced : M_full;
 
         // Work arrays, kept per thread (called from OpenMP parallel regions)

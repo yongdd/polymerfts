@@ -89,17 +89,17 @@ void FftwRealFFT::backward(std::complex<double>* modes, double* samples) const
 //------------------------------------------------------------------------------
 // Constructor
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx)
+template <typename T>
+FftwFFT<T>::FftwFFT(const std::vector<int>& nx)
     : nx_(nx)
 {
     total_grid_ = 1;
-    for (int d = 0; d < DIM; ++d)
-        total_grid_ *= nx_[d];
+    for (int n : nx_)
+        total_grid_ *= n;
 
     // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
     if constexpr (std::is_same<T, double>::value)
-        total_complex_grid_ = total_grid_ / nx_[DIM - 1] * (nx_[DIM - 1] / 2 + 1);
+        total_complex_grid_ = total_grid_ / nx_.back() * (nx_.back() / 2 + 1);
     else
         total_complex_grid_ = total_grid_;
 
@@ -118,14 +118,14 @@ FftwFFT<T, DIM>::FftwFFT(std::array<int, DIM> nx)
 //------------------------------------------------------------------------------
 // Destructor
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-FftwFFT<T, DIM>::~FftwFFT()
+template <typename T>
+FftwFFT<T>::~FftwFFT()
 {
     release();
 }
 
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::release()
+template <typename T>
+void FftwFFT<T>::release()
 {
     if (plan_forward_ != nullptr)
         fftw_destroy_plan(plan_forward_);
@@ -138,8 +138,8 @@ void FftwFFT<T, DIM>::release()
 //------------------------------------------------------------------------------
 // Initialize periodic FFT (FFTW r2c/c2r, or c2c for complex fields)
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::initPeriodicFFT()
+template <typename T>
+void FftwFFT<T>::initPeriodicFFT()
 {
     // Planning arrays only: the plans run on other arrays of the same alignment
     // (see the class description). A complex field (c2c) takes two doubles per point.
@@ -151,33 +151,18 @@ void FftwFFT<T, DIM>::initPeriodicFFT()
     {
         // FFTW_MEASURE runs actual transforms to find the fastest algorithm: slower
         // planning, faster execution. Out of place, the forward plans keep their input.
+        // (fftw_plan_dft_r2c_3d and the like are these calls with rank 3)
         const unsigned int flags = FFTW_MEASURE;
+        const int rank = static_cast<int>(nx_.size());
         if constexpr (std::is_same<T, double>::value)
         {
-            if (DIM == 1)
-            {
-                plan_forward_ = fftw_plan_dft_r2c_1d(nx_[0], field, modes, flags);
-                plan_backward_ = fftw_plan_dft_c2r_1d(nx_[0], modes, field, flags);
-            }
-            else if (DIM == 2)
-            {
-                plan_forward_ = fftw_plan_dft_r2c_2d(nx_[0], nx_[1], field, modes, flags);
-                plan_backward_ = fftw_plan_dft_c2r_2d(nx_[0], nx_[1], modes, field, flags);
-            }
-            else // DIM == 3
-            {
-                plan_forward_ = fftw_plan_dft_r2c_3d(nx_[0], nx_[1], nx_[2], field, modes, flags);
-                plan_backward_ = fftw_plan_dft_c2r_3d(nx_[0], nx_[1], nx_[2], modes, field, flags);
-            }
+            plan_forward_ = fftw_plan_dft_r2c(rank, nx_.data(), field, modes, flags);
+            plan_backward_ = fftw_plan_dft_c2r(rank, nx_.data(), modes, field, flags);
         }
         else // Complex input (c2c transform)
         {
-            int n[DIM];
-            for (int d = 0; d < DIM; ++d)
-                n[d] = nx_[d];
-
-            plan_forward_ = fftw_plan_dft(DIM, n, reinterpret_cast<fftw_complex*>(field), modes, FFTW_FORWARD, flags);
-            plan_backward_ = fftw_plan_dft(DIM, n, modes, reinterpret_cast<fftw_complex*>(field), FFTW_BACKWARD, flags);
+            plan_forward_ = fftw_plan_dft(rank, nx_.data(), reinterpret_cast<fftw_complex*>(field), modes, FFTW_FORWARD, flags);
+            plan_backward_ = fftw_plan_dft(rank, nx_.data(), modes, reinterpret_cast<fftw_complex*>(field), FFTW_BACKWARD, flags);
         }
     }
     const bool allocated = field != nullptr && modes != nullptr;
@@ -195,8 +180,8 @@ void FftwFFT<T, DIM>::initPeriodicFFT()
 //------------------------------------------------------------------------------
 // Periodic transforms on the caller's arrays or on thread-local scratch
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::periodic_forward(const T* field, std::complex<double>* modes) const
+template <typename T>
+void FftwFFT<T>::periodic_forward(const T* field, std::complex<double>* modes) const
 {
     constexpr std::size_t doubles_per_point = sizeof(T) / sizeof(double);
     const std::size_t field_bytes = sizeof(T) * total_grid_;
@@ -225,8 +210,8 @@ void FftwFFT<T, DIM>::periodic_forward(const T* field, std::complex<double>* mod
         std::copy_n(out, total_complex_grid_, modes);
 }
 
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const double* k_factor, T* field,
+template <typename T>
+void FftwFFT<T>::periodic_backward(std::complex<double>* modes, const double* k_factor, T* field,
                                         const T* r_factor, bool keep_modes) const
 {
     constexpr bool real_field = std::is_same<T, double>::value;
@@ -276,28 +261,24 @@ void FftwFFT<T, DIM>::periodic_backward(std::complex<double>* modes, const doubl
 //------------------------------------------------------------------------------
 // FFT<T> interface: the complex coefficients as interleaved doubles
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::forward(T *rdata, double *cdata)
+template <typename T>
+void FftwFFT<T>::forward(T *rdata, double *cdata)
 {
     periodic_forward(rdata, reinterpret_cast<std::complex<double>*>(cdata));
 }
 
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::backward(double *cdata, T *rdata)
+template <typename T>
+void FftwFFT<T>::backward(double *cdata, T *rdata)
 {
     periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), nullptr, rdata, nullptr, true);
 }
 
-template <typename T, int DIM>
-void FftwFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
+template <typename T>
+void FftwFFT<T>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
 {
     periodic_backward(reinterpret_cast<std::complex<double>*>(cdata), k_factor, rdata, r_factor, false);
 }
 
 // Explicit template instantiations
-template class FftwFFT<double, 1>;
-template class FftwFFT<double, 2>;
-template class FftwFFT<double, 3>;
-template class FftwFFT<std::complex<double>, 1>;
-template class FftwFFT<std::complex<double>, 2>;
-template class FftwFFT<std::complex<double>, 3>;
+#include "TemplateInstantiations.h"
+INSTANTIATE_CLASS(FftwFFT);

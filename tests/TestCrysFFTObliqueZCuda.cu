@@ -2,10 +2,10 @@
  * @file TestCrysFFTObliqueZCuda.cu
  * @brief CUDA ObliqueZ CrysFFT against the CPU (FFTW) ObliqueZ engine.
  *
- * The CUDA engine forms the z DCT and the xy FFT as one permuted real 3D FFT
- * (see CudaCrysFFTObliqueZ.h); the CPU engine runs them as separate transforms.
- * Both use the same Boltzmann convention, so for random fields (standard
- * deviation 5) they must agree to round-off. The grids cover odd and even
+ * Both engines form the z DCT and the xy FFT as one permuted real 3D FFT with
+ * the same table (CrysFFTObliqueZTable.h), cuFFT and the spectral kernel on the
+ * GPU, FFTW and a loop on the CPU, so for random fields (standard deviation 5)
+ * they must agree to round-off. The grids cover odd and even
  * Nz/2 (including 1 and 2), odd in-plane sizes, rectangular, hexagonal and
  * monoclinic in-plane angles, and grid spacings 8x apart in the plane, where
  * the alias search must be exact for the Boltzmann factors to be even in
@@ -24,7 +24,7 @@
 
 #include "CudaCommon.h"
 #include "CudaCrysFFTObliqueZ.h"
-#include "FftwCrysFFTObliqueZ.h"
+#include "CrysFFTObliqueZ.h"
 #include "TestNanSafe.h"
 
 #ifndef M_PI
@@ -59,7 +59,7 @@ static bool test_case(const std::array<int, 3>& nx, const std::array<double, 6>&
     for (double& v : q)
         v = normal(rng);
 
-    FftwCrysFFTObliqueZ cpu(nx);
+    CrysFFTObliqueZ cpu(nx, FFTBackend::FFTW);
     std::vector<double> cpu_boltz;
     cpu.build_boltzmann(cpu_boltz, cell, ds);
     std::vector<double> q_cpu = q, reference(M_phys);

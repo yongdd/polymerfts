@@ -117,23 +117,23 @@ void MklRealFFT::backward(std::complex<double>* modes, double* samples) const
 //------------------------------------------------------------------------------
 // Constructor
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-MklFFT<T, DIM>::MklFFT(std::array<int, DIM> nx)
+template <typename T>
+MklFFT<T>::MklFFT(const std::vector<int>& nx)
 {
     total_grid_ = 1;
-    for (int d = 0; d < DIM; ++d)
-        total_grid_ *= nx[d];
+    for (int n : nx)
+        total_grid_ *= n;
 
     // r2c: the half spectrum of the last axis (Hermitian symmetry); c2c: the full grid
     if constexpr (std::is_same<T, double>::value)
-        total_complex_grid_ = total_grid_ / nx[DIM - 1] * (nx[DIM - 1] / 2 + 1);
+        total_complex_grid_ = total_grid_ / nx.back() * (nx.back() / 2 + 1);
     else
         total_complex_grid_ = total_grid_;
 
     try
     {
         // The backward transform includes the 1/N of the FFT<T> interface
-        create_descriptors(std::vector<int>(nx.begin(), nx.end()), std::is_same<T, double>::value,
+        create_descriptors(nx, std::is_same<T, double>::value,
                            1.0 / static_cast<double>(total_grid_), hand_forward_, hand_backward_);
     }
     catch (std::exception& exc)
@@ -147,14 +147,14 @@ MklFFT<T, DIM>::MklFFT(std::array<int, DIM> nx)
 //------------------------------------------------------------------------------
 // Destructor
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-MklFFT<T, DIM>::~MklFFT()
+template <typename T>
+MklFFT<T>::~MklFFT()
 {
     release();
 }
 
-template <typename T, int DIM>
-void MklFFT<T, DIM>::release()
+template <typename T>
+void MklFFT<T>::release()
 {
     if (hand_forward_ != nullptr)
         DftiFreeDescriptor(&hand_forward_);
@@ -167,22 +167,22 @@ void MklFFT<T, DIM>::release()
 //------------------------------------------------------------------------------
 // FFT<T> interface: the complex coefficients as interleaved doubles
 //------------------------------------------------------------------------------
-template <typename T, int DIM>
-void MklFFT<T, DIM>::forward(T *rdata, double *cdata)
+template <typename T>
+void MklFFT<T>::forward(T *rdata, double *cdata)
 {
     mkl_dfti_check(DftiComputeForward(hand_forward_, rdata, reinterpret_cast<std::complex<double>*>(cdata)),
                    "DftiComputeForward (periodic)");
 }
 
-template <typename T, int DIM>
-void MklFFT<T, DIM>::backward(double *cdata, T *rdata)
+template <typename T>
+void MklFFT<T>::backward(double *cdata, T *rdata)
 {
     mkl_dfti_check(DftiComputeBackward(hand_backward_, reinterpret_cast<std::complex<double>*>(cdata), rdata),
                    "DftiComputeBackward (periodic)");
 }
 
-template <typename T, int DIM>
-void MklFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
+template <typename T>
+void MklFFT<T>::backward_with_factors(double *cdata, const double *k_factor, T *rdata, const T *r_factor)
 {
     if (k_factor != nullptr)
     {
@@ -198,4 +198,4 @@ void MklFFT<T, DIM>::backward_with_factors(double *cdata, const double *k_factor
 
 // Explicit template instantiations
 #include "TemplateInstantiations.h"
-INSTANTIATE_FFT_CLASS(MklFFT);
+INSTANTIATE_CLASS(MklFFT);

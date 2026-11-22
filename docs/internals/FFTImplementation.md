@@ -221,8 +221,12 @@ q_out = DCT-III_z[ IFFT_xy[ exp(-k^2 * coeff) * FFT_xy[ DCT-II_z[q_in] ] ] ]
 ```
 
 - Physical grid: `Nx x Ny x (Nz/2)`
-- Supports oblique in-plane angles (e.g., hexagonal γ=120°)
+- Supports oblique in-plane angles (e.g., hexagonal γ=120°), with the in-plane alias of least form
 - For glide mirror (t_z=1/2): requires `Nz % 4 == 0`
+- Both platforms run it as one real FFT of the physical grid after Makhoul's permutation along z
+  (even samples forward, odd samples backward) and one pass over the half spectrum that forms
+  the DCT coefficients of `kz` and `Nz/2 - kz` and applies both Boltzmann factors; the table of
+  these factor pairs is built once for both platforms (`CrysFFTObliqueZTable.h`)
 
 ### 6.3 Activation Criteria
 
@@ -302,26 +306,25 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 
 **FFTW backend** (`POLYMERFTS_USE_FFTW`):
 
-- `FftwFFT<T, DIM>`: Periodic FFT using FFTW3
+- `FftwFFT<T>`: Periodic FFT using FFTW3 (grids of one to three axes)
 - `FftwRealFFT`: the real FFT of the grid under `MakhoulTransform` (Section 2.4)
 - `FftwCrysFFTRecursive3m`: Recursive 3m algorithm (`CrysFFTRecursive3mBase`) over the real FFT of the physical grid
-- `FftwCrysFFTObliqueZ`: DCT-z + FFT-xy
 
 **MKL backend** (`POLYMERFTS_USE_MKL`):
 
-- `MklFFT<T, DIM>`: Periodic FFT using MKL DFTI
+- `MklFFT<T>`: Periodic FFT using MKL DFTI (grids of one to three axes)
 - `MklRealFFT`: the real FFT of the grid under `MakhoulTransform` (Section 2.4)
 - `MklRealTransform1D/2D/3D`: DCT/DST of all types (FFT-based algorithms + MKL TT interface, see Section 8.2)
 - `MklCrysFFTRecursive3m`: Recursive 3m algorithm (`CrysFFTRecursive3mBase`) over the real FFT of the physical grid
-- `MklCrysFFTObliqueZ`: DCT-z through a real FFT of the same length (Makhoul) + FFT-xy on contiguous z planes
 
 **Both backends**:
 
 - `MakhoulFFT<T>`: DCT/DST of boxes of reflecting and absorbing axes through `MakhoulTransform` over the real FFT of the selected library (Section 2.4); `createFFT()` in `FFTFactory.h` returns it for such boxes and `FftwFFT` or `MklFFT` for periodic ones
 - `CrysFFTPmmm`: Pmmm DCT through `MakhoulTransform` over the real FFT of the selected library (`createRealFFT()` in `FFTFactory.h`)
+- `CrysFFTObliqueZ`: the ObliqueZ algorithm of Section 6.2 over the real FFT of the selected library, as `CudaCrysFFTObliqueZ` runs it with cuFFT
 - `CpuFourierTransform`: the transforms of `PropagatorSolver.fourier`; boxes that mix periodic axes and walls run `MakhoulTransform` with periodic axes (Section 2.5)
 
-`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm`, or the recursive 3m or ObliqueZ engine of the library of the selected platform (`cpu-mkl` or `cpu-fftw`). The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch (`AlignedScratch`, 64-byte aligned: MKL may pick its code by alignment, and FFTW runs its plans only on arrays of the alignment of the planning arrays). The engines run their transforms on the caller's fields: MKL out of place, FFTW when the fields have the alignment of the planning arrays, and otherwise on a copy. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
+`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm` or `CrysFFTObliqueZ` over the real FFT of the library of the selected platform (`cpu-mkl` or `cpu-fftw`), or the recursive 3m engine of that library. The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch (`AlignedScratch`, 64-byte aligned: MKL may pick its code by alignment, and FFTW runs its plans only on arrays of the alignment of the planning arrays). The Pmmm and ObliqueZ engines reorder the caller's field into their scratch and transform it there; the recursive 3m engines run their transforms on the caller's fields: MKL out of place, FFTW when the fields have the alignment of the planning arrays, and otherwise on a copy. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
 
 **Threading**: FFTW/MKL multithreading is disabled; concurrency is handled at the solver level (OpenMP over propagators). Thread-local buffers are used to avoid race conditions.
 
@@ -478,7 +481,7 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 | Platform | Standard FFT | ObliqueZ |
 |----------|-------------|----------|
 | CUDA | 0.132 ms | 0.104 ms (1.3x) |
-| CPU | 1.85 ms | 1.43 ms (1.3x) |
+| CPU | 1.87 ms | 1.08 ms (1.7x) |
 
 ### 8.5 CrysFFT in the Complete Solver
 
@@ -488,7 +491,7 @@ Speedup = FFTW time / MKL time (>1× means MKL is faster)
 |--------------------------------------|-----------------|----------------|----------|---------|
 | Recursive 3m (Im-3m and Ia-3d, m3) | 3.4-4.0x | 2.4-2.5x | 4.8-5.2x | 4.9-5.0x |
 | Pmmm DCT (Im-3m and Pmmm, Pmmm) | 2.2-2.5x | 1.7-1.8x | 5.9-6.3x | 5.6-5.9x |
-| ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.3-1.5x | 1.3-1.4x |
+| ObliqueZ (P6/mmm, z-mirror) | 1.6-1.8x | 1.3x | 1.6-1.7x | 1.7-1.8x |
 
 The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 
@@ -497,7 +500,7 @@ The gain depends on the grid. With `rqm4`, CUDA with 4 streams:
 | Recursive 3m (Im-3m, m3) | 0.9x | 1.1x | 3.4x | 3.5x | 6.2x | 7.3x |
 | ObliqueZ (P6/mmm, z-mirror) | 0.7x | 0.8x | 1.4x | 1.7x | 2.1x | 2.0x |
 
-A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine and 1.2-2.0x with ObliqueZ).
+A space group therefore saves no time with CUDA below about 48³: the Gyroid example on 32³ takes the same time per SCFT iteration with and without it. The CPU backends gain at every size in this table (4 threads: 3.5-9x with the recursive 3m engine; 1.4-1.8x with ObliqueZ, `rqm4` on 24³ to 128³, FFTW and MKL, AMD EPYC 7543).
 
 Stress (`compute_stress` after the propagators and concentrations, median of nine calls with CUDA): on a cubic cell the group gains 2.6x with CUDA (4 streams) and 5x on the CPU on the m3 basis, and 1.8x with CUDA and 4-6x on the CPU on the Pmmm basis. On a cell of three different lengths with the Pmmm basis the stress takes longer than on the full grid with CUDA (0.6x), and the CPU gains 1.6-2.1x. With ObliqueZ it takes about the same time (0.9x).
 

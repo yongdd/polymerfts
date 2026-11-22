@@ -137,9 +137,9 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaMakhoulTransform<T>` (one cuFFT of the grid) |
+| Transforms | periodic: `FftwFFT<T>`, `MklFFT<T>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaMakhoulTransform<T>` (one cuFFT of the grid) |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` and `CrysFFTObliqueZ` (over the real FFT of either library), `{Fftw,Mkl}CrysFFTRecursive3m` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
 
 ### Platform Selection
@@ -342,6 +342,8 @@ differently grouped sums of the two modes differently (see
 CpuSolver<T>                                  [Abstract Base]
 ├── exp_dw[monomer]         - Boltzmann factors
 ├── exp_dw_half[monomer]    - Half-step Boltzmann factors
+├── cb, molecules, space_group_, n_basis_   - shared context (protected constructor)
+├── compute_exp_dw()        - the body of every update_dw()
 ├── update_dw(w)            [pure virtual]
 ├── advance_propagator()    [pure virtual]
 └── compute_single_segment_stress() [pure virtual]
@@ -384,7 +386,10 @@ CpuSolver<T>                                  [Abstract Base]
 
 Every CPU solver takes the space group (`nullptr` for the full grid) in its constructor
 and builds the tables of the cell there; `update_laplacian_operator()` rebuilds them for a
-new cell.
+new cell. `CpuSolver<T>` holds what every CPU solver shares, as `CudaSolver<T>` does on the
+GPU: the computation box, the molecules, the space group and the size of a propagator, and
+the Boltzmann factors exp(-w ds) of every solver (`compute_exp_dw()`, which each
+`update_dw()` calls with its factor of ds).
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base. It holds what
 every CUDA solver shares: the computation box, the molecules, the backend's streams, and the
@@ -440,11 +445,9 @@ FFT<T>                                        [Abstract Base]
 ├── backward(double* spectral, T* real)       [pure virtual]
 └── backward_with_factors(...)                [k_factor · coefficients, r_factor · field]
         │
-        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
-        │   └── DIM = 1, 2, or 3 (compile-time)
+        ├── FftwFFT<T>                         [CPU - FFTW backend, periodic, grid of 1 to 3 axes]
         │
-        ├── MklFFT<T, DIM>                     [CPU - MKL backend, periodic]
-        │   └── DIM = 1, 2, or 3 (compile-time)
+        ├── MklFFT<T>                          [CPU - MKL backend, periodic, grid of 1 to 3 axes]
         │
         └── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
             └── MakhoulTransform over FftwRealFFT or MklRealFFT
@@ -595,21 +598,10 @@ All computational classes use explicit template instantiation for:
 **Location**: `src/common/TemplateInstantiations.h`
 
 ```cpp
-// For single-parameter templates (most classes)
 INSTANTIATE_CLASS(ComputationContinuous);
 // Expands to:
 //   template class ComputationContinuous<double>;
 //   template class ComputationContinuous<std::complex<double>>;
-
-// For FFT classes with dimension parameter
-INSTANTIATE_FFT_CLASS(FftwFFT);
-// Expands to:
-//   template class FftwFFT<double, 1>;
-//   template class FftwFFT<double, 2>;
-//   template class FftwFFT<double, 3>;
-//   template class FftwFFT<std::complex<double>, 1>;
-//   template class FftwFFT<std::complex<double>, 2>;
-//   template class FftwFFT<std::complex<double>, 3>;
 ```
 
 ---

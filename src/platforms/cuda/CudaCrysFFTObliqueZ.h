@@ -12,7 +12,8 @@
  *
  * with S = B(kz) + B(Nz/2 - kz), D = B(kz) - B(Nz/2 - kz) and B(Nz/2) = 0.
  * This needs the Boltzmann factors to be even in (kx, ky), which holds for
- * alpha = beta = 90 degrees.
+ * alpha = beta = 90 degrees. The CPU engine (CrysFFTObliqueZ) runs the same
+ * algorithm with the same table (CrysFFTObliqueZTable.h).
  */
 
 #ifndef CUDA_CRYS_FFT_OBLIQUEZ_H_
