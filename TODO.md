@@ -53,13 +53,6 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
     irreducible and a reduced array is wrong (Pmmm, 16^3: 4.48 instead of -5.11). SCFT
     keeps every array in the irreducible basis and is not affected. Take the basis as an
     argument, or accept only the reduced basis and convert in SCFT.
-35. CUDA absorbing walls are limited to 6142 grid points along the wall axis (2D/3D;
-    found 2026-10-29). The CUDA sine transforms (DST-II/III) give one block to each line
-    of the grid and stage the nx + 2 values of the line in the 48 KB of shared memory of
-    the block, so a longer line does not fit; `platform="auto"` runs such inputs on the
-    CPU. Lifting the limit needs another kernel layout (for example lines split across
-    blocks, or the staging in global memory). Explain the layout, its cost and the
-    alternatives to the maintainer before changing it.
 37. Propagator keys grow with the chain (found 2026-11-17): each key spells out the whole
     subtree it depends on, so a linear chain of N blocks holds keys of O(N) characters and
     the optimizer O(N^2) memory and time (one thread: 1000 blocks 0.2 s and 107 MB, 4000 blocks
@@ -74,7 +67,6 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
 16. Unit test for Anderson mixing (real and complex).
 17. Validation of pseudo-spectral parameters.
 18. Syntax check of keys in `Molecules`.
-19. `TestComparePropagatorKey`.
 21. Check `get_negative_frequency_mapping()` and `compute_single_segment_stress()`.
 
 ## Build and packaging
@@ -128,6 +120,11 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
 
 ## Done (removed from the list above)
 
+- 19. `TestComparePropagatorKey`: `TestCompareBranchKey` checks the order of `ComparePropagatorKey`
+  (a fixed key order, strict ordering, and every propagator after its dependencies; 2026-11-22).
+- 35. The 6142-point limit of CUDA absorbing walls (2026-11-22): CUDA wall boxes run through
+  `CudaMakhoulTransform` (one cuFFT of the reordered grid, as on the CPU), which has no line
+  staged in shared memory and takes odd sizes; `platform="auto"` runs every 2D/3D box on CUDA.
 - 1. Parallel tempering: dropped (maintainer's decision, 2026-10-21).
 - 5. SCFT with singular chi matrices (verified 2026-10-22): the inverse-free
   projected incompressible residual and direct compressible residual are already

@@ -202,7 +202,9 @@ Keep each simulation class readable from top to bottom:
   A new option inside a section (`langevin`, `recording`, `wtmd`, ...) also needs
   its entry in `SECTION_KEYS`: a method refuses keys its sections do not take.
   A new key of a `polymers` entry or of its `blocks` also needs its entry in
-  `POLYMER_KEYS` or `BLOCK_KEYS`.
+  `POLYMER_KEYS` or `BLOCK_KEYS`, and a new key of a point ion
+  (`electrostatics.ions`) or of a Gibbs box (`gibbs_ensemble.boxes`) its entry in
+  `ION_KEYS` or `GIBBS_BOX_KEYS`.
 - Keep one topic per file. Share what is identical in `scft.py`, `lfts.py` and
   `clfts.py` through plain functions; a little duplication is fine where sharing
   would hide a difference between the methods.
@@ -221,8 +223,10 @@ Keep each simulation class readable from top to bottom:
   in objects with one topic each, as the loop's own words say: `self.saddle`
   (`saddle.py`: compressors, saddle search and retries), `self.structure_functions`
   (`structure_functions.py`), `self.thermodynamics` (`thermodynamics.py`),
-  `self.cell` (`cell_relaxation.py`), and likewise `self.smearing`, `self.wtmd` and
-  `self.electrostatics`. `scft_results.py` holds what SCFT returns and writes.
+  `self.cell` (`cell_relaxation.py`), `self.grid` (`grid.py`: the axis order, the
+  space group and the bases of the SCFT fields), and likewise `self.smearing`,
+  `self.wtmd` and `self.electrostatics`. `scft_results.py` holds what SCFT returns
+  and writes.
 - `integrators.py` implements built-in LM and Euler steps. Use the existing
   `integrator=` interface for additional methods and named `callbacks=` for
   observables. Preserve accepted-step ordering and checkpoint contracts.
