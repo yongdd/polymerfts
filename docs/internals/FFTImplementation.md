@@ -210,6 +210,9 @@ For space groups with 3m translations (mirror + translational offsets):
 
 - Same physical grid size `(Nx/2) x (Ny/2) x (Nz/2)`
 - Uses eight sub-transforms with precomputed twiddle factors
+- `Recursive3mTables` (`CrysFFTTables.h`) checks the grid, holds the twiddle factors and the
+  parity permutation of the fold and folds the tables of both platforms (`CrysFFTRecursive3mBase`
+  and `CudaCrysFFTRecursive3m`; the CPU pads the stride of the 16 arrays of a table)
 - Faster than Pmmm DCT with CUDA; on the CPU the Pmmm DCT (`MakhoulTransform`) is faster (Sections 8.3 and 8.5)
 
 #### ObliqueZ (z-mirror)
@@ -235,26 +238,35 @@ CrysFFT is enabled automatically when:
 - Dimension is 3D
 - Boundary conditions are periodic
 - Fields are real-valued
-- Grid parity matches the algorithm: `Nx`, `Ny`, `Nz` all even for the Pmmm/3m variants; only `Nz` even for ObliqueZ (odd `Nx`/`Ny` are allowed with the z-mirror physical basis and on cells with γ≠90°)
+- Grid parity matches the algorithm: `Nx`, `Ny`, `Nz` all even for the Pmmm/3m variants; only `Nz` even for ObliqueZ (odd `Nx`/`Ny` are allowed)
 
-**Selection order:** an enabled physical basis (Section 6.4) fixes the variant:
-3m recursive for the m3 basis (on any grid it maps, since the engines are exact
-for `Nz/2 >= 2`; the `Nz/2 >= 8` size rule below only chooses), Pmmm DCT for the
-Pmmm basis and ObliqueZ for the z-mirror basis. With the irreducible basis, a cell
-with α=β=90° and γ≠90° (e.g. hexagonal) uses ObliqueZ when the space group has a z-mirror, and the standard FFT
-otherwise. An orthogonal cell needs `Nx`, `Ny`, `Nz` all even, and the first
-applicable variant is used:
+**Selection order:** one function, `plan_crysfft()` in `src/common/CrysFFTSelector.h`,
+chooses the engine for the CPU and CUDA solvers. An enabled physical basis
+(Section 6.4) must match the cell (m3 and Pmmm need an orthogonal cell, the
+z-mirror basis α=β=90°) and fixes the variant: 3m recursive for the m3 basis (on
+any grid it maps, since the engines are exact for `Nz/2 >= 2`; the `Nz/2 >= 8`
+size rule below only chooses), Pmmm DCT for the Pmmm basis and ObliqueZ for the
+z-mirror basis; a basis whose engine does not take the grid raises. With the
+irreducible basis the candidates are, in this order:
 
-1. **3m recursive** if the space group provides 3m translations, the
-   translation-parity fold permutation is valid (every generator translation
-   must be an integral number of grid cells with a bijective parity map — see
-   `Recursive3mFoldParity.h`; e.g. for Fddd's quarter-cell glides at most one
-   of `Nx/4`, `Ny/4`, `Nz/4` may be odd), and `Nz/2 >= 8` (a performance rule:
-   smaller grids gain nothing from the fold; `SpaceGroup.m3_crysfft_feasible()`,
-   which SCFT uses to choose the m3 basis, applies it too)
-2. **Pmmm DCT** if space group has mirror planes in x/y/z
-3. **ObliqueZ** if space group has a z-mirror
+1. **3m recursive** on an orthogonal cell, if the space group provides 3m
+   translations, the translation-parity fold permutation is valid (every
+   generator translation must be an integral number of grid cells with a
+   bijective parity map — see `Recursive3mFoldParity.h`; e.g. for Fddd's
+   quarter-cell glides at most one of `Nx/4`, `Ny/4`, `Nz/4` may be odd), the
+   grid is even and `Nz/2 >= 8` (a performance rule: smaller grids gain nothing
+   from the fold; `SpaceGroup.m3_crysfft_feasible()`, which SCFT uses to choose
+   the m3 basis, applies it too)
+2. **Pmmm DCT** on an orthogonal cell with an even grid, if the space group has
+   mirror planes in x/y/z
+3. **ObliqueZ** on a cell with α=β=90° (orthogonal, hexagonal or another γ), if
+   the space group has a z-mirror with a half grid along z
+   (`SpaceGroup.z_mirror_half_grid_shift()`)
 4. Fall back to standard FFT
+
+The first candidate whose physical grid reaches every orbit of the irreducible
+basis is used. So an orthogonal grid with an odd `Nx` or `Ny`, which has no
+octant, takes ObliqueZ when the space group has a z-mirror, as an oblique cell does.
 
 The 3m fold pairs each twiddle factor with the Boltzmann sub-array selected by
 the translation-parity permutation; glide translations by an odd number of
@@ -275,14 +287,16 @@ Fddd, which has no pure mirror, ends on the standard FFT.
 | 3m physical | (Nx/2)(Ny/2)(Nz/2) | Identity (none) |
 | Z-mirror physical | Nx * Ny * (Nz/2) | Identity (none) |
 
-The solver uses the basis the `SpaceGroup` holds. SCFT (`scft/grid.py`) enables one
-automatically from the angles the group fixes (`SpaceGroup.fixed_angles()`): with
-α=β=γ=90° the m3 basis when the recursive 3m CrysFFT pays off
-(`SpaceGroup.m3_crysfft_feasible()`), otherwise the Pmmm basis; with α=β=90° and γ
-free or 120° the z-mirror basis; the irreducible basis stays when none applies.
+The solver uses the basis the `SpaceGroup` holds, whose name is the engine of
+its grid (`CrysFFTEngine` in `SpaceGroup.h`). SCFT (`scft/grid.py`) enables one with
+`SpaceGroup.enable_best_physical_basis()`, from the angles the group fixes
+(`SpaceGroup.fixed_angles()`): with α=β=γ=90° the m3 basis when the recursive 3m
+CrysFFT pays off (`SpaceGroup.m3_crysfft_feasible()`), otherwise the Pmmm basis;
+with α=β=90° and γ free or 120° the z-mirror basis; the irreducible basis stays
+when none applies (an orthogonal grid with an odd `Nx` then runs ObliqueZ on it).
 With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
-(`enable_m3_physical_basis()`, `enable_pmmm_physical_basis()`,
-`enable_z_mirror_physical_basis()`).
+(`enable_best_physical_basis()`, `enable_m3_physical_basis()`,
+`enable_pmmm_physical_basis()`, `enable_z_mirror_physical_basis()`).
 
 ### 6.5 Phase Support Table
 
@@ -324,7 +338,7 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 - `CrysFFTObliqueZ`: the ObliqueZ algorithm of Section 6.2 over the real FFT of the selected library, as `CudaCrysFFTObliqueZ` runs it with cuFFT
 - `CpuFourierTransform`: the transforms of `PropagatorSolver.fourier`; boxes that mix periodic axes and walls run `MakhoulTransform` with periodic axes (Section 2.5)
 
-`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm` or `CrysFFTObliqueZ` over the real FFT of the library of the selected platform (`cpu-mkl` or `cpu-fftw`), or the recursive 3m engine of that library. The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch (`AlignedScratch`, 64-byte aligned: MKL may pick its code by alignment, and FFTW runs its plans only on arrays of the alignment of the planning arrays). The Pmmm and ObliqueZ engines reorder the caller's field into their scratch and transform it there; the recursive 3m engines run their transforms on the caller's fields: MKL out of place, FFTW when the fields have the alignment of the planning arrays, and otherwise on a copy. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
+`CpuSolverPseudoBase` holds one CrysFFT engine (`crysfft_`, behind the interface `CpuCrysFFT`): `CrysFFTPmmm` or `CrysFFTObliqueZ` over the real FFT of the library of the selected platform (`cpu-mkl` or `cpu-fftw`), or the recursive 3m engine of that library. The OpenMP threads of the propagator and stress loops call this one engine at once, each on its own thread-local scratch (`AlignedScratch`, 64-byte aligned: MKL may pick its code by alignment, and FFTW runs its plans only on arrays of the alignment of the planning arrays). The Pmmm and ObliqueZ engines reorder the caller's field into their scratch and transform it there; the recursive 3m engines run their transforms on the caller's fields: MKL out of place, FFTW when the fields have the alignment of the planning arrays, and otherwise on a copy. The k-space tables belong to the solver, one per key for all threads: the Boltzmann factors of each step coefficient (`crysfft_boltz_`), built for the monomer type and contour step of every block (`crysfft_block_coeffs()`) when the CrysFFT path is set up, and the stress multipliers of each axis group and bond coefficient (`crysfft_multipliers_`; Pmmm and recursive 3m), built by `prepare_stress()` before the first stress loop. A cell change (`update_laplacian_operator()`) rebuilds every table in place. The engines take the table as an argument (`diffusion(in, out, table)`, `apply_multiplier(in, out, table)`) and hold none themselves, so the loops only read the tables and never build one; a missing key is an error. The engine (`plan_crysfft()`), the keys of the tables (`crysfft_step_coeffs()`, `crysfft_multiplier_keys()`), their cell and the bond and step coefficients are those of the CUDA solver (`CrysFFTSelector.h`, `PseudoSolverHelpers.h`). A recursive 3m table holds the real and imaginary parts of the eight folded octants, 16 physical-grid arrays, in one allocation, each array padded by one 64-byte line: the multiply loop reads all 16 at the same index, and on a physical grid of a power-of-two size the unpadded arrays would fall into one cache set (twice the time per diffusion on 16³).
 
 **Threading**: FFTW/MKL multithreading is disabled; concurrency is handled at the solver level (OpenMP over propagators). Thread-local buffers are used to avoid race conditions.
 

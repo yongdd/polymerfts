@@ -6,18 +6,10 @@
 #include "CudaCrysFFTRecursive3m.h"
 
 #include "CudaCommon.h"
+#include "CrysFFTTables.h"
 #include "Exception.h"
-#include "Recursive3mFoldParity.h"
-#include "Recursive3mHelpers.h"
 
 #include <cstdint>
-#include <cstring>
-#include <cmath>
-#include <stdexcept>
-#include <tuple>
-
-// Host-side fold, twiddles and multipliers are shared with the CPU engine
-using namespace crys_recursive_3m;
 
 namespace {
 
@@ -96,60 +88,23 @@ __global__ void ker_apply_k_3m(
 CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(
     std::array<int, 3> nx_logical,
     std::array<double, 9> translational_part)
-    : nx_logical_(nx_logical),
-      translational_part_(translational_part)
+    : tables_(std::make_shared<const Recursive3mTables>(nx_logical, translational_part))
 {
-    for (int d = 0; d < 3; ++d)
-    {
-        if (nx_logical_[d] <= 0 || (nx_logical_[d] % 2) != 0)
-        {
-            throw_with_line_number("CudaCrysFFTRecursive3m requires even, positive grid dimensions.");
-        }
-    }
-    // The kernels here are size-agnostic (ker_apply_k_3m iterates the packed
-    // z range Nz2c = Nz2/2+1 with exact bounds; cuFFT D2Z/Z2D handles any
-    // length). The nz/2 >= 2 bound mirrors the guard in
-    // CrysFFTRecursive3mBase.h so CPU and CUDA stay constructible for exactly
-    // the same grids.
-    if ((nx_logical_[2] / 2) < 2)
-    {
-        throw_with_line_number("CudaCrysFFTRecursive3m requires Nz/2 >= 2.");
-    }
-
-    // The fold pairs twiddle r_p with the octant-transformed Boltzmann array
-    // S_{psi(p)}, where psi depends on the parities of the m3 generator
-    // translations in grid units (see Recursive3mFoldParity.h). When psi is
-    // not a bijection the even-index physical basis does not exist on this
-    // grid and the fold cannot represent the group; CrysFFTSelector rejects
-    // such grids, but guard direct construction.
-    if (!compute_m3_fold_permutation(translational_part_, nx_logical_, fold_perm_))
-    {
-        throw_with_line_number("CudaCrysFFTRecursive3m: m3 translations are "
-            "incompatible with this grid (translation-parity permutation is "
-            "not a bijection; no even-index physical basis exists).");
-    }
-
-    nx_physical_ = { nx_logical_[0] / 2, nx_logical_[1] / 2, nx_logical_[2] / 2 };
-    M_logical_ = nx_logical_[0] * nx_logical_[1] * nx_logical_[2];
-    M_physical_ = nx_physical_[0] * nx_physical_[1] * nx_physical_[2];
+    nx_physical_ = tables_->nx_physical();
+    M_physical_ = tables_->M_physical();
     M_complex_ = nx_physical_[0] * nx_physical_[1] * (nx_physical_[2] / 2 + 1);
 
     d_step1_.allocate(M_complex_);
     d_step2_.allocate(M_complex_);
 
     init_plans();
-    twiddles_ = generate_twiddle_factors();
 }
 
 CudaCrysFFTRecursive3m::CudaCrysFFTRecursive3m(const CudaCrysFFTRecursive3m& other)
-    : nx_logical_(other.nx_logical_),
+    : tables_(other.tables_),
       nx_physical_(other.nx_physical_),
-      M_logical_(other.M_logical_),
       M_physical_(other.M_physical_),
-      M_complex_(other.M_complex_),
-      translational_part_(other.translational_part_),
-      fold_perm_(other.fold_perm_),
-      twiddles_(other.twiddles_)
+      M_complex_(other.M_complex_)
 {
     d_step1_.allocate(M_complex_);
     d_step2_.allocate(M_complex_);
@@ -169,98 +124,21 @@ void CudaCrysFFTRecursive3m::init_plans()
         throw_with_line_number("Failed to create cuFFT Z2D plan for CudaCrysFFTRecursive3m.");
 }
 
-std::shared_ptr<const CudaCrysFFTRecursive3m::Twiddles> CudaCrysFFTRecursive3m::generate_twiddle_factors() const
-{
-    auto twiddles = std::make_shared<Twiddles>();
-    auto& r_re = twiddles->re;
-    auto& r_im = twiddles->im;
-    for (int i = 0; i < 8; ++i)
-    {
-        r_re[i].assign(M_physical_, 0.0);
-        r_im[i].assign(M_physical_, 0.0);
-    }
-
-    auto operations = generate_m3_operations(translational_part_, nx_logical_);
-    std::vector<std::tuple<double*, double*, std::array<double, 3>>> twiddle;
-    for (size_t i = 0; i < operations.size(); ++i)
-    {
-        twiddle.emplace_back(r_re[i + 1].data(), r_im[i + 1].data(), operations[i]);
-    }
-
-    std::fill(r_re[0].begin(), r_re[0].end(), 1.0);
-    std::fill(r_im[0].begin(), r_im[0].end(), 0.0);
-
-    twiddle_factor(twiddle, nx_physical_);
-    return twiddles;
-}
-
 void CudaCrysFFTRecursive3m::build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                                              double coeff, cudaStream_t stream) const
 {
-    const std::vector<double> tempmat = logical_k_table(nx_logical_, cell, [coeff](double kx2, double ky2, double kz2) {
-        return std::exp(-(kx2 + ky2 + kz2) * coeff);
-    });
-    build_table_from_tempmat(table, tempmat, stream);
+    // The 16 arrays of the table one after another (stride M_physical)
+    std::vector<double> h_table;
+    tables_->boltzmann(h_table, M_physical_, cell, coeff);
+    upload_table(table, h_table, stream);
 }
 
 void CudaCrysFFTRecursive3m::build_multiplier(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                                               int axes, double coeff, cudaStream_t stream) const
 {
-    if (axes < 1 || axes > 7)
-        throw_with_line_number("CudaCrysFFTRecursive3m::build_multiplier: axes must be a mask of 1 (x), 2 (y), 4 (z).");
-    const bool with_bond = (coeff != 0.0);   // continuous chains: Σ k_d² alone
-    const std::vector<double> tempmat = logical_k_table(nx_logical_, cell, [axes, with_bond, coeff](double kx2, double ky2, double kz2) {
-        const double k_axes = ((axes & 1) ? kx2 : 0.0) + ((axes & 2) ? ky2 : 0.0) + ((axes & 4) ? kz2 : 0.0);
-        return with_bond ? std::exp(-(kx2 + ky2 + kz2) * coeff) * k_axes : k_axes;
-    });
-    build_table_from_tempmat(table, tempmat, stream);
-}
-
-void CudaCrysFFTRecursive3m::build_table_from_tempmat(
-    CudaDeviceBuffer<double>& table, const std::vector<double>& tempmat, cudaStream_t stream) const
-{
-    std::array<std::vector<double>, 8> k_split;
-    std::array<double*, 8> k_split_ptr{};
-    for (int i = 0; i < 8; ++i)
-    {
-        k_split[i].assign(M_physical_, 0.0);
-        k_split_ptr[i] = k_split[i].data();
-    }
-
-    mat_split(tempmat.data(), k_split_ptr, nx_logical_);
-
-    std::array<int, 3> halfsize = nx_physical_;
-    constexpr std::array<std::pair<int, int>, 4> seq0{{{0,4},{1,5},{2,6},{3,7}}};
-    constexpr std::array<std::pair<int, int>, 4> seq1{{{0,2},{1,3},{4,6},{5,7}}};
-    constexpr std::array<std::pair<int, int>, 4> seq2{{{0,1},{2,3},{4,5},{6,7}}};
-    add_sub_by_seq(k_split_ptr, seq0, halfsize);
-    add_sub_by_seq(k_split_ptr, seq1, halfsize);
-    add_sub_by_seq(k_split_ptr, seq2, halfsize);
-
-    // The table on the host: the eight real factor arrays, then the eight imaginary ones
-    std::vector<double> k_host(16 * static_cast<size_t>(M_physical_), 0.0);
-    std::array<double*, 8> k_re_ptr{};
-    std::array<double*, 8> k_im_ptr{};
-    std::array<const double*, 8> r_re_ptr{};
-    std::array<const double*, 8> r_im_ptr{};
-    std::array<const double*, 8> k_split_perm_ptr{};
-
-    for (int i = 0; i < 8; ++i)
-    {
-        k_re_ptr[i] = k_host.data() + static_cast<size_t>(i) * M_physical_;
-        k_im_ptr[i] = k_host.data() + static_cast<size_t>(8 + i) * M_physical_;
-        r_re_ptr[i] = twiddles_->re[i].data();
-        r_im_ptr[i] = twiddles_->im[i].data();
-        // Twiddle r_p pairs with S_{fold_perm_[p]} (translation-parity
-        // permutation; identity when all generator translations are even in
-        // grid units).
-        k_split_perm_ptr[i] = k_split[fold_perm_[i]].data();
-    }
-
-    constexpr std::array<std::pair<int, int>, 4> seq3{{{0,7},{6,1},{2,5},{4,3}}};
-    mul_add_sub_by_seq(k_re_ptr, k_im_ptr, r_re_ptr, r_im_ptr, k_split_perm_ptr, seq3, halfsize);
-
-    upload_table(table, k_host, stream);
+    std::vector<double> h_table;
+    tables_->multiplier(h_table, M_physical_, cell, axes, coeff);
+    upload_table(table, h_table, stream);
 }
 
 void CudaCrysFFTRecursive3m::diffusion(

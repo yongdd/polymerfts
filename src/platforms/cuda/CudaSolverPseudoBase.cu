@@ -9,7 +9,6 @@
 #include <iostream>
 #include <cmath>
 #include <array>
-#include <set>
 #include <vector>
 
 #include "CudaSolverPseudoBase.h"
@@ -20,7 +19,7 @@
 #include "CudaCrysFFTRecursive3m.h"
 #include "CudaCrysFFTObliqueZ.h"
 #include "CrysFFTSelector.h"
-#include "CrysFFTBasisMapping.h"
+#include "PseudoSolverHelpers.h"
 #include "SpaceGroup.h"
 
 namespace {
@@ -235,30 +234,12 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     // The device buffers, cuFFT plans and transform objects are owning members,
     // released automatically (also when a constructor throws)
     use_crysfft_ = false;
-    crysfft_mode_ = CudaCrysFFTMode::None;
+    crysfft_engine_ = CrysFFTEngine::None;
     crysfft_identity_map_ = false;
     crysfft_physical_size_ = 0;
 
-    // Boundary conditions: the pseudo-spectral method needs the same BC on
-    // both faces of each direction.
-    auto bc_vec = cb->get_boundary_conditions();
-    for (int d = 0; d < dim_; ++d)
-    {
-        if (bc_vec[2*d] != bc_vec[2*d + 1])
-        {
-            throw_with_line_number("Pseudo-spectral method requires matching boundary conditions on both sides of each direction. "
-                "Direction " + std::to_string(d) + " has mismatched BCs. Use real-space method for mixed BCs.");
-        }
-    }
-    is_periodic_ = true;
-    for (const auto& b : bc_vec)
-    {
-        if (b != BoundaryCondition::PERIODIC)
-        {
-            is_periodic_ = false;
-            break;
-        }
-    }
+    // Both faces of each direction need the same BC: the transforms take whole directions
+    is_periodic_ = pseudo_spectral_periodic(cb->get_boundary_conditions(), dim_);
     // The Boltzmann factor buffers exp(-w ds) per distinct contour step and
     // monomer type; provide_work() allocates them for the field basis of the path
     molecules->finalize_contour_length_mapping();
@@ -495,18 +476,14 @@ void CudaSolverPseudoBase<T>::init_crysfft()
     // Engine choice and its basis map, shared with the CPU solver
     const CrysFFTPlan plan = plan_crysfft(
         space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), cb->is_z_axis_orthogonal());
-    if (plan.mode == CrysFFTChoice::Recursive3m)
-        setup_crysfft(CudaCrysFFTMode::Recursive3m, plan.map, plan.m3_translations);
-    else if (plan.mode == CrysFFTChoice::PmmmDct)
-        setup_crysfft(CudaCrysFFTMode::PmmmDct, plan.map, plan.m3_translations);
-    else if (plan.mode == CrysFFTChoice::ObliqueZ)
-        setup_crysfft(CudaCrysFFTMode::ObliqueZ, plan.map, plan.m3_translations);
+    if (plan.engine != CrysFFTEngine::None)
+        setup_crysfft(plan);
 }
 
 template <typename T>
-void CudaSolverPseudoBase<T>::setup_crysfft(
-    CudaCrysFFTMode mode, const CrysFFTBasisMapping& map, const std::array<double, 9>& m3_translations)
+void CudaSolverPseudoBase<T>::setup_crysfft(const CrysFFTPlan& plan)
 {
+    const CrysFFTBasisMapping& map = plan.map;
     crysfft_physical_size_ = map.M_phys;
     crysfft_identity_map_ = map.identity;
 
@@ -535,9 +512,9 @@ void CudaSolverPseudoBase<T>::setup_crysfft(
         // One transform per stream (plans and work buffers); the tables are shared
         if (i > 0)
             work_[i].crysfft = work_[0].crysfft->clone();
-        else if (mode == CudaCrysFFTMode::Recursive3m)
-            work_[i].crysfft = std::make_unique<CudaCrysFFTRecursive3m>(nx_logical, m3_translations);
-        else if (mode == CudaCrysFFTMode::ObliqueZ)
+        else if (plan.engine == CrysFFTEngine::Recursive3m)
+            work_[i].crysfft = std::make_unique<CudaCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
+        else if (plan.engine == CrysFFTEngine::ObliqueZ)
             work_[i].crysfft = std::make_unique<CudaCrysFFTObliqueZ>(nx_logical);
         else
             work_[i].crysfft = std::make_unique<CudaCrysFFT>(nx_logical);
@@ -545,25 +522,16 @@ void CudaSolverPseudoBase<T>::setup_crysfft(
         work_[i].d_crysfft_in.allocate(map.M_phys);
         work_[i].d_crysfft_out.allocate(map.M_phys);
     }
-    crysfft_mode_ = mode;
+    crysfft_engine_ = plan.engine;
     use_crysfft_ = true;
 
-    // The Boltzmann tables of the steps of each block's monomer type and contour step
-    // (not of every combination: a recursive 3m table holds 16 physical-grid arrays)
-    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
-        for (const Block& block : molecules->get_polymer(p).get_blocks())
-            for (double coeff : crysfft_block_coeffs(block.monomer_type, mapping.get_ds_index(block.contour_length)))
-                crysfft_boltz_.try_emplace(coeff);
+    // The Boltzmann tables of the steps of the blocks, built here for the cell
+    const auto block_coeffs = [this](const std::string& monomer_type, int ds_index) {
+        return crysfft_block_coeffs(monomer_type, ds_index);
+    };
+    for (double coeff : crysfft_step_coeffs(*molecules, block_coeffs))
+        crysfft_boltz_.try_emplace(coeff);
     update_crysfft_tables();
-}
-
-template <typename T>
-std::array<double, 6> CudaSolverPseudoBase<T>::crysfft_cell() const
-{
-    const auto lx = cb->get_lx();
-    const auto angles = cb->get_angles();
-    return {lx[0], lx[1], lx[2], angles[0], angles[1], angles[2]};
 }
 
 template <typename T>
@@ -571,19 +539,11 @@ void CudaSolverPseudoBase<T>::update_crysfft_tables()
 {
     // In place: the kernels of every stream that may still read the tables finish first
     CUDA_CHECK(cudaDeviceSynchronize());
-    const std::array<double, 6> cell = crysfft_cell();
+    const std::array<double, 6> cell = crysfft_cell(*cb);
     for (auto& [coeff, table] : crysfft_boltz_)
         work_[0].crysfft->build_boltzmann(table, cell, coeff, streams[0]);
     for (auto& [key, table] : crysfft_multipliers_)
         work_[0].crysfft->build_multiplier(table, cell, key.first, key.second, streams[0]);
-}
-
-template <typename T>
-double CudaSolverPseudoBase<T>::crysfft_coeff(const std::string& monomer_type, int ds_index, double divisor) const
-{
-    const double local_ds = molecules->get_contour_length_mapping().get_ds_from_index(ds_index);
-    const double bond_length = molecules->get_bond_lengths().at(monomer_type);   // no map copy per step
-    return bond_length * bond_length * local_ds / divisor;
 }
 
 template <typename T>
@@ -710,31 +670,7 @@ bool CudaSolverPseudoBase<T>::crysfft_stress_fast_path() const
     return use_crysfft_
         && this->cb->is_orthogonal()
         && !this->force_off_diagonal_stress_
-        && (crysfft_mode_ == CudaCrysFFTMode::PmmmDct || crysfft_mode_ == CudaCrysFFTMode::Recursive3m);
-}
-
-template <typename T>
-double CudaSolverPseudoBase<T>::stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const
-{
-    const auto& bond_lengths = this->molecules->get_bond_lengths();
-    auto bond_it = bond_lengths.find(monomer_type);
-    if (bond_it == bond_lengths.end())
-        throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
-    double bond_length_sq = bond_it->second * bond_it->second;
-    if (is_half_bond_length)
-        bond_length_sq *= 0.5;
-    return bond_length_sq;
-}
-
-template <typename T>
-std::vector<std::pair<int, double>> CudaSolverPseudoBase<T>::crysfft_stress_keys(
-    double bond_length_sq, bool include_bond_factor) const
-{
-    const double coeff = include_bond_factor ? bond_length_sq * this->molecules->get_global_ds() / 6.0 : 0.0;
-    std::vector<std::pair<int, double>> keys;
-    for (int axes : crysfft_stress_axis_groups(space_group_->get_crystal_system()))
-        keys.emplace_back(axes, coeff);
-    return keys;
+        && (crysfft_engine_ == CrysFFTEngine::Pmmm || crysfft_engine_ == CrysFFTEngine::Recursive3m);
 }
 
 template <typename T>
@@ -762,7 +698,8 @@ void CudaSolverPseudoBase<T>::crysfft_segment_stress(
 
     // d_segment_stress[g] = Σ_r n_orbit(r) q1(r) [F⁻¹ m_g F q2](r) over the reduced basis, with
     // the multiplier m_g of axis group g built by prepare_stress()
-    const std::vector<std::pair<int, double>> keys = crysfft_stress_keys(bond_length_sq, stress_has_bond_factor());
+    const std::vector<std::pair<int, double>> keys =
+        crysfft_stress_keys(*molecules, *space_group_, bond_length_sq, stress_has_bond_factor());
     int masks[3] = {0, 0, 0};
     for (size_t g = 0; g < keys.size(); ++g)
     {
@@ -843,27 +780,14 @@ void CudaSolverPseudoBase<T>::prepare_stress()
             // half bonds, one per axis group for all streams: the missing ones are built
             // here, before the segment loop, and update_crysfft_tables() rebuilds them
             // for a new cell
-            const std::array<double, 6> cell = crysfft_cell();
-            std::set<std::string> monomer_types;
-            for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
-                for (const Block& block : molecules->get_polymer(p).get_blocks())
-                    monomer_types.insert(block.monomer_type);
-            for (const std::string& monomer_type : monomer_types)
+            const std::array<double, 6> cell = crysfft_cell(*cb);
+            for (const auto& key : crysfft_multiplier_keys(*molecules, *space_group_, stress_has_bond_factor()))
             {
-                for (const bool half : {false, true})
-                {
-                    const bool include_bond_factor = stress_has_bond_factor();
-                    if (half && !include_bond_factor)
-                        continue;   // continuous chains: one multiplier per axis group
-                    for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
-                    {
-                        if (crysfft_multipliers_.contains(key))
-                            continue;
-                        CudaDeviceBuffer<double> table;
-                        work_[0].crysfft->build_multiplier(table, cell, key.first, key.second, streams[0]);
-                        crysfft_multipliers_.emplace(key, std::move(table));
-                    }
-                }
+                if (crysfft_multipliers_.contains(key))
+                    continue;
+                CudaDeviceBuffer<double> table;
+                work_[0].crysfft->build_multiplier(table, cell, key.first, key.second, streams[0]);
+                crysfft_multipliers_.emplace(key, std::move(table));
             }
         }
     }
@@ -896,7 +820,7 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         const int DIM = this->cb->get_dim();
         const int M_COMPLEX = this->total_complex_grid();
 
-        const double bond_length_sq = stress_bond_length_sq(monomer_type, is_half_bond_length);
+        const double bond_length_sq = stress_bond_length_sq(*molecules, monomer_type, is_half_bond_length);
 
         // =====================================================================
         // CrysFFT stress fast path (reduced grid, no full-grid FFT)

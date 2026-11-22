@@ -28,15 +28,6 @@
 #include "CudaCommon.h"
 #include "CudaMakhoulTransform.h"
 
-/// CrysFFT mode selection for CUDA solvers.
-enum class CudaCrysFFTMode
-{
-    None,
-    Recursive3m,
-    PmmmDct,
-    ObliqueZ
-};
-
 /**
  * @class CudaCrysFFTBase
  * @brief Abstract base for CUDA crystallographic FFT implementations.

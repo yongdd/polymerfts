@@ -221,10 +221,12 @@ w_symmetrized = sg.symmetrize(w_full)
 
 When CrysFFT is available (periodic 3D only), the reduced basis can be switched
 from the irreducible mesh to a **physical basis** to avoid gather/scatter
-mapping during diffusion. SCFT makes this choice automatically; with
-`PropagatorSolver`, enable a basis on the `SpaceGroup` (`enable_*_physical_basis()`)
-before passing it in. SCFT chooses from the angles the group fixes
-(`SpaceGroup.fixed_angles()`; the cell has them and keeps them in box relaxation):
+mapping during diffusion. SCFT makes this choice automatically
+(`SpaceGroup.enable_best_physical_basis()`); with `PropagatorSolver`, enable a
+basis on the `SpaceGroup` (`enable_best_physical_basis()` or
+`enable_*_physical_basis()`) before passing it in. The choice follows the angles
+the group fixes (`SpaceGroup.fixed_angles()`; the cell has them and keeps them in
+box relaxation):
 
 - **α, β and γ fixed at 90°** (cubic, tetragonal and orthorhombic groups): the
   3m physical basis (1/8 grid) is preferred when the space group provides the
@@ -235,7 +237,9 @@ before passing it in. SCFT chooses from the angles the group fixes
   Pmmm physical basis (1/8 grid, requires an even grid and mirror planes along
   x, y, z); otherwise the irreducible basis. The z-mirror basis that some of
   these groups have (P4/m) would hold the propagators on half the grid, several
-  times the irreducible mesh, and gains little time.
+  times the irreducible mesh, and gains little time; on a grid without an
+  octant (odd $`n_x`$ or $`n_y`$) such a group runs the ObliqueZ CrysFFT on the
+  irreducible basis.
 - **α and β fixed at 90°, γ free or fixed at another angle** (hexagonal groups,
   trigonal groups on hexagonal axes, monoclinic groups with the unique axis c,
   also when their γ is 90°): the z-mirror (ObliqueZ) physical basis (1/2 grid)
@@ -309,7 +313,8 @@ Metadata is exposed through getter methods (not attributes):
 | `get_n_reduced_basis()` | Number of reduced-basis points (irreducible mesh points, or the physical sub-grid size when a physical basis is enabled) |
 | `get_n_reduced_basis_full()` | Number of irreducible-orbit points of the full space group (equals `get_n_reduced_basis()` unless a physical basis is active) |
 | `physical_basis_name()` | Active physical basis: `'irreducible'`, `'pmmm'`, `'m3'` or `'z-mirror'` |
-| `m3_crysfft_feasible()` | True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 ≥ 8, translations that fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller grid runs with the recursive 3m CrysFFT all the same |
+| `m3_crysfft_feasible()` | True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 ≥ 8, translations that fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller grid (Nz/2 ≥ 2) runs with the recursive 3m CrysFFT all the same; `enable_m3_physical_basis()` refuses Nz/2 < 2 |
+| `enable_best_physical_basis()` | Enable the physical basis SCFT uses (see [Physical Bases for CrysFFT](#physical-bases-for-crysfft)) and return its name; the irreducible basis stays when none applies |
 | `enable_pmmm_physical_basis()` / `using_pmmm_physical_basis()` | Switch the reduced basis to the Pmmm physical sub-grid (1/8 grid) / query whether it is active |
 | `enable_m3_physical_basis()` / `using_m3_physical_basis()` | Switch to the M3 physical sub-grid (1/8 even-index grid) / query whether it is active |
 | `enable_z_mirror_physical_basis()` / `using_z_mirror_physical_basis()` | Switch to the z-mirror physical basis (half grid along z) / query whether it is active |

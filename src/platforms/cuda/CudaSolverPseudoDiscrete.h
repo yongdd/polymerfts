@@ -143,7 +143,7 @@ public:
     /// global ds (index 0; see advance_propagator_half_bond_step())
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
-        return {this->crysfft_coeff(monomer_type, ds_index, 6.0), this->crysfft_coeff(monomer_type, 0, 12.0)};
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false), this->get_effective_diffusion_coeff(monomer_type, 0, true)};
     }
     /// Boltzmann bond factor of the stress integrand (see CudaSolverPseudoBase)
     const double* get_stress_boltz_bond(

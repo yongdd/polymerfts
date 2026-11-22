@@ -21,13 +21,12 @@
 #include <cstring>
 #include <type_traits>
 #include <algorithm>
-#include <set>
 
 #include "CpuSolverPseudoBase.h"
 #include "CrysFFTSelector.h"
-#include "CrysFFTBasisMapping.h"
 #include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
+#include "PseudoSolverHelpers.h"
 #ifdef USE_CPU_FFTW
 #include "FftwCrysFFTRecursive3m.h"
 #endif
@@ -69,32 +68,12 @@ void CpuSolverPseudoBase<T>::init_shared(FFTBackend backend)
 {
     this->fft_backend_ = backend;
 
-    // Check if all BCs are periodic
+    // Both faces of each direction need the same BC: the transforms take whole directions
     auto bc_vec = cb->get_boundary_conditions();
-
-    // Validate that both sides of each direction have matching BC
-    // (required for pseudo-spectral: FFT/DCT/DST apply to entire direction)
-    int dim = cb->get_dim();
-    for (int d = 0; d < dim; ++d)
-    {
-        if (bc_vec[2*d] != bc_vec[2*d + 1])
-        {
-            throw_with_line_number("Pseudo-spectral method requires matching boundary conditions on both sides of each direction. "
-                "Direction " + std::to_string(d) + " has mismatched BCs. Use real-space method for mixed BCs.");
-        }
-    }
-    is_periodic_ = true;
-    for (const auto& b : bc_vec)
-    {
-        if (b != BoundaryCondition::PERIODIC)
-        {
-            is_periodic_ = false;
-            break;
-        }
-    }
+    dim_ = cb->get_dim();
+    is_periodic_ = pseudo_spectral_periodic(bc_vec, dim_);
 
     // The transform of the grid, one boundary condition per dimension (all BCs and backends)
-    dim_ = cb->get_dim();
     std::vector<BoundaryCondition> bc_per_dim;
     for (int d = 0; d < dim_; ++d)
         bc_per_dim.push_back(bc_vec[2 * d]);
@@ -137,16 +116,16 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     // Engine choice and its basis map, shared with the CUDA solver
     const CrysFFTPlan plan = plan_crysfft(
         space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), cb->is_z_axis_orthogonal());
-    if (plan.mode == CrysFFTChoice::None)
+    if (plan.engine == CrysFFTEngine::None)
         return;
 
     // The physical-grid -> reduced-basis map, not needed when the reduced basis is the
-    // physical grid (a physical basis has the identity map, see crysfft_mapping_usable())
+    // physical grid (a physical basis has the identity map, see plan_crysfft())
     crysfft_identity_map_ = plan.map.identity;
     if (!crysfft_identity_map_)
         crysfft_reduced_indices_ = plan.map.phys_to_reduced;
 
-    if (plan.mode == CrysFFTChoice::Recursive3m)
+    if (plan.engine == CrysFFTEngine::Recursive3m)
     {
 #ifdef USE_CPU_MKL
         if (fft_backend_ == FFTBackend::MKL)
@@ -157,53 +136,24 @@ void CpuSolverPseudoBase<T>::init_crysfft()
             crysfft_ = std::make_unique<FftwCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
 #endif
     }
-    else if (plan.mode == CrysFFTChoice::PmmmDct)
+    else if (plan.engine == CrysFFTEngine::Pmmm)
     {
         crysfft_ = std::make_unique<CrysFFTPmmm>(nx_logical, fft_backend_);
     }
-    else if (plan.mode == CrysFFTChoice::ObliqueZ)
+    else if (plan.engine == CrysFFTEngine::ObliqueZ)
     {
         crysfft_ = std::make_unique<CrysFFTObliqueZ>(nx_logical, fft_backend_);
     }
     if (!crysfft_)
         throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
 
-    // The Boltzmann tables of the steps of each block's monomer type and contour step
-    // (not of every combination: a recursive 3m table holds 16 physical-grid arrays),
-    // which update_laplacian_operator() builds for the cell
-    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
-        for (const Block& block : molecules->get_polymer(p).get_blocks())
-            for (double coeff : crysfft_block_coeffs(block.monomer_type, mapping.get_ds_index(block.contour_length)))
-                crysfft_boltz_.try_emplace(coeff);
-}
-
-//------------------------------------------------------------------------------
-// ds value helpers
-//------------------------------------------------------------------------------
-template <typename T>
-double CpuSolverPseudoBase<T>::get_ds_value(int ds_index) const
-{
-    auto it = ds_values_.find(ds_index);
-    if (it == ds_values_.end())
-        throw_with_line_number("ds_index " + std::to_string(ds_index) + " not registered in solver.");
-    return it->second;
-}
-
-template <typename T>
-double CpuSolverPseudoBase<T>::get_effective_diffusion_coeff(
-    const std::string& monomer_type, int ds_index, bool half_step) const
-{
-    double ds = get_ds_value(ds_index);
-    if (half_step)
-        ds *= 0.5;
-
-    auto& bond_lengths = molecules->get_bond_lengths();
-    auto it = bond_lengths.find(monomer_type);
-    if (it == bond_lengths.end())
-        throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
-    double bond_length_sq = it->second * it->second;
-    return bond_length_sq * ds / 6.0;
+    // The Boltzmann tables of the steps of the blocks, which update_laplacian_operator()
+    // builds for the cell
+    const auto block_coeffs = [this](const std::string& monomer_type, int ds_index) {
+        return crysfft_block_coeffs(monomer_type, ds_index);
+    };
+    for (double coeff : crysfft_step_coeffs(*molecules, block_coeffs))
+        crysfft_boltz_.try_emplace(coeff);
 }
 
 //------------------------------------------------------------------------------
@@ -241,7 +191,7 @@ void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, do
     }
 
     // The CrysFFT path is taken only when the physical grid reaches every reduced-basis
-    // point (crysfft_mapping_usable), so the scatter writes all of reduced_out
+    // point (plan_crysfft()), so the scatter writes all of reduced_out
     for (int i = 0; i < M_phys; ++i)
     {
         reduced_out[crysfft_reduced_indices_[i]] = phys_in[i];
@@ -294,18 +244,10 @@ void CpuSolverPseudoBase<T>::crysfft_step(double* q_in, double* q_out, double co
 }
 
 template <typename T>
-std::array<double, 6> CpuSolverPseudoBase<T>::crysfft_cell() const
-{
-    const auto lx = cb->get_lx();
-    const auto angles = cb->get_angles();
-    return {lx[0], lx[1], lx[2], angles[0], angles[1], angles[2]};
-}
-
-template <typename T>
 void CpuSolverPseudoBase<T>::update_crysfft_tables()
 {
     // In place, while no thread runs a propagator or stress loop
-    const std::array<double, 6> cell = crysfft_cell();
+    const std::array<double, 6> cell = crysfft_cell(*cb);
     for (auto& [coeff, table] : crysfft_boltz_)
         crysfft_->build_boltzmann(table, cell, coeff);
     for (auto& [key, table] : crysfft_multipliers_)
@@ -370,32 +312,6 @@ bool CpuSolverPseudoBase<T>::crysfft_stress_fast_path() const
 }
 
 template <typename T>
-double CpuSolverPseudoBase<T>::stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const
-{
-    const auto& bond_lengths = this->molecules->get_bond_lengths();
-    auto bond_it = bond_lengths.find(monomer_type);
-    if (bond_it == bond_lengths.end())
-        throw_with_line_number("monomer_type \"" + monomer_type + "\" not found in bond_lengths.");
-
-    double bond_length_sq = bond_it->second * bond_it->second;
-    if (is_half_bond_length)
-        bond_length_sq *= 0.5;
-    return bond_length_sq;
-}
-
-template <typename T>
-std::vector<std::pair<int, double>> CpuSolverPseudoBase<T>::crysfft_stress_keys(
-    double bond_length_sq, bool include_bond_factor) const
-{
-    // Discrete chains carry the bond factor ĝ(k) = exp(-b² k² Δs / 6)
-    const double coeff = include_bond_factor ? bond_length_sq * molecules->get_global_ds() / 6.0 : 0.0;
-    std::vector<std::pair<int, double>> keys;
-    for (int axes : crysfft_stress_axis_groups(space_group_->get_crystal_system()))
-        keys.emplace_back(axes, coeff);
-    return keys;
-}
-
-template <typename T>
 void CpuSolverPseudoBase<T>::prepare_stress()
 {
     // The Pseudo tables of the cell when the off-diagonal flag has turned the stress
@@ -419,27 +335,14 @@ void CpuSolverPseudoBase<T>::prepare_stress()
         // half bonds, one per axis group for all threads: the missing ones are built
         // here, before the stress loop, and update_crysfft_tables() rebuilds them
         // for a new cell
-        const std::array<double, 6> cell = crysfft_cell();
-        std::set<std::string> monomer_types;
-        for (int p = 0; p < molecules->get_n_polymer_types(); ++p)
-            for (const Block& block : molecules->get_polymer(p).get_blocks())
-                monomer_types.insert(block.monomer_type);
-        for (const std::string& monomer_type : monomer_types)
+        const std::array<double, 6> cell = crysfft_cell(*cb);
+        for (const auto& key : crysfft_multiplier_keys(*molecules, *space_group_, stress_has_bond_factor()))
         {
-            for (const bool half : {false, true})
-            {
-                const bool include_bond_factor = stress_has_bond_factor();
-                if (half && !include_bond_factor)
-                    continue;   // continuous chains: one multiplier per axis group
-                for (const auto& key : crysfft_stress_keys(stress_bond_length_sq(monomer_type, half), include_bond_factor))
-                {
-                    if (crysfft_multipliers_.contains(key))
-                        continue;
-                    std::vector<double> table;
-                    crysfft_->build_multiplier(table, cell, key.first, key.second);
-                    crysfft_multipliers_.emplace(key, std::move(table));
-                }
-            }
+            if (crysfft_multipliers_.contains(key))
+                continue;
+            std::vector<double> table;
+            crysfft_->build_multiplier(table, cell, key.first, key.second);
+            crysfft_multipliers_.emplace(key, std::move(table));
         }
     }
 }
@@ -484,7 +387,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         // the axes of the group (see crysfft_stress_axis_groups), built by prepare_stress()
         // with the bond factor for discrete chains
         double sums[3] = {0.0, 0.0, 0.0};
-        for (const auto& key : crysfft_stress_keys(bond_length_sq, stress_has_bond_factor()))
+        for (const auto& key : crysfft_stress_keys(*molecules, *space_group_, bond_length_sq, stress_has_bond_factor()))
         {
             const int axes = key.first;
             const auto multiplier = crysfft_multipliers_.find(key);
@@ -622,7 +525,7 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
     {
         const int N_STRESS = 6;  // v⊗v dyad sums: V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃
         const int M_COMPLEX = pseudo->get_total_complex_grid();
-        const double bond_length_sq = stress_bond_length_sq(monomer_type, is_half_bond_length);
+        const double bond_length_sq = stress_bond_length_sq(*molecules, monomer_type, is_half_bond_length);
 
         std::vector<T> stress(N_STRESS, 0.0);
 

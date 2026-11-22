@@ -542,7 +542,7 @@ void SpaceGroup::to_reduced_basis(const double* full_field, double* reduced_fiel
 void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irreducible_field, int n_fields) const
 {
     // Without a physical basis the reduced basis is the irreducible one
-    if (physical_basis_ == PhysicalBasis::None)
+    if (physical_basis_ == CrysFFTEngine::None)
     {
         const int n_reduced = n_basis_;
         for (int f = 0; f < n_fields; ++f)
@@ -589,7 +589,7 @@ void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irr
 void SpaceGroup::irreducible_to_reduced(const double* irreducible_field, double* reduced_field, int n_fields) const
 {
     // Without a physical basis the reduced basis is the irreducible one
-    if (physical_basis_ == PhysicalBasis::None)
+    if (physical_basis_ == CrysFFTEngine::None)
     {
         const int n_reduced = n_basis_;
         for (int f = 0; f < n_fields; ++f)
@@ -793,7 +793,7 @@ void SpaceGroup::check_basis_not_frozen() const
         throw_with_line_number("The physical basis cannot be changed after a computation box or solver was created with this SpaceGroup (their reduced-basis maps are snapshots); create a new SpaceGroup.");
 }
 
-void SpaceGroup::adopt_physical_basis(PhysicalBasis basis, const CrysFFTBasisMapping& grid,
+void SpaceGroup::adopt_physical_basis(CrysFFTEngine basis, const CrysFFTBasisMapping& grid,
                                       const std::vector<GridMap>& folds)
 {
     // Built in locals and committed at the end, so that a failure leaves the group as it was
@@ -814,7 +814,7 @@ void SpaceGroup::adopt_physical_basis(PhysicalBasis basis, const CrysFFTBasisMap
         }
         if (b < 0)
         {
-            const char* name = basis == PhysicalBasis::M3 ? "M3" : (basis == PhysicalBasis::Pmmm ? "Pmmm" : "Z-mirror");
+            const char* name = basis == CrysFFTEngine::Recursive3m ? "M3" : (basis == CrysFFTEngine::Pmmm ? "Pmmm" : "Z-mirror");
             throw_with_line_number(std::string("Failed to map grid point to ") + name + " physical basis.");
         }
         basis_of[point] = b;
@@ -831,7 +831,7 @@ void SpaceGroup::adopt_physical_basis(PhysicalBasis basis, const CrysFFTBasisMap
 
 void SpaceGroup::enable_pmmm_physical_basis()
 {
-    if (physical_basis_ == PhysicalBasis::Pmmm)
+    if (physical_basis_ == CrysFFTEngine::Pmmm)
         return;
     check_basis_not_frozen();
 
@@ -843,7 +843,7 @@ void SpaceGroup::enable_pmmm_physical_basis()
 
     // The octant at consecutive indices; the mirrors through the origin fold the grid onto it
     const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
-    adopt_physical_basis(PhysicalBasis::Pmmm,
+    adopt_physical_basis(CrysFFTEngine::Pmmm,
         build_crysfft_mapping_octant(nx3, orbit_of_, n_orbits_, /*even_indices=*/false),
         grid_maps_where([](const auto& R, const auto& t) { return is_diagonal(R) && is_lattice_translation(t, 1e-10); }));
 }
@@ -857,7 +857,7 @@ bool SpaceGroup::m3_crysfft_feasible() const
 
 void SpaceGroup::enable_m3_physical_basis()
 {
-    if (physical_basis_ == PhysicalBasis::M3)
+    if (physical_basis_ == CrysFFTEngine::Recursive3m)
         return;
     check_basis_not_frozen();
 
@@ -867,17 +867,20 @@ void SpaceGroup::enable_m3_physical_basis()
     std::array<double, 9> trans_part = {0,0,0, 0,0,0, 0,0,0};
     if (!get_m3_translations(trans_part))
         throw_with_line_number("Space group does not contain 3m translations for M3 physical basis.");
+    // The recursive 3m CrysFFT of this basis needs nz/2 >= 2 (crysfft_recursive_3m_feasible)
+    if (nx_[2] / 2 < 2)
+        throw_with_line_number("M3 physical basis requires nz/2 >= 2 (the recursive 3m CrysFFT).");
+    const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
 
     // The octant at even indices; a point takes the first diagonal operation that maps it there
-    const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
-    adopt_physical_basis(PhysicalBasis::M3,
+    adopt_physical_basis(CrysFFTEngine::Recursive3m,
         build_crysfft_mapping_octant(nx3, orbit_of_, n_orbits_, /*even_indices=*/true),
         grid_maps_where([](const auto& R, const auto&) { return is_diagonal(R); }));
 }
 
 void SpaceGroup::enable_z_mirror_physical_basis()
 {
-    if (physical_basis_ == PhysicalBasis::ZMirror)
+    if (physical_basis_ == CrysFFTEngine::ObliqueZ)
         return;
     check_basis_not_frozen();
 
@@ -890,12 +893,33 @@ void SpaceGroup::enable_z_mirror_physical_basis()
     double t_z = 0.0;
     get_z_mirror_translation(t_z);
     const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
-    adopt_physical_basis(PhysicalBasis::ZMirror,
+    adopt_physical_basis(CrysFFTEngine::ObliqueZ,
         build_crysfft_mapping_z_mirror(nx3, orbit_of_, n_orbits_, shift),
         grid_maps_where([t_z](const auto& R, const auto& t) {
             return is_diagonal_with(R, MIRRORS[0]) && is_zero_mod1(t[0], 1e-10) && is_zero_mod1(t[1], 1e-10)
                    && is_zero_mod1(wrap01(t[2]) - t_z, 1e-10);
         }));
+}
+
+CrysFFTEngine SpaceGroup::enable_best_physical_basis()
+{
+    // Each predicate below implies that its enable function succeeds (for m3: a bijective
+    // fold permutation maps every grid point onto an even index, Recursive3mFoldParity.h)
+    const std::array<double, 3> angles = fixed_angles();
+    const bool even_grid = (nx_[0] % 2 == 0) && (nx_[1] % 2 == 0) && (nx_[2] % 2 == 0);
+    if (angles[0] == 90.0 && angles[1] == 90.0 && angles[2] == 90.0)
+    {
+        if (m3_crysfft_feasible())
+            enable_m3_physical_basis();
+        else if (even_grid && has_mirror_planes_xyz())
+            enable_pmmm_physical_basis();
+    }
+    else if (angles[0] == 90.0 && angles[1] == 90.0)
+    {
+        if (z_mirror_half_grid_shift() >= 0)
+            enable_z_mirror_physical_basis();
+    }
+    return physical_basis_;
 }
 
 void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<double>& angles_deg) const
@@ -1003,9 +1027,9 @@ std::string SpaceGroup::physical_basis_name() const
 {
     switch (physical_basis_)
     {
-        case PhysicalBasis::Pmmm:    return "pmmm";
-        case PhysicalBasis::M3:      return "m3";
-        case PhysicalBasis::ZMirror: return "z-mirror";
-        default:                     return "irreducible";
+        case CrysFFTEngine::Pmmm:        return "pmmm";
+        case CrysFFTEngine::Recursive3m: return "m3";
+        case CrysFFTEngine::ObliqueZ:    return "z-mirror";
+        default:                         return "irreducible";
     }
 }

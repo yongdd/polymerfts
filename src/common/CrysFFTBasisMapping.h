@@ -18,8 +18,6 @@
 #include <string>
 #include <vector>
 
-#include "Exception.h"
-
 struct CrysFFTBasisMapping
 {
     int M_phys = 0;                    ///< Number of physical grid points
@@ -126,26 +124,6 @@ inline CrysFFTBasisMapping build_crysfft_mapping_z_mirror(
     }
     crysfft_mapping_detail::finish(map, full_to_reduced);
     return map;
-}
-
-/**
- * @brief Whether a mapping can be used for the CrysFFT path.
- *
- * With a physical basis enabled the space group already stores its fields on
- * the physical grid, so the mapping must be the identity; a mismatch is a
- * configuration error and throws `mismatch_message`. Without a physical basis
- * the mapping is usable when it reaches every reduced-basis point.
- */
-inline bool crysfft_mapping_usable(
-    const CrysFFTBasisMapping& map, bool physical_basis_enabled, const char* mismatch_message)
-{
-    if (physical_basis_enabled)
-    {
-        if (!map.identity)
-            throw_with_line_number(std::string(mismatch_message));
-        return true;
-    }
-    return map.covers_all_reduced;
 }
 
 /**

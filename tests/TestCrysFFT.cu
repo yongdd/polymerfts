@@ -356,14 +356,13 @@ bool test_recursive3m(const char* symbol, int hall, int Nx, int Ny, int Nz,
                expect_rescued ? "singular (rescued case)" : "bijective");
         return false;
     }
-    const auto selection =
-        select_crysfft_mode(&sg, {Nx, Ny, Nz}, 3, true, true, true);
-    if (selection.mode != CrysFFTChoice::Recursive3m)
+    const auto plan = plan_crysfft(&sg, {Nx, Ny, Nz}, 3, true, true, true);
+    if (plan.engine != CrysFFTEngine::Recursive3m)
     {
         printf("  selector did not choose Recursive3m FAIL\n");
         return false;
     }
-    const std::array<double, 9>& trans = selection.m3_translations;
+    const std::array<double, 9> trans = plan.m3_translations;
     sg.enable_m3_physical_basis();
 
     // Random reduced field, symmetrized to a valid symmetric full field

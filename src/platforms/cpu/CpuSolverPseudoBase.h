@@ -47,8 +47,8 @@
 #include "Pseudo.h"
 #include "FFTFactory.h"
 #include "SpaceGroup.h"
-#include "CrysFFTBasisMapping.h"
 #include "CpuCrysFFT.h"
+#include "PseudoSolverHelpers.h"
 
 /**
  * @class CpuSolverPseudoBase
@@ -244,17 +244,11 @@ protected:
     void init_crysfft();
     /// Rebuild every CrysFFT table in place for the current cell.
     void update_crysfft_tables();
-    /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
-    std::array<double, 6> crysfft_cell() const;
 
     // ---- compute_single_segment_stress() helpers ----------------------------
     /// True when the segment stress takes the CrysFFT fast path (an engine with stress
     /// multipliers: Pmmm or recursive 3m; orthogonal 3D periodic cell, no angle optimization).
     bool crysfft_stress_fast_path() const;
-    /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).
-    double stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const;
-    /// Keys of the stress multipliers of a bond: per axis group, (axes, b²·ds/6 or 0 without the bond factor).
-    std::vector<std::pair<int, double>> crysfft_stress_keys(double bond_length_sq, bool include_bond_factor) const;
     /**
      * @brief Diagonal stress sums through the CrysFFT fast path.
      *
@@ -279,12 +273,11 @@ public:
     /// Virtual destructor. Frees the shared components (FFT, Pseudo).
     virtual ~CpuSolverPseudoBase() = default;   // fft_ and pseudo are owning members
 
-    /// Get the contour step size for a ds index.
-    double get_ds_value(int ds_index) const;
-
-    /// Compute effective diffusion coefficient (b^2 * ds / 6).
-    double get_effective_diffusion_coeff(
-        const std::string& monomer_type, int ds_index, bool half_step) const;
+    /// The diffusion coefficient b² ds / 6 of a step, ds / 2 for a half step (effective_diffusion_coeff()).
+    double get_effective_diffusion_coeff(const std::string& monomer_type, int ds_index, bool half_step) const
+    {
+        return effective_diffusion_coeff(*molecules, monomer_type, ds_index, half_step);
+    }
 
     /**
      * @brief Update Fourier-space operators.

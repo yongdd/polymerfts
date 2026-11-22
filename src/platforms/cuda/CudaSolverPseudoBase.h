@@ -55,10 +55,11 @@
 #include "CudaMakhoulTransform.h"
 #include "CudaSolver.h"
 #include "CudaCommon.h"
-#include "CudaCrysFFT.h"   // CudaCrysFFTBase, CudaCrysFFTMode
+#include "CudaCrysFFT.h"   // CudaCrysFFTBase
+#include "PseudoSolverHelpers.h"
+#include "SpaceGroup.h"   // CrysFFTEngine
 
-class SpaceGroup;
-struct CrysFFTBasisMapping;
+struct CrysFFTPlan;
 
 template <typename T>
 class CudaSolverPseudoBase : public CudaSolver<T>
@@ -122,7 +123,7 @@ protected:
 
     // CrysFFT fast path (crystallographic FFT on the physical sub-grid)
     bool use_crysfft_;                               ///< True when the CrysFFT path is enabled (a space group, 3D, periodic, real fields)
-    CudaCrysFFTMode crysfft_mode_;
+    CrysFFTEngine crysfft_engine_;                   ///< The engine of the CrysFFT path (plan_crysfft())
     bool crysfft_identity_map_;                      ///< True when reduced basis matches physical grid
     int crysfft_physical_size_;
     CudaDeviceBuffer<int> d_crysfft_phys_to_reduced_;   ///< Device map: physical index -> reduced index
@@ -260,15 +261,14 @@ protected:
     /// True when the stress integrand carries the Boltzmann bond factor (discrete chains).
     virtual bool stress_has_bond_factor() const { return false; }
 
-    /**
-     * @brief CrysFFT diffusion coefficient b²·Δs/divisor of one propagator step.
-     *
-     * @param divisor 6 for a full step, 12 for a half step
-     */
-    double crysfft_coeff(const std::string& monomer_type, int ds_index, double divisor) const;
+    /// The diffusion coefficient b² ds / 6 of a step, ds / 2 for a half step (effective_diffusion_coeff()).
+    double get_effective_diffusion_coeff(const std::string& monomer_type, int ds_index, bool half_step) const
+    {
+        return effective_diffusion_coeff(*molecules, monomer_type, ds_index, half_step);
+    }
 
     /**
-     * @brief Coefficients (see crysfft_coeff()) of the CrysFFT steps that the
+     * @brief Coefficients (get_effective_diffusion_coeff()) of the CrysFFT steps that the
      *        method takes for a block of this monomer type and contour step.
      *
      * Their Boltzmann tables are built for every block when the CrysFFT objects
@@ -288,19 +288,12 @@ private:
     void update_pseudo();
     /// Select and build the CrysFFT fast path for the current space group (3D periodic, real fields).
     void init_crysfft();
-    /// Upload the index maps and create the per-stream CrysFFT objects for `mode`.
-    void setup_crysfft(CudaCrysFFTMode mode, const CrysFFTBasisMapping& map,
-                       const std::array<double, 9>& m3_translations);
+    /// Upload the index maps of the plan and create the per-stream CrysFFT objects of its engine.
+    void setup_crysfft(const CrysFFTPlan& plan);
     /// Rebuild every CrysFFT table for the current cell.
     void update_crysfft_tables();
-    /// Cell parameters [Lx, Ly, Lz, alpha, beta, gamma] of the computation box.
-    std::array<double, 6> crysfft_cell() const;
-    /// Keys of the stress multipliers of a bond: per axis group, (axes, b²·ds/6 or 0 without the bond factor).
-    std::vector<std::pair<int, double>> crysfft_stress_keys(double bond_length_sq, bool include_bond_factor) const;
     /// True when the segment stress takes the CrysFFT fast path (Pmmm or 3m, orthogonal 3D cell).
     bool crysfft_stress_fast_path() const;
-    /// b² of the monomer type, halved for a half bond (the stress integrand and its multiplier key).
-    double stress_bond_length_sq(const std::string& monomer_type, bool is_half_bond_length) const;
     /**
      * @brief Segment stress of the CrysFFT fast path: V₁₁, V₂₂, V₃₃ into d_segment_stress[0..2].
      *

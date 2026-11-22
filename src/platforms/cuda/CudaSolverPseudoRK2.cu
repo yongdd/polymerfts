@@ -93,7 +93,7 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
             }
             else
             {
-                const double coeff_full = this->crysfft_coeff(monomer_type, ds_index, 6.0);
+                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
                 this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
                 this->multiply_mask(STREAM, d_q_out, d_q_mask);

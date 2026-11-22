@@ -19,6 +19,8 @@
 
 #include "CudaCrysFFT.h"
 
+class Recursive3mTables;
+
 /**
  * @class CudaCrysFFTRecursive3m
  * @brief Recursive 3m CrysFFT; physical grid (Nx/2) × (Ny/2) × (Nz/2).
@@ -44,27 +46,12 @@ public:
                           cudaStream_t stream) override;
 
 private:
-    std::array<int, 3> nx_logical_;
+    /// The grid checks, the twiddle factors and the fold of the tables (CrysFFTTables.h,
+    /// shared with the CPU engine), fixed by the grid and the translations (shared with the clones)
+    std::shared_ptr<const Recursive3mTables> tables_;
     std::array<int, 3> nx_physical_;
-    int M_logical_{0};
     int M_physical_{0};
     int M_complex_{0};
-
-    std::array<double, 9> translational_part_;
-
-    /// Pairing permutation of the fold: twiddle r_p multiplies the
-    /// octant-transformed Boltzmann array S_{fold_perm_[p]} (identity when
-    /// all generator translations are an even number of grid cells).
-    /// See Recursive3mFoldParity.h for the derivation.
-    std::array<int, 8> fold_perm_{};
-
-    /// Twiddle factors of the fold, fixed by the grid and the translations (shared with the clones)
-    struct Twiddles
-    {
-        std::array<std::vector<double>, 8> re;
-        std::array<std::vector<double>, 8> im;
-    };
-    std::shared_ptr<const Twiddles> twiddles_;
 
     CufftPlan plan_r2c_;
     CufftPlan plan_c2r_;
@@ -80,10 +67,6 @@ private:
     void init_plans();
     /// Run the cuFFT plans and kernels on `stream` (diffusion() calls it every time).
     void use_stream(cudaStream_t stream);
-    std::shared_ptr<const Twiddles> generate_twiddle_factors() const;
-    /// Fold the logical k-space array tempmat into the 16 factor arrays of a table.
-    void build_table_from_tempmat(CudaDeviceBuffer<double>& table, const std::vector<double>& tempmat,
-                                  cudaStream_t stream) const;
 };
 
 #endif

@@ -26,8 +26,8 @@
 // Case D "P4/mmm": tetragonal; joint Lx = Ly FD vs stress[0]+stress[1] plus
 //    Lz-only FD, and stress[0] = stress[1] within 1e-8. Exercises the
 //    tetragonal x,y axis-averaging of the CrysFFT stress path (Recursive3m).
-// Case E "Im-3m" 12^3: same checks as B; nz/2 = 6 < 8 forces the PmmmDct
-//    engine, exercising the cubic axis-averaging of the PmmmDct stress path.
+// Case E "Im-3m" 12^3: same checks as B; nz/2 = 6 < 8 forces the Pmmm
+//    engine, exercising the cubic axis-averaging of the Pmmm stress path.
 //
 // On CPU this exercises the CrysFFT fast path; on CUDA the expand+FFT path.
 
@@ -415,7 +415,7 @@ int main()
         symmetrize_fields(case_b);
 
         // Case C: same cubic group on a 40^3 grid, where nz/2 = 20 is not a
-        // multiple of 8. Historically this grid fell back to the PmmmDct engine
+        // multiple of 8. Historically this grid fell back to the Pmmm engine
         // (catching a DCT-normalization bug of the MKL Pmmm engine); since the
         // Recursive3m grid condition was relaxed to nz/2 >= 8, this now
         // exercises the Recursive3m engine on a non-multiple-of-16 grid that
@@ -490,13 +490,13 @@ int main()
         }
         symmetrize_fields(case_d);
 
-        // ================= Case E: Im-3m on 12^3 (PmmmDct fallback) =================
+        // ================= Case E: Im-3m on 12^3 (Pmmm fallback) =================
         // nz/2 = 6 < 8 fails the Recursive3m grid bound, so the selector falls
-        // back to the PmmmDct engine; this exercises the cubic averaging branch
-        // of the PmmmDct stress path, which larger cubic grids no longer reach
+        // back to the Pmmm engine; this exercises the cubic averaging branch
+        // of the Pmmm stress path, which larger cubic grids no longer reach
         // (they select Recursive3m since the nz/2 >= 8 relaxation).
         CaseSpec case_e = case_b;
-        case_e.name = "Im-3m (BCC, cubic, 12^3 PmmmDct fallback)";
+        case_e.name = "Im-3m (BCC, cubic, 12^3 Pmmm fallback)";
         case_e.nx = {12, 12, 12};
         case_e.lx = {1.9, 1.9, 1.9};  // same cubic box as case B, coarser grid
         SpaceGroup sg_bcc12(case_e.nx, "Im-3m", 529);

@@ -143,7 +143,7 @@ public:
     /// CrysFFT steps of a block: a full step and two half steps
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
-        return {this->crysfft_coeff(monomer_type, ds_index, 6.0), this->crysfft_coeff(monomer_type, ds_index, 12.0)};
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false), this->get_effective_diffusion_coeff(monomer_type, ds_index, true)};
     }
 };
 #endif

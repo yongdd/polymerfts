@@ -102,7 +102,7 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
             }
             else
             {
-                const double coeff_full = this->crysfft_coeff(monomer_type, ds_index, 6.0);
+                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
                 // Bond convolution, then the full-segment weight exp(-w*ds)
                 this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, nullptr, nullptr, _d_exp_dw);
@@ -151,7 +151,7 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
             }
             else
             {
-                const double coeff_half = this->crysfft_coeff(monomer_type, 0, 12.0);
+                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
 
                 this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_half, nullptr, nullptr, nullptr);
                 return;

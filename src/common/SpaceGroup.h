@@ -23,17 +23,18 @@ inline double wrap01(double v)
 }
 
 /**
- * @brief Physical (CrysFFT) basis layered on top of the irreducible basis.
+ * @brief The crystallographic FFT engines, and the physical bases that store their grids.
  *
- * At most one physical basis is active at a time; it selects which
- * crystallographic FFT fast path the solvers may use.
+ * The solvers choose an engine with plan_crysfft() (CrysFFTSelector.h). A SpaceGroup
+ * holds at most one physical basis on top of its irreducible orbits, named by the
+ * engine whose physical grid it stores.
  */
-enum class PhysicalBasis
+enum class CrysFFTEngine
 {
-    None,     ///< Irreducible (full-group) basis only
-    Pmmm,     ///< Pmmm mirror-plane basis (DCT CrysFFT)
-    M3,       ///< Recursive 3m basis
-    ZMirror   ///< z-mirror basis for hexagonal-axes settings (ObliqueZ CrysFFT)
+    None,         ///< No engine; as a basis: the irreducible (full-group) basis
+    Recursive3m,  ///< Recursive 3m fold; the m3 basis: the (N/2)^3 octant at even indices
+    Pmmm,         ///< Pmmm DCT; the Pmmm basis: the (N/2)^3 octant at consecutive indices
+    ObliqueZ      ///< DCT along z, FFT in-plane; the z-mirror basis: nz/2 planes along z from the mirror's shift
 };
 
 /**
@@ -79,7 +80,7 @@ private:
     std::vector<int> basis_counts_;            ///< Full-grid points mapped to each basis point (size: n_basis)
     std::vector<int> basis_to_orbit_;          ///< Basis point -> orbit (empty without a physical basis)
 
-    PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
+    CrysFFTEngine physical_basis_{CrysFFTEngine::None};  ///< Engine whose grid the active basis stores (None: irreducible)
     mutable bool in_use_{false};  ///< set once a computation box or solver holds this group
 
     /// Initialize space group from Hall number.
@@ -132,7 +133,7 @@ private:
      * @param folds Operations that map every other grid point onto the physical grid;
      *              a point takes the basis point of the first fold that reaches it.
      */
-    void adopt_physical_basis(PhysicalBasis basis, const CrysFFTBasisMapping& grid,
+    void adopt_physical_basis(CrysFFTEngine basis, const CrysFFTBasisMapping& grid,
                               const std::vector<GridMap>& folds);
 
 public:
@@ -338,7 +339,8 @@ public:
      */
     int z_mirror_half_grid_shift(std::string* why = nullptr) const;
 
-    PhysicalBasis physical_basis() const { return physical_basis_; }
+    /// The engine whose physical grid the active basis stores (None: the irreducible basis).
+    CrysFFTEngine physical_basis() const { return physical_basis_; }
     /// Human-readable name of the active basis ("irreducible", "pmmm", "m3", "z-mirror").
     std::string physical_basis_name() const;
     /// Print the group, its crystal system and the sizes of its bases (nothing else prints).
@@ -350,6 +352,23 @@ public:
     bool in_use() const { return in_use_; }
 
     /**
+     * @brief Enable the physical basis that SCFT uses, chosen from the angles the group
+     *        fixes (fixed_angles(): the cell has them and keeps them in a box relaxation).
+     *
+     * With alpha, beta and gamma fixed at 90 degrees: the m3 basis where the recursive
+     * 3m CrysFFT pays off (m3_crysfft_feasible()), else the Pmmm basis (an even grid and
+     * the mirrors along x, y and z). The z-mirror basis that some of these groups have
+     * would hold the propagators on half the grid, several times the irreducible mesh,
+     * so their solvers take ObliqueZ on the irreducible basis instead (plan_crysfft()).
+     * With alpha and beta fixed at 90 degrees and gamma free or fixed at another angle:
+     * the z-mirror basis (z_mirror_half_grid_shift() >= 0). Otherwise, or when no basis
+     * applies, the irreducible basis stays.
+     *
+     * @return The engine of the basis now active (None: the irreducible basis)
+     */
+    CrysFFTEngine enable_best_physical_basis();
+
+    /**
      * @brief Enable Pmmm physical basis (1/8 grid) mapping.
      *
      * Replaces the irreducible basis with the Pmmm physical basis
@@ -357,14 +376,14 @@ public:
      * and mirror planes along x, y, z.
      */
     void enable_pmmm_physical_basis();
-    bool using_pmmm_physical_basis() const { return physical_basis_ == PhysicalBasis::Pmmm; }
+    bool using_pmmm_physical_basis() const { return physical_basis_ == CrysFFTEngine::Pmmm; }
 
     /**
      * @brief Enable 3m physical basis (1/8 even-index grid) mapping.
      *
      * Replaces the irreducible basis with the 3m physical basis
      * (even indices, size Nx/2 * Ny/2 * Nz/2). Requires 3D even grid
-     * and valid 3m translations.
+     * and valid 3m translations, and nz/2 >= 2 for the recursive 3m CrysFFT.
      */
     void enable_m3_physical_basis();
     /**
@@ -372,10 +391,10 @@ public:
      *
      * Even sizes, nz/2 >= 8 and translations that fold onto the grid: the rule
      * by which SCFT chooses the m3 physical basis. An m3 basis enabled on a
-     * smaller grid runs with the recursive 3m CrysFFT all the same.
+     * smaller grid (nz/2 >= 2) runs with the recursive 3m CrysFFT all the same.
      */
     bool m3_crysfft_feasible() const;
-    bool using_m3_physical_basis() const { return physical_basis_ == PhysicalBasis::M3; }
+    bool using_m3_physical_basis() const { return physical_basis_ == CrysFFTEngine::Recursive3m; }
 
     /**
      * @brief Enable z-mirror physical basis (half grid along z).
@@ -386,7 +405,7 @@ public:
      * For t_z = 1/2, Nz must be divisible by 4 to align the half-cell shift.
      */
     void enable_z_mirror_physical_basis();
-    bool using_z_mirror_physical_basis() const { return physical_basis_ == PhysicalBasis::ZMirror; }
+    bool using_z_mirror_physical_basis() const { return physical_basis_ == CrysFFTEngine::ObliqueZ; }
 
 };
 

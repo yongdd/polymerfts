@@ -897,6 +897,14 @@ Example:
              "Print the group, its crystal system and the sizes of its bases.")
         .def("in_use", &SpaceGroup::in_use,
              "True once a computation box or solver holds this group; the physical basis is then frozen.")
+        .def("enable_best_physical_basis", [](SpaceGroup& sg)
+        {
+            sg.enable_best_physical_basis();
+            return sg.physical_basis_name();
+        }, "Enable the physical basis that SCFT uses, from the angles the group fixes (fixed_angles()): with all "
+           "three at 90 degrees m3 where the recursive 3m CrysFFT pays off (m3_crysfft_feasible()), else Pmmm; with "
+           "alpha and beta at 90 degrees z-mirror; otherwise, or when none applies, the irreducible basis stays. "
+           "Returns physical_basis_name().")
         .def("enable_pmmm_physical_basis", &SpaceGroup::enable_pmmm_physical_basis,
              "Enable Pmmm physical basis (1/8 grid) mapping.")
         .def("using_pmmm_physical_basis", &SpaceGroup::using_pmmm_physical_basis,
@@ -904,7 +912,7 @@ Example:
         .def("m3_crysfft_feasible", &SpaceGroup::m3_crysfft_feasible,
              "True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 >= 8, translations that "
              "fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller "
-             "grid runs with the recursive 3m CrysFFT all the same.")
+             "grid (Nz/2 >= 2) runs with the recursive 3m CrysFFT all the same.")
         .def("enable_m3_physical_basis", &SpaceGroup::enable_m3_physical_basis,
              "Enable M3 physical basis (1/8 even-index grid) mapping.")
         .def("using_m3_physical_basis", &SpaceGroup::using_m3_physical_basis,

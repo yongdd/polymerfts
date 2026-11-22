@@ -225,8 +225,8 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
             }
             else
             {
-                const double coeff_full = this->crysfft_coeff(monomer_type, ds_index, 6.0);
-                const double coeff_half = this->crysfft_coeff(monomer_type, ds_index, 12.0);
+                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
 
                 double* d_full_step = reinterpret_cast<double*>(d_q_step_1_one[STREAM].get());
                 double* d_half_step = reinterpret_cast<double*>(d_q_step_2_one[STREAM].get());

@@ -10,23 +10,6 @@
 #include "SpaceGroup.h"
 #include "Exception.h"
 
-enum class CrysFFTChoice
-{
-    None,
-    Recursive3m,
-    PmmmDct,
-    ObliqueZ
-};
-
-struct CrysFFTSelection
-{
-    CrysFFTChoice mode = CrysFFTChoice::None;
-    bool can_pmmm = false;
-    std::array<double, 9> m3_translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-    bool can_oblique_z = false;
-    int oblique_z_shift = 0;
-};
-
 /// Grid feasibility of the recursive 3m CrysFFT, and therefore of the m3
 /// physical basis that relies on it: even grid, nz/2 >= 8 (nz/2 >= 2 without
 /// the size heuristic, see below), and a translation-parity permutation that
@@ -63,7 +46,7 @@ inline bool crysfft_recursive_3m_feasible(
     // 8x8x16 case of tests/TestSpaceGroupPlatformEquivalence.py checks nx = ny = 8
     // against the full-grid FFT, and tests/TestCrysFFTM3SmallGrid.py Im-3m 8^3 and
     // 12^3). An m3 physical basis that is already enabled needs these engines
-    // whatever the grid size, so the selector drops the heuristic for it.
+    // whatever the grid size, so plan_crysfft() drops the heuristic for it.
     if (!even_all || (nx[2] / 2) < (size_heuristic ? 8 : 2))
         return false;
     std::array<int, 8> fold_perm{};
@@ -74,7 +57,7 @@ inline bool crysfft_recursive_3m_feasible(
         // representatives composed with the pure (centering) translations;
         // by the exchange argument above, if the m3 basis is feasible at all,
         // some composition yields a bijective psi. The engines recompute the
-        // permutation from selection.m3_translations, so storing the composed
+        // permutation from CrysFFTPlan::m3_translations, so storing the composed
         // translations keeps the fold, its twiddles, and psi consistent.
         std::vector<std::array<double, 3>> centerings;
         sg->get_pure_translations(centerings);
@@ -99,119 +82,32 @@ inline bool crysfft_recursive_3m_feasible(
     return fold_ok;
 }
 
-inline CrysFFTSelection select_crysfft_mode(
-    const SpaceGroup* sg,
-    const std::array<int, 3>& nx,
-    int dim,
-    bool is_periodic,
-    bool is_orthogonal,
-    bool z_axis_orthogonal)
-{
-    CrysFFTSelection selection;
-
-    if (sg == nullptr || dim != 3 || !is_periodic)
-        return selection;
-
-    const bool even_grid = (nx[0] % 2 == 0 && nx[1] % 2 == 0 && nx[2] % 2 == 0);
-
-    std::array<double, 9> trans_part = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-    const bool recursive_ok = crysfft_recursive_3m_feasible(
-        sg, nx, trans_part, /*size_heuristic=*/!sg->using_m3_physical_basis());
-    const bool has_pmmm = sg->has_mirror_planes_xyz();
-
-    // A physical basis enabled by hand (on a SpaceGroup passed to PropagatorSolver,
-    // or through the C++ API) must match the cell; scft.py checks the cell before
-    // enabling one. The Pmmm/m3 mirrors need an orthogonal cell and the z-mirror
-    // alpha = beta = 90 degrees.
-    if ((sg->using_pmmm_physical_basis() || sg->using_m3_physical_basis()) && !is_orthogonal)
-        throw_with_line_number("The " + sg->physical_basis_name() + " physical basis requires an orthogonal cell (all angles 90 degrees).");
-    if (sg->using_z_mirror_physical_basis() && !z_axis_orthogonal)
-        throw_with_line_number("The z-mirror physical basis requires alpha = beta = 90 degrees.");
-
-    selection.can_pmmm = has_pmmm;
-
-    // Z-mirror (ObliqueZ): allow even for non-orthogonal cells when z-axis is orthogonal
-    if (z_axis_orthogonal)
-    {
-        const int z_shift = sg->z_mirror_half_grid_shift();
-        if (z_shift >= 0)
-        {
-            selection.can_oblique_z = true;
-            selection.oblique_z_shift = z_shift;
-        }
-    }
-
-    if (sg->using_z_mirror_physical_basis())
-    {
-        if (selection.can_oblique_z)
-            selection.mode = CrysFFTChoice::ObliqueZ;
-        return selection;
-    }
-
-    if (sg->using_pmmm_physical_basis())
-    {
-        if (has_pmmm)
-            selection.mode = CrysFFTChoice::PmmmDct;
-        return selection;
-    }
-
-    if (sg->using_m3_physical_basis())
-    {
-        if (recursive_ok)
-        {
-            selection.mode = CrysFFTChoice::Recursive3m;
-            selection.m3_translations = trans_part;
-        }
-        return selection;
-    }
-
-    // Pmmm/3m need an orthogonal cell; ObliqueZ needs only alpha = beta = 90
-    // degrees and an even Nz (both part of can_oblique_z), so it also serves
-    // oblique cells on the irreducible basis
-    if (!is_orthogonal)
-    {
-        selection.can_pmmm = false;
-        if (selection.can_oblique_z)
-            selection.mode = CrysFFTChoice::ObliqueZ;
-        return selection;
-    }
-
-    if (!even_grid)
-        return selection;
-
-    if (recursive_ok)
-    {
-        selection.mode = CrysFFTChoice::Recursive3m;
-        selection.m3_translations = trans_part;
-        return selection;
-    }
-
-    if (has_pmmm)
-        selection.mode = CrysFFTChoice::PmmmDct;
-
-    if (selection.mode == CrysFFTChoice::None && selection.can_oblique_z)
-        selection.mode = CrysFFTChoice::ObliqueZ;
-
-    return selection;
-}
-
 /// The CrysFFT engine a solver builds and the map between its physical grid and
-/// the space group's reduced basis (mode None: no engine applies).
+/// the active basis of the space group (engine None: no engine applies).
 struct CrysFFTPlan
 {
-    CrysFFTChoice mode = CrysFFTChoice::None;
-    CrysFFTBasisMapping map;
-    bool physical_basis = false;   ///< the reduced basis is the engine's physical grid (map.identity)
-    std::array<double, 9> m3_translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    CrysFFTEngine engine = CrysFFTEngine::None;
+    CrysFFTBasisMapping map;   ///< physical grid -> active basis (the identity on a physical basis)
+    std::array<double, 9> m3_translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};   ///< of the recursive 3m engine
 };
 
 /**
- * @brief Engine choice shared by the CPU and CUDA solvers.
+ * @brief The CrysFFT engine of a solver, shared by the CPU and CUDA solvers.
  *
- * Tries the recursive 3m transform, the Pmmm DCT and ObliqueZ in this order,
- * each when select_crysfft_mode() allows it and its physical grid reaches every
- * reduced-basis point (see crysfft_mapping_usable()). A physical basis that
- * does not fit the engine raises.
+ * 1. A physical basis enabled on the group must match the cell: the m3 and Pmmm
+ *    mirrors need an orthogonal cell, the z mirror alpha = beta = 90 degrees.
+ * 2. The candidates: the engine of the enabled physical basis alone; on the
+ *    irreducible basis the recursive 3m engine and the Pmmm DCT on an orthogonal
+ *    cell, then ObliqueZ when alpha = beta = 90 degrees.
+ * 3. The first candidate that applies to the group and the grid and whose
+ *    physical grid reaches every point of the active basis is taken: on a
+ *    physical basis the grid is the basis itself (the identity map).
+ * 4. An enabled physical basis that its engine does not take raises.
+ *
+ * The recursive 3m engine applies where crysfft_recursive_3m_feasible() holds (its
+ * nz/2 >= 8 size rule only chooses: an enabled m3 basis takes the engine on any grid
+ * of nz/2 >= 2), the Pmmm DCT to an even grid with the mirrors along x, y and z, and
+ * ObliqueZ to a z mirror with a half grid along z (SpaceGroup::z_mirror_half_grid_shift()).
  */
 inline CrysFFTPlan plan_crysfft(
     const SpaceGroup* sg,
@@ -222,53 +118,71 @@ inline CrysFFTPlan plan_crysfft(
     bool z_axis_orthogonal)
 {
     CrysFFTPlan plan;
-    const CrysFFTSelection selection = select_crysfft_mode(sg, nx, dim, is_periodic, is_orthogonal, z_axis_orthogonal);
-    if (selection.mode == CrysFFTChoice::None && !selection.can_pmmm && !selection.can_oblique_z)
+    if (sg == nullptr || dim != 3 || !is_periodic)
         return plan;
 
+    // 1. A physical basis enabled by hand (on a SpaceGroup passed to PropagatorSolver, or
+    // through the C++ API) must match the cell; SCFT chooses it from the angles the cell has
+    const CrysFFTEngine basis = sg->physical_basis();
+    if ((basis == CrysFFTEngine::Recursive3m || basis == CrysFFTEngine::Pmmm) && !is_orthogonal)
+        throw_with_line_number("The " + sg->physical_basis_name() + " physical basis requires an orthogonal cell (all angles 90 degrees).");
+    if (basis == CrysFFTEngine::ObliqueZ && !z_axis_orthogonal)
+        throw_with_line_number("The z-mirror physical basis requires alpha = beta = 90 degrees.");
+
+    // 2. The candidates in order
+    std::vector<CrysFFTEngine> candidates;
+    if (basis != CrysFFTEngine::None)
+        candidates.push_back(basis);
+    else
+    {
+        if (is_orthogonal)
+            candidates = {CrysFFTEngine::Recursive3m, CrysFFTEngine::Pmmm};
+        if (z_axis_orthogonal)
+            candidates.push_back(CrysFFTEngine::ObliqueZ);
+    }
+
+    // 3. The first that applies and whose physical grid reaches the active basis
+    const bool even_grid = (nx[0] % 2 == 0) && (nx[1] % 2 == 0) && (nx[2] % 2 == 0);
     const int M_reduced = sg->get_n_reduced_basis();
     const auto& full_to_reduced = sg->get_full_to_reduced_map();
-    const bool use_m3_basis = sg->using_m3_physical_basis();
-    const bool use_pmmm_basis = sg->using_pmmm_physical_basis();
-    const bool use_z_mirror_basis = sg->using_z_mirror_physical_basis();
-    auto adopt = [&](CrysFFTChoice mode, CrysFFTBasisMapping map, bool physical_basis) {
-        plan.mode = mode;
-        plan.map = std::move(map);
-        plan.physical_basis = physical_basis;
-        plan.m3_translations = selection.m3_translations;
-        return std::move(plan);
-    };
-
-    // Recursive 3m: octant sampled at even full-grid indices
-    if (selection.mode == CrysFFTChoice::Recursive3m)
+    for (const CrysFFTEngine engine : candidates)
     {
-        if (use_pmmm_basis)
-            throw_with_line_number("Pmmm physical basis is enabled but recursive 3m CrysFFT is selected.");
-        auto map = build_crysfft_mapping_octant(nx, full_to_reduced, M_reduced, /*even_indices=*/true);
-        if (crysfft_mapping_usable(map, use_m3_basis, "M3 physical basis does not match recursive 3m CrysFFT grid ordering."))
-            return adopt(CrysFFTChoice::Recursive3m, std::move(map), use_m3_basis);
+        std::array<double, 9> m3_translations = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        CrysFFTBasisMapping map;
+        if (engine == CrysFFTEngine::Recursive3m)
+        {
+            // The octant at even full-grid indices
+            if (!crysfft_recursive_3m_feasible(sg, nx, m3_translations, /*size_heuristic=*/basis == CrysFFTEngine::None))
+                continue;
+            map = build_crysfft_mapping_octant(nx, full_to_reduced, M_reduced, /*even_indices=*/true);
+        }
+        else if (engine == CrysFFTEngine::Pmmm)
+        {
+            // The octant at consecutive indices
+            if (!even_grid || !sg->has_mirror_planes_xyz())
+                continue;
+            map = build_crysfft_mapping_octant(nx, full_to_reduced, M_reduced, /*even_indices=*/false);
+        }
+        else
+        {
+            // The lower half along z, from the shift of the mirror plane (the z-mirror basis has the same)
+            const int z_shift = sg->z_mirror_half_grid_shift();
+            if (z_shift < 0)
+                continue;
+            map = build_crysfft_mapping_z_mirror(nx, full_to_reduced, M_reduced, z_shift);
+        }
+        if (basis != CrysFFTEngine::None ? map.identity : map.covers_all_reduced)
+        {
+            plan.engine = engine;
+            plan.map = std::move(map);
+            plan.m3_translations = m3_translations;
+            return plan;
+        }
     }
 
-    // Pmmm DCT: octant at consecutive indices
-    if (selection.can_pmmm)
-    {
-        if (use_m3_basis)
-            throw_with_line_number("M3 physical basis is enabled but recursive 3m CrysFFT is unavailable.");
-        auto map = build_crysfft_mapping_octant(nx, full_to_reduced, M_reduced, /*even_indices=*/false);
-        if (crysfft_mapping_usable(map, use_pmmm_basis, "Pmmm physical basis does not match Pmmm CrysFFT grid ordering."))
-            return adopt(CrysFFTChoice::PmmmDct, std::move(map), use_pmmm_basis);
-    }
-
-    // ObliqueZ: lower z half (z-mirror)
-    if (selection.mode == CrysFFTChoice::ObliqueZ)
-    {
-        if (use_m3_basis || use_pmmm_basis)
-            throw_with_line_number("ObliqueZ CrysFFT selected but Pmmm/M3 physical basis is enabled.");
-        // The z-mirror physical basis has the same shift (SpaceGroup::z_mirror_half_grid_shift)
-        auto map = build_crysfft_mapping_z_mirror(nx, full_to_reduced, M_reduced, selection.oblique_z_shift);
-        if (crysfft_mapping_usable(map, use_z_mirror_basis, "Z-mirror physical basis does not match ObliqueZ CrysFFT grid ordering."))
-            return adopt(CrysFFTChoice::ObliqueZ, std::move(map), use_z_mirror_basis);
-    }
+    // 4. An enabled physical basis must have its engine
+    if (basis != CrysFFTEngine::None)
+        throw_with_line_number("The " + sg->physical_basis_name() + " physical basis does not fit the grid of its CrysFFT engine.");
     return plan;
 }
 

@@ -109,27 +109,11 @@ class FieldGrid:
 
         # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
         # test of the box, and keeps them during box relaxation). With all three at 90 degrees: m3 where
-        # the recursive 3m CrysFFT pays off on the grid (SpaceGroup.m3_crysfft_feasible: even sizes,
-        # nz/2 >= 8 and translations that fold onto the grid), else Pmmm, else the irreducible basis.
-        # With alpha and beta at 90 degrees and gamma free or fixed at another angle (hexagonal groups,
-        # trigonal groups on hexagonal axes, whose hybrid grid is cell-centered along z, and monoclinic
-        # groups with the unique axis c): z-mirror. Otherwise the irreducible basis. A basis that does
-        # not apply to the group or the grid raises RuntimeError, and the next one is tried; other
-        # exceptions are real bugs and propagate.
-        alpha, beta, gamma = sg.fixed_angles()
-        bases = []
-        if alpha == beta == gamma == 90.0:
-            if sg.m3_crysfft_feasible():
-                bases.append(sg.enable_m3_physical_basis)
-            bases.append(sg.enable_pmmm_physical_basis)
-        elif alpha == beta == 90.0:
-            bases.append(sg.enable_z_mirror_physical_basis)
-        for enable in bases:
-            try:
-                enable()
-                break
-            except RuntimeError:
-                pass
+        # the recursive 3m CrysFFT pays off on the grid, else Pmmm. With alpha and beta at 90 degrees and
+        # gamma free or fixed at another angle (hexagonal groups, trigonal groups on hexagonal axes and
+        # monoclinic groups with the unique axis c): z-mirror. Otherwise, or where the group or the grid
+        # allows none, the irreducible basis (SpaceGroup::enable_best_physical_basis).
+        sg.enable_best_physical_basis()
         sg.display_info()
         return sg
 
