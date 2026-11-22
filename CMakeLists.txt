@@ -617,11 +617,9 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaCommon.cu
         src/platforms/cuda/CudaComputationBox.cu
         src/platforms/cuda/CudaPseudo.cu
-        src/platforms/cuda/CudaFFT.cu
         src/platforms/cuda/CudaCrysFFT.cu
         src/platforms/cuda/CudaCrysFFTRecursive3m.cu
         src/platforms/cuda/CudaCrysFFTObliqueZ.cu
-        src/platforms/cuda/CudaRealTransform.cu
         src/platforms/cuda/CudaSolver.cu
         src/platforms/cuda/CudaSolverPseudoBase.cu
         src/platforms/cuda/CudaSolverPseudoRQM4.cu

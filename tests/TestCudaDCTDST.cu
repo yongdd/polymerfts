@@ -2,11 +2,14 @@
  * @file TestCudaDCTDST.cu
  * @brief Test the CUDA DCT and DST of types 2 and 3 against FFTW.
  *
- * Both families of CudaRealTransform run the same checks on their own inputs and
- * grids: the 1D, 2D and 3D transforms of one type and of mixed types per axis against
- * FFTW (REDFT10/01 for the DCT, RODFT10/01 for the DST), the type-2/type-3 round trip,
- * and the lengths the constructors accept and refuse. The DCT takes odd lengths on
- * every axis; the DST takes them only in the 1D DST-3.
+ * The CUDA cosine and sine transforms of the wall boxes and the Pmmm CrysFFT run
+ * through CudaMakhoulTransform: with scale 1 its forward transform is the type 2
+ * (FFTW's REDFT10 / RODFT10) and its backward transform the type 3 (REDFT01 /
+ * RODFT01) along every axis, the cosine or the sine transform per axis. Both
+ * families run the same checks on their own inputs and grids: the 1D, 2D and 3D
+ * transforms of one family and of mixed families per axis against FFTW, the
+ * type-2/type-3 round trip, and lengths of every parity on every axis, also the
+ * 1D lengths beyond the 6144 points the earlier transforms took.
  */
 
 #include <cmath>
@@ -17,7 +20,8 @@
 #include <cuda_runtime.h>
 #include <fftw3.h>
 
-#include "../src/platforms/cuda/CudaRealTransform.h"
+#include "CudaCommon.h"
+#include "CudaMakhoulTransform.h"
 #include "TestNanSafe.h"
 
 #ifndef M_PI
@@ -29,38 +33,38 @@ struct Family
 {
     const char* name;
     bool cosine;
-    CudaTransformType type2, type3;
     fftw_r2r_kind kind2, kind3;
 
-    CudaTransformType type(int order) const { return order == 2 ? type2 : type3; }
     fftw_r2r_kind kind(int order) const { return order == 2 ? kind2 : kind3; }
+    BoundaryCondition wall() const { return cosine ? BoundaryCondition::REFLECTING : BoundaryCondition::ABSORBING; }
     /// The function of the family: cos for the DCT, sin for the DST
     double g(double x) const { return cosine ? cos(x) : sin(x); }
 };
 
-static const Family DCT{"DCT", true, CUDA_DCT_2, CUDA_DCT_3, FFTW_REDFT10, FFTW_REDFT01};
-static const Family DST{"DST", false, CUDA_DST_2, CUDA_DST_3, FFTW_RODFT10, FFTW_RODFT01};
+static const Family DCT{"DCT", true, FFTW_REDFT10, FFTW_REDFT01};
+static const Family DST{"DST", false, FFTW_RODFT10, FFTW_RODFT01};
 
-/// One check: a grid (1 to 3 axes) and the order (2 or 3) of the transform along each axis
+/// One check: a grid (1 to 3 axes), the family of each axis and the order (2 or 3) of the transform
 struct Case
 {
     std::vector<int> n;
-    std::vector<int> order;
+    std::vector<const Family*> family;
+    int order;
 };
 
-/// The cases of grids of one type
-static std::vector<Case> of_type(int order, const std::vector<std::vector<int>>& grids)
+/// The cases of grids of one family and one type
+static std::vector<Case> of_type(const Family& f, int order, const std::vector<std::vector<int>>& grids)
 {
     std::vector<Case> cases;
     for (const std::vector<int>& n : grids)
-        cases.push_back({n, std::vector<int>(n.size(), order)});
+        cases.push_back({n, std::vector<const Family*>(n.size(), &f), order});
     return cases;
 }
 
-static bool one_type(const std::vector<int>& order)
+static bool one_family(const Case& c)
 {
-    for (int o : order)
-        if (o != order[0])
+    for (const Family* f : c.family)
+        if (f != c.family[0])
             return false;
     return true;
 }
@@ -79,7 +83,7 @@ static double input_1d(const Family& f, int order, int i, int N)
     return sin(M_PI * (i + 1) / (N + 1)) + 0.5 * f.g(2 * M_PI * (i + 1) / (N + 1));
 }
 
-/// 2D and 3D input of one type: a Gaussian exp(-r^2/50) for the DCT (r from the points
+/// 2D and 3D input of one family: a Gaussian exp(-r^2/50) for the DCT (r from the points
 /// i + 1/2 for type 2, i for type 3), a product of sines for the DST (at (i + 1/2)/N for
 /// type 2, (i + 1)/(N + 1) for type 3)
 static double input_one_type(const Family& f, int order, const int* i, const std::vector<int>& n)
@@ -104,19 +108,20 @@ static double input_one_type(const Family& f, int order, const int* i, const std
     return value;
 }
 
-/// Input of mixed types, with x = (i + 1/2)/N on every axis: sin(pi x) g(pi y) + g(2 pi x) sin(2 pi y)/2
-/// in 2D, sin(pi x) g(pi y) sin(pi z) in 3D
-static double input_mixed(const Family& f, const int* i, const std::vector<int>& n)
+/// Input of mixed families, with x = (i + 1/2)/N on every axis: the product over the axes of
+/// sin(pi x) + g(2 pi x)/2, g the function of the axis
+static double input_mixed(const Case& c, const int* i)
 {
-    if (n.size() == 2)
-        return sin(M_PI * (i[0] + 0.5) / n[0]) * f.g(M_PI * (i[1] + 0.5) / n[1])
-             + 0.5 * f.g(2 * M_PI * (i[0] + 0.5) / n[0]) * sin(2 * M_PI * (i[1] + 0.5) / n[1]);
-    return sin(M_PI * (i[0] + 0.5) / n[0])
-         * f.g(M_PI * (i[1] + 0.5) / n[1])
-         * sin(M_PI * (i[2] + 0.5) / n[2]);
+    double value = 1.0;
+    for (size_t d = 0; d < c.n.size(); ++d)
+    {
+        const double x = (i[d] + 0.5) / c.n[d];
+        value *= sin(M_PI * x) + 0.5 * c.family[d]->g(2 * M_PI * x);
+    }
+    return value;
 }
 
-static std::vector<double> input_of(const Family& f, const Case& c)
+static std::vector<double> input_of(const Case& c)
 {
     const int dim = static_cast<int>(c.n.size());
     int M = 1;
@@ -134,11 +139,11 @@ static std::vector<double> input_of(const Family& f, const Case& c)
             rest /= c.n[d];
         }
         if (dim == 1)
-            input[m] = input_1d(f, c.order[0], i[0], c.n[0]);
-        else if (one_type(c.order))
-            input[m] = input_one_type(f, c.order[0], i, c.n);
+            input[m] = input_1d(*c.family[0], c.order, i[0], c.n[0]);
+        else if (one_family(c))
+            input[m] = input_one_type(*c.family[0], c.order, i, c.n);
         else
-            input[m] = input_mixed(f, i, c.n);
+            input[m] = input_mixed(c, i);
     }
     return input;
 }
@@ -146,11 +151,11 @@ static std::vector<double> input_of(const Family& f, const Case& c)
 //==============================================================================
 // Transforms
 //==============================================================================
-static std::vector<double> fftw_transform(const Family& f, const Case& c, std::vector<double> data)
+static std::vector<double> fftw_transform(const Case& c, std::vector<double> data)
 {
     fftw_r2r_kind kinds[3];
     for (size_t d = 0; d < c.n.size(); ++d)
-        kinds[d] = f.kind(c.order[d]);
+        kinds[d] = c.family[d]->kind(c.order);
     fftw_plan plan = fftw_plan_r2r(static_cast<int>(c.n.size()), c.n.data(), data.data(), data.data(),
                                    kinds, FFTW_ESTIMATE);
     fftw_execute(plan);
@@ -158,40 +163,21 @@ static std::vector<double> fftw_transform(const Family& f, const Case& c, std::v
     return data;
 }
 
-/// The transform of CudaRealTransform, in place on the device; a grid of one type takes the
-/// constructor of one type
-static std::vector<double> cuda_transform(const Family& f, const Case& c, std::vector<double> data)
+/// The transform of CudaMakhoulTransform on the device: the forward transform (type 2) or the
+/// backward transform (type 3), both with scale 1
+static std::vector<double> cuda_transform(const Case& c, std::vector<double> data)
 {
-    CudaDeviceBuffer<double> d_data(data.size());
-    CUDA_CHECK(cudaMemcpy(d_data, data.data(), sizeof(double) * data.size(), cudaMemcpyHostToDevice));
-    const std::vector<int>& n = c.n;
-    const CudaTransformType t0 = f.type(c.order[0]);
-    if (n.size() == 1)
-    {
-        CudaRealTransform1D transform(n[0], t0);
-        transform.execute(d_data);
-    }
-    else if (n.size() == 2 && one_type(c.order))
-    {
-        CudaRealTransform2D transform(n[0], n[1], t0);
-        transform.execute(d_data);
-    }
-    else if (n.size() == 2)
-    {
-        CudaRealTransform2D transform(n[0], n[1], t0, f.type(c.order[1]));
-        transform.execute(d_data);
-    }
-    else if (one_type(c.order))
-    {
-        CudaRealTransform3D transform(n[0], n[1], n[2], t0);
-        transform.execute(d_data);
-    }
+    std::vector<BoundaryCondition> bc;
+    for (const Family* f : c.family)
+        bc.push_back(f->wall());
+    CudaMakhoulTransform<double> transform(c.n, bc);
+    CudaDeviceBuffer<double> d_in(data.size()), d_out(data.size());
+    CUDA_CHECK(cudaMemcpy(d_in, data.data(), sizeof(double) * data.size(), cudaMemcpyHostToDevice));
+    if (c.order == 2)
+        transform.forward(d_in, d_out, 1.0, 0);
     else
-    {
-        CudaRealTransform3D transform(n[0], n[1], n[2], t0, f.type(c.order[1]), f.type(c.order[2]));
-        transform.execute(d_data);
-    }
-    CUDA_CHECK(cudaMemcpy(data.data(), d_data, sizeof(double) * data.size(), cudaMemcpyDeviceToHost));
+        transform.backward(d_in, nullptr, d_out, 1.0, 0);
+    CUDA_CHECK(cudaMemcpy(data.data(), d_out, sizeof(double) * data.size(), cudaMemcpyDeviceToHost));
     return data;
 }
 
@@ -204,11 +190,11 @@ static double relative_error(const std::vector<double>& a, const std::vector<dou
     return max_err / max_abs_or_nan(b);
 }
 
-static std::string describe(const Family& f, const Case& c)
+static std::string describe(const Case& c)
 {
     std::string text = std::to_string(c.n.size()) + "D ";
     for (size_t d = 0; d < c.n.size(); ++d)
-        text += (d > 0 ? " x " : "") + std::string(f.name) + "-" + std::to_string(c.order[d]);
+        text += (d > 0 ? " x " : "") + std::string(c.family[d]->name) + "-" + std::to_string(c.order);
     text += ":";
     for (size_t d = 0; d < c.n.size(); ++d)
         text += (d > 0 ? " x " : " ") + std::to_string(c.n[d]);
@@ -219,25 +205,25 @@ static std::string describe(const Family& f, const Case& c)
 // Checks
 //==============================================================================
 /// The CUDA transform of a case against FFTW
-static bool check_transform(const Family& f, const Case& c)
+static bool check_transform(const Case& c)
 {
-    const std::vector<double> input = input_of(f, c);
-    const double rel_err = relative_error(cuda_transform(f, c, input), fftw_transform(f, c, input));
+    const std::vector<double> input = input_of(c);
+    const double rel_err = relative_error(cuda_transform(c, input), fftw_transform(c, input));
     const bool passed = rel_err < 1e-10;
-    printf("%-40s relative error %.6e  %s\n", describe(f, c).c_str(), rel_err, passed ? "PASSED" : "FAILED");
+    printf("%-40s relative error %.6e  %s\n", describe(c).c_str(), rel_err, passed ? "PASSED" : "FAILED");
     return passed;
 }
 
 /// Type 2 then type 3 recovers the input times 2N, with FFTW and with CUDA
 static bool check_round_trip(const Family& f, int N)
 {
-    const Case forward{{N}, {2}}, backward{{N}, {3}};
-    const std::vector<double> input = input_of(f, forward);
+    const Case forward{{N}, {&f}, 2}, backward{{N}, {&f}, 3};
+    const std::vector<double> input = input_of(forward);
     bool passed = true;
     for (const bool cuda : {false, true})
     {
-        std::vector<double> result = cuda ? cuda_transform(f, backward, cuda_transform(f, forward, input))
-                                          : fftw_transform(f, backward, fftw_transform(f, forward, input));
+        std::vector<double> result = cuda ? cuda_transform(backward, cuda_transform(forward, input))
+                                          : fftw_transform(backward, fftw_transform(forward, input));
         const double norm = 1.0 / (2.0 * N);
         for (double& v : result)
             v *= norm;
@@ -250,73 +236,30 @@ static bool check_round_trip(const Family& f, int N)
     return passed;
 }
 
-/// A transform shape: ny = 0 for 1D, nz = 0 for 2D
-struct Shape
-{
-    int nx, ny, nz;
-    CudaTransformType type;
-};
-
-static void construct(const Shape& s)
-{
-    if (s.ny == 0)
-    {
-        CudaRealTransform1D transform(s.nx, s.type);
-    }
-    else if (s.nz == 0)
-    {
-        CudaRealTransform2D transform(s.nx, s.ny, s.type);
-    }
-    else
-    {
-        CudaRealTransform3D transform(s.nx, s.ny, s.nz, s.type);
-    }
-}
-
-/// Supported lengths are accepted; unsupported ones are refused in the constructor, not
-/// computed wrongly
-static bool check_lengths(const Family& f, const std::vector<Shape>& accepted, const std::vector<Shape>& rejected)
-{
-    bool ok = true;
-    for (const Shape& s : accepted)
-    {
-        try { construct(s); }
-        catch (const std::exception& e)
-        {
-            printf("  %s (%d,%d,%d), a supported length, was rejected: %s\n", getTransformName(s.type), s.nx, s.ny, s.nz, e.what());
-            ok = false;
-        }
-    }
-    for (const Shape& s : rejected)
-    {
-        bool threw = false;
-        try { construct(s); }
-        catch (const std::exception&) { threw = true; }
-        if (!threw)
-        {
-            printf("  %s (%d,%d,%d), an unsupported length, was NOT rejected\n", getTransformName(s.type), s.nx, s.ny, s.nz);
-            ok = false;
-        }
-    }
-    printf("%s length checks: %s\n", f.name, ok ? "PASSED" : "FAILED");
-    return ok;
-}
-
-static bool check_family(const Family& f, const std::vector<Case>& cases)
+static bool check_cases(const std::vector<Case>& cases)
 {
     bool passed = true;
     for (const Case& c : cases)
-        passed = check_transform(f, c) && passed;
+        passed = check_transform(c) && passed;
     return passed;
 }
 
-/// The cases of mixed types per axis, the same for both families
+/// The cases of mixed families per axis, of both types
 static std::vector<Case> mixed_cases()
 {
-    return {
-        {{16, 16}, {2, 3}}, {{16, 16}, {3, 2}},
-        {{8, 8, 8}, {2, 3, 2}}, {{8, 8, 8}, {3, 2, 3}}, {{8, 8, 8}, {3, 3, 2}},
-    };
+    std::vector<Case> cases;
+    for (int order : {2, 3})
+    {
+        cases.push_back({{16, 16}, {&DCT, &DST}, order});
+        cases.push_back({{16, 16}, {&DST, &DCT}, order});
+        cases.push_back({{8, 8, 8}, {&DCT, &DST, &DCT}, order});
+        cases.push_back({{8, 8, 8}, {&DST, &DCT, &DST}, order});
+        cases.push_back({{8, 8, 8}, {&DST, &DST, &DCT}, order});
+        // Odd lengths along both families
+        cases.push_back({{7, 9}, {&DCT, &DST}, order});
+        cases.push_back({{5, 7, 9}, {&DST, &DCT, &DST}, order});
+    }
+    return cases;
 }
 
 static std::vector<Case> join(std::vector<std::vector<Case>> lists)
@@ -333,42 +276,33 @@ int main()
     bool all_passed = true;
     try
     {
-        // DCT: odd lengths on every axis
         printf("--- DCT (FFTW REDFT10/01) ---\n");
-        all_passed &= check_family(DCT, join({
-            // 1D: odd lengths (slot N/2 is an ordinary pair), and beyond 4096 points (the shared
-            // memory holds N values, not 2^ceil(log2 N)) up to the largest that fits
-            of_type(2, {{16}, {32}, {64}, {15}, {31}, {5001}, {6144}}),
-            of_type(3, {{16}, {32}, {64}, {15}, {5001}, {6142}}),
-            of_type(2, {{8, 8}, {16, 16}, {32, 32}, {6, 5}, {5, 6}, {7, 9}}),
-            of_type(3, {{8, 8}, {16, 16}, {32, 32}, {7, 9}}),
+        all_passed &= check_cases(join({
+            // 1D: odd lengths, and beyond the 6144 points of the earlier shared-memory transforms
+            of_type(DCT, 2, {{16}, {32}, {64}, {15}, {31}, {5001}, {6144}, {6145}}),
+            of_type(DCT, 3, {{16}, {32}, {64}, {15}, {5001}, {6142}, {6143}}),
+            of_type(DCT, 2, {{8, 8}, {16, 16}, {32, 32}, {6, 5}, {5, 6}, {7, 9}}),
+            of_type(DCT, 3, {{8, 8}, {16, 16}, {32, 32}, {7, 9}, {6, 5, 7}}),
             // (6, 6, 5): odd physical z of the logical 12x12x10 CrysFFT grid
-            of_type(2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 6, 5}, {6, 5, 6}, {5, 6, 6}, {5, 7, 9}}),
-            of_type(3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {5, 7, 9}}),
-            mixed_cases()}));
-        // The 1D DCT-2/3 stage N and N + 2 values in the 48 KB of shared memory of a block:
-        // 6144 and 6142 points fit, one more does not
-        all_passed &= check_lengths(DCT,
-            {{15, 0, 0, CUDA_DCT_2}, {6, 5, 7, CUDA_DCT_3}, {6144, 0, 0, CUDA_DCT_2}, {6142, 0, 0, CUDA_DCT_3}},
-            {{6145, 0, 0, CUDA_DCT_2}, {6143, 0, 0, CUDA_DCT_3}});
+            of_type(DCT, 2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 6, 5}, {6, 5, 6}, {5, 6, 6}, {5, 7, 9}}),
+            of_type(DCT, 3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {5, 7, 9}})}));
         all_passed &= check_round_trip(DCT, 32);
         all_passed &= check_round_trip(DCT, 15);
 
-        // DST: odd lengths only in the 1D DST-3; DST-2 and the 2D/3D DST-3 kernels assume even lengths
+        // DST: the odd lengths of every type and dimension, which the earlier transforms refused
         printf("--- DST (FFTW RODFT10/01) ---\n");
-        all_passed &= check_family(DST, join({
-            of_type(2, {{16}, {32}, {64}}),
-            of_type(3, {{16}, {32}, {64}, {15}}),
-            of_type(2, {{8, 8}, {16, 16}, {32, 32}}),
-            of_type(3, {{8, 8}, {16, 16}, {32, 32}}),
-            of_type(2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}}),
-            of_type(3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}}),
-            mixed_cases()}));
-        all_passed &= check_lengths(DST,
-            {{15, 0, 0, CUDA_DST_3}},
-            {{15, 0, 0, CUDA_DST_2}, {6, 5, 0, CUDA_DST_2}, {5, 6, 0, CUDA_DST_3},
-             {6, 6, 5, CUDA_DST_2}, {6, 5, 6, CUDA_DST_3}});
+        all_passed &= check_cases(join({
+            of_type(DST, 2, {{16}, {32}, {64}, {15}}),
+            of_type(DST, 3, {{16}, {32}, {64}, {15}}),
+            of_type(DST, 2, {{8, 8}, {16, 16}, {32, 32}, {6, 5}}),
+            of_type(DST, 3, {{8, 8}, {16, 16}, {32, 32}, {5, 6}}),
+            of_type(DST, 2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 6, 5}}),
+            of_type(DST, 3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 5, 6}})}));
         all_passed &= check_round_trip(DST, 32);
+        all_passed &= check_round_trip(DST, 15);
+
+        printf("--- DCT and DST per axis ---\n");
+        all_passed &= check_cases(mixed_cases());
     }
     catch (const std::exception& e)
     {

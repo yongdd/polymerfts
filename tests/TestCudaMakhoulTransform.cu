@@ -13,24 +13,34 @@
  * @file TestCudaMakhoulTransform.cu
  * @brief CudaMakhoulTransform against the O(N^2) definitions and the CPU MakhoulTransform.
  *
- * Boxes that mix periodic axes and walls (CudaFourierTransform) run one cuFFT of
- * the grid with Makhoul's reordering and combining on the wall axes. For every mix
- * of periodic, reflecting and absorbing axes on grids of two and three axes with at
- * least one periodic axis and one wall, with even, odd and unit lengths, and on a
- * few larger grids, real and complex fields of standard deviation 5 must match the
- * definition axis by axis, as TestCpuMakhoulTransform checks the CPU version:
+ * The CUDA wall boxes (the propagator solvers and CudaFourierTransform), the Pmmm
+ * CrysFFT and the boxes that mix periodic axes and walls (CudaFourierTransform) run
+ * one cuFFT of the grid with Makhoul's reordering and combining on the wall axes.
+ * Real and complex fields of standard deviation 5 must match the definition axis by
+ * axis, as TestCpuMakhoulTransform checks the CPU version:
  *
  * - forward: the DFT exp(-2 pi i m j / n) along periodic axes, REDFT10 or RODFT10 / 2 along walls
  * - backward: the inverse DFT / n along periodic axes, REDFT01 or RODFT01 / n along walls,
- *   from random complex coefficients without symmetry; a real field is the real part
+ *   from random coefficients: complex without symmetry when a periodic axis is present or the
+ *   field is complex (a real field is the real part), real for a real field between walls
  * - backward(forward(f)) = f
+ *
+ * on these grids:
+ *
+ * - every mix of periodic, reflecting and absorbing axes on grids of two and three axes
+ *   with at least one periodic axis and one wall, with even, odd and unit lengths, and a
+ *   few larger grids (the mixed grids of TestMakhoulDefinitions.h);
+ * - walls only, every mix of reflecting and absorbing axes on the grids of one to three
+ *   axes of TestCpuMakhoulTransform and a few larger ones, whose real fields have real
+ *   coefficients.
  *
  * The forward and backward transforms keep their inputs, and with a CPU backend
  * they agree with MakhoulTransform over its real FFT (the largest relative
- * difference is printed). The definitions and the mixed grids are those of
- * TestMakhoulDefinitions.h; the error maxima keep a NaN (TestNanSafe.h).
+ * difference is printed). The backward transform with a factor per coefficient
+ * equals the backward transform of the products bit for bit. The error maxima keep a
+ * NaN (TestNanSafe.h).
  *
- * On two grids of more than two million points, whose real half spectrum also
+ * On three grids of more than two million points, whose real half spectrum also
  * has more than MAX_GRID_THREADS modes, every grid-stride loop of the kernels takes
  * more than one stride. There the definition is summed for the corners and 16
  * random points of every result, and with a CPU backend MakhoulTransform checks
@@ -177,9 +187,11 @@ struct GridErrors
     double definition = 0.0;   ///< forward, backward and round trip against the definition
     double cpu = 0.0;          ///< forward and backward against MakhoulTransform
     bool inputs_kept = true;
+    bool k_factor_exact = true;   ///< backward with a factor per coefficient = backward of the products
 };
 
-/// The CUDA transform of host arrays: a real field lives in the real parts of `in`
+/// The CUDA transform of host arrays: a real field lives in the real parts of `in`, and so do
+/// real coefficients (a real field between walls only)
 template <typename T>
 struct DeviceTransform
 {
@@ -188,28 +200,60 @@ struct DeviceTransform
     int total;
     CudaDeviceBuffer<DeviceT> d_field;
     CudaDeviceBuffer<cuDoubleComplex> d_coefficients;
+    CudaDeviceBuffer<double> d_k_factor;
 
     DeviceTransform(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc, int n)
-        : transform(nx, bc), total(n), d_field(n), d_coefficients(n) {}
+        : transform(nx, bc), total(n), d_field(n), d_coefficients(n), d_k_factor(n) {}
 
     /// Upload, transform and download; `in_after` receives the device input after the call
     void forward(const std::vector<Complex>& in, std::vector<Complex>& out, double scale, std::vector<Complex>& in_after)
     {
         upload_field(in);
-        transform.forward(d_field, d_coefficients, scale, 0);
-        CUDA_CHECK(cudaMemcpy(out.data(), d_coefficients, sizeof(Complex) * total, cudaMemcpyDeviceToHost));
+        transform.forward(d_field, reinterpret_cast<double*>(d_coefficients.get()), scale, 0);
+        download_coefficients(out);
         download_field(in_after);
     }
 
-    void backward(const std::vector<Complex>& in, std::vector<Complex>& out, double scale, std::vector<Complex>& in_after)
+    /// The backward transform of in, times k_factor per coefficient unless it is empty
+    void backward(const std::vector<Complex>& in, std::vector<Complex>& out, double scale, std::vector<Complex>& in_after,
+                  const std::vector<double>& k_factor = {})
     {
-        CUDA_CHECK(cudaMemcpy(d_coefficients, in.data(), sizeof(Complex) * total, cudaMemcpyHostToDevice));
-        transform.backward(d_coefficients, d_field, scale, 0);
+        upload_coefficients(in);
+        if (!k_factor.empty())
+            CUDA_CHECK(cudaMemcpy(d_k_factor, k_factor.data(), sizeof(double) * total, cudaMemcpyHostToDevice));
+        transform.backward(reinterpret_cast<const double*>(d_coefficients.get()), k_factor.empty() ? nullptr : d_k_factor.get(),
+                           d_field, scale, 0);
         download_field(out);
-        CUDA_CHECK(cudaMemcpy(in_after.data(), d_coefficients, sizeof(Complex) * total, cudaMemcpyDeviceToHost));
+        download_coefficients(in_after);
     }
 
 private:
+    void upload_coefficients(const std::vector<Complex>& in)
+    {
+        if (transform.real_coefficients())
+        {
+            std::vector<double> real(total);
+            for (int i = 0; i < total; ++i)
+                real[i] = in[i].real();
+            CUDA_CHECK(cudaMemcpy(d_coefficients, real.data(), sizeof(double) * total, cudaMemcpyHostToDevice));
+        }
+        else
+            CUDA_CHECK(cudaMemcpy(d_coefficients, in.data(), sizeof(Complex) * total, cudaMemcpyHostToDevice));
+    }
+
+    void download_coefficients(std::vector<Complex>& out)
+    {
+        if (transform.real_coefficients())
+        {
+            std::vector<double> real(total);
+            CUDA_CHECK(cudaMemcpy(real.data(), d_coefficients, sizeof(double) * total, cudaMemcpyDeviceToHost));
+            for (int i = 0; i < total; ++i)
+                out[i] = real[i];
+        }
+        else
+            CUDA_CHECK(cudaMemcpy(out.data(), d_coefficients, sizeof(Complex) * total, cudaMemcpyDeviceToHost));
+    }
+
     void upload_field(const std::vector<Complex>& in)
     {
         if constexpr (std::is_same_v<T, double>)
@@ -273,18 +317,23 @@ GridErrors check_grid(const std::vector<int>& nx, const std::vector<BoundaryCond
         total *= nx[d];
         walls += bc[d] != BoundaryCondition::PERIODIC;
     }
+    [[maybe_unused]] const bool walls_only = walls == static_cast<int>(nx.size());
     DeviceTransform<T> gpu(nx, bc, total);
     // As CudaFourierTransform: REDFT10 and RODFT10 are twice the series
     const double forward_scale = 1.0 / (1 << walls);
     const double backward_scale = 1.0 / total;
 
-    // A real field is stored in the real parts; the coefficients have no symmetry
+    // A real field is stored in the real parts; the coefficients have no symmetry, and are real
+    // for a real field between walls
     std::normal_distribution<double> normal(0.0, 5.0);
     std::vector<Complex> field(total), coefficients(total);
     for (Complex& x : field)
         x = complex_field ? Complex(normal(rng), normal(rng)) : Complex(normal(rng), 0.0);
     for (Complex& x : coefficients)
         x = Complex(normal(rng), normal(rng));
+    if (gpu.transform.real_coefficients())
+        for (Complex& x : coefficients)
+            x = x.real();
 
     GridErrors errors;
     std::vector<Complex> forward(total), backward(total), round_trip(total), kept(total);
@@ -301,10 +350,55 @@ GridErrors check_grid(const std::vector<int>& nx, const std::vector<BoundaryCond
     errors.definition = max_or_nan(errors.definition, definition_error(backward, coefficients, nx, bc, false,
                                                                        !complex_field, samples, rng));
 
+    // A factor per coefficient: the backward transform of the products, bit for bit (the factors
+    // come from a generator of their own, so that the fields of the other grids stay those of rng)
+    std::mt19937 factor_rng(static_cast<unsigned>(total));
+    std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    std::vector<double> k_factor(total);
+    for (double& k : k_factor)
+        k = uniform(factor_rng);
+    std::vector<Complex> products(total), with_factor(total), of_products(total);
+    for (int i = 0; i < total; ++i)
+        products[i] = Complex(coefficients[i].real() * k_factor[i], coefficients[i].imag() * k_factor[i]);
+    gpu.backward(coefficients, with_factor, backward_scale, kept, k_factor);
+    errors.inputs_kept = errors.inputs_kept && kept == coefficients;
+    gpu.backward(products, of_products, backward_scale, kept);
+    errors.k_factor_exact = with_factor == of_products;
+
 #if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
     std::vector<Complex> cpu_forward(total), cpu_backward(total);
     std::vector<double> real_in(total), real_out(total);
-    if (complex_field)
+    if (walls_only)
+    {
+        // The real coefficients of MakhoulTransform, (re, im) pairs for a complex field
+        std::vector<double> pairs(2 * total);
+        if (complex_field)
+        {
+            cpu->forward(field.data(), pairs.data(), forward_scale);
+            for (int i = 0; i < total; ++i)
+                cpu_forward[i] = Complex(pairs[2 * i], pairs[2 * i + 1]);
+            for (int i = 0; i < total; ++i)
+            {
+                pairs[2 * i] = coefficients[i].real();
+                pairs[2 * i + 1] = coefficients[i].imag();
+            }
+            cpu->backward(pairs.data(), cpu_backward.data(), backward_scale);
+        }
+        else
+        {
+            for (int i = 0; i < total; ++i)
+                real_in[i] = field[i].real();
+            cpu->forward(real_in.data(), pairs.data(), forward_scale);
+            for (int i = 0; i < total; ++i)
+                cpu_forward[i] = pairs[i];
+            for (int i = 0; i < total; ++i)
+                pairs[i] = coefficients[i].real();
+            cpu->backward(pairs.data(), real_out.data(), backward_scale);
+            for (int i = 0; i < total; ++i)
+                cpu_backward[i] = real_out[i];
+        }
+    }
+    else if (complex_field)
     {
         cpu->forward(field.data(), cpu_forward.data(), forward_scale);
         cpu->backward(coefficients.data(), cpu_backward.data(), backward_scale);
@@ -336,6 +430,7 @@ int main()
             worst.definition = max_or_nan(worst.definition, e.definition);
             worst.cpu = max_or_nan(worst.cpu, e.cpu);
             worst.inputs_kept = worst.inputs_kept && e.inputs_kept;
+            worst.k_factor_exact = worst.k_factor_exact && e.k_factor_exact;
         };
         // The grids of TestCpuMakhoulTransform and a few larger ones, whose kernels loop over several blocks
         std::vector<std::vector<int>> grid_list = mixed_grids();
@@ -357,6 +452,38 @@ int main()
                   << worst_complex.cpu << std::endl;
 #endif
 
+        // Walls only: the grids of TestCpuMakhoulTransform with every mix of reflecting and absorbing
+        // axes, and a few larger ones whose kernels loop over several blocks (fields from a generator
+        // of their own)
+        std::mt19937 wall_rng(23);
+        GridErrors walls_real, walls_complex;
+        int wall_grids = 0;
+        const std::vector<std::vector<int>> wall_grid_list = {
+            {1}, {2}, {3}, {4}, {5}, {7}, {8}, {16}, {17},
+            {1, 1}, {1, 6}, {6, 1}, {2, 2}, {4, 6}, {5, 7}, {3, 8}, {7, 2}, {12, 10},
+            {1, 1, 1}, {2, 2, 2}, {4, 6, 8}, {5, 7, 9}, {3, 4, 5}, {2, 3, 1}, {4, 1, 6}, {1, 5, 6}, {9, 8, 7},
+            {16, 12, 10}, {96, 75}, {24, 20, 33}, {32, 31, 16}};
+        for (const std::vector<int>& nx : wall_grid_list)
+        {
+            const int dim = static_cast<int>(nx.size());
+            for (int mask = 0; mask < (1 << dim); ++mask)
+            {
+                std::vector<BoundaryCondition> bc(dim);
+                for (int d = 0; d < dim; ++d)
+                    bc[d] = ((mask >> d) & 1) ? BoundaryCondition::ABSORBING : BoundaryCondition::REFLECTING;
+                const auto cpu = cpu_reference(nx, bc);
+                add(walls_real, check_grid<double>(nx, bc, wall_rng, cpu.get()));
+                add(walls_complex, check_grid<Complex>(nx, bc, wall_rng, cpu.get()));
+                ++wall_grids;
+            }
+        }
+        std::cout << "CudaMakhoulTransform, walls only (" << wall_grids << " grids), against the definitions: real "
+                  << walls_real.definition << ", complex " << walls_complex.definition << std::endl;
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+        std::cout << "  against MakhoulTransform: real " << walls_real.cpu << ", complex " << walls_complex.cpu
+                  << std::endl;
+#endif
+
         // Grids whose real half spectrum, too, has more than MAX_GRID_THREADS modes: every
         // grid-stride loop takes more than one stride (the fields still come from rng). Both walls,
         // even and odd, last axes periodic and wall; lengths with small factors keep the measured
@@ -366,7 +493,8 @@ int main()
         bool beyond_one_stride = true;
         for (const auto& [nx, bc] : std::vector<std::pair<std::vector<int>, std::vector<BoundaryCondition>>>{
                  {{1215, 1755}, {BC::REFLECTING, BC::PERIODIC}},
-                 {{135, 128, 125}, {BC::PERIODIC, BC::ABSORBING, BC::REFLECTING}}})
+                 {{135, 128, 125}, {BC::PERIODIC, BC::ABSORBING, BC::REFLECTING}},
+                 {{125, 135, 128}, {BC::ABSORBING, BC::REFLECTING, BC::ABSORBING}}})
         {
             long long points = 1;
             for (const int n : nx)
@@ -376,34 +504,29 @@ int main()
             add(large_real, check_grid<double>(nx, bc, rng, cpu.get(), 16));
             add(large_complex, check_grid<Complex>(nx, bc, rng, cpu.get(), 16));
         }
-        std::cout << "CudaMakhoulTransform (2 grids beyond one stride: " << (beyond_one_stride ? "yes" : "no")
+        std::cout << "CudaMakhoulTransform (3 grids beyond one stride: " << (beyond_one_stride ? "yes" : "no")
                   << ") against the definition on samples: real " << large_real.definition << ", complex "
                   << large_complex.definition << std::endl;
 #if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
         std::cout << "  against MakhoulTransform: real " << large_real.cpu << ", complex " << large_complex.cpu
                   << std::endl;
 #endif
-        const bool inputs_kept = worst_real.inputs_kept && worst_complex.inputs_kept && large_real.inputs_kept
-                                 && large_complex.inputs_kept;
+        const bool inputs_kept = worst_real.inputs_kept && worst_complex.inputs_kept && walls_real.inputs_kept
+                                 && walls_complex.inputs_kept && large_real.inputs_kept && large_complex.inputs_kept;
         std::cout << "Inputs kept: " << (inputs_kept ? "yes" : "no") << std::endl;
-
-        // A box without a periodic axis has real coefficients: refused
-        bool refused = false;
-        try
-        {
-            CudaMakhoulTransform<double> walls({4, 6}, {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING});
-        }
-        catch (std::exception&)
-        {
-            refused = true;
-        }
-        std::cout << "Walls only refused: " << (refused ? "yes" : "no") << std::endl;
+        const bool k_factor_exact = worst_real.k_factor_exact && worst_complex.k_factor_exact
+                                    && walls_real.k_factor_exact && walls_complex.k_factor_exact
+                                    && large_real.k_factor_exact && large_complex.k_factor_exact;
+        std::cout << "Backward with factors equals the backward of the products bit for bit: "
+                  << (k_factor_exact ? "yes" : "no") << std::endl;
 
         const bool ok = worst_real.definition < tolerance && worst_complex.definition < tolerance
                         && worst_real.cpu < tolerance && worst_complex.cpu < tolerance
+                        && walls_real.definition < tolerance && walls_complex.definition < tolerance
+                        && walls_real.cpu < tolerance && walls_complex.cpu < tolerance
                         && large_real.definition < tolerance && large_complex.definition < tolerance
                         && large_real.cpu < tolerance && large_complex.cpu < tolerance
-                        && beyond_one_stride && inputs_kept && refused;
+                        && beyond_one_stride && inputs_kept && k_factor_exact;
         return ok ? 0 : -1;
     }
     catch (std::exception& exc)

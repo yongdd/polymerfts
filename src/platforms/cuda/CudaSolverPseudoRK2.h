@@ -42,9 +42,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
 #include "CudaCrysFFT.h"
-#include "FFT.h"
 #include "SpaceGroup.h"
 
 class CudaCrysFFTBase;
@@ -64,8 +62,8 @@ class CudaCrysFFTBase;
  *
  * **Memory per Stream:**
  *
- * None of its own: the step runs in its full-grid output, and the spectra go to the
- * base's scratch (d_qk_ or d_rk_1_), which the stress shares.
+ * None of its own: the step runs in its full-grid output, and the spectrum goes to the
+ * base's scratch, which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
@@ -73,10 +71,8 @@ class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
 private:
     using Base = CudaSolverPseudoBase<T>;
     using Base::cb; using Base::pseudo;
-    using Base::is_periodic_; using Base::streams;
+    using Base::streams;
     using Base::use_crysfft_;
-    using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_;
 
 public:
     /**

@@ -10,7 +10,7 @@
  *
  * Regression guard for:
  *   - CUDA discrete non-periodic path that used the periodic cuFFT plans (wrong DCT/DST).
- *   - CudaFFT non-periodic glue kernels missing grid-stride loops (NaN for M > 65536,
+ *   - CUDA wall-transform kernels missing grid-stride loops (NaN for M > 65536,
  *     hence the 48^3 case).
  *   - The MKL DST-III backward dropping the highest (Nyquist) mode (absorbing BC).
  *
@@ -88,7 +88,7 @@ int main()
                 cases.push_back({chain, bc, {16, 16},     {3.0, 3.0}});
                 cases.push_back({chain, bc, {16, 16, 16}, {3.0, 3.0, 3.0}});
                 // M = 48^3 = 110592 > n_blocks*n_threads (65536): exercises the
-                // CudaFFT non-periodic glue-kernel grid-stride loops.
+                // grid-stride loops of the CUDA wall-transform kernels.
                 cases.push_back({chain, bc, {48, 48, 48}, {3.0, 3.0, 3.0}});
             }
         const double ds = 1.0 / 50.0;

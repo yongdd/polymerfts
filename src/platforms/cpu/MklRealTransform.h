@@ -2,7 +2,8 @@
  * @file MklRealTransform.h
  * @brief MKL real-to-real DCT/DST (types 1-4) for 1D/2D/3D arrays.
  *
- * This provides a CPU counterpart to CudaRealTransform for internal use.
+ * The solvers do not use it (they run MakhoulTransform); tests and the MKL/FFTW
+ * benchmark use it for every DCT/DST type.
  * The transforms are unnormalized (FFTW-style); use get_normalization()
  * to obtain the round-trip scale factor.
  *

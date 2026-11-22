@@ -1,14 +1,17 @@
 /**
  * @file TestCudaFFTMixedBC.cu
- * @brief Test CUDA DCT-II/III and DST-II/III transforms for mixed boundary conditions.
+ * @brief Test the CUDA DCT-II/III and DST-II/III of boxes with reflecting and absorbing walls.
  *
- * This test verifies that CudaFFT correctly implements:
- * - DCT-II forward / DCT-III backward for reflecting (Neumann) BCs
- * - DST-II forward / DST-III backward for absorbing (Dirichlet) BCs
+ * The CUDA wall boxes transform through CudaMakhoulTransform. Taken with scale 1, its
+ * forward transform is FFTW's unnormalized REDFT10 / RODFT10 per axis (DCT-II for
+ * reflecting, DST-II for absorbing walls) and its backward transform REDFT01 / RODFT01,
+ * which a backward scale of 1/(2N) per axis makes the inverse.
  *
- * Tests cover 1D, 2D, and 3D cases.
- *
- * The primary verification is round-trip: backward(forward(x)) = x
+ * Tests cover 1D, 2D, and 3D cases:
+ * - odd lengths along reflecting and absorbing axes against direct sums and, with a CPU
+ *   backend, against MakhoulTransform;
+ * - round trips: backward(forward(x)) = x;
+ * - the periodic transform of CudaFourierTransform (cuFFT): a round trip.
  */
 
 #include <iostream>
@@ -16,13 +19,55 @@
 #include <numbers>
 #include <complex>
 #include <algorithm>
+#include <memory>
 #include <random>
+#include <string>
+#include <tuple>
 #include <vector>
 #include <array>
 
+#include "ComputationBox.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
+#include "CudaFourierTransform.h"
+#include "CudaMakhoulTransform.h"
 #include "TestNanSafe.h"
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+#include "FFTFactory.h"
+#include "MakhoulTransform.h"
+#endif
+
+/// The wall transform of a real field on the device: FFTW's REDFT10/RODFT10 forward and
+/// the normalized inverse backward
+struct WallTransform
+{
+    CudaMakhoulTransform<double> transform;
+    double backward_scale = 1.0;
+
+    WallTransform(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc) : transform(nx, bc)
+    {
+        for (int n : nx)
+            backward_scale /= 2.0 * n;
+    }
+    void forward(const double* d_in, double* d_out) { transform.forward(d_in, d_out, 1.0, 0); }
+    void backward(const double* d_in, double* d_out) { transform.backward(d_in, nullptr, d_out, backward_scale, 0); }
+};
+
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+/// The forward transform (scale 1) of x on the CPU, MakhoulTransform over the real FFT of a backend
+std::vector<double> cpu_forward(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,
+                                const std::vector<double>& x)
+{
+#ifdef USE_CPU_FFTW
+    const FFTBackend backend = FFTBackend::FFTW;
+#else
+    const FFTBackend backend = FFTBackend::MKL;
+#endif
+    MakhoulTransform cpu(nx, bc, createRealFFT(nx, backend));
+    std::vector<double> out(x.size());
+    cpu.forward(x.data(), out.data(), 1.0);
+    return out;
+}
+#endif
 
 int main()
 {
@@ -41,18 +86,16 @@ int main()
         std::vector<double> data_k(N);
 
         // GPU buffers
-        double* d_data_r;
-        double* d_data_k;
-        CUDA_CHECK(cudaMalloc((void**)&d_data_r, sizeof(double) * N));
-        CUDA_CHECK(cudaMalloc((void**)&d_data_k, sizeof(double) * N));
+        CudaDeviceBuffer<double> d_data_r(N);
+        CudaDeviceBuffer<double> d_data_k(N);
 
         //=======================================================================
-        // Test 0: Odd lengths along reflecting axes. CudaFFT's forward is the
+        // Test 0: Odd lengths along the walls. The forward transform is the
         // unnormalized DCT-II / DST-II per axis (FFTW REDFT10 / RODFT10), which
-        // a direct sum checks; absorbing axes must stay even.
+        // a direct sum checks; an odd absorbing axis is checked against the CPU.
         //=======================================================================
         {
-            std::cout << "Test 0: odd reflecting axes (1D N=11, 3D 6x4x3 R/A/R) against direct sums" << std::endl;
+            std::cout << "Test 0: odd wall axes (1D N=11, 3D 6x4x3 R/A/R, 2D 6x5 R/A) against direct sums" << std::endl;
             auto basis = [](BoundaryCondition bc, int k, int n, int len) {
                 const double pi = std::numbers::pi;
                 return (bc == BoundaryCondition::REFLECTING) ? 2.0 * std::cos(pi * k * (2 * n + 1) / (2.0 * len))
@@ -70,7 +113,7 @@ int main()
                 for (int k = 0; k < N1; ++k)
                     for (int n = 0; n < N1; ++n)
                         ref[k] += x[n] * basis(BoundaryCondition::REFLECTING, k, n, N1);
-                CudaFFT<double, 1> fft_odd({N1}, {BoundaryCondition::REFLECTING});
+                WallTransform fft_odd({N1}, {BoundaryCondition::REFLECTING});
                 CudaDeviceBuffer<double> d_x(N1), d_c(N1);
                 CUDA_CHECK(cudaMemcpy(d_x, x.data(), sizeof(double) * N1, cudaMemcpyHostToDevice));
                 fft_odd.forward(d_x, d_c);
@@ -92,11 +135,16 @@ int main()
                 }
             }
 
-            // 3D, 6 (reflecting) x 4 (absorbing) x 3 (reflecting)
+            // 3D, 6 (reflecting) x 4 (absorbing) x 3 (reflecting), and 2D, 6 (reflecting) x 5 (absorbing)
+            for (const auto& [n3, bc3, label] : std::vector<std::tuple<std::vector<int>, std::vector<BoundaryCondition>, std::string>>{
+                     {{6, 4, 3}, {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING, BoundaryCondition::REFLECTING},
+                      "3D 6x4x3 R/A/R"},
+                     {{1, 6, 5}, {BoundaryCondition::REFLECTING, BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING},
+                      "2D 6x5 R/A"}})
             {
-                const std::array<int, 3> n3 = {6, 4, 3};
-                const std::array<BoundaryCondition, 3> bc3 = {
-                    BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING, BoundaryCondition::REFLECTING};
+                // The 2D box is the 3D sum with one point along the first axis
+                const std::vector<int> nx = (n3[0] == 1) ? std::vector<int>{n3[1], n3[2]} : n3;
+                const std::vector<BoundaryCondition> bc = (n3[0] == 1) ? std::vector<BoundaryCondition>{bc3[1], bc3[2]} : bc3;
                 const int M3 = n3[0] * n3[1] * n3[2];
                 std::vector<double> x(M3), coeff(M3), back(M3), ref(M3, 0.0);
                 for (double& v : x)
@@ -109,11 +157,12 @@ int main()
                             for (int i0 = 0; i0 < n3[0]; ++i0)
                                 for (int i1 = 0; i1 < n3[1]; ++i1)
                                     for (int i2 = 0; i2 < n3[2]; ++i2)
-                                        sum += x[(i0 * n3[1] + i1) * n3[2] + i2] * basis(bc3[0], k0, i0, n3[0]) *
-                                               basis(bc3[1], k1, i1, n3[1]) * basis(bc3[2], k2, i2, n3[2]);
+                                        sum += x[(i0 * n3[1] + i1) * n3[2] + i2]
+                                             * (n3[0] == 1 ? 1.0 : basis(bc3[0], k0, i0, n3[0]))
+                                             * basis(bc3[1], k1, i1, n3[1]) * basis(bc3[2], k2, i2, n3[2]);
                             ref[(k0 * n3[1] + k1) * n3[2] + k2] = sum;
                         }
-                CudaFFT<double, 3> fft_odd3(n3, bc3);
+                WallTransform fft_odd3(nx, bc);
                 CudaDeviceBuffer<double> d_x(M3), d_c(M3);
                 CUDA_CHECK(cudaMemcpy(d_x, x.data(), sizeof(double) * M3, cudaMemcpyHostToDevice));
                 fft_odd3.forward(d_x, d_c);
@@ -127,29 +176,23 @@ int main()
                     err_back = max_or_nan(err_back, std::abs(back[i] - x[i]));
                     scale = std::max(scale, std::abs(ref[i]));
                 }
-                std::cout << "  3D 6x4x3 R/A/R: forward vs direct " << err_fwd / scale << ", round trip " << err_back << std::endl;
-                if (!(err_fwd / scale < 1e-12) || !(err_back < 1e-12))
+                std::cout << "  " << label << ": forward vs direct " << err_fwd / scale << ", round trip " << err_back;
+                bool ok = err_fwd / scale < 1e-12 && err_back < 1e-12;
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+                // The CPU MakhoulTransform of the same field (an odd absorbing axis was refused on CUDA before)
+                const std::vector<double> cpu = cpu_forward(nx, bc, x);
+                double err_cpu = 0.0;
+                for (int i = 0; i < M3; ++i)
+                    err_cpu = max_or_nan(err_cpu, std::abs(coeff[i] - cpu[i]));
+                std::cout << ", vs CPU " << err_cpu / scale;
+                ok = ok && err_cpu / scale < 1e-13;
+#endif
+                std::cout << std::endl;
+                if (!ok)
                 {
                     std::cout << "  FAILED!" << std::endl;
                     return -1;
                 }
-            }
-
-            // An odd absorbing axis is refused
-            bool refused = false;
-            try
-            {
-                CudaFFT<double, 2> fft_bad({6, 5}, {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING});
-            }
-            catch (std::exception&)
-            {
-                refused = true;
-            }
-            std::cout << "  odd absorbing axis refused: " << (refused ? "yes" : "NO") << std::endl;
-            if (!refused)
-            {
-                std::cout << "  FAILED!" << std::endl;
-                return -1;
             }
             std::cout << "  PASSED!" << std::endl;
         }
@@ -159,9 +202,7 @@ int main()
         //=======================================================================
         std::cout << "\nTest 1: DCT-II/III (Reflecting BC) Round-trip" << std::endl;
 
-        std::array<int, 1> nx_1d = {N};
-        std::array<BoundaryCondition, 1> bc_reflect = {BoundaryCondition::REFLECTING};
-        CudaFFT<double, 1> fft_dct(nx_1d, bc_reflect);
+        WallTransform fft_dct({N}, {BoundaryCondition::REFLECTING});
 
         // Copy input to device
         CUDA_CHECK(cudaMemcpy(d_data_r, data_init.data(),
@@ -185,8 +226,6 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data_r);
-            cudaFree(d_data_k);
             return -1;
         }
         std::cout << "  PASSED!" << std::endl;
@@ -196,8 +235,7 @@ int main()
         //=======================================================================
         std::cout << "\nTest 2: DST-II/III (Absorbing BC) Round-trip" << std::endl;
 
-        std::array<BoundaryCondition, 1> bc_absorb = {BoundaryCondition::ABSORBING};
-        CudaFFT<double, 1> fft_dst(nx_1d, bc_absorb);
+        WallTransform fft_dst({N}, {BoundaryCondition::ABSORBING});
 
         // Copy input to device
         CUDA_CHECK(cudaMemcpy(d_data_r, data_init.data(),
@@ -221,8 +259,6 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data_r);
-            cudaFree(d_data_k);
             return -1;
         }
         std::cout << "  PASSED!" << std::endl;
@@ -257,8 +293,6 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data_r);
-            cudaFree(d_data_k);
             return -1;
         }
 
@@ -280,15 +314,9 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data_r);
-            cudaFree(d_data_k);
             return -1;
         }
         std::cout << "  PASSED!" << std::endl;
-
-        // Clean up
-        cudaFree(d_data_r);
-        cudaFree(d_data_k);
 
         //=======================================================================
         // Test 4: 2D Mixed BC test
@@ -302,14 +330,10 @@ int main()
         for (int i = 0; i < M; ++i)
             data2d_init[i] = dist(gen);
 
-        double* d_data2d_r;
-        double* d_data2d_k;
-        CUDA_CHECK(cudaMalloc((void**)&d_data2d_r, sizeof(double) * M));
-        CUDA_CHECK(cudaMalloc((void**)&d_data2d_k, sizeof(double) * M));
+        CudaDeviceBuffer<double> d_data2d_r(M);
+        CudaDeviceBuffer<double> d_data2d_k(M);
 
-        std::array<int, 2> nx_2d = {NX, NY};
-        std::array<BoundaryCondition, 2> bc_2d = {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING};
-        CudaFFT<double, 2> fft_2d(nx_2d, bc_2d);
+        WallTransform fft_2d({NX, NY}, {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING});
 
         CUDA_CHECK(cudaMemcpy(d_data2d_r, data2d_init.data(),
                                    sizeof(double) * M, cudaMemcpyHostToDevice));
@@ -329,14 +353,9 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data2d_r);
-            cudaFree(d_data2d_k);
             return -1;
         }
         std::cout << "  PASSED!" << std::endl;
-
-        cudaFree(d_data2d_r);
-        cudaFree(d_data2d_k);
 
         //=======================================================================
         // Test 5: 3D Mixed BC test (the reflecting z axis has an odd length)
@@ -350,18 +369,11 @@ int main()
         for (int i = 0; i < M3; ++i)
             data3d_init[i] = dist(gen);
 
-        double* d_data3d_r;
-        double* d_data3d_k;
-        CUDA_CHECK(cudaMalloc((void**)&d_data3d_r, sizeof(double) * M3));
-        CUDA_CHECK(cudaMalloc((void**)&d_data3d_k, sizeof(double) * M3));
+        CudaDeviceBuffer<double> d_data3d_r(M3);
+        CudaDeviceBuffer<double> d_data3d_k(M3);
 
-        std::array<int, 3> nx_3d = {NX3, NY3, NZ3};
-        std::array<BoundaryCondition, 3> bc_3d = {
-            BoundaryCondition::REFLECTING,
-            BoundaryCondition::ABSORBING,
-            BoundaryCondition::REFLECTING
-        };
-        CudaFFT<double, 3> fft_3d(nx_3d, bc_3d);
+        WallTransform fft_3d({NX3, NY3, NZ3},
+                             {BoundaryCondition::REFLECTING, BoundaryCondition::ABSORBING, BoundaryCondition::REFLECTING});
 
         CUDA_CHECK(cudaMemcpy(d_data3d_r, data3d_init.data(),
                                    sizeof(double) * M3, cudaMemcpyHostToDevice));
@@ -381,40 +393,27 @@ int main()
         if (!std::isfinite(error) || error > 1e-7)
         {
             std::cout << "  FAILED!" << std::endl;
-            cudaFree(d_data3d_r);
-            cudaFree(d_data3d_k);
             return -1;
         }
         std::cout << "  PASSED!" << std::endl;
-
-        cudaFree(d_data3d_r);
-        cudaFree(d_data3d_k);
         }
 
         //=======================================================================
-        // Periodic complex interface: round trip (backward() may overwrite its
-        // input spectrum, which cuFFT Z2D uses as scratch)
+        // Periodic transform of CudaFourierTransform (cuFFT D2Z/Z2D): round trip
         //=======================================================================
         {
-            std::cout << "\nPeriodic forward/backward(complex) round trip" << std::endl;
-            const std::array<int, 3> nx_p = {8, 6, 10};
-            const std::array<BoundaryCondition, 3> bc_p = {
-                BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC};
+            std::cout << "\nPeriodic forward/backward round trip" << std::endl;
+            const std::vector<int> nx_p = {8, 6, 10};
             const int MP = nx_p[0] * nx_p[1] * nx_p[2];
-            const int MP_COMPLEX = nx_p[0] * nx_p[1] * (nx_p[2] / 2 + 1);
-            CudaFFT<double, 3> fft_p(nx_p, bc_p);
+            ComputationBox<double> cb(nx_p, {1.0, 1.0, 1.0}, std::vector<std::string>(6, "periodic"));
+            CudaFourierTransform<double> fft_p(&cb, std::vector<BoundaryCondition>(3, BoundaryCondition::PERIODIC));
 
             std::vector<double> data_p(MP), data_p_back(MP);
             for (int i = 0; i < MP; ++i)
                 data_p[i] = std::sin(0.37 * i) + 0.1 * i / MP;
-            CudaDeviceBuffer<double> d_p(MP), d_p_back(MP);
-            CudaDeviceBuffer<cuDoubleComplex> d_pk(MP_COMPLEX);
-            std::complex<double>* pk = reinterpret_cast<std::complex<double>*>(d_pk.get());
-            CUDA_CHECK(cudaMemcpy(d_p, data_p.data(), sizeof(double) * MP, cudaMemcpyHostToDevice));
-
-            fft_p.forward_stream(d_p, pk, 0);
-            fft_p.backward_stream(pk, d_p_back, 0);
-            CUDA_CHECK(cudaMemcpy(data_p_back.data(), d_p_back, sizeof(double) * MP, cudaMemcpyDeviceToHost));
+            std::vector<double> coefficients(2 * nx_p[0] * nx_p[1] * (nx_p[2] / 2 + 1));
+            fft_p.forward(data_p.data(), 1, coefficients.data());
+            fft_p.backward(coefficients.data(), 1, data_p_back.data());
 
             std::vector<double> diff_p(MP);
             for (int i = 0; i < MP; ++i)

@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 
+#include "CudaDeviceOps.cuh"
 #include "CudaSolver.h"
 #include "SpaceGroup.h"
 
@@ -51,7 +52,7 @@ CuDeviceData<T>* CudaSolver<T>::expand_to_full_grid(int STREAM, CuDeviceData<T>*
         d_full = d_q_full_[STREAM];
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+    ker_gather<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
         d_full, d_q, d_full_to_reduced_map_, cb->get_total_grid());
     CUDA_CHECK_LAUNCH();
     return d_full;
@@ -71,7 +72,7 @@ void CudaSolver<T>::store_full_grid(
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        ker_reduce_to_basis<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+        ker_gather<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
             d_q_out, d_full, d_reduced_basis_indices_, n_basis_);
         CUDA_CHECK_LAUNCH();
     }
@@ -122,7 +123,7 @@ void CudaSolver<T>::compute_exp_dw(
             {
                 CuDeviceData<T>* d_stage = (with_half ? d_exp_dw_half : d_exp_dw)
                                            .at(n_unique_ds - 1).at(monomer_type).get();
-                ker_expand_reduced_basis<<<N_BLOCKS, N_THREADS>>>(d_stage, d_w_input_monomer, d_full_to_reduced_map_, n_table);
+                ker_gather<<<N_BLOCKS, N_THREADS>>>(d_stage, d_w_input_monomer, d_full_to_reduced_map_, n_table);
                 CUDA_CHECK_LAUNCH();
                 d_w = d_stage;
             }

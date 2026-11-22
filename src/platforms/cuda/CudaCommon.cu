@@ -14,13 +14,11 @@
  *
  * **Kernel Categories:**
  *
- * - Linear scaling: ker_linear_scaling (dst = a*src + b)
  * - Exponential: ker_exp (dst = a*exp(b*src))
  * - Multiplication: ker_multi (element-wise products)
  * - Division: ker_divide (element-wise division)
  * - Linear combination: ker_lin_comb
  * - Complex operations: ker_multi_complex_conjugate, ker_multi_complex_real
- * - Batched exp-dw: ker_multi_exp_dw_two
  *
  * **Type Conversion:**
  *
@@ -114,26 +112,6 @@ int CudaCommon::get_n_blocks()
 int CudaCommon::get_n_threads()
 {
     return n_threads;
-}
-
-__global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i] = src[negative_k_idx[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_linear_scaling(double* dst, const double* src, double a, double b, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst[i] = a * src[i] + b;
-        i += blockDim.x * gridDim.x;
-    }
 }
 
 __global__ void ker_exp(double* dst, const double* src, double a, double exp_b, const int M)
@@ -286,50 +264,6 @@ __global__ void ker_lin_comb(cuDoubleComplex* dst, cuDoubleComplex a, const cuDo
     }
 }
 
-__global__ void ker_multi_lin_comb(double* dst, double a, const double* src1, const double* w1, double scale,
-                                   double b, const double* src2, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        const double t = scale * src1[i] * w1[i];
-        dst[i] = a * t + b * src2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, const cuDoubleComplex* w1, double scale,
-                                   double b, const cuDoubleComplex* src2, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Same arithmetic as the complex ker_multi
-        const double tx = scale * (src1[i].x * w1[i].x - src1[i].y * w1[i].y);
-        const double ty = scale * (src1[i].x * w1[i].y + src1[i].y * w1[i].x);
-        dst[i].x = a * tx + b * src2[i].x;
-        dst[i].y = a * ty + b * src2[i].y;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_lin_comb_exp(
-    double* dst,
-    const double* src1, const double* exp1, double a,
-    const double* src2, const double* exp2, double b,
-    const double* mask, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        double val = a * (src1[i] * exp1[i]) + b * (src2[i] * exp2[i]);
-        if (mask != nullptr)
-            val *= mask[i];
-        dst[i] = val;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
 __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, double a, const int M)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -362,143 +296,6 @@ __global__ void ker_multi_complex_conjugate(
         temp_dst.x = src1[i].x * src2[i].x + src1[i].y * src2[i].y;
         temp_dst.y = src1[i].x * src2[i].y - src1[i].y * src2[i].x;
         dst[i] = temp_dst;
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_exp_dw_two(
-    double* dst1, const double* src1, const double* exp_dw1,
-    double* dst2, const double* src2, const double* exp_dw2,
-    double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst1[i] = a * src1[i] * exp_dw1[i];
-        dst2[i] = a * src2[i] * exp_dw2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_exp_dw_two(
-    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
-    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
-    double a, const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        // Use temporary variables to avoid overwriting when dst and src share the same address
-        cuDoubleComplex temp_dst1, temp_dst2;
-
-        temp_dst1.x = a * (src1[i].x * exp_dw1[i].x - src1[i].y * exp_dw1[i].y);
-        temp_dst1.y = a * (src1[i].x * exp_dw1[i].y + src1[i].y * exp_dw1[i].x);
-
-        temp_dst2.x = a * (src2[i].x * exp_dw2[i].x - src2[i].y * exp_dw2[i].y);
-        temp_dst2.y = a * (src2[i].x * exp_dw2[i].y + src2[i].y * exp_dw2[i].x);
-
-        dst1[i] = temp_dst1;
-        dst2[i] = temp_dst2;
-
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_complex_real_multi_bond_two(
-    cuDoubleComplex* dst1, const double* boltz_bond1,
-    cuDoubleComplex* dst2, const double* boltz_bond2,
-    const int M)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < M)
-    {
-        dst1[i].x *= boltz_bond1[i];
-        dst1[i].y *= boltz_bond1[i];
-        dst2[i].x *= boltz_bond2[i];
-        dst2[i].y *= boltz_bond2[i];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-// ============================================================
-// Space group reduced basis kernels
-// ============================================================
-
-__global__ void ker_expand_reduced_basis(
-    double* dst, const double* src, const int* full_to_reduced_map, const int total_grid)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < total_grid)
-    {
-        dst[i] = src[full_to_reduced_map[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_expand_reduced_basis(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* full_to_reduced_map, const int total_grid)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < total_grid)
-    {
-        dst[i] = src[full_to_reduced_map[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_expand_reduced_basis_multi(
-    double* dst, const double* src, const double* reduced_multiplier,
-    const int* phys_to_reduced_map, const int n_phys)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_phys)
-    {
-        int ridx = phys_to_reduced_map[i];
-        dst[i] = src[ridx] * reduced_multiplier[ridx];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_reduce_to_basis(
-    double* dst, const double* src, const int* reduced_basis_indices, const int n_basis)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_basis)
-    {
-        dst[i] = src[reduced_basis_indices[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_reduce_to_basis(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* reduced_basis_indices, const int n_basis)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_basis)
-    {
-        dst[i] = src[reduced_basis_indices[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_map(
-    double* dst, const double* reduced_multiplier, const int* phys_to_reduced_map, const int n_phys)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n_phys)
-    {
-        dst[i] *= reduced_multiplier[phys_to_reduced_map[i]];
-        i += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void ker_multi_weight(
-    double* dst, const double* src, const int* weights, const int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while (i < n)
-    {
-        dst[i] = src[i] * static_cast<double>(weights[i]);
         i += blockDim.x * gridDim.x;
     }
 }

@@ -2,7 +2,9 @@
  * @file CudaCrysFFT.h
  * @brief CUDA Crystallographic FFT using DCT-II/III for Pmmm symmetry.
  *
- * DCT-II/III is implemented via CudaRealTransform (FCT algorithm).
+ * The DCT-II/III of the physical grid run through CudaMakhoulTransform, as
+ * CrysFFTPmmm runs them through MakhoulTransform on the CPU; the tables come from
+ * CrysFFTTables.h.
  *
  * **Grid size:**
  *
@@ -24,9 +26,7 @@
 #include <cuda_runtime.h>
 
 #include "CudaCommon.h"
-
-// Forward declaration
-class CudaRealTransform3D;
+#include "CudaMakhoulTransform.h"
 
 /// CrysFFT mode selection for CUDA solvers.
 enum class CudaCrysFFTMode
@@ -114,16 +114,17 @@ private:
     int M_logical_;                     ///< Total logical grid size
     int M_physical_;                    ///< Total physical grid size
 
-    // CudaRealTransform objects for DCT-II (forward) and DCT-III (backward)
-    std::unique_ptr<CudaRealTransform3D> dct_forward_;
-    std::unique_ptr<CudaRealTransform3D> dct_backward_;
+    /// DCT-II (FFTW's REDFT10) and DCT-III (REDFT01) of the physical grid. Their round
+    /// trip gains 2n per dimension, which norm_factor_ removes.
+    std::unique_ptr<CudaMakhoulTransform<double>> dct_;
+    CudaDeviceBuffer<double> d_coefficients_;   ///< DCT-II coefficients of the physical grid
 
     // Normalization factor
     double norm_factor_;
-    cudaStream_t stream_{0};      ///< Stream the transforms run on (the last call's)
 
-    /// Run the DCTs and kernels on `stream` (diffusion() and apply_multiplier() call it).
-    void use_stream(cudaStream_t stream);
+    /// d_q_out = scale · DCT-III[ table · DCT-II[d_q_in] ] on `stream`.
+    void apply_spectral(const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+                        double scale, cudaStream_t stream);
 
 public:
     /**
@@ -132,8 +133,6 @@ public:
      * @param nx_logical Logical grid dimensions (must be even)
      */
     explicit CudaCrysFFT(std::array<int, 3> nx_logical);
-
-    ~CudaCrysFFT();
 
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,

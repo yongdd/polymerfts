@@ -8,17 +8,12 @@
 #include <cmath>
 #include <cuComplex.h>
 
+#include "CudaDeviceOps.cuh"
 #include "CudaFourierTransform.h"
+#include "CudaTypeDispatch.h"
 
 namespace
 {
-__device__ inline double fourier_mul(double a, double b) { return a * b; }
-__device__ inline cuDoubleComplex fourier_mul(cuDoubleComplex a, cuDoubleComplex b) { return cuCmul(a, b); }
-__device__ inline double fourier_add(double a, double b) { return a + b; }
-__device__ inline cuDoubleComplex fourier_add(cuDoubleComplex a, cuDoubleComplex b) { return cuCadd(a, b); }
-__device__ inline void fourier_zero(double& a) { a = 0.0; }
-__device__ inline void fourier_zero(cuDoubleComplex& a) { a = make_cuDoubleComplex(0.0, 0.0); }
-
 /// out_i (+)= Σ_j M_ij · in_j at every coefficient (diagonal: out_i (+)= M · in_i).
 /// The n coefficients of a field are `pitch` apart in `in` and `out`; m is packed.
 template <typename C>
@@ -33,17 +28,25 @@ __global__ void ker_fourier_multiply(C* out, const C* m, const C* in, int n_out,
             C sum;
             if (diagonal)
             {
-                sum = fourier_mul(m[k], in[i * pitch + k]);
+                sum = multiplied(m[k], in[i * pitch + k]);
             }
             else
             {
-                fourier_zero(sum);
+                sum = zero_of(sum);
                 for (int j = 0; j < n_in; ++j)
-                    sum = fourier_add(sum, fourier_mul(m[(static_cast<long long>(i) * n_in + j) * n + k], in[j * pitch + k]));
+                    sum = added(sum, multiplied(m[(static_cast<long long>(i) * n_in + j) * n + k], in[j * pitch + k]));
             }
-            out[i * pitch + k] = accumulate ? fourier_add(out[i * pitch + k], sum) : sum;
+            out[i * pitch + k] = accumulate ? added(out[i * pitch + k], sum) : sum;
         }
     }
+}
+
+/// x *= factor at every element (the normalization of a periodic box's inverse cuFFT)
+__global__ void ker_fourier_scale(double* x, double factor, long long n)
+{
+    for (long long i = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; i < n;
+         i += static_cast<long long>(blockDim.x) * gridDim.x)
+        x[i] *= factor;
 }
 
 /// Allocate at least `count` elements, keeping a large enough buffer
@@ -59,25 +62,23 @@ template <typename T>
 CudaFourierTransform<T>::CudaFourierTransform(ComputationBox<T>* cb, std::vector<BoundaryCondition> bc)
     : FourierTransform<T>(cb, bc)
 {
-    const std::vector<int> nx = cb->get_nx();
-    if (this->mixed_)
-    {
-        // The DFT along the periodic axes and the series along the walls, through one cuFFT
-        // of the grid (a mixed box has at least two axes)
-        mixed_fft_ = std::make_unique<CudaMakhoulTransform<T>>(nx, bc);
-    }
-    else if (this->dim_ == 3)
-        fft_ = std::make_unique<CudaFFT<T, 3>>(std::array<int, 3>{nx[0], nx[1], nx[2]},
-                                                std::array<BoundaryCondition, 3>{bc[0], bc[1], bc[2]});
-    else if (this->dim_ == 2)
-        fft_ = std::make_unique<CudaFFT<T, 2>>(std::array<int, 2>{nx[0], nx[1]},
-                                                std::array<BoundaryCondition, 2>{bc[0], bc[1]});
-    else if (this->dim_ == 1)
-        fft_ = std::make_unique<CudaFFT<T, 1>>(std::array<int, 1>{nx[0]},
-                                                std::array<BoundaryCondition, 1>{bc[0]});
-    else
+    std::vector<int> nx = cb->get_nx();
+    if (this->dim_ < 1 || this->dim_ > 3)
         throw_with_line_number("A Fourier transform supports 1D, 2D or 3D grids, got dim = "
                                + std::to_string(this->dim_) + ".");
+    if (this->periodic_)
+    {
+        // The unnormalized FFT of the grid, both directions; backward() divides by the grid
+        CUFFT_CHECK(plan_forward_.create(cufftPlanMany, this->dim_, nx.data(), nullptr, 1, 0, nullptr, 1, 0,
+                                         CufftPlanType<T>::forward, 1));
+        CUFFT_CHECK(plan_backward_.create(cufftPlanMany, this->dim_, nx.data(), nullptr, 1, 0, nullptr, 1, 0,
+                                          CufftPlanType<T>::backward, 1));
+    }
+    else
+    {
+        // The series along the walls and the DFT along the periodic axes, through one cuFFT of the grid
+        series_ = std::make_unique<CudaMakhoulTransform<T>>(nx, bc);
+    }
     // cuFFT needs 16-byte aligned real data: give every field an even number of doubles
     const long long doubles_per_value = static_cast<long long>(sizeof(T) / sizeof(double));
     const long long field_doubles = this->n_grid_ * doubles_per_value;
@@ -160,18 +161,21 @@ void CudaFourierTransform<T>::transform_forward(int n_fields, double* d_coeffici
     T* d_fields = reinterpret_cast<T*>(d_fields_.get());
     for (int f = 0; f < n_fields; ++f)
     {
-        if (this->mixed_)
+        // The coefficients of a field start an even number of doubles apart: 16-byte aligned
+        DeviceT* d_field = reinterpret_cast<DeviceT*>(d_fields + f * field_pitch_);
+        double* d_field_coefficients = d_coefficients + f * coefficient_pitch_;
+        if (this->periodic_)
         {
-            // The coefficients of a field start an even number of doubles apart: 16-byte aligned
-            mixed_fft_->forward(reinterpret_cast<const DeviceT*>(d_fields + f * field_pitch_),
-                                reinterpret_cast<cuDoubleComplex*>(d_coefficients + f * coefficient_pitch_),
-                                this->mixed_forward_scale_, stream_);
+            cuDoubleComplex* d_spectrum = reinterpret_cast<cuDoubleComplex*>(d_field_coefficients);
+            CUFFT_CHECK(cufftSetStream(plan_forward_, stream_));
+            CUFFT_CHECK(cufft_exec_forward(plan_forward_, d_field, d_spectrum));
         }
-        else if (this->periodic_)
-            fft_->forward_stream(d_fields + f * field_pitch_,
-                                 reinterpret_cast<std::complex<double>*>(d_coefficients + f * coefficient_pitch_), stream_);
         else
-            fft_->forward_stream(d_fields + f * field_pitch_, d_coefficients + f * coefficient_pitch_, stream_);
+        {
+            // The series are half of FFTW's REDFT10/RODFT10 per wall axis (mixed_forward_scale_
+            // holds 1/2 per wall axis, also in a box of walls only)
+            series_->forward(d_field, d_field_coefficients, this->mixed_forward_scale_, stream_);
+        }
     }
 }
 
@@ -179,35 +183,29 @@ template <typename T>
 void CudaFourierTransform<T>::transform_backward(double* d_coefficients, int n_fields)
 {
     T* d_fields = reinterpret_cast<T*>(d_fields_.get());
+    const double normalization = 1.0 / static_cast<double>(this->n_grid_);
     for (int f = 0; f < n_fields; ++f)
     {
-        if (this->mixed_)
+        DeviceT* d_field = reinterpret_cast<DeviceT*>(d_fields + f * field_pitch_);
+        double* d_field_coefficients = d_coefficients + f * coefficient_pitch_;
+        if (this->periodic_)
         {
-            // A real field is the real part of the inverse
-            mixed_fft_->backward(reinterpret_cast<const cuDoubleComplex*>(d_coefficients + f * coefficient_pitch_),
-                                 reinterpret_cast<DeviceT*>(d_fields + f * field_pitch_),
-                                 1.0 / static_cast<double>(this->n_grid_), stream_);
+            // Z2D may overwrite its input even out of place; the coefficients are scratch
+            // (see the declaration), so they are transformed without a copy
+            cuDoubleComplex* d_spectrum = reinterpret_cast<cuDoubleComplex*>(d_field_coefficients);
+            CUFFT_CHECK(cufftSetStream(plan_backward_, stream_));
+            CUFFT_CHECK(cufft_exec_backward(plan_backward_, d_spectrum, d_field));
+            const long long n_doubles = static_cast<long long>(sizeof(T) / sizeof(double)) * this->n_grid_;
+            const int n_threads = CudaCommon::get_instance().get_n_threads();
+            ker_fourier_scale<<<grid_blocks(n_doubles, n_threads), n_threads, 0, stream_>>>(
+                reinterpret_cast<double*>(d_field), normalization, n_doubles);
+            CUDA_CHECK_LAUNCH();
         }
-        else if (this->periodic_)
-            fft_->backward_stream(reinterpret_cast<std::complex<double>*>(d_coefficients + f * coefficient_pitch_),
-                                  d_fields + f * field_pitch_, stream_);
         else
-            fft_->backward_stream(d_coefficients + f * coefficient_pitch_, d_fields + f * field_pitch_, stream_);
-    }
-}
-
-template <typename T>
-void CudaFourierTransform<T>::scale_wall_coefficients(double* d_coefficients, int n_fields, double factor)
-{
-    // One launch per field: a field's coefficients fit the int index of the kernel
-    const long long stride = this->coefficient_stride();
-    const int n_threads = CudaCommon::get_instance().get_n_threads();
-    for (int f = 0; f < n_fields; ++f)
-    {
-        double* d_field = d_coefficients + f * coefficient_pitch_;
-        ker_linear_scaling<<<grid_blocks(stride, n_threads), n_threads, 0, stream_>>>(
-            d_field, d_field, factor, 0.0, static_cast<int>(stride));
-        CUDA_CHECK_LAUNCH();
+        {
+            // A real field with periodic axes is the real part of the inverse
+            series_->backward(d_field_coefficients, nullptr, d_field, normalization, stream_);
+        }
     }
 }
 
@@ -218,8 +216,6 @@ void CudaFourierTransform<T>::forward_impl(const T* fields, int n_fields, double
     reserve(d_coefficients_in_, n_fields * coefficient_pitch_);
     upload_fields(fields, n_fields);
     transform_forward(n_fields, d_coefficients_in_);
-    if (!this->periodic_ && !this->mixed_)   // the CUDA cosine and sine series
-        scale_wall_coefficients(d_coefficients_in_, n_fields, std::ldexp(1.0, -this->dim_));
     copy_coefficients(coefficients, d_coefficients_in_, n_fields, false);
     CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
@@ -230,8 +226,6 @@ void CudaFourierTransform<T>::backward_impl(const double* coefficients, int n_fi
     reserve(d_coefficients_out_, n_fields * coefficient_pitch_);
     reserve(d_fields_, n_fields * field_pitch_);
     copy_coefficients(d_coefficients_out_, coefficients, n_fields, true);
-    if (!this->periodic_ && !this->mixed_)
-        scale_wall_coefficients(d_coefficients_out_, n_fields, std::ldexp(1.0, this->dim_));
     transform_backward(d_coefficients_out_, n_fields);
     download_fields(fields, n_fields);
     CUDA_CHECK(cudaStreamSynchronize(stream_));

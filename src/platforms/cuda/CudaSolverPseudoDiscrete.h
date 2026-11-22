@@ -44,7 +44,6 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
 #include "CudaCrysFFT.h"
 
 class SpaceGroup;  // Forward declaration
@@ -72,8 +71,6 @@ private:
     using Base = CudaSolverPseudoBase<T>;
     using Base::cb; using Base::pseudo; using Base::streams;
     using Base::use_crysfft_;
-    using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_;
 
 public:
     /**

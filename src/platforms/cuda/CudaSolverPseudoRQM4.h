@@ -21,7 +21,7 @@
  *
  * Pre-created FFT plans for efficiency:
  * - cuFFT plans (batch 1 for the full step, batch 2 for the half-step pair)
- *   and DCT/DST objects are owned by CudaSolverPseudoBase
+ *   and the cosine and sine series of wall boxes are owned by CudaSolverPseudoBase
  *
  * **Stress Array Convention (Voigt Notation):**
  *
@@ -48,9 +48,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
 #include "CudaCrysFFT.h"
-#include "FFT.h"
 
 class SpaceGroup;  // Forward declaration
 class CudaCrysFFTBase;  // Forward declaration
@@ -78,7 +76,7 @@ class CudaCrysFFTBase;  // Forward declaration
  *   cuFFT (2*M; full-grid steps with periodic BC), the full step staying in the first half
  * - d_q_step_1_one: the full step of the other paths (the reduced basis on the CrysFFT path)
  *
- * The spectra go to the base's scratch (d_qk_ or d_rk_1_/d_rk_2_), which the stress shares.
+ * The spectra go to the base's scratch, which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
@@ -89,8 +87,7 @@ private:
     using Base::n_streams; using Base::is_periodic_; using Base::streams;
     using Base::n_basis_; using Base::use_crysfft_; using Base::crysfft_identity_map_;
     using Base::crysfft_physical_size_;
-    using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
+    using Base::fft_forward; using Base::fft_backward; using Base::spectrum;
 
     /// @name Workspace Arrays (per stream)
     /// @{

@@ -14,6 +14,7 @@
 #include <string>
 #include <cuComplex.h>
 
+#include "CudaDeviceOps.cuh"
 #include "CudaMakhoulTransform.h"
 #include "GridLimits.h"
 
@@ -30,9 +31,6 @@ __device__ inline int makhoul_place(int j, int n)
 {
     return (j % 2 == 0) ? j / 2 : n - 1 - j / 2;
 }
-
-__device__ inline double scaled(double x, double s) { return s * x; }
-__device__ inline cuDoubleComplex scaled(cuDoubleComplex x, double s) { return make_cuDoubleComplex(s * x.x, s * x.y); }
 
 /// Grid index (i0, i1, i2) of a flat index on a grid of shape n
 __device__ inline void unflatten(int idx, const int n[3], int i[3])
@@ -60,7 +58,7 @@ __global__ void ker_makhoul_reorder(const D* __restrict__ field, D* __restrict__
             if (a.sine[d] && j[d] % 2 == 1)
                 factor = -factor;
         }
-        samples[idx] = scaled(field[(j[0] * a.n[1] + j[1]) * a.n[2] + j[2]], factor);
+        samples[idx] = scaled(factor, field[(j[0] * a.n[1] + j[1]) * a.n[2] + j[2]]);
     }
 }
 
@@ -82,7 +80,7 @@ __global__ void ker_makhoul_restore(const D* __restrict__ samples, D* __restrict
             if (a.sine[d] && j[d] % 2 == 1)
                 factor = -factor;
         }
-        field[idx] = scaled(samples[(p[0] * a.n[1] + p[1]) * a.n[2] + p[2]], factor);
+        field[idx] = scaled(factor, samples[(p[0] * a.n[1] + p[1]) * a.n[2] + p[2]]);
     }
 }
 
@@ -102,29 +100,51 @@ __device__ inline cuDoubleComplex makhoul_mode(const cuDoubleComplex* modes, con
     return cuConj(modes[(m0 * a.n[1] + m1) * half + (a.n[2] - i2)]);
 }
 
-/// Coefficient C(c), or for a real field the Hermitian part (C(c) + conj C(-c))/2, -c reversing
-/// only the periodic indices: the coefficients of the real part of the field
-template <bool REAL>
-__device__ inline cuDoubleComplex makhoul_coefficient(const cuDoubleComplex* coefficients, const CudaMakhoulAxes& a,
-                                                      int c0, int c1, int c2)
+/// Coefficient i times its factor (k_factor nullptr: none); a real coefficient as (x, 0). The
+/// products are rounded (__dmul_rn is never contracted into a fused multiply-add), so the result
+/// equals the transform of the products bit for bit.
+__device__ inline cuDoubleComplex makhoul_load(const double* coefficients, const double* k_factor, int i)
 {
-    const cuDoubleComplex x = coefficients[(c0 * a.n[1] + c1) * a.n[2] + c2];
-    if (!REAL)
+    return make_cuDoubleComplex(k_factor != nullptr ? __dmul_rn(coefficients[i], k_factor[i]) : coefficients[i], 0.0);
+}
+__device__ inline cuDoubleComplex makhoul_load(const cuDoubleComplex* coefficients, const double* k_factor, int i)
+{
+    if (k_factor == nullptr)
+        return coefficients[i];
+    const cuDoubleComplex x = coefficients[i];
+    return make_cuDoubleComplex(__dmul_rn(x.x, k_factor[i]), __dmul_rn(x.y, k_factor[i]));
+}
+
+/// Coefficient C(c) times its factor, or for a real field with complex coefficients the Hermitian
+/// part (C(c) + conj C(-c))/2 of the products, -c reversing only the periodic indices: the
+/// coefficients of the real part of the field. Real coefficients are their own Hermitian part.
+template <bool REAL, typename C>
+__device__ inline cuDoubleComplex makhoul_coefficient(const C* coefficients, const double* k_factor,
+                                                      const CudaMakhoulAxes& a, int c0, int c1, int c2)
+{
+    const cuDoubleComplex x = makhoul_load(coefficients, k_factor, (c0 * a.n[1] + c1) * a.n[2] + c2);
+    if constexpr (!REAL || std::is_same_v<C, double>)
         return x;
     const int m0 = a.wall[0] ? c0 : (a.n[0] - c0) % a.n[0];
     const int m1 = a.wall[1] ? c1 : (a.n[1] - c1) % a.n[1];
     const int m2 = a.wall[2] ? c2 : (a.n[2] - c2) % a.n[2];
-    const cuDoubleComplex y = coefficients[(m0 * a.n[1] + m1) * a.n[2] + m2];
+    const cuDoubleComplex y = makhoul_load(coefficients, k_factor, (m0 * a.n[1] + m1) * a.n[2] + m2);
     return make_cuDoubleComplex(0.5 * (x.x + y.x), 0.5 * (x.y - y.y));
 }
 
 /// Forward: every coefficient from its modes. Along a wall axis the coefficient of mode k
 /// (stored at k, or at n-1-k on a sine axis) is W^k V_k + W^-k V_{-k}; a periodic axis keeps V_k.
 /// The loops over the two terms of each axis unroll, so the terms stay in registers.
-template <bool REAL>
-__global__ void ker_makhoul_combine(const cuDoubleComplex* __restrict__ modes, cuDoubleComplex* __restrict__ coefficients,
+///
+/// Real coefficients (C = double: a real field between walls only, the last axis a wall): the
+/// term with the opposite signs on every axis is the complex conjugate of a term, as V(-k) =
+/// conj V(k), so the coefficient is twice the real part of the terms with the + sign on the
+/// last axis.
+template <bool REAL, typename C>
+__global__ void ker_makhoul_combine(const cuDoubleComplex* __restrict__ modes, C* __restrict__ coefficients,
                                     CudaMakhoulAxes a, int n_grid)
 {
+    constexpr bool REAL_COEFFICIENTS = std::is_same_v<C, double>;
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n_grid; idx += blockDim.x * gridDim.x)
     {
         int c[3];
@@ -147,7 +167,7 @@ __global__ void ker_makhoul_combine(const cuDoubleComplex* __restrict__ modes, c
             #pragma unroll
             for (int t1 = 0; t1 < 2; ++t1)
                 #pragma unroll
-                for (int t2 = 0; t2 < 2; ++t2)
+                for (int t2 = 0; t2 < (REAL_COEFFICIENTS ? 1 : 2); ++t2)
                 {
                     // A periodic axis has one term
                     if ((t0 == 1 && !a.wall[0]) || (t1 == 1 && !a.wall[1]) || (t2 == 1 && !a.wall[2]))
@@ -161,16 +181,19 @@ __global__ void ker_makhoul_combine(const cuDoubleComplex* __restrict__ modes, c
                         v = cuCmul(factor[2][t2], v);
                     sum = cuCadd(sum, v);
                 }
-        coefficients[idx] = sum;
+        if constexpr (REAL_COEFFICIENTS)
+            coefficients[idx] = 2.0 * sum.x;
+        else
+            coefficients[idx] = sum;
     }
 }
 
-/// Backward: every mode from its coefficients (a real field: the half spectrum of the last axis,
-/// from the Hermitian part). Along a wall axis V_k = W^-k (X_k - i X_{n-k}), X_n = 0, twice the
-/// inverse of the forward step; a periodic axis keeps X_k.
-template <bool REAL>
-__global__ void ker_makhoul_separate(const cuDoubleComplex* __restrict__ coefficients, cuDoubleComplex* __restrict__ modes,
-                                     CudaMakhoulAxes a, int n_modes)
+/// Backward: every mode from its coefficients times k_factor (a real field: the half spectrum of
+/// the last axis, from the Hermitian part). Along a wall axis V_k = W^-k (X_k - i X_{n-k}),
+/// X_n = 0, twice the inverse of the forward step; a periodic axis keeps X_k.
+template <bool REAL, typename C>
+__global__ void ker_makhoul_separate(const C* __restrict__ coefficients, const double* __restrict__ k_factor,
+                                     cuDoubleComplex* __restrict__ modes, CudaMakhoulAxes a, int n_modes)
 {
     const int shape[3] = {a.n[0], a.n[1], REAL ? a.n[2] / 2 + 1 : a.n[2]};
     for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n_modes; idx += blockDim.x * gridDim.x)
@@ -202,7 +225,8 @@ __global__ void ker_makhoul_separate(const cuDoubleComplex* __restrict__ coeffic
                 {
                     if ((t0 == 1 && !two_terms[0]) || (t1 == 1 && !two_terms[1]) || (t2 == 1 && !two_terms[2]))
                         continue;
-                    cuDoubleComplex v = makhoul_coefficient<REAL>(coefficients, a, index[0][t0], index[1][t1], index[2][t2]);
+                    cuDoubleComplex v = makhoul_coefficient<REAL>(coefficients, k_factor, a,
+                                                                  index[0][t0], index[1][t1], index[2][t2]);
                     if (a.wall[0])
                         v = cuCmul(factor[0][t0], v);
                     if (a.wall[1])
@@ -222,9 +246,9 @@ CudaMakhoulTransform<T>::CudaMakhoulTransform(const std::vector<int>& nx, const 
     const int rank = static_cast<int>(nx.size());
     if (rank < 1 || rank > 3 || bc.size() != nx.size())
         throw_with_line_number("CudaMakhoulTransform takes one to three axes, each periodic, cosine or sine.");
-    if (std::none_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b == BoundaryCondition::PERIODIC; }))
-        throw_with_line_number("CudaMakhoulTransform needs a periodic axis: walls alone have real coefficients.");
     n_grid_ = checked_grid_points(nx);   // the kernels index the grid with int
+    real_coefficients_ = REAL && std::none_of(bc.begin(), bc.end(),
+                                              [](BoundaryCondition b) { return b == BoundaryCondition::PERIODIC; });
 
     // Axes padded to three in front; W^k on the wall axes, one table after the other
     std::vector<std::complex<double>> w;
@@ -273,7 +297,7 @@ CudaMakhoulTransform<T>::CudaMakhoulTransform(const std::vector<int>& nx, const 
 }
 
 template <typename T>
-void CudaMakhoulTransform<T>::forward(const DeviceT* d_in, cuDoubleComplex* d_out, double scale, cudaStream_t stream)
+void CudaMakhoulTransform<T>::forward(const DeviceT* d_in, double* d_out, double scale, cudaStream_t stream)
 {
     const int n_threads = CudaCommon::get_instance().get_n_threads();
     const int n_blocks = grid_blocks(n_grid_, n_threads);
@@ -291,16 +315,27 @@ void CudaMakhoulTransform<T>::forward(const DeviceT* d_in, cuDoubleComplex* d_ou
         CUDA_CHECK_LAUNCH();
         CUFFT_CHECK(cufftExecZ2Z(plan_, d_modes_.get(), d_modes_.get(), CUFFT_FORWARD));
     }
-    ker_makhoul_combine<REAL><<<n_blocks, n_threads, 0, stream>>>(d_modes_.get(), d_out, axes_, n_grid_);
+    // Real coefficients only for a real field (no kernel of a complex field writes doubles)
+    if (REAL && real_coefficients_)
+        ker_makhoul_combine<true><<<n_blocks, n_threads, 0, stream>>>(d_modes_.get(), d_out, axes_, n_grid_);
+    else
+        ker_makhoul_combine<REAL><<<n_blocks, n_threads, 0, stream>>>(
+            d_modes_.get(), reinterpret_cast<cuDoubleComplex*>(d_out), axes_, n_grid_);
     CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
-void CudaMakhoulTransform<T>::backward(const cuDoubleComplex* d_in, DeviceT* d_out, double scale, cudaStream_t stream)
+void CudaMakhoulTransform<T>::backward(const double* d_in, const double* d_k_factor, DeviceT* d_out, double scale,
+                                       cudaStream_t stream)
 {
     const int n_threads = CudaCommon::get_instance().get_n_threads();
-    ker_makhoul_separate<REAL><<<grid_blocks(n_modes_, n_threads), n_threads, 0, stream>>>(
-        d_in, d_modes_.get(), axes_, n_modes_);
+    const int n_mode_blocks = grid_blocks(n_modes_, n_threads);
+    if (REAL && real_coefficients_)
+        ker_makhoul_separate<true><<<n_mode_blocks, n_threads, 0, stream>>>(
+            d_in, d_k_factor, d_modes_.get(), axes_, n_modes_);
+    else
+        ker_makhoul_separate<REAL><<<n_mode_blocks, n_threads, 0, stream>>>(
+            reinterpret_cast<const cuDoubleComplex*>(d_in), d_k_factor, d_modes_.get(), axes_, n_modes_);
     CUDA_CHECK_LAUNCH();
     const int n_blocks = grid_blocks(n_grid_, n_threads);
     if constexpr (REAL)

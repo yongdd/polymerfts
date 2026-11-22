@@ -210,7 +210,7 @@ protected:
     std::vector<int> coefficient_shape_;
     bool complex_coefficients_;
     bool holds_orthogonal_cell_ = false;
-    /// Forward scale of a mixed box, 1/2 per wall axis: the cosine and sine series are half of
+    /// Forward scale of a box with walls, 1/2 per wall axis: the cosine and sine series are half of
     /// FFTW's REDFT10/RODFT10, which MakhoulTransform and CudaMakhoulTransform follow
     double mixed_forward_scale_ = 1.0;
 

@@ -207,24 +207,14 @@ class PropagatorSolver:
     def _auto_platform(self):
         """Platform for ``platform="auto"``: CPU for 1D (GPU overhead outweighs
         the gain), CUDA for 2D/3D when available, otherwise the first CPU
-        backend of this build. Inputs that only the CPU backends run stay on
-        the CPU: the CUDA pseudo-spectral solvers need even sizes of at most 6142
-        points along absorbing axes (the sine transform stages a line of nx+2
-        values in the 48 KB of shared memory of a block), and periodic boxes for
-        complex fields of continuous chains.
+        backend of this build.
         """
         avail = _core.PlatformSelector.avail_platforms()
         cpu_platforms = [p for p in avail if p.startswith("cpu")]
         if self.dim == 1 and cpu_platforms:
             return cpu_platforms[0]
         if "cuda" in avail:
-            bc = self.bc_lower
-            cpu_only = self.numerical_methods()[self.numerical_method]["solver_type"] == "pseudospectral" and (
-                any("absorbing" in bc[2*d:2*d+2] and (self.nx[d] % 2 or self.nx[d] > 6142) for d in range(self.dim))
-                or (self.field_type == "complex" and self.chain_model == "continuous"
-                    and any(b != "periodic" for b in bc)))
-            if not (cpu_only and cpu_platforms):
-                return "cuda"
+            return "cuda"
         if cpu_platforms:
             return cpu_platforms[0]
         raise RuntimeError("No computational platform available in this build.")
@@ -234,10 +224,9 @@ class PropagatorSolver:
 
         Reflecting (DCT) and absorbing (DST) boundaries are supported on both
         platforms, verified against each other to machine precision in 1D/2D/3D
-        for continuous and discrete chains. CUDA needs even sizes along absorbing
-        axes and, for continuous chains, real fields (see _auto_platform). Mixing
-        periodic with non-periodic directions is not supported by the spectral
-        transform, so it fails loudly instead of silently switching solvers.
+        for continuous and discrete chains. Mixing periodic with non-periodic
+        directions is not supported by the spectral transform, so it fails loudly
+        instead of silently switching solvers.
         """
         has_walls = any(b in ["reflecting", "absorbing"] for b in self.bc_lower)
         has_periodic = any(b == "periodic" for b in self.bc_lower)

@@ -18,16 +18,11 @@
 #include <complex>
 #include <vector>
 
+#include "CudaDeviceOps.cuh"
 #include "CudaSolverRealSpaceDiscrete.h"
 
 namespace
 {
-__device__ inline double scaled(double a, double x) { return a * x; }
-__device__ inline cuDoubleComplex scaled(double a, cuDoubleComplex x) { return make_cuDoubleComplex(a * x.x, a * x.y); }
-__device__ inline double added(double x, double y) { return x + y; }
-__device__ inline cuDoubleComplex added(cuDoubleComplex x, cuDoubleComplex y) { return make_cuDoubleComplex(x.x + y.x, x.y + y.y); }
-__device__ inline double multiplied(double x, double y) { return x * y; }
-__device__ inline cuDoubleComplex multiplied(cuDoubleComplex x, cuDoubleComplex y) { return cuCmul(x, y); }
 
 // The last pass of a bond multiplies by exp(-w ds) and the mask (null when absent)
 template <typename D>
@@ -43,8 +38,6 @@ __device__ inline D finished(D sum, long m, const D* __restrict__ factor, const 
 // Sum of a b over the grid in a fixed order: partial sums of the blocks, then their sum times factor
 constexpr int reduce_threads = 256;
 constexpr int reduce_blocks = 256;
-__device__ inline double zero_of(double) { return 0.0; }
-__device__ inline cuDoubleComplex zero_of(cuDoubleComplex) { return make_cuDoubleComplex(0.0, 0.0); }
 
 template <typename D>
 __global__ void ker_dot_partial(const D* __restrict__ a, const D* __restrict__ b, D* __restrict__ partial, const long n)

@@ -18,9 +18,8 @@ intact. The complex+non-periodic transforms now process the real and
 imaginary parts independently (the DCT/DST is real-linear) with
 interleaved complex coefficients.
 
-Checks per available platform (cpu-mkl / cpu-fftw: discrete + continuous;
-cuda: discrete only — RQM4/RK2 CUDA complex+non-periodic intentionally
-raise):
+Checks per available platform (cpu-mkl, cpu-fftw and cuda: discrete,
+continuous with RQM4 and RK2, and a discrete diblock):
   1. Q(reflecting) == Q(mirrored periodic) to machine precision.
   2. phi(reflecting) == phi(mirrored periodic, first half) to machine
      precision, with genuinely complex fields (std ~ 3, nonzero Im(phi)).
@@ -113,17 +112,12 @@ def main():
     print("Available platforms:", avail)
     ran = 0
     for platform in avail:
-        if platform.startswith("cpu"):
-            for chain_model in ["discrete", "continuous"]:
-                run_case(platform, chain_model)
-                ran += 1
-            run_case(platform, "continuous", method="rk2")
-            run_case(platform, "discrete", diblock=True)   # half-bond junction
-            ran += 2
-        elif platform == "cuda":
-            run_case(platform, "discrete")
-            run_case(platform, "discrete", diblock=True)
-            ran += 2
+        for chain_model in ["discrete", "continuous"]:
+            run_case(platform, chain_model)
+            ran += 1
+        run_case(platform, "continuous", method="rk2")
+        run_case(platform, "discrete", diblock=True)   # half-bond junction
+        ran += 2
     assert ran > 0, "no platform available"
     if cuda_part_missing():
         return 1

@@ -15,8 +15,8 @@
  *
  * **cuFFT Plans:**
  *
- * - cuFFT plans and DCT/DST objects are owned by CudaSolverPseudoBase
- *   (fft_forward / fft_backward / fft_)
+ * - cuFFT plans and the cosine and sine series are owned by CudaSolverPseudoBase
+ *   (fft_forward / fft_backward for the batch of periodic BC, bond_step() otherwise)
  * - Stream-associated for concurrent execution
  *
  * **Stress Calculation:**
@@ -44,6 +44,112 @@
 #include "CudaSolverPseudoRQM4.h"
 #include "CudaCrysFFT.h"
 
+namespace
+{
+/// dst = a*(scale*src1*w1) + b*src2: ker_multi(src1, w1, scale) followed by
+/// ker_lin_comb in one pass, with the same arithmetic (the Richardson step)
+__global__ void ker_multi_lin_comb(double* dst, double a, const double* src1, const double* w1, double scale,
+                                   double b, const double* src2, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        const double t = scale * src1[i] * w1[i];
+        dst[i] = a * t + b * src2[i];
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void ker_multi_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, const cuDoubleComplex* w1, double scale,
+                                   double b, const cuDoubleComplex* src2, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        // Same arithmetic as the complex ker_multi
+        const double tx = scale * (src1[i].x * w1[i].x - src1[i].y * w1[i].y);
+        const double ty = scale * (src1[i].x * w1[i].y + src1[i].y * w1[i].x);
+        dst[i].x = a * tx + b * src2[i].x;
+        dst[i].y = a * ty + b * src2[i].y;
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+/// dst = (a*(src1*exp1) + b*(src2*exp2)) * mask: the Richardson step of the CrysFFT identity map
+__global__ void ker_lin_comb_exp(
+    double* dst,
+    const double* src1, const double* exp1, double a,
+    const double* src2, const double* exp2, double b,
+    const double* mask, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        double val = a * (src1[i] * exp1[i]) + b * (src2[i] * exp2[i]);
+        if (mask != nullptr)
+            val *= mask[i];
+        dst[i] = val;
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+/// Two fields times their factors in one pass: the full and the first half step of the batch
+__global__ void ker_multi_exp_dw_two(
+    double* dst1, const double* src1, const double* exp_dw1,
+    double* dst2, const double* src2, const double* exp_dw2,
+    double a, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        dst1[i] = a * src1[i] * exp_dw1[i];
+        dst2[i] = a * src2[i] * exp_dw2[i];
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+__global__ void ker_multi_exp_dw_two(
+    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
+    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
+    double a, const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        // Use temporary variables to avoid overwriting when dst and src share the same address
+        cuDoubleComplex temp_dst1, temp_dst2;
+
+        temp_dst1.x = a * (src1[i].x * exp_dw1[i].x - src1[i].y * exp_dw1[i].y);
+        temp_dst1.y = a * (src1[i].x * exp_dw1[i].y + src1[i].y * exp_dw1[i].x);
+
+        temp_dst2.x = a * (src2[i].x * exp_dw2[i].x - src2[i].y * exp_dw2[i].y);
+        temp_dst2.y = a * (src2[i].x * exp_dw2[i].y + src2[i].y * exp_dw2[i].x);
+
+        dst1[i] = temp_dst1;
+        dst2[i] = temp_dst2;
+
+        i += blockDim.x * gridDim.x;
+    }
+}
+
+/// The spectra of the batch times their bond factors
+__global__ void ker_complex_real_multi_bond_two(
+    cuDoubleComplex* dst1, const double* boltz_bond1,
+    cuDoubleComplex* dst2, const double* boltz_bond2,
+    const int M)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    while (i < M)
+    {
+        dst1[i].x *= boltz_bond1[i];
+        dst1[i].y *= boltz_bond1[i];
+        dst2[i].x *= boltz_bond2[i];
+        dst2[i].y *= boltz_bond2[i];
+        i += blockDim.x * gridDim.x;
+    }
+}
+}  // namespace
+
 template <typename T>
 CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
     ComputationBox<T>* cb,
@@ -55,8 +161,7 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
     const int* d_full_to_reduced_map)
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
                               space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/2,
-                              /*with_exp_dw_half=*/true,
-                              /*complex_requires_periodic=*/true)
+                              /*with_exp_dw_half=*/true)
 {
     try{
         // The CrysFFT objects and the work buffers of the path the space group chooses
@@ -175,6 +280,8 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
             // ============================================================
             // Periodic BC: Use batched cuFFT with complex coefficients
             // ============================================================
+            // The spectra of the batch, one after the other in the base's scratch
+            cuDoubleComplex* d_qk = reinterpret_cast<cuDoubleComplex*>(spectrum(STREAM, 0));
 
             // step 1/2: Evaluate exp(-w*ds/2) in real space
             // step 1/4: Evaluate exp(-w*ds/4) in real space
@@ -185,19 +292,19 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
 
             // step 1/2: Execute a forward FFT
             // step 1/4: Execute a forward FFT
-            fft_forward(STREAM, d_q_step_1_two[STREAM], d_qk_[STREAM], 2);
+            fft_forward(STREAM, d_q_step_1_two[STREAM], d_qk, 2);
             CUDA_CHECK_LAUNCH();
 
             // step 1/2: Multiply exp(-k^2 ds/6)  in fourier space
             // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
             ker_complex_real_multi_bond_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                (d_qk_[STREAM].get() + 0),         _d_boltz_bond,
-                (d_qk_[STREAM].get() + M_COMPLEX), _d_boltz_bond_half, M_COMPLEX);
+                (d_qk + 0),         _d_boltz_bond,
+                (d_qk + M_COMPLEX), _d_boltz_bond_half, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // step 1/2: Execute a backward FFT
             // step 1/4: Execute a backward FFT
-            fft_backward(STREAM, d_qk_[STREAM], d_q_step_1_two[STREAM], 2);
+            fft_backward(STREAM, d_qk, d_q_step_1_two[STREAM], 2);
             CUDA_CHECK_LAUNCH();
 
             // step 1/2: Evaluate exp(-w*ds/2) in real space (in place)
@@ -208,15 +315,15 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: Execute a forward FFT
-            fft_forward(STREAM, d_q_step_2_one[STREAM], d_qk_[STREAM], 1);
+            fft_forward(STREAM, d_q_step_2_one[STREAM], d_qk, 1);
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk_[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
+            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk, _d_boltz_bond_half, 1.0, M_COMPLEX);
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: Execute a backward FFT
-            fft_backward(STREAM, d_qk_[STREAM], d_q_step_2_one[STREAM], 1);
+            fft_backward(STREAM, d_qk, d_q_step_2_one[STREAM], 1);
             CUDA_CHECK_LAUNCH();
 
             // step 1/4: exp(-w*ds/4) and 1/M follow in the Richardson combination
@@ -225,57 +332,31 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
         else
         {
             // ============================================================
-            // Non-periodic BC: Use CudaFFT (DCT/DST) with real coefficients
+            // Walls: one field at a time through the cosine and sine series
             // ============================================================
-            // Each stream has its own CudaFFT object with independent work buffers;
-            // transforms and kernels are issued on this propagator's stream.
-
-            // Cast device pointers for FFT interface
-            T* d_q_step_1 = reinterpret_cast<T*>(d_q_step_1_one[STREAM].get());
-            T* d_q_step_2 = reinterpret_cast<T*>(d_q_step_2_one[STREAM].get());
 
             // ===== Step 1: Full step =====
-            // Evaluate exp(-w*ds/2) in real space
+            // exp(-w*ds/2), exp(-k^2 ds/6) in Fourier space, exp(-w*ds/2) with 1/M
             ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], fft_in, _d_exp_dw, 1.0, M);
             CUDA_CHECK_LAUNCH();
-
-            // Forward transform (DCT/DST)
-            fft_[STREAM]->forward_stream(d_q_step_1, d_rk_1_[STREAM], streams[STREAM]);
-
-            // Multiply by Boltzmann factor (real coefficients)
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            // Backward transform (inverse DCT/DST) - normalization included
-            fft_[STREAM]->backward_stream(d_rk_1_[STREAM], d_q_step_1, streams[STREAM]);
-
-            // Evaluate exp(-w*ds/2) in real space
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0, M);
+            this->bond_step(STREAM, d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_boltz_bond, 1.0);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+                d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
             CUDA_CHECK_LAUNCH();
 
             // ===== Step 2: Two half steps =====
-            // First half step
+            // First half step: exp(-w*ds/4), exp(-k^2 ds/12), exp(-w*ds/2) with 1/M
             ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], fft_in, _d_exp_dw_half, 1.0, M);
             CUDA_CHECK_LAUNCH();
-
-            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_2_[STREAM], streams[STREAM]);
-
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_2_[STREAM], d_rk_2_[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
+            this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
+            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+                d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
             CUDA_CHECK_LAUNCH();
 
-            fft_[STREAM]->backward_stream(d_rk_2_[STREAM], d_q_step_2, streams[STREAM]);
-
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0, M);
-            CUDA_CHECK_LAUNCH();
-
-            // Second half step
-            fft_[STREAM]->forward_stream(d_q_step_2, d_rk_2_[STREAM], streams[STREAM]);
-
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_2_[STREAM], d_rk_2_[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            fft_[STREAM]->backward_stream(d_rk_2_[STREAM], d_q_step_2, streams[STREAM]);
-            // exp(-w*ds/4) follows in the Richardson combination
+            // Second half step: exp(-k^2 ds/12); exp(-w*ds/4) and 1/M follow in the
+            // Richardson combination
+            this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
+            half_step_scale = 1.0/static_cast<double>(M);
         }
 
         // ===== RQM4: Richardson extrapolation =====

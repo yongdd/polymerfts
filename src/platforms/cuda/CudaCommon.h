@@ -181,7 +181,7 @@ public:
  * @code
  * CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&stream)));   // counted handle
  * CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost));
- * ker_scale<<<blocks, threads, 0, stream>>>(d_x, 2.0, n);
+ * ker_multi<<<blocks, threads, 0, stream>>>(d_x, d_x, d_y, 2.0, n);
  * CUDA_CHECK_LAUNCH();
  * @endcode
  */
@@ -453,10 +453,6 @@ inline void release_cuda_stream(cudaStream_t stream) noexcept
     ignore_release_error(cudaStreamDestroy(stream));
 }
 
-__global__ void ker_copy_data_with_idx(cuDoubleComplex* dst, const cuDoubleComplex* src, const int* negative_k_idx, const int M);
-
-__global__ void ker_linear_scaling(double* dst, const double* src, double a, double b, const int M);
-
 __global__ void ker_exp(double* dst, const double* src, double a, double exp_b, const int M);
 __global__ void ker_exp(cuDoubleComplex* dst, const cuDoubleComplex* src, double a, double exp_b, const int M);
 
@@ -475,110 +471,9 @@ __global__ void ker_divide_masked(cuDoubleComplex* dst, const cuDoubleComplex* s
 __global__ void ker_lin_comb(double* dst, double a, const double* src1, double b, const double* src2, const int M);
 __global__ void ker_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M);
 __global__ void ker_lin_comb(cuDoubleComplex* dst, cuDoubleComplex a, const cuDoubleComplex* src1, double b, const cuDoubleComplex* src2, const int M);
-/// dst = a*(scale*src1*w1) + b*src2: ker_multi(src1, w1, scale) followed by
-/// ker_lin_comb in one pass, with the same arithmetic (RQM4 Richardson step).
-__global__ void ker_multi_lin_comb(double* dst, double a, const double* src1, const double* w1, double scale,
-                                   double b, const double* src2, const int M);
-__global__ void ker_multi_lin_comb(cuDoubleComplex* dst, double a, const cuDoubleComplex* src1, const cuDoubleComplex* w1, double scale,
-                                   double b, const cuDoubleComplex* src2, const int M);
-__global__ void ker_lin_comb_exp(
-    double* dst,
-    const double* src1, const double* exp1, double a,
-    const double* src2, const double* exp2, double b,
-    const double* mask, const int M);
 
 __global__ void ker_multi_complex_real(cuDoubleComplex* dst, const double* src, double a, const int M);
 
-__global__ void ker_multi_exp_dw_two(
-    double* dst1, const double* src1, const double* exp_dw1,
-    double* dst2, const double* src2, const double* exp_dw2,
-    double a, const int M);
-
-__global__ void ker_multi_exp_dw_two(
-    cuDoubleComplex* dst1, const cuDoubleComplex* src1, const cuDoubleComplex* exp_dw1,
-    cuDoubleComplex* dst2, const cuDoubleComplex* src2, const cuDoubleComplex* exp_dw2,
-    double a, const int M);
-
-__global__ void ker_complex_real_multi_bond_two(
-    cuDoubleComplex* dst1, const double* boltz_bond1,
-    cuDoubleComplex* dst2, const double* boltz_bond2,
-    const int M);
-
-// ============================================================
-// Space group reduced basis kernels
-// ============================================================
-
-/**
- * @brief Expand reduced basis to full grid.
- *
- * Broadcasts values from reduced-basis points to total_grid points
- * using the full_to_reduced_map lookup table.
- *
- * @param dst Output full grid array (size: total_grid)
- * @param src Input reduced basis array (size: n_basis)
- * @param full_to_reduced_map Map from full grid index to reduced basis index
- * @param total_grid Number of full grid points
- */
-__global__ void ker_expand_reduced_basis(
-    double* dst, const double* src, const int* full_to_reduced_map, const int total_grid);
-
-__global__ void ker_expand_reduced_basis(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* full_to_reduced_map, const int total_grid);
-
-/**
- * @brief Expand reduced basis and apply reduced multiplier in one pass.
- *
- * dst[i] = src[phys_to_reduced_map[i]] * reduced_multiplier[phys_to_reduced_map[i]]
- *
- * @param dst Output physical grid array (size: n_phys)
- * @param src Input reduced basis array (size: n_basis)
- * @param reduced_multiplier Reduced basis multiplier array (size: n_basis)
- * @param phys_to_reduced_map Map from physical index to reduced basis index
- * @param n_phys Number of physical grid points
- */
-__global__ void ker_expand_reduced_basis_multi(
-    double* dst, const double* src, const double* reduced_multiplier,
-    const int* phys_to_reduced_map, const int n_phys);
-
-/**
- * @brief Reduce full grid to reduced basis.
- *
- * Extracts values at reduced-basis points from full grid.
- *
- * @param dst Output reduced basis array (size: n_basis)
- * @param src Input full grid array (size: total_grid)
- * @param reduced_basis_indices Flat indices of reduced-basis points
- * @param n_basis Number of reduced-basis points
- */
-__global__ void ker_reduce_to_basis(
-    double* dst, const double* src, const int* reduced_basis_indices, const int n_basis);
-
-__global__ void ker_reduce_to_basis(
-    cuDoubleComplex* dst, const cuDoubleComplex* src, const int* reduced_basis_indices, const int n_basis);
-
-/**
- * @brief Multiply physical-grid array by reduced-basis multiplier using mapping.
- *
- * @param dst Physical grid array (size: n_phys)
- * @param reduced_multiplier Reduced basis array (size: n_basis)
- * @param phys_to_reduced_map Map from physical index to reduced basis index
- * @param n_phys Number of physical grid points
- */
-__global__ void ker_multi_map(
-    double* dst, const double* reduced_multiplier, const int* phys_to_reduced_map, const int n_phys);
-
-/**
- * @brief Multiply array by integer weights: dst[i] = src[i] * weights[i]
- *
- * Used for orbit-weighted integration in reduced basis.
- *
- * @param dst Output array
- * @param src Input array
- * @param weights Integer weight array (e.g., orbit_counts)
- * @param n Number of elements
- */
-__global__ void ker_multi_weight(
-    double* dst, const double* src, const int* weights, const int n);
 
 //==============================================================================
 // Owning CUDA allocations

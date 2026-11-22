@@ -137,7 +137,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaMakhoulTransform<T>` (one cuFFT of the grid) |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
 | CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
@@ -396,13 +396,12 @@ the steps (`expand_to_full_grid()`, `full_grid_output()`, `store_full_grid()`); 
 three pseudo-spectral solvers share -- the `Pseudo` helper, the stress reduction workspace
 and the CrysFFT fast path -- and implements `update_laplacian_operator()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
-constructor argument; the plans of a stream share one work area) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
+constructor argument; the plans of a stream share one work area) and the per-stream cosine and sine series (`CudaMakhoulTransform`) for walls.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
 (as `CpuSolverPseudoBase` does on the CPU) and owns the spectral scratch that the
-propagator steps and the stress share (`d_qk_` for periodic boundaries, `d_rk_1_`/`d_rk_2_`
-for walls); the discrete solver overrides
+propagator steps and the stress share (one or two spectra per stream); the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
 tables exist only for a path that uses them (`provide_work()` with the derived solvers'
@@ -410,7 +409,7 @@ tables exist only for a path that uses them (`provide_work()` with the derived s
 again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
 Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them, and the stress
-workspace (for RK2 and discrete chains also the second spectrum, which only the stress reads)
+workspace (also the second spectrum, which only the stress reads, except for the batch of the periodic RQM4 step)
 exists only from the first `prepare_stress()` on. The steps reuse what they have
 read: the RK2 step runs in its output, and with a space group the pseudo-spectral and CN-ADI
 steps work in place in one full grid per stream (the rs bonds, which cannot run in place,
@@ -418,16 +417,22 @@ take a second).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 `update_dw()`/`advance_propagator()` (RQM4 also the buffers of its full and half steps);
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
-bond of discrete chains on the grid. The non-periodic DCT/DST
-objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
-`backward_stream()` run the transform on the propagator's stream. Mechanical real/complex
+bond of discrete chains on the grid. The work of each stream is one `StreamWork` of
+`CudaSolverPseudoBase`: the cuFFT plans of a periodic box or the `CudaMakhoulTransform` of
+a box with walls, the spectral scratch, the stress workspace and the CrysFFT engine.
+`bond_step()` runs the bond convolution of a full-grid field on its stream, the forward
+transform, the bond factor and the backward transform of either kind of box, without the
+normalization 1/M, which the caller multiplies into its next kernel, and
+`transform_forward()` gives the spectra of the stress; they are the counterparts of
+`transform_forward()` and `transform_backward()` of the CPU solvers. The batch of two fields
+of the periodic RQM4 step and the CrysFFT steps keep their own paths. Mechanical real/complex
 differences (D2Z vs Z2Z transforms, CUB sum vs reduce) are hidden behind the overloads
 in `CudaTypeDispatch.h`, so a remaining `if constexpr` on the field type marks a genuine
 algorithmic difference or a real-only feature and is commented as such.
 
 ### 3.4 FFT Hierarchy
 
-**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`, `src/platforms/cuda/CudaFFT.h`
+**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`
 
 ```
 FFT<T>                                        [Abstract Base]
@@ -441,20 +446,16 @@ FFT<T>                                        [Abstract Base]
         ├── MklFFT<T, DIM>                     [CPU - MKL backend, periodic]
         │   └── DIM = 1, 2, or 3 (compile-time)
         │
-        ├── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
-        │   └── MakhoulTransform over FftwRealFFT or MklRealFFT
-        │
-        └── CudaFFTBase<T>                    [GPU abstract base]
-            ├── forward_stream(..., cudaStream_t)   [pure virtual; double* and complex* overloads]
-            ├── backward_stream(..., cudaStream_t)  [pure virtual; double* and complex* overloads]
-            │
-            └── CudaFFT<T, DIM>               [GPU/cuFFT + CudaRealTransform]
-                ├── forward()/backward() call the stream versions on stream 0
-                └── Uses CudaRealTransform for non-periodic BC (DCT/DST)
+        └── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
+            └── MakhoulTransform over FftwRealFFT or MklRealFFT
 ```
 
 On the CPU, `createFFT()` (`FFTFactory.h`) returns `FftwFFT` or `MklFFT` for a periodic
-box and `MakhoulFFT` for a box of reflecting and absorbing axes.
+box and `MakhoulFFT` for a box of reflecting and absorbing axes. `FFT<T>` is a CPU
+interface. On CUDA the solvers hold cuFFT plans for periodic boxes and
+`CudaMakhoulTransform<T>` for boxes with walls, whose coefficients have the layout of
+`FFT<T>` and the scale of `MakhoulFFT` there (half of FFTW's REDFT10/RODFT10 per axis);
+`CudaCrysFFT` (Pmmm) and `CudaFourierTransform` use `CudaMakhoulTransform` as well.
 
 **Transform Types:**
 
@@ -486,11 +487,11 @@ hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT wo
 other values differently; on the device every field starts an even number of doubles from
 the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
 has complex coefficients, with the full spectrum on the periodic axes, and real fields take
-the real part of `backward`. Both versions compute them with one FFT of the grid whose wall
-axes are reordered and combined as in Makhoul's cosine transform: `MakhoulTransform` with
-periodic axes on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid between a reordering
-and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
-Section 2.5). `PropagatorSolver.fourier` uses the
+the real part of `backward`. Both versions compute the transforms of boxes with walls with
+one FFT of the grid whose wall axes are reordered and combined as in Makhoul's cosine
+transform: `MakhoulTransform` on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid
+between a reordering and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
+Sections 2.4 and 2.5). `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
 (osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls

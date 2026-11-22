@@ -229,7 +229,6 @@ See [NumericalMethods.md](../theory/NumericalMethods.md) for benchmarks.
 **Auto-selection logic** (same for `PropagatorSolver`, `SCFT`, `LFTS` and `CLFTS`):
 - 1D simulations → the first CPU backend of the build
 - 2D/3D simulations → `"cuda"` if available, else CPU
-- Inputs that the CUDA pseudo-spectral solvers do not run stay on the CPU: an odd grid size, or more than 6142 points, along an absorbing direction in 2D/3D, and complex fields of continuous chains with non-periodic boundaries. With `"platform": "cuda"` these inputs raise an error
 
 **Threads.** The number of propagators computed at the same time is `OMP_NUM_THREADS` (CPU threads, or at most 4 CUDA streams). `import polymerfts` sets `OMP_NUM_THREADS=1` and `OMP_STACKSIZE=1G` when they are not set; set other values in the shell or before the import ([Installation](../getting-started/Installation.md#threads)).
 
@@ -579,7 +578,7 @@ $`k`$ is the physical wavenumber of the cell, including the cell angles. Along a
 
 `relax_cell`, `stress_scale` and `crystal_system` are listed under [SCFT Parameters](#scft-parameters).
 
-**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"` (on CUDA, `"rqm4"` and `"rk2"` take no complex fields with walls, which `"auto"` runs on the CPU); `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
+**Restrictions:** Stress computation supports periodic, reflecting, and absorbing boundary conditions for real and complex fields, with every method except the real-space `"cn-adi2"`; `SCFT` rejects `relax_cell` with `"cn-adi2"` (`ValidationError`). `"rs"` keeps the cell orthogonal, so `SCFT` rejects `relax_cell` with it in a crystal system whose angles relax (`"Monoclinic"`, `"Triclinic"`, `"Oblique2D"`). With non-periodic boundaries only box lengths can be optimized (angles stay at 90°); discrete-chain stress is exact against d(-lnQ)/dL, continuous-chain stress carries the contour-quadrature error (see docs/theory/StressTensor.md).
 
 ### Lattice Angles (Non-orthogonal)
 
@@ -711,7 +710,7 @@ params = {
 
 ### Non-Periodic Boundaries (Confined Film)
 
-All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. On CUDA, the pseudo-spectral methods need an even grid size of at most 6142 points along absorbing directions (in 1D also at most 6142 points along reflecting ones), and continuous chains with complex fields need periodic boundaries; `"platform": "auto"` runs such inputs on the CPU. `PropagatorSolver.fourier`, which applies smearing in every box and the `lr`/`lram` compressors along periodic axes and reflecting walls, uses the cosine series along every wall, absorbing ones included; on CUDA its 1D transform takes at most 6142 points (`"auto"` runs 1D inputs on the CPU), and in 2D and 3D it has no size limit.
+All numerical methods support boundary conditions that are non-periodic in every direction (reflecting or absorbing, chosen per direction): RQM4, RK2 and PS use DCT/DST transforms, while CN-ADI2 and RS use ghost cells. **Mixing** periodic and non-periodic directions, as in the confined-film example below, is supported only by the real-space methods (`"cn-adi2"` for continuous, `"rs"` for discrete chains) — the pseudo-spectral methods raise an error for mixed boundary conditions. `PropagatorSolver.fourier`, which applies smearing in every box and the `lr`/`lram` compressors along periodic axes and reflecting walls, uses the cosine series along every wall, absorbing ones included.
 
 ```python
 params = {

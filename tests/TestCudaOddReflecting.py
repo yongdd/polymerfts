@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-CUDA runs boxes with reflecting walls on odd grid sizes, like the CPU backends.
+CUDA runs boxes with walls on grids of any size, like the CPU backends.
 
-CudaFFT used to refuse every odd non-periodic grid size, although the DCT-2 and
-DCT-3 of CudaRealTransform take any length; only the DST-2 of absorbing axes
-needs an even one. This test runs 1D, 2D and 3D boxes whose reflecting axes have
-odd sizes (absorbing axes even) on CUDA and compares them with each CPU backend
-on the same random field (std 5): partition function (relative 1e-10),
+The CUDA wall transforms (CudaMakhoulTransform, one cuFFT of the grid) take
+every length along reflecting and absorbing axes. This test runs 1D, 2D and 3D
+boxes whose reflecting axes have odd sizes (absorbing axes even), boxes with an
+odd absorbing axis and boxes with an absorbing axis of 6144 points, which the
+earlier CUDA sine transform refused, on CUDA and compares them with each CPU
+backend on the same random field (std 5): partition function (relative 1e-10),
 concentrations (absolute 1e-10) and stress (relative 1e-8), for continuous
-(RQM4) and discrete chains. An odd absorbing axis, and in 2D/3D one of more than
-6142 points (the sine transform stages a line in shared memory), must still be
-refused on CUDA, and platform="auto" must choose a CPU backend for them (and for
-complex fields of continuous chains with walls). Exit code 77 (skipped) in a build without
-the CUDA backend or a CPU backend; exit code 1 in a CUDA build without a visible
-CUDA device.
+(RQM4) and discrete chains. platform="auto" chooses CUDA for every 2D box of
+these kinds, complex fields of continuous chains with walls included. Exit code
+77 (skipped) in a build without the CUDA backend or a CPU backend; exit code 1
+in a CUDA build without a visible CUDA device.
 """
 
 import contextlib
@@ -65,6 +64,14 @@ def main():
         ([15, 12], [2.0, 1.6], ["reflecting", "reflecting", "absorbing", "absorbing"]),
         ([9, 8, 7], [1.5, 1.4, 1.3], ["reflecting", "reflecting", "absorbing", "absorbing", "reflecting", "reflecting"]),
     ]
+    # Boxes the earlier CUDA sine transform refused: an odd absorbing axis, and absorbing axes
+    # of 6144 points (a line of nx + 2 values did not fit the shared memory of a block)
+    absorbing_6144 = []
+    for nx in ([2, 6144], [6144, 2], [2, 2, 6144]):
+        bc = ["reflecting"] * (2*len(nx))
+        bc[2*nx.index(6144):2*nx.index(6144) + 2] = ["absorbing", "absorbing"]
+        absorbing_6144.append((nx, [1.0] * len(nx), bc))
+    cases += [([8, 7], [1.0, 1.0], ["reflecting", "reflecting", "absorbing", "absorbing"])] + absorbing_6144
     rng = np.random.default_rng(31)
     for nx, lx, bc in cases:
         w = {m: rng.normal(0.0, 5.0, int(np.prod(nx))) for m in "AB"}
@@ -80,30 +87,13 @@ def main():
                 check(dphi < 1e-10, f"{tag}: phi max abs diff {dphi:.2e}")
                 check(rel_s < 1e-8, f"{tag}: stress relative diff {rel_s:.2e}")
 
-    refused = False
-    try:
-        run("cuda", "continuous", [8, 7], [1.0, 1.0], ["reflecting", "reflecting", "absorbing", "absorbing"],
-            {m: np.zeros(56) for m in "AB"})
-    except Exception as exc:
-        refused = "absorbing" in str(exc)
-    check(refused, "cuda refuses an odd absorbing axis with a message naming it")
-    for nx, axis in (([2, 6144], "Ny"), ([6144, 2], "Nx"), ([2, 2, 6144], "Nz")):
-        bc = ["reflecting"] * (2*len(nx))
-        bc[2*nx.index(6144):2*nx.index(6144) + 2] = ["absorbing", "absorbing"]
-        refused = False
-        try:
-            run("cuda", "discrete", nx, [1.0] * len(nx), bc, {m: np.zeros(int(np.prod(nx))) for m in "AB"})
-        except Exception as exc:
-            refused = all(text in str(exc) for text in ("absorbing", "shared memory", f"{axis} = 6144 points"))
-        check(refused, f"cuda refuses an absorbing axis {axis} of 6144 points in {len(nx)}D with a message naming it")
-
-    # platform="auto" keeps the inputs that only the CPU backends run on the CPU
+    # platform="auto" runs every 2D box on CUDA
     walls = ["reflecting", "reflecting", "absorbing", "absorbing"]
     for nx, bc, chain_model, field_type, platform in (
-            ([8, 7], walls, "continuous", "real", "cpu"), ([8, 7], walls, "discrete", "real", "cpu"),
-            ([8, 8], walls, "discrete", "real", "cuda"), ([8, 8], walls, "continuous", "complex", "cpu"),
+            ([8, 7], walls, "continuous", "real", "cuda"), ([8, 7], walls, "discrete", "real", "cuda"),
+            ([8, 8], walls, "discrete", "real", "cuda"), ([8, 8], walls, "continuous", "complex", "cuda"),
             ([8, 8], walls, "discrete", "complex", "cuda"), ([8, 7], ["periodic"]*4, "continuous", "complex", "cuda"),
-            ([2, 6144], walls, "continuous", "real", "cpu"), ([2, 6142], walls, "discrete", "real", "cuda"),
+            ([2, 6144], walls, "continuous", "real", "cuda"), ([2, 6142], walls, "discrete", "real", "cuda"),
             ([6144, 2], ["reflecting"]*4, "continuous", "real", "cuda")):
         with contextlib.redirect_stdout(io.StringIO()):
             chosen = PropagatorSolver(nx=nx, lx=[1.0, 1.0], ds=0.02, bond_lengths={"A": 1.0}, bc=bc,
@@ -113,7 +103,7 @@ def main():
     if FAILURES:
         print(f"\nFAILED: {len(FAILURES)} check(s)")
         return 1
-    print("\nOdd reflecting grids on CUDA: PASSED")
+    print("\nWall boxes of any size on CUDA: PASSED")
     return 0
 
 

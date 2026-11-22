@@ -2,9 +2,10 @@
  * @file CudaFourierTransform.h
  * @brief FourierTransform on the GPU (cuFFT and the CUDA cosine/sine transforms).
  *
- * A box that mixes periodic and wall axes runs CudaMakhoulTransform: one cuFFT of
- * the grid, the DFT along the periodic axes and the cosine or sine series along
- * the walls, as MakhoulTransform on the CPU.
+ * A periodic box runs cuFFT (D2Z/Z2D for real fields, Z2Z for complex ones). A box
+ * with walls runs CudaMakhoulTransform: one cuFFT of the grid, the DFT along the
+ * periodic axes and the cosine or sine series along the walls, as MakhoulTransform
+ * on the CPU.
  *
  * The multipliers stay in device memory. A call uploads its fields, transforms
  * and multiplies them on the device and downloads the result, all on the
@@ -25,7 +26,6 @@
 #include <vector>
 
 #include "CudaCommon.h"
-#include "CudaFFT.h"
 #include "CudaMakhoulTransform.h"
 #include "FourierTransform.h"
 
@@ -62,8 +62,9 @@ protected:
 private:
     using DeviceT = CuDeviceData<T>;
 
-    std::unique_ptr<CudaFFTBase<T>> fft_;                 ///< periodic or wall boxes
-    std::unique_ptr<CudaMakhoulTransform<T>> mixed_fft_;  ///< boxes that mix periodic and wall axes
+    CufftPlan plan_forward_;    ///< periodic boxes: D2Z (real fields) or Z2Z
+    CufftPlan plan_backward_;   ///< periodic boxes: Z2D (real fields) or Z2Z
+    std::unique_ptr<CudaMakhoulTransform<T>> series_;   ///< boxes with walls (and periodic axes)
     cudaStream_t stream_ = nullptr;
 
     CudaDeviceBuffer<DeviceT> d_fields_;           ///< fields of a call (inputs, then outputs)
@@ -83,11 +84,6 @@ private:
     /// Inverse-transform n_fields device coefficients into d_fields_; the coefficients
     /// are scratch afterwards (a periodic real transform overwrites them)
     void transform_backward(double* d_coefficients, int n_fields);
-    /// Multiply n_fields device coefficients by `factor`. The CUDA cosine and sine
-    /// series are 2 Σ_j f_j φ_m(x_j) per axis (their inverse divides by 2N), the CPU
-    /// ones Σ_j f_j φ_m(x_j); forward() and backward() return and take the latter.
-    /// apply() needs no scaling: the factor cancels.
-    void scale_wall_coefficients(double* d_coefficients, int n_fields, double factor);
 };
 
 #endif

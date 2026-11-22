@@ -25,8 +25,8 @@
  *
  * **cuFFT Plans:**
  *
- * - cuFFT plans and DCT/DST objects are owned by CudaSolverPseudoBase
- *   (fft_forward / fft_backward / fft_)
+ * - cuFFT plans and the cosine and sine series are owned by CudaSolverPseudoBase,
+ *   whose bond_step() runs either
  * - Stream-associated for concurrent execution
  *
  * **Template Instantiations:**
@@ -57,8 +57,7 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
     const int* d_full_to_reduced_map)
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
                               space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/1,
-                              /*with_exp_dw_half=*/false,
-                              /*complex_requires_periodic=*/false)
+                              /*with_exp_dw_half=*/false)
 {
     try{
         // The CrysFFT objects and the work buffers of the path the space group chooses
@@ -91,7 +90,6 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
 
         const int M = cb->get_total_grid();
-        const int M_COMPLEX = this->total_complex_grid();
 
         // Get Boltzmann factors for the correct ds_index
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
@@ -120,44 +118,13 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
         CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
 
-        if (this->is_periodic_)
-        {
-            // Execute a forward FFT
-            fft_forward(STREAM, fft_in, d_qk_[STREAM], 1);
+        // The forward transform, exp(-k^2 ds/6) in Fourier space and the backward transform
+        // (cuFFT for periodic BC, the cosine and sine series for walls); fft_in is kept
+        this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond, 1.0);
 
-            // Multiply exp(-k^2 ds/6) in fourier space
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            // Execute a backward FFT
-            fft_backward(STREAM, d_qk_[STREAM], fft_out, 1);
-
-            // Evaluate exp(-w*ds) in real space (1/M normalization from unnormalized cuFFT)
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
-            CUDA_CHECK_LAUNCH();
-        }
-        else
-        {
-            // Non-periodic BC (reflecting/absorbing): use CudaFFT (DCT/DST) with real
-            // coefficients. forward_stream() copies the input into its own work buffer,
-            // so fft_in is preserved; everything is issued on this propagator's stream.
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(fft_in), d_rk_1_[STREAM], streams[STREAM]);
-
-            // Multiply bond Boltzmann factor (real factor; coefficients are
-            // real for real fields, interleaved complex pairs for complex)
-            // [type-specific algorithm] DCT/DST coefficients are real for real fields and interleaved complex pairs for complex fields.
-            if constexpr (std::is_same<T, double>::value)
-                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond, 1.0, M_COMPLEX);
-            else
-                ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(reinterpret_cast<cuDoubleComplex*>(d_rk_1_[STREAM].get()), _d_boltz_bond, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            fft_[STREAM]->backward_stream(d_rk_1_[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM]);
-
-            // Evaluate exp(-w*ds); DCT/DST backward is already normalized (no 1/M).
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0, M);
-            CUDA_CHECK_LAUNCH();
-        }
+        // Evaluate exp(-w*ds) in real space (1/M normalization of the unnormalized transforms)
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
+        CUDA_CHECK_LAUNCH();
 
         // Reduce to the basis (with a space group) and multiply the mask
         this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
@@ -174,11 +141,7 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
 {
     try
     {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-
         const int M = cb->get_total_grid();
-        const int M_COMPLEX = this->total_complex_grid();
         if (use_crysfft_)
         {
             // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
@@ -202,34 +165,8 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
         CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
 
-        if (this->is_periodic_)
-        {
-            // 3D fourier discrete transform, forward
-            fft_forward(STREAM, fft_in, d_qk_[STREAM], 1);
-            CUDA_CHECK_LAUNCH();
-
-            // Multiply exp(-k^2 ds/12) in fourier space, in all 3 directions
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk_[STREAM], _d_boltz_bond_half, 1.0/static_cast<double>(M), M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            // 3D fourier discrete transform, backward
-            fft_backward(STREAM, d_qk_[STREAM], fft_out, 1);
-            CUDA_CHECK_LAUNCH();
-        }
-        else
-        {
-            // Non-periodic BC (reflecting/absorbing): CudaFFT (DCT/DST), real
-            // coefficients, on this propagator's stream. backward_stream() includes
-            // normalization (no 1/M).
-            fft_[STREAM]->forward_stream(reinterpret_cast<T*>(fft_in), d_rk_1_[STREAM], streams[STREAM]);
-            // [type-specific algorithm] DCT/DST coefficients are real for real fields and interleaved complex pairs for complex fields.
-            if constexpr (std::is_same<T, double>::value)
-                ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_rk_1_[STREAM], d_rk_1_[STREAM], _d_boltz_bond_half, 1.0, M_COMPLEX);
-            else
-                ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(reinterpret_cast<cuDoubleComplex*>(d_rk_1_[STREAM].get()), _d_boltz_bond_half, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-            fft_[STREAM]->backward_stream(d_rk_1_[STREAM], reinterpret_cast<T*>(fft_out), streams[STREAM]);
-        }
+        // Multiply exp(-k^2 ds/12) in Fourier space with the 1/M normalization
+        this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond_half, 1.0/static_cast<double>(M));
 
         // Reduce full grid → reduced basis (no mask on the half bond)
         this->store_full_grid(STREAM, fft_out, d_q_out, nullptr);
