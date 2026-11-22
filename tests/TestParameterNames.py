@@ -17,6 +17,7 @@ from polymerfts import SCFT, LFTS, CLFTS, PlatformSelector, ValidationError
 from polymerfts.utils.common import atomic_savemat, input_hash, settings_json
 from polymerfts.utils.mat_fields import decode_mat_fields
 from polymerfts.utils.validation import normalize_params, validate_lfts_params
+from cuda_part import cuda_part_missing
 from fts_checks import diblock_fields, diblock_parameters, expect_error, scft_parameters, silenced
 
 
@@ -308,6 +309,9 @@ def main():
                     check_checkpoint(root, cls)
         finally:
             os.chdir(previous)
+    # check_graft_files runs every available platform: fail if the CUDA part did not run
+    if cuda_part_missing():
+        return 1
     print("Test passed, canonical parameter names and legacy input/checkpoint compatibility")
     return 0
 

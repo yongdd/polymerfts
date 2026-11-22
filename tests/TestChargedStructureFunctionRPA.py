@@ -57,6 +57,11 @@ other blocks, and the standard errors follow from the spread of the block means.
 one by chance; the printed errors give the actual margins. For the bounds against the
 RPA without charges, the margin between the bound and the RPA ratio must exceed 2
 standard errors.
+
+The two systems run as two CTest entries, so that ctest -j runs them at once: without an
+argument the test runs the diblock (TestChargedStructureFunctionRPA), with --polyampholyte the
+polyampholyte (TestChargedStructureFunctionRPAPolyampholyte). Each system seeds its own
+noise generator (seed 7), so it gives the same result alone as after the other.
 """
 
 import os
@@ -245,7 +250,8 @@ def run(make_params, seed):
         shutil.rmtree(root, ignore_errors=True)
 
 
-def main():
+def check_diblock():
+    """The charged diblock with counterions."""
     measured = run(params, 7)
     reference, neutral = rpa(COUPLING), rpa(0.0)
     for key in ("A,A", "B,B", "A,B"):
@@ -263,7 +269,9 @@ def main():
     check_ratio(f"charge structure function from psi, field-field form (n = 1..{np.sum(strong)})",
                 measured["charge_field_field"][:, strong], reference["charge"][strong])
 
-    # Polyampholyte: the charge direction has no auxiliary field
+
+def check_polyampholyte():
+    """The polyampholyte: the charge direction has no auxiliary field."""
     measured = run(params_polyampholyte, 7)
     reference, neutral = rpa_polyampholyte(PA_COUPLING), rpa_polyampholyte(0.0)
     density = measured["E,E"] + measured["K,K"] + 2 * measured["E,K"]
@@ -278,7 +286,15 @@ def main():
                 measured["charge_field_field"][:, strong], reference[2][strong])
     check_below("polyampholyte charge S", charge[:, :3], neutral[1][:3], reference[1][:3] / neutral[1][:3], 0.9)
 
-    print(f"\n{n_pass} passed, {n_fail} failed")
+
+def main():
+    if "--polyampholyte" in sys.argv[1:]:
+        system = "polyampholyte"
+        check_polyampholyte()
+    else:
+        system = "diblock"
+        check_diblock()
+    print(f"\n{system}: {n_pass} passed, {n_fail} failed")
     sys.exit(0 if n_fail == 0 else 1)
 
 

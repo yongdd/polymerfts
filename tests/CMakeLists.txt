@@ -110,32 +110,24 @@ SET(BASIC_TESTS
     TestCpuCrysFFTTables
 
     # Propagator solvers
-    TestCrankNicolson1D
-    TestCrankNicolson2D
-    TestCrankNicolson3D
+    TestCrankNicolson
     TestDCTDSTPropagator
-    TestPseudoLinearContinuous3D
-    TestPseudoLinearDiscrete3D
+    TestPseudoLinear3D
     TestRealSpaceLinearContinuous3D
     TestRealSpaceAbsorbingRange
     TestMultipleLocalDs
     TestInitialConditionPropagator
 
     # Aggregation tests
-    TestAggregation3D
-    TestAggregationDendritic
-    TestAggregationSideChains
+    TestAggregation
     TestAggregationSlicedSideChains
 
     # Branched polymer tests
-    TestPseudoBranchedContinuous3D
-    TestPseudoBranchedDiscrete3D
-    TestPseudoBranchedMixtureContinuous3D
-    TestPseudoBranchedMixtureDiscrete3D
+    TestPseudoBranched3D
+    TestPseudoBranchedMixture3D
 
     # SCFT & Stress
-    TestScft1D
-    TestScft2D
+    TestScft
     TestStressFiniteDifference
 
     # Space Group
@@ -151,20 +143,19 @@ SET(BASIC_TESTS
 # Physical and numerical regressions (label "numerical")
 SET(NUMERICAL_TESTS
     TestParameterNames TestFtsReliability TestCheckpointValidation TestExtensions TestPropagatorAnalytic TestConvergenceOrderLite TestSamplingStatistics
-    TestStructureFunctionRPA TestChargedStructureFunctionRPA TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
+    TestStructureFunctionRPA TestChargedStructureFunctionRPA TestChargedStructureFunctionRPAPolyampholyte TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
     TestLftsRun TestLftsDetails TestLftsIdealLimit TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
     TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
     TestJunctionRange TestBlockMultiplicity
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
     TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
     TestContourPrecision TestDiscreteComposition TestCanonicalIonRange TestThinObliqueCell TestFourierTransform TestGceZeroPartition TestGceIonRange TestPhysicalBasisOperators TestSmearingAliases TestWtmdZeroModes
-    TestPartitionIntegrand TestConcentrationsAndStress TestCrankNicolson1D TestCrankNicolson2D TestCrankNicolson3D
+    TestPartitionIntegrand TestConcentrationsAndStress TestCrankNicolson
     # Stress, SCFT and propagators
     TestStressFiniteDifference TestStressSpaceGroup TestStressComplexPlatforms
     TestScft3D TestScftCompressible TestScftHexagonalCylinder2D TestScftOptions TestSpaceGroupPhases TestCrysFFTM3SmallGrid
     TestSmearingLattice TestPhaseEquilibrium TestPolymerFieldTheory TestBlockConcentration TestMinimalFormAlias
-    TestPseudoLinearContinuous3DComplex TestPseudoLinearDiscrete3DComplex TestPseudoSolventContinuous3D
-    TestPseudoSolventContinuous3DComplex TestPseudoSolventDiscrete3D TestPseudoSolventDiscrete3DComplex
+    TestPseudoLinear3D TestPseudoSolvent3D
     TestNanoParticle2D TestNonMonotonicConvergence TestHexagonalRectangularEquivalence
     # Boundary conditions and platforms
     TestAbsorbingVsMask TestComplexNonPeriodicMirror TestCompareRealSpacePseudoSpectral
@@ -176,9 +167,18 @@ SET(EXAMPLES_TESTS
     TestTutorials
 )
 
+# CTest entries that run one case of a test file (an argument of the test) and are named in
+# the lists like a test: a long case runs beside the others under ctest -j, or keeps a label
+# of its own. Each is added below, after its test.
+SET(CASE_ENTRIES
+    TestCudaDeviceBufferOutOfMemory                 # TestCudaDeviceBuffer --out-of-memory
+    TestScft3D                                      # TestScft --3d
+    TestChargedStructureFunctionRPAPolyampholyte    # TestChargedStructureFunctionRPA.py --polyampholyte
+)
+
 # Every name in the lists is a test of this directory
 FOREACH(TEST_NAME IN LISTS BASIC_TESTS NUMERICAL_TESTS EXAMPLES_TESTS)
-    IF(NOT TEST_NAME STREQUAL "TestCudaDeviceBufferOutOfMemory"
+    IF(NOT TEST_NAME IN_LIST CASE_ENTRIES
        AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.py
        AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.cpp
        AND NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME}.cu)
@@ -232,6 +232,13 @@ FOREACH(FILE_NAME ${FILE_LIST})
         SKIP_RETURN_CODE 77)
     SET_TEST_LABELS(${TEST_NAME})
 ENDFOREACH()
+# The polyampholyte of TestChargedStructureFunctionRPA, which runs the diblock
+ADD_TEST(NAME TestChargedStructureFunctionRPAPolyampholyte
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestChargedStructureFunctionRPA.py --polyampholyte)
+SET_TESTS_PROPERTIES(TestChargedStructureFunctionRPAPolyampholyte PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1"
+    SKIP_RETURN_CODE 77)
+SET_TEST_LABELS(TestChargedStructureFunctionRPAPolyampholyte)
 
 # Generate files named "Test*.cpp"
 FILE(GLOB FILE_LIST "Test*.cpp")
@@ -266,6 +273,11 @@ FOREACH(FILE_NAME ${FILE_LIST})
     SET_TEST_LABELS(${TEST_NAME})
     SET_TEST_DLL_PATH(${TEST_NAME})
 ENDFOREACH()
+# The 3D box of TestScft (numerical; TestScft runs the 1D and 2D boxes)
+ADD_TEST(TestScft3D ${CMAKE_CURRENT_BINARY_DIR}/TestScft --3d)
+SET_TESTS_PROPERTIES(TestScft3D PROPERTIES SKIP_RETURN_CODE 77)
+SET_TEST_LABELS(TestScft3D)
+SET_TEST_DLL_PATH(TestScft3D)
 
 # Benchmark executables (not added to ctest)
 FILE(GLOB BENCHMARK_LIST "Benchmark*.cpp")
