@@ -302,19 +302,27 @@ template <typename T>
 CpuSolver<T>::CpuSolver(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group, bool with_half)
     : cb(cb), molecules(molecules), space_group_(space_group)
 {
-    n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : cb->get_total_grid();
-
-    const int M = cb->get_total_grid();
-    molecules->finalize_contour_length_mapping();
-    const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
-    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
+    // This runs before the derived constructors' try blocks; its errors leave the same way
+    try
     {
-        for (const auto& item : molecules->get_bond_lengths())
+        n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : cb->get_total_grid();
+
+        const int M = cb->get_total_grid();
+        molecules->finalize_contour_length_mapping();
+        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
+        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
         {
-            exp_dw[ds_idx][item.first].resize(M);
-            if (with_half)
-                exp_dw_half[ds_idx][item.first].resize(M);
+            for (const auto& item : molecules->get_bond_lengths())
+            {
+                exp_dw[ds_idx][item.first].resize(M);
+                if (with_half)
+                    exp_dw_half[ds_idx][item.first].resize(M);
+            }
         }
+    }
+    catch (std::exception& exc)
+    {
+        throw_without_line_number(exc.what());
     }
 }
 
