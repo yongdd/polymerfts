@@ -401,7 +401,7 @@ the steps (`expand_to_full_grid()`, `full_grid_output()`, `store_full_grid()`); 
 three pseudo-spectral solvers share -- the `Pseudo` helper, the stress reduction workspace
 and the CrysFFT fast path -- and implements `update_laplacian_operator()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
-constructor argument; the plans of a stream share one work area) and the per-stream cosine and sine series (`CudaMakhoulTransform`) for walls.
+constructor argument, 1 on the CrysFFT path; the plans of a stream share one work area) and the per-stream cosine and sine series (`CudaMakhoulTransform`) for walls.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers

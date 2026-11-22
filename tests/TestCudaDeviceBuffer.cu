@@ -294,6 +294,8 @@ static std::vector<Case> cases()
     s = ComputationSpec(); s.method = "rk2"; s.nx = {12, 12, 16}; s.lx = {1.8, 1.8, 2.4}; s.angles = {90.0, 90.0, 120.0};
     s.sg_symbol = "P6_3/mmc"; s.sg_hall = 488; s.basis = "z-mirror";
     add("continuous rk2, P6_3/mmc z-mirror basis (ObliqueZ CrysFFT)", s);
+    s.method = "rqm4";
+    add("continuous rqm4, P6_3/mmc z-mirror basis (ObliqueZ CrysFFT)", s);
     s = ComputationSpec(); s.sg_symbol = "Im-3m"; s.sg_hall = 529;
     add("continuous rqm4, Im-3m irreducible basis", s);
     s = ComputationSpec(); s.nx = {16, 12, 8}; s.lx = {2.0, 1.5, 1.0};

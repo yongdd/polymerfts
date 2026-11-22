@@ -313,6 +313,7 @@ int main()
         {"discrete, Pmmm basis (Pmmm DCT)", "discrete", "ps", {16, 16, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
         {"rqm4, Pmmm basis (Pmmm DCT)", "continuous", "rqm4", {16, 16, 16}, {2.0, 1.8, 1.6}, {}, "Pmmm", -1, "pmmm"},
         {"rk2, P6_3/mmc z-mirror basis (ObliqueZ)", "continuous", "rk2", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
+        {"rqm4, P6_3/mmc z-mirror basis (ObliqueZ)", "continuous", "rqm4", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
         {"discrete, P6_3/mmc z-mirror basis (ObliqueZ)", "discrete", "ps", {12, 12, 16}, {1.8, 1.8, 2.4}, {90.0, 90.0, 120.0}, "P6_3/mmc", 488, "z-mirror"},
     };
 

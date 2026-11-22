@@ -249,6 +249,10 @@ protected:
      */
     bool full_grid_path() const;
 
+    /// Largest batch of the full-grid transforms: max_fft_batch_, or 1 on the CrysFFT path,
+    /// whose propagator steps take no full-grid transform (its stress transforms one field at a time)
+    int full_grid_fft_batch() const;
+
     /**
      * @brief Allocate the derived solver's work buffers that are missing or of another size
      *        (default: none).

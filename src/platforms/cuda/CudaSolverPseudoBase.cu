@@ -269,13 +269,14 @@ void CudaSolverPseudoBase<T>::init_fft()
     // failed part way can be repeated
     if (is_periodic_)
     {
-        // Forward and backward plans of each batch size up to max_fft_batch_ per stream;
+        // Forward and backward plans of each batch size up to full_grid_fft_batch() per stream;
         // they run one after another on their stream and share one work area.
         // cufftMakePlanMany reads dim_ entries of total_grid
         const int NRANK = dim_;
         int total_grid[3] = {0, 0, 0};
         for (int d = 0; d < dim_; ++d)
             total_grid[d] = cb->get_nx(d);
+        const int n_batch = full_grid_fft_batch();
 
         for (int i = 0; i < n_streams; i++)
         {
@@ -284,7 +285,7 @@ void CudaSolverPseudoBase<T>::init_fft()
                 continue;
             CufftPlan forward[2], backward[2];
             size_t work_bytes = 0;
-            for (int b = 0; b < max_fft_batch_; b++)
+            for (int b = 0; b < n_batch; b++)
             {
                 CUFFT_CHECK(forward[b].create_without_work_area(work_bytes, cufftMakePlanMany, NRANK, total_grid,
                     nullptr, 1, 0, nullptr, 1, 0, CufftPlanType<T>::forward, b + 1));
@@ -293,7 +294,7 @@ void CudaSolverPseudoBase<T>::init_fft()
             }
             if (work_bytes > 0)
                 provide(work_[i].d_fft_work, (work_bytes + sizeof(double) - 1) / sizeof(double));
-            for (int b = 0; b < max_fft_batch_; b++)
+            for (int b = 0; b < n_batch; b++)
             {
                 for (CufftPlan* plan : {&forward[b], &backward[b]})
                 {
@@ -302,7 +303,7 @@ void CudaSolverPseudoBase<T>::init_fft()
                     CUFFT_CHECK(cufftSetStream(*plan, streams[i]));
                 }
             }
-            for (int b = 0; b < max_fft_batch_; b++)
+            for (int b = 0; b < n_batch; b++)
             {
                 work_[i].plan_forward[b] = std::move(forward[b]);
                 work_[i].plan_backward[b] = std::move(backward[b]);
@@ -600,6 +601,12 @@ bool CudaSolverPseudoBase<T>::full_grid_path() const
 }
 
 template <typename T>
+int CudaSolverPseudoBase<T>::full_grid_fft_batch() const
+{
+    return use_crysfft_ ? 1 : max_fft_batch_;
+}
+
+template <typename T>
 int CudaSolverPseudoBase<T>::total_complex_grid() const
 {
     return Pseudo<T>::complex_grid_size(cb->get_total_grid(), cb->get_nx(dim_ - 1), is_periodic_);
@@ -625,10 +632,11 @@ void CudaSolverPseudoBase<T>::provide_work()
         // with the stress workspace from the first prepare_stress() on
         init_fft();
         const int M_COMPLEX = total_complex_grid();
-        // The second spectrum of the scratch holds the RQM4 half step (a batch of two, periodic BC)
-        // or the second propagator of the stress: the other steps transform one field at a time,
-        // and their solvers hold it only from the first prepare_stress() on
-        const size_t n_spectra = ((max_fft_batch_ == 2 && is_periodic_) || stress_basis_) ? 2 : 1;
+        // The second spectrum of the scratch holds the RQM4 half step of the full-grid steps (a batch
+        // of two, periodic BC) or the second propagator of the stress: the other steps, the CrysFFT
+        // steps among them, transform one field at a time, and their solvers hold it only from the
+        // first prepare_stress() on
+        const size_t n_spectra = ((full_grid_fft_batch() == 2 && is_periodic_) || stress_basis_) ? 2 : 1;
         for (int i = 0; i < n_streams; i++)
         {
             StreamWork& work = work_[i];

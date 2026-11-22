@@ -384,8 +384,8 @@ in use. The propagator steps of the
 CrysFFT path work on the reduced basis (`exp(-w ds)` and the RQM4 step buffers hold its
 values only). ObliqueZ, a non-orthogonal cell or the off-diagonal stress flag take the
 full-grid stress and hold these as well. On the full grid each stream has the forward and
-backward cuFFT plans of the batch sizes its solver runs (one field; RQM4 also two for its
-half-step pair), and these plans share one work area, since they run one after another
+backward cuFFT plans of the batch sizes its solver runs (one field; RQM4 also two for the
+half-step pair of its full-grid steps, which the CrysFFT path does not take), and these plans share one work area, since they run one after another
 on their stream. The `CudaPseudo` tables hold the Boltzmann bond
 factors only for full-grid propagator steps or the discrete-chain stress (not for the
 ObliqueZ steps of continuous chains), and the stress basis from the first

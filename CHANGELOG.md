@@ -1247,6 +1247,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
     P4/mmm and monoclinic groups at γ = 90°) take the ObliqueZ CrysFFT instead of the full-grid FFT:
     Pmmm 63x64x64 takes 54 ms on CUDA (was 87, A10) and 578 ms on cpu-mkl (was 924); results agree
     with the run without a space group to 1e-14.
+  - CUDA RQM4 on the CrysFFT paths whose stress runs on the full grid (ObliqueZ, the off-diagonal
+    flag) creates no batch-2 cuFFT plans and holds the second spectrum from the first stress on, as
+    RK2 does: 40-64 MiB less device memory with a stress on 96x96x128 and 128³ (A10, 4 streams).
+    Results are bitwise unchanged.
   - Everything else is bitwise unchanged on cpu-mkl and CUDA: the CUDA CN-ADI solver (one matrix
     record per axis, line offsets computed in the kernels), the CPU solver context, the FFT classes
     without a dimension template, one stress-dyad loop, the propagator keys and the computation
