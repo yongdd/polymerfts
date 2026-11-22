@@ -140,6 +140,7 @@ SET(BASIC_TESTS
 
     # Space Group
     TestSpaceGroupReducedBasis
+    TestSpaceGroupOrbits
     TestSpaceGroupBasisSelection
     TestSpaceGroupCell
     TestSpaceGroupReduceMemorySafety

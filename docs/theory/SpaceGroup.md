@@ -90,6 +90,11 @@ rotations are exact on the grid only in node-centered coordinates (see
 [How Hexagonal/Trigonal Groups Are
 Handled](#how-hexagonaltrigonal-groups-are-handled)).
 
+In either convention an operation acts on the grid indices as an exact integer
+map, $`i'_r = \sum_k R_{rk} i_k + c_r \pmod{N_r}`$, where the offset $`c_r`$ holds the
+translation and the sampling offsets. A grid that an operation does not map onto
+itself (a rhombohedral-axes setting with unequal $`N_x`$, $`N_z`$) is refused.
+
 **Example: Orbit calculation for BCC on 4×4×4 grid**
 
 Consider the point $`\mathbf{p} = (1, 0, 0)`$ in grid indices, which is $`\mathbf{p}_{\text{frac}} = (0.375, 0.125, 0.125)`$ in cell-centered fractional coordinates.

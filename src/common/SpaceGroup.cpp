@@ -7,6 +7,7 @@
 #include "ComputationBox.h"
 #include "GridLimits.h"
 #include "Exception.h"
+#include "CrysFFTBasisMapping.h"
 #include "CrysFFTSelector.h"
 #include <cstring>
 #include <cmath>
@@ -32,16 +33,51 @@ bool is_diagonal(const std::array<std::array<int, 3>, 3>& R)
     return R[0][1] == 0 && R[0][2] == 0 && R[1][0] == 0 && R[1][2] == 0 && R[2][0] == 0 && R[2][1] == 0;
 }
 
+/// Whether a rotation (lattice coordinates) is diag(sign)
+bool is_diagonal_with(const std::array<std::array<int, 3>, 3>& R, const std::array<int, 3>& sign)
+{
+    return is_diagonal(R) && R[0][0] == sign[0] && R[1][1] == sign[1] && R[2][2] == sign[2];
+}
+
 /// Whether a translation component is a lattice translation (an integer within tol)
 bool is_zero_mod1(double v, double tol)
 {
     return std::fabs(v - std::round(v)) < tol;
 }
 
+/// Whether every component of a translation is a lattice translation
+bool is_lattice_translation(const std::array<double, 3>& t, double tol)
+{
+    return is_zero_mod1(t[0], tol) && is_zero_mod1(t[1], tol) && is_zero_mod1(t[2], tol);
+}
+
 /// A translation component mapped to [-0.5, 0.5), for comparing the norms of translations
 double wrap_half(double v)
 {
     return v - std::floor(v + 0.5);
+}
+
+/// The rotations of the mirrors perpendicular to z, y and x (the order of get_m3_translations)
+constexpr std::array<std::array<int, 3>, 3> MIRRORS = {{{1, 1, -1}, {1, -1, 1}, {-1, 1, 1}}};
+
+/// Index of the shortest translation (components taken in [-1/2, 1/2)): the first one
+/// unless a later one is shorter by more than tol; -1 for none.
+int shortest_translation(const std::vector<std::array<double, 3>>& translations, double tol)
+{
+    int best = -1;
+    double best_norm = std::numeric_limits<double>::infinity();
+    for (size_t k = 0; k < translations.size(); ++k)
+    {
+        double norm = 0.0;
+        for (double v : translations[k])
+            norm += wrap_half(v) * wrap_half(v);
+        if (best < 0 || norm + tol < best_norm)
+        {
+            best = static_cast<int>(k);
+            best_norm = norm;
+        }
+    }
+    return best;
 }
 }  // namespace
 
@@ -171,14 +207,9 @@ void SpaceGroup::initialize(std::vector<int> nx, int hall_number)
     // Validate grid compatibility with symmetry operations
     validate_grid_compatibility();
 
-    // Find irreducible mesh
-    find_irreducible_mesh();
-
-    // Preserve full-space-group irreducible mapping
-    n_irreducible_full_ = n_irreducible_;
-    full_to_reduced_map_full_ = full_to_reduced_map_;
-    orbit_counts_full_ = orbit_counts_;
-    reduced_to_irreducible_map_.clear();
+    // The operations as exact maps of the grid, and the irreducible orbits they make
+    build_grid_maps();
+    find_irreducible_orbits();
 }
 
 void SpaceGroup::display_info() const
@@ -389,199 +420,121 @@ void SpaceGroup::get_symmetry_operations()
     }
 }
 
-void SpaceGroup::find_irreducible_mesh()
+void SpaceGroup::build_grid_maps()
 {
-    // Orbit coordinate conventions:
+    // Grid point i of an axis with N points sits at (i + o/2)/N: o = 1 at the cell
+    // centers, o = 0 at the nodes. Hexagonal-axes settings put x and y on the nodes:
+    // an in-plane row such as x' = x - y annihilates a half-cell offset and maps cell
+    // centers onto cell boundaries, while every operation of these settings is a 2x2
+    // in-plane block (+) (+/-1 on z). All other axes and settings are cell-centered.
     //
-    // (a) Cell-centered sampling x = (i+0.5)/N (default). Exact whenever every
-    //     rotation-matrix row has an odd sum AND any axes mixed by a row have
-    //     equal grid extents: the 0.5 offsets then recombine to an odd multiple
-    //     of 0.5 and grid points map onto grid points. This holds for
-    //     cubic/tetragonal/orthorhombic/monoclinic/triclinic settings, and for
-    //     rhombohedral-axes trigonal settings (signed permutation rows) only
-    //     when Nx = Ny = Nz. Inexact mappings are now detected and rejected
-    //     (see the exactness check in the fallback loop below) instead of
-    //     being silently rounded onto wrong orbits.
-    //
-    // (b) Hybrid sampling for hexagonal-axes settings of trigonal/hexagonal
-    //     groups: NODE-centered in-plane x = i/Nx, y = j/Ny with CELL-centered
-    //     z = (k+0.5)/Nz. In these settings, in-plane rotation rows can have
-    //     even sums (e.g. x' = x - y), which annihilate the 0.5 offset and map
-    //     cell centers onto cell boundaries — no rounding strategy is
-    //     consistent there. Every op in these settings decomposes as a 2x2
-    //     in-plane block (+) (+/-1 in z), so node-centering only x,y makes the
-    //     in-plane action an exact integer map (Nx = Ny is enforced), while the
-    //     z part (+/-z + t_z, odd "row sum") stays exact on cell centers. This
-    //     keeps the z-mirror physical basis and the ObliqueZ CrysFFT (DCT-II
-    //     fold along z) valid unchanged. Symmetry translations are integral in
-    //     grid units by validate_grid_compatibility(), so the whole hybrid map
-    //     is exact integer arithmetic — no rounding at all.
+    // In half-index units u = 2i + o the operation x' = R x + t reads
+    //     u'_r = sum_k R_rk u_k (N_r/N_k) + 2 N_r t_r,
+    // so with equal sizes on the axes R mixes it is an integer map of the indices,
+    //     i'_r = sum_k R_rk i_k + c_r (mod N_r),  c_r = (sum_k R_rk o_k + 2 N_r t_r - o_r) / 2,
+    // provided 2 N_r t_r and c_r are integers: a grid point then lands on a grid point.
+    // validate_grid() and validate_grid_compatibility() ensure this for every setting
+    // except a rhombohedral-axes setting with unequal sizes, which is refused here.
+    const bool hexagonal_axes = uses_hexagonal_axes();
+    const std::array<int, 3> o = {hexagonal_axes ? 0 : 1, hexagonal_axes ? 0 : 1, 1};
 
-    // Initialize full_to_reduced_map with -1 (unvisited)
-    full_to_reduced_map_.resize(total_grid_, -1);
-    reduced_basis_indices_.clear();
-
-    int Nx = nx_[0];
-    int Ny = nx_[1];
-    int Nz = nx_[2];
-
-    // Decide whether the hybrid (node-centered x,y; cell-centered z) convention
-    // applies: hexagonal/trigonal crystal system, square in-plane grid, all ops
-    // z-block-diagonal, and all translations integral in grid units.
-    const bool hex_like = (crystal_system_ == "Hexagonal" || crystal_system_ == "Trigonal");
-    bool use_hybrid = hex_like && (Nx == Ny);
-    std::vector<std::array<int, 3>> trans_grid(n_symmetry_ops_, {0, 0, 0});
-    if (use_hybrid)
+    grid_maps_.resize(n_symmetry_ops_);
+    for (int op = 0; op < n_symmetry_ops_; ++op)
     {
-        for (int op = 0; op < n_symmetry_ops_ && use_hybrid; ++op)
+        const auto& R = rotations_[op];
+        bool exact = true;
+        for (int r = 0; r < 3; ++r)
         {
-            const auto& R = rotations_[op];
-            // Require (2x2 in-plane block) (+) (+/-1 in z)
-            if (R[0][2] != 0 || R[1][2] != 0 || R[2][0] != 0 || R[2][1] != 0 ||
-                std::abs(R[2][2]) != 1)
+            long long numerator = -o[r];
+            for (int k = 0; k < 3; ++k)
             {
-                use_hybrid = false;
-                break;
+                if (R[r][k] != 0 && nx_[k] != nx_[r])
+                    exact = false;
+                numerator += static_cast<long long>(R[r][k]) * o[k];
             }
-            for (int dim = 0; dim < 3; ++dim)
-            {
-                const double t_grid = translations_[op][dim] * static_cast<double>(nx_[dim]);
-                const long t_int = std::lround(t_grid);
-                if (std::abs(t_grid - static_cast<double>(t_int)) > 1e-6)
-                {
-                    use_hybrid = false;
-                    break;
-                }
-                trans_grid[op][dim] = static_cast<int>(((t_int % nx_[dim]) + nx_[dim]) % nx_[dim]);
-            }
+            const double shift = 2.0 * static_cast<double>(nx_[r]) * translations_[op][r];
+            const long long shift_int = std::llround(shift);
+            numerator += shift_int;
+            if (std::abs(shift - static_cast<double>(shift_int)) > 1e-6 || numerator % 2 != 0)
+                exact = false;
+            const long long c = (numerator / 2) % nx_[r];
+            grid_maps_[op].R[r] = R[r];
+            grid_maps_[op].c[r] = static_cast<int>(c < 0 ? c + nx_[r] : c);
+        }
+        if (!exact)
+        {
+            throw_with_line_number(
+                "Symmetry operation " + std::to_string(op) + " does not map the grid (cell-centered; "
+                "node-centered x and y in a hexagonal-axes setting) onto itself. This grid is "
+                "incompatible with the space group under the current sampling convention; for "
+                "rhombohedral-axes settings use Nx = Ny = Nz.");
         }
     }
+}
 
-    auto mod_pos = [](int v, int N) {
-        int r = v % N;
-        return (r < 0) ? r + N : r;
-    };
+std::array<int, 3> SpaceGroup::grid_indices(int point) const
+{
+    return {point / (nx_[1] * nx_[2]), (point / nx_[2]) % nx_[1], point % nx_[2]};
+}
 
-    int count = 0;
-
-    // Iterate through all grid points
-    for (int flat_idx = 0; flat_idx < total_grid_; ++flat_idx)
+int SpaceGroup::map_point(const GridMap& op, const std::array<int, 3>& i) const
+{
+    int image = 0;
+    for (int r = 0; r < 3; ++r)
     {
-        // Convert flat index to 3D coordinates
-        int ix = flat_idx / (Ny * Nz);
-        int iy = (flat_idx / Nz) % Ny;
-        int iz = flat_idx % Nz;
-
-        if (full_to_reduced_map_[flat_idx] == -1)
-        {
-            // This is a new irreducible point
-            reduced_basis_indices_.push_back(flat_idx);
-
-            if (use_hybrid)
-            {
-                // Exact integer orbit: node-centered x,y; cell-centered z.
-                // x' = R00 x + R01 y + tx  (units of 1/Nx, valid since Nx == Ny)
-                // z' = +z + tz  ->  oz = iz + tz
-                // z' = -z + tz  ->  (oz+0.5) = -(iz+0.5) + tz  ->  oz = tz - iz - 1
-                for (int op = 0; op < n_symmetry_ops_; ++op)
-                {
-                    const auto& R = rotations_[op];
-                    const auto& tg = trans_grid[op];
-                    const int ox = mod_pos(R[0][0] * ix + R[0][1] * iy + tg[0], Nx);
-                    const int oy = mod_pos(R[1][0] * ix + R[1][1] * iy + tg[1], Ny);
-                    const int oz = (R[2][2] == 1) ? mod_pos(iz + tg[2], Nz)
-                                                  : mod_pos(tg[2] - iz - 1, Nz);
-
-                    // Convert to flat index and mark this orbit point
-                    const int orbit_flat = (ox * Ny + oy) * Nz + oz;
-                    full_to_reduced_map_[orbit_flat] = count;
-                }
-            }
-            else
-            {
-                // Apply all symmetry operations to find orbit (cell-centered grid)
-                const double x = (static_cast<double>(ix) + 0.5) / static_cast<double>(Nx);
-                const double y = (static_cast<double>(iy) + 0.5) / static_cast<double>(Ny);
-                const double z = (static_cast<double>(iz) + 0.5) / static_cast<double>(Nz);
-                const double eps = 1e-8;
-
-                for (int op = 0; op < n_symmetry_ops_; ++op)
-                {
-                    // Apply rotation + translation in fractional coordinates
-                    double rx = rotations_[op][0][0] * x + rotations_[op][0][1] * y + rotations_[op][0][2] * z + translations_[op][0];
-                    double ry = rotations_[op][1][0] * x + rotations_[op][1][1] * y + rotations_[op][1][2] * z + translations_[op][1];
-                    double rz = rotations_[op][2][0] * x + rotations_[op][2][1] * y + rotations_[op][2][2] * z + translations_[op][2];
-
-                    // Wrap to [0,1)
-                    rx -= std::floor(rx);
-                    ry -= std::floor(ry);
-                    rz -= std::floor(rz);
-
-                    // Map back to cell-centered indices
-                    int ox = static_cast<int>(std::floor(rx * Nx + eps));
-                    int oy = static_cast<int>(std::floor(ry * Ny + eps));
-                    int oz = static_cast<int>(std::floor(rz * Nz + eps));
-
-                    if (ox >= Nx) ox -= Nx;
-                    if (oy >= Ny) oy -= Ny;
-                    if (oz >= Nz) oz -= Nz;
-
-                    // Exactness check: the mapped coordinate must land on a
-                    // cell center (fractional part 0.5 in index units). If it
-                    // does not, this op/grid/sampling-convention combination
-                    // cannot represent the symmetry consistently (e.g.
-                    // rhombohedral-axes settings with unequal Nx, Ny, Nz);
-                    // fail loudly rather than silently corrupting the orbits.
-                    const double fx = rx * Nx - std::floor(rx * Nx + eps);
-                    const double fy = ry * Ny - std::floor(ry * Ny + eps);
-                    const double fz = rz * Nz - std::floor(rz * Nz + eps);
-                    if (std::abs(fx - 0.5) > 1e-6 || std::abs(fy - 0.5) > 1e-6 ||
-                        std::abs(fz - 0.5) > 1e-6)
-                    {
-                        throw_with_line_number(
-                            "Symmetry operation " + std::to_string(op) +
-                            " does not map the cell-centered grid onto itself "
-                            "(off-center by more than 1e-6 in index units). "
-                            "This grid is incompatible with the space group "
-                            "under the current sampling convention; for "
-                            "rhombohedral-axes settings use Nx = Ny = Nz.");
-                    }
-
-                    // Convert to flat index
-                    const int orbit_flat = ox * Ny * Nz + oy * Nz + oz;
-
-                    // Mark this orbit point
-                    full_to_reduced_map_[orbit_flat] = count;
-                }
-            }
-
-            ++count;
-        }
+        // 0 <= c_r < N_r, and R mixes only axes of size N_r with entries 0 and +-1:
+        // v lies within a few periods of [0, N_r)
+        long long v = op.c[r];
+        for (int k = 0; k < 3; ++k)
+            v += static_cast<long long>(op.R[r][k]) * i[k];
+        while (v < 0)
+            v += nx_[r];
+        while (v >= nx_[r])
+            v -= nx_[r];
+        image = image * nx_[r] + static_cast<int>(v);
     }
+    return image;
+}
 
-    n_irreducible_ = count;
-
-    // Compute orbit counts
-    orbit_counts_.resize(n_irreducible_, 0);
-    for (int i = 0; i < total_grid_; ++i)
+void SpaceGroup::find_irreducible_orbits()
+{
+    // The first point of an orbit in flat order represents it; its images under all
+    // operations are the orbit
+    orbit_of_.assign(total_grid_, -1);
+    std::vector<int> representatives;
+    for (int point = 0; point < total_grid_; ++point)
     {
-        orbit_counts_[full_to_reduced_map_[i]]++;
+        if (orbit_of_[point] >= 0)
+            continue;
+        const int orbit = static_cast<int>(representatives.size());
+        representatives.push_back(point);
+        const std::array<int, 3> i = grid_indices(point);
+        for (const GridMap& op : grid_maps_)
+            orbit_of_[map_point(op, i)] = orbit;
     }
+    n_orbits_ = static_cast<int>(representatives.size());
+    orbit_sizes_.assign(n_orbits_, 0);
+    for (int point = 0; point < total_grid_; ++point)
+        orbit_sizes_[orbit_of_[point]] += 1;
+
+    // Without a physical basis the active basis is the irreducible one
+    n_basis_ = n_orbits_;
+    basis_points_ = std::move(representatives);
+    basis_of_ = orbit_of_;
+    basis_counts_ = orbit_sizes_;
+    basis_to_orbit_.clear();
 }
 
 void SpaceGroup::to_reduced_basis(const double* full_field, double* reduced_field, int n_fields) const
 {
-    const auto& reduced_indices = reduced_basis_indices_;
-    const int n_reduced = n_irreducible_;
-
     for (int f = 0; f < n_fields; ++f)
     {
         const double* src = full_field + static_cast<size_t>(f) * total_grid_;
-        double* dst = reduced_field + static_cast<size_t>(f) * n_reduced;
+        double* dst = reduced_field + static_cast<size_t>(f) * n_basis_;
 
-        for (int i = 0; i < n_reduced; ++i)
+        for (int i = 0; i < n_basis_; ++i)
         {
-            dst[i] = src[reduced_indices[i]];
+            dst[i] = src[basis_points_[i]];
         }
     }
 }
@@ -591,7 +544,7 @@ void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irr
     // Without a physical basis the reduced basis is the irreducible one
     if (physical_basis_ == PhysicalBasis::None)
     {
-        const int n_reduced = n_irreducible_;
+        const int n_reduced = n_basis_;
         for (int f = 0; f < n_fields; ++f)
         {
             std::memcpy(irreducible_field + static_cast<size_t>(f) * n_reduced,
@@ -601,8 +554,8 @@ void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irr
         return;
     }
 
-    const int n_reduced = n_irreducible_;
-    const int n_irreducible = n_irreducible_full_;
+    const int n_reduced = n_basis_;
+    const int n_irreducible = n_orbits_;
 
     std::vector<double> orbit_sums(n_irreducible, 0.0);
     std::vector<int> orbit_weights(n_irreducible, 0);
@@ -617,8 +570,8 @@ void SpaceGroup::reduced_to_irreducible(const double* reduced_field, double* irr
 
         for (int i = 0; i < n_reduced; ++i)
         {
-            const int ridx = reduced_to_irreducible_map_[i];
-            const int weight = orbit_counts_[i];
+            const int ridx = basis_to_orbit_[i];
+            const int weight = basis_counts_[i];
             orbit_sums[ridx] += static_cast<double>(weight) * src[i];
             orbit_weights[ridx] += weight;
         }
@@ -638,7 +591,7 @@ void SpaceGroup::irreducible_to_reduced(const double* irreducible_field, double*
     // Without a physical basis the reduced basis is the irreducible one
     if (physical_basis_ == PhysicalBasis::None)
     {
-        const int n_reduced = n_irreducible_;
+        const int n_reduced = n_basis_;
         for (int f = 0; f < n_fields; ++f)
         {
             std::memcpy(reduced_field + static_cast<size_t>(f) * n_reduced,
@@ -648,8 +601,8 @@ void SpaceGroup::irreducible_to_reduced(const double* irreducible_field, double*
         return;
     }
 
-    const int n_reduced = n_irreducible_;
-    const int n_irreducible = n_irreducible_full_;
+    const int n_reduced = n_basis_;
+    const int n_irreducible = n_orbits_;
 
     for (int f = 0; f < n_fields; ++f)
     {
@@ -658,24 +611,21 @@ void SpaceGroup::irreducible_to_reduced(const double* irreducible_field, double*
 
         for (int i = 0; i < n_reduced; ++i)
         {
-            dst[i] = src[reduced_to_irreducible_map_[i]];
+            dst[i] = src[basis_to_orbit_[i]];
         }
     }
 }
 
 void SpaceGroup::from_reduced_basis(const double* reduced_field, double* full_field, int n_fields) const
 {
-    const auto& full_to_reduced = full_to_reduced_map_;
-    const int n_reduced = n_irreducible_;
-
     for (int f = 0; f < n_fields; ++f)
     {
-        const double* src = reduced_field + static_cast<size_t>(f) * n_reduced;
+        const double* src = reduced_field + static_cast<size_t>(f) * n_basis_;
         double* dst = full_field + static_cast<size_t>(f) * total_grid_;
 
         for (int i = 0; i < total_grid_; ++i)
         {
-            dst[i] = src[full_to_reduced[i]];
+            dst[i] = src[basis_of_[i]];
         }
     }
 }
@@ -683,15 +633,12 @@ void SpaceGroup::from_reduced_basis(const double* reduced_field, double* full_fi
 bool SpaceGroup::is_invariant(const double* full_field, double tolerance) const
 {
     // Orbits of the full group (kept from the constructor; a physical basis replaces
-    // only the active map)
-    const std::vector<int>& orbit_of = full_to_reduced_map_full_;
-    const int n_orbits = n_irreducible_full_;
-
-    std::vector<double> value(n_orbits, 0.0);
-    std::vector<char> seen(n_orbits, 0);
+    // only the active basis)
+    std::vector<double> value(n_orbits_, 0.0);
+    std::vector<char> seen(n_orbits_, 0);
     for (int i = 0; i < total_grid_; i++)
     {
-        const int orbit = orbit_of[i];
+        const int orbit = orbit_of_[i];
         if (!seen[orbit])
         {
             seen[orbit] = 1;
@@ -705,12 +652,8 @@ bool SpaceGroup::is_invariant(const double* full_field, double tolerance) const
 
 void SpaceGroup::symmetrize(double* field, int n_fields) const
 {
-    const auto& full_to_reduced = full_to_reduced_map_full_;
-    const auto& orbit_counts = orbit_counts_full_;
-    const int n_reduced = n_irreducible_full_;
-
     // Temporary buffer for orbit sums
-    std::vector<double> orbit_sums(n_reduced);
+    std::vector<double> orbit_sums(n_orbits_);
 
     for (int f = 0; f < n_fields; ++f)
     {
@@ -722,14 +665,14 @@ void SpaceGroup::symmetrize(double* field, int n_fields) const
         // Accumulate values by orbit
         for (int i = 0; i < total_grid_; ++i)
         {
-            orbit_sums[full_to_reduced[i]] += data[i];
+            orbit_sums[orbit_of_[i]] += data[i];
         }
 
         // Compute averages and broadcast back
         for (int i = 0; i < total_grid_; ++i)
         {
-            int orbit_idx = full_to_reduced[i];
-            data[i] = orbit_sums[orbit_idx] / orbit_counts[orbit_idx];
+            int orbit_idx = orbit_of_[i];
+            data[i] = orbit_sums[orbit_idx] / orbit_sizes_[orbit_idx];
         }
     }
 }
@@ -743,142 +686,67 @@ void SpaceGroup::symmetrize(const double* field_in, double* field_out, int n_fie
     symmetrize(field_out, n_fields);
 }
 
+std::vector<std::array<double, 3>> SpaceGroup::translations_of(const std::array<int, 3>& sign) const
+{
+    std::vector<std::array<double, 3>> result;
+    for (int op = 0; op < n_symmetry_ops_; ++op)
+    {
+        if (is_diagonal_with(rotations_[op], sign))
+        {
+            const auto& t = translations_[op];
+            result.push_back({wrap01(t[0]), wrap01(t[1]), wrap01(t[2])});
+        }
+    }
+    return result;
+}
+
 bool SpaceGroup::has_mirror_planes_xyz(double tol) const
 {
-    bool has_x = false;
-    bool has_y = false;
-    bool has_z = false;
-
-    for (size_t i = 0; i < rotations_.size(); ++i)
+    // The mirrors perpendicular to x, y and z through the origin (lattice translations)
+    for (const auto& sign : MIRRORS)
     {
-        const auto& R = rotations_[i];
-        const auto& t = translations_[i];
-
-        bool t_zero = is_zero_mod1(t[0], tol) && is_zero_mod1(t[1], tol) && is_zero_mod1(t[2], tol);
-        if (!t_zero || !is_diagonal(R))
-            continue;
-
-        if (R[0][0] == -1 && R[1][1] == 1 && R[2][2] == 1)
-            has_x = true;
-        if (R[0][0] == 1 && R[1][1] == -1 && R[2][2] == 1)
-            has_y = true;
-        if (R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1)
-            has_z = true;
+        const auto translations = translations_of(sign);
+        if (std::none_of(translations.begin(), translations.end(),
+                         [tol](const auto& t) { return is_lattice_translation(t, tol); }))
+            return false;
     }
-
-    return has_x && has_y && has_z;
+    return true;
 }
 
 bool SpaceGroup::get_m3_translations(std::array<double, 9>& g, double tol) const
 {
-    auto norm2 = [&](const std::array<double, 3>& t) {
-        double x = wrap_half(t[0]);
-        double y = wrap_half(t[1]);
-        double z = wrap_half(t[2]);
-        return x * x + y * y + z * z;
-    };
-
-    bool found_x = false;
-    bool found_y = false;
-    bool found_z = false;
-    double best_x = std::numeric_limits<double>::infinity();
-    double best_y = std::numeric_limits<double>::infinity();
-    double best_z = std::numeric_limits<double>::infinity();
-
-    for (size_t i = 0; i < rotations_.size(); ++i)
+    // The shortest translation of each mirror (z, y, x)
+    bool found_all = true;
+    for (int m = 0; m < 3; ++m)
     {
-        const auto& R = rotations_[i];
-        const auto& t = translations_[i];
-
-        if (!is_diagonal(R))
+        const auto translations = translations_of(MIRRORS[m]);
+        const int k = shortest_translation(translations, tol);
+        if (k < 0)
+        {
+            found_all = false;
             continue;
-
-        const std::array<double, 3> t_val = {t[0], t[1], t[2]};
-        const double t_norm = norm2(t_val);
-
-        if (R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1)
-        {
-            if (!found_z || t_norm + tol < best_z)
-            {
-                g[0] = wrap01(t[0]);
-                g[1] = wrap01(t[1]);
-                g[2] = wrap01(t[2]);
-                best_z = t_norm;
-                found_z = true;
-            }
         }
-        if (R[0][0] == 1 && R[1][1] == -1 && R[2][2] == 1)
-        {
-            if (!found_y || t_norm + tol < best_y)
-            {
-                g[3] = wrap01(t[0]);
-                g[4] = wrap01(t[1]);
-                g[5] = wrap01(t[2]);
-                best_y = t_norm;
-                found_y = true;
-            }
-        }
-        if (R[0][0] == -1 && R[1][1] == 1 && R[2][2] == 1)
-        {
-            if (!found_x || t_norm + tol < best_x)
-            {
-                g[6] = wrap01(t[0]);
-                g[7] = wrap01(t[1]);
-                g[8] = wrap01(t[2]);
-                best_x = t_norm;
-                found_x = true;
-            }
-        }
+        for (int d = 0; d < 3; ++d)
+            g[3 * m + d] = translations[k][d];
     }
-
-    return found_x && found_y && found_z;
+    return found_all;
 }
 
 void SpaceGroup::get_pure_translations(std::vector<std::array<double, 3>>& translations) const
 {
-    translations.clear();
-    for (size_t i = 0; i < rotations_.size(); ++i)
-    {
-        const auto& R = rotations_[i];
-        if (!(is_diagonal(R) && R[0][0] == 1 && R[1][1] == 1 && R[2][2] == 1))
-            continue;
-        translations.push_back({wrap01(translations_[i][0]),
-                                wrap01(translations_[i][1]),
-                                wrap01(translations_[i][2])});
-    }
+    translations = translations_of({1, 1, 1});
 }
 
 bool SpaceGroup::get_z_mirror_translation(double& t_z, double tol) const
 {
-    bool found = false;
-    double best_norm = std::numeric_limits<double>::infinity();
-    double best_tz = 0.0;
-
-    for (size_t i = 0; i < rotations_.size(); ++i)
-    {
-        const auto& R = rotations_[i];
-        const auto& t = translations_[i];
-
-        if (!(is_diagonal(R) && R[0][0] == 1 && R[1][1] == 1 && R[2][2] == -1))
-            continue;
-
-        if (!is_zero_mod1(t[0], tol) || !is_zero_mod1(t[1], tol))
-            continue;
-
-        const double tz = wrap01(t[2]);
-        const double nz = wrap_half(tz);
-        const double norm = nz * nz;
-        if (!found || norm + tol < best_norm)
-        {
-            best_norm = norm;
-            best_tz = tz;
-            found = true;
-        }
-    }
-
-    if (found)
-        t_z = best_tz;
-    return found;
+    // The shortest (x, y, -z) + t with lattice translations along x and y
+    auto translations = translations_of(MIRRORS[0]);
+    std::erase_if(translations, [tol](const auto& t) { return !is_zero_mod1(t[0], tol) || !is_zero_mod1(t[1], tol); });
+    const int k = shortest_translation(translations, tol);
+    if (k < 0)
+        return false;
+    t_z = translations[k][2];
+    return true;
 }
 
 int SpaceGroup::z_mirror_half_grid_shift(std::string* why) const
@@ -909,72 +777,75 @@ int SpaceGroup::z_mirror_half_grid_shift(std::string* why) const
     return none("Unsupported z-mirror translation (only 0 or 1/2 are supported).");
 }
 
+template <typename Keep>
+std::vector<SpaceGroup::GridMap> SpaceGroup::grid_maps_where(Keep keep) const
+{
+    std::vector<GridMap> result;
+    for (int op = 0; op < n_symmetry_ops_; ++op)
+        if (keep(rotations_[op], translations_[op]))
+            result.push_back(grid_maps_[op]);
+    return result;
+}
+
+void SpaceGroup::check_basis_not_frozen() const
+{
+    if (in_use_)
+        throw_with_line_number("The physical basis cannot be changed after a computation box or solver was created with this SpaceGroup (their reduced-basis maps are snapshots); create a new SpaceGroup.");
+}
+
+void SpaceGroup::adopt_physical_basis(PhysicalBasis basis, const CrysFFTBasisMapping& grid,
+                                      const std::vector<GridMap>& folds)
+{
+    // Built in locals and committed at the end, so that a failure leaves the group as it was
+    std::vector<int> grid_index(total_grid_, -1);
+    for (int b = 0; b < grid.M_phys; ++b)
+        grid_index[grid.phys_to_full[b]] = b;
+
+    std::vector<int> basis_of(total_grid_);
+    std::vector<int> basis_counts(grid.M_phys, 0);
+    for (int point = 0; point < total_grid_; ++point)
+    {
+        int b = grid_index[point];
+        if (b < 0)
+        {
+            const std::array<int, 3> i = grid_indices(point);
+            for (size_t k = 0; b < 0 && k < folds.size(); ++k)
+                b = grid_index[map_point(folds[k], i)];
+        }
+        if (b < 0)
+        {
+            const char* name = basis == PhysicalBasis::M3 ? "M3" : (basis == PhysicalBasis::Pmmm ? "Pmmm" : "Z-mirror");
+            throw_with_line_number(std::string("Failed to map grid point to ") + name + " physical basis.");
+        }
+        basis_of[point] = b;
+        basis_counts[b] += 1;
+    }
+
+    n_basis_ = grid.M_phys;
+    basis_points_ = grid.phys_to_full;
+    basis_of_ = std::move(basis_of);
+    basis_counts_ = std::move(basis_counts);
+    basis_to_orbit_ = grid.phys_to_reduced;
+    physical_basis_ = basis;
+}
+
 void SpaceGroup::enable_pmmm_physical_basis()
 {
     if (physical_basis_ == PhysicalBasis::Pmmm)
         return;
-    if (in_use_)
-        throw_with_line_number("The physical basis cannot be changed after a computation box or solver was created with this SpaceGroup (their reduced-basis maps are snapshots); create a new SpaceGroup.");
+    check_basis_not_frozen();
 
-    const int Nx = nx_[0];
-    const int Ny = nx_[1];
-    const int Nz = nx_[2];
-
-    if ((Nx % 2) != 0 || (Ny % 2) != 0 || (Nz % 2) != 0)
+    if ((nx_[0] % 2) != 0 || (nx_[1] % 2) != 0 || (nx_[2] % 2) != 0)
         throw_with_line_number("Pmmm physical basis requires even grid dimensions.");
 
     if (!has_mirror_planes_xyz())
         throw_with_line_number("Space group does not contain mirror planes along x, y, z (Pmmm).");
 
-    const int Nx2 = Nx / 2;
-    const int Ny2 = Ny / 2;
-    const int Nz2 = Nz / 2;
-
-    n_irreducible_ = Nx2 * Ny2 * Nz2;
-    reduced_basis_indices_.resize(n_irreducible_);
-    full_to_reduced_map_.resize(total_grid_);
-    orbit_counts_.assign(n_irreducible_, 0);
-
-    int idx = 0;
-    for (int ix = 0; ix < Nx2; ++ix)
-    {
-        for (int iy = 0; iy < Ny2; ++iy)
-        {
-            for (int iz = 0; iz < Nz2; ++iz)
-            {
-                const int full_idx = (ix * Ny + iy) * Nz + iz;
-                reduced_basis_indices_[idx++] = full_idx;
-            }
-        }
-    }
-
-    for (int ix = 0; ix < Nx; ++ix)
-    {
-        const int ix2 = (ix < Nx2) ? ix : (Nx - 1 - ix);
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            const int iy2 = (iy < Ny2) ? iy : (Ny - 1 - iy);
-            for (int iz = 0; iz < Nz; ++iz)
-            {
-                const int iz2 = (iz < Nz2) ? iz : (Nz - 1 - iz);
-                const int full_idx = (ix * Ny + iy) * Nz + iz;
-                const int reduced_idx = (ix2 * Ny2 + iy2) * Nz2 + iz2;
-                full_to_reduced_map_[full_idx] = reduced_idx;
-                orbit_counts_[reduced_idx] += 1;
-            }
-        }
-    }
-
-    map_reduced_to_irreducible();
-    physical_basis_ = PhysicalBasis::Pmmm;
-}
-
-void SpaceGroup::map_reduced_to_irreducible()
-{
-    // The orbit of the full group of each physical-basis point (initialize() kept the full maps)
-    reduced_to_irreducible_map_.resize(n_irreducible_);
-    for (int i = 0; i < n_irreducible_; ++i)
-        reduced_to_irreducible_map_[i] = full_to_reduced_map_full_[reduced_basis_indices_[i]];
+    // The octant at consecutive indices; the mirrors through the origin fold the grid onto it
+    const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
+    adopt_physical_basis(PhysicalBasis::Pmmm,
+        build_crysfft_mapping_octant(nx3, orbit_of_, n_orbits_, /*even_indices=*/false),
+        grid_maps_where([](const auto& R, const auto& t) { return is_diagonal(R) && is_lattice_translation(t, 1e-10); }));
 }
 
 bool SpaceGroup::m3_crysfft_feasible() const
@@ -988,196 +859,43 @@ void SpaceGroup::enable_m3_physical_basis()
 {
     if (physical_basis_ == PhysicalBasis::M3)
         return;
-    if (in_use_)
-        throw_with_line_number("The physical basis cannot be changed after a computation box or solver was created with this SpaceGroup (their reduced-basis maps are snapshots); create a new SpaceGroup.");
+    check_basis_not_frozen();
 
-    const int Nx = nx_[0];
-    const int Ny = nx_[1];
-    const int Nz = nx_[2];
-
-    if ((Nx % 2) != 0 || (Ny % 2) != 0 || (Nz % 2) != 0)
+    if ((nx_[0] % 2) != 0 || (nx_[1] % 2) != 0 || (nx_[2] % 2) != 0)
         throw_with_line_number("M3 physical basis requires even grid dimensions.");
 
     std::array<double, 9> trans_part = {0,0,0, 0,0,0, 0,0,0};
     if (!get_m3_translations(trans_part))
         throw_with_line_number("Space group does not contain 3m translations for M3 physical basis.");
 
-    const int Nx2 = Nx / 2;
-    const int Ny2 = Ny / 2;
-    const int Nz2 = Nz / 2;
-
-    // The basis is built in locals and committed at the end, so that a failed
-    // mapping below leaves the object in its previous state.
-    const int n_reduced = Nx2 * Ny2 * Nz2;
-    std::vector<int> reduced_basis_indices(n_reduced);
-    std::vector<int> full_to_reduced_map(total_grid_, -1);
-    std::vector<int> orbit_counts(n_reduced, 0);
-
-    int idx = 0;
-    for (int ix = 0; ix < Nx2; ++ix)
-    {
-        const int fx = 2 * ix;
-        for (int iy = 0; iy < Ny2; ++iy)
-        {
-            const int fy = 2 * iy;
-            for (int iz = 0; iz < Nz2; ++iz)
-            {
-                const int fz = 2 * iz;
-                const int full_idx = (fx * Ny + fy) * Nz + fz;
-                reduced_basis_indices[idx++] = full_idx;
-            }
-        }
-    }
-
-    struct Op {
-        std::array<int, 3> diag;
-        std::array<double, 3> t;
-    };
-
-    std::vector<Op> ops;
-    ops.reserve(rotations_.size());
-    for (size_t i = 0; i < rotations_.size(); ++i)
-    {
-        const auto& R = rotations_[i];
-        const auto& t = translations_[i];
-        if (!is_diagonal(R))
-            continue;
-        if (std::abs(R[0][0]) != 1 || std::abs(R[1][1]) != 1 || std::abs(R[2][2]) != 1)
-            continue;
-        ops.push_back({{R[0][0], R[1][1], R[2][2]}, {t[0], t[1], t[2]}});
-    }
-
-    if (ops.empty())
-        throw_with_line_number("Failed to find diagonal symmetry operations for M3 physical basis.");
-
-    auto to_index = [&](double v, int N) {
-        double w = wrap01(v);
-        double scaled = w * static_cast<double>(N);
-        int idx = static_cast<int>(std::floor(scaled + 1e-12));
-        if (idx >= N)
-            idx = 0;
-        return idx;
-    };
-    auto reduced_index = [&](int ix, int iy, int iz) {
-        return ((ix / 2) * Ny2 + (iy / 2)) * Nz2 + (iz / 2);
-    };
-
-    for (int ix = 0; ix < Nx; ++ix)
-    {
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            for (int iz = 0; iz < Nz; ++iz)
-            {
-                const int full_idx = (ix * Ny + iy) * Nz + iz;
-
-                int reduced_idx = -1;
-                if ((ix % 2 == 0) && (iy % 2 == 0) && (iz % 2 == 0))
-                {
-                    reduced_idx = reduced_index(ix, iy, iz);
-                }
-                else
-                {
-                    const double x = (static_cast<double>(ix) + 0.5) / static_cast<double>(Nx);
-                    const double y = (static_cast<double>(iy) + 0.5) / static_cast<double>(Ny);
-                    const double z = (static_cast<double>(iz) + 0.5) / static_cast<double>(Nz);
-
-                    for (const auto& op : ops)
-                    {
-                        const double x2 = op.diag[0] * x + op.t[0];
-                        const double y2 = op.diag[1] * y + op.t[1];
-                        const double z2 = op.diag[2] * z + op.t[2];
-
-                        const int jx = to_index(x2, Nx);
-                        const int jy = to_index(y2, Ny);
-                        const int jz = to_index(z2, Nz);
-
-                        if ((jx % 2 == 0) && (jy % 2 == 0) && (jz % 2 == 0))
-                        {
-                            reduced_idx = reduced_index(jx, jy, jz);
-                            break;
-                        }
-                    }
-                }
-
-                if (reduced_idx < 0)
-                    throw_with_line_number("Failed to map grid point to M3 physical basis.");
-
-                full_to_reduced_map[full_idx] = reduced_idx;
-                orbit_counts[reduced_idx] += 1;
-            }
-        }
-    }
-
-    n_irreducible_ = n_reduced;
-    reduced_basis_indices_ = std::move(reduced_basis_indices);
-    full_to_reduced_map_ = std::move(full_to_reduced_map);
-    orbit_counts_ = std::move(orbit_counts);
-
-    map_reduced_to_irreducible();
-    physical_basis_ = PhysicalBasis::M3;
+    // The octant at even indices; a point takes the first diagonal operation that maps it there
+    const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
+    adopt_physical_basis(PhysicalBasis::M3,
+        build_crysfft_mapping_octant(nx3, orbit_of_, n_orbits_, /*even_indices=*/true),
+        grid_maps_where([](const auto& R, const auto&) { return is_diagonal(R); }));
 }
 
 void SpaceGroup::enable_z_mirror_physical_basis()
 {
     if (physical_basis_ == PhysicalBasis::ZMirror)
         return;
-    if (in_use_)
-        throw_with_line_number("The physical basis cannot be changed after a computation box or solver was created with this SpaceGroup (their reduced-basis maps are snapshots); create a new SpaceGroup.");
-
-    const int Nx = nx_[0];
-    const int Ny = nx_[1];
-    const int Nz = nx_[2];
+    check_basis_not_frozen();
 
     std::string why;
     const int shift = z_mirror_half_grid_shift(&why);
     if (shift < 0)
         throw_with_line_number(why);
 
-    const int Nz2 = Nz / 2;
-    n_irreducible_ = Nx * Ny * Nz2;
-    reduced_basis_indices_.resize(n_irreducible_);
-    full_to_reduced_map_.resize(total_grid_);
-    orbit_counts_.assign(n_irreducible_, 0);
-
-    int idx = 0;
-    for (int ix = 0; ix < Nx; ++ix)
-    {
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            for (int iz = 0; iz < Nz2; ++iz)
-            {
-                int iz_full = iz + shift;
-                if (iz_full >= Nz)
-                    iz_full -= Nz;
-                const int full_idx = (ix * Ny + iy) * Nz + iz_full;
-                reduced_basis_indices_[idx++] = full_idx;
-            }
-        }
-    }
-
-    for (int ix = 0; ix < Nx; ++ix)
-    {
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            for (int iz = 0; iz < Nz; ++iz)
-            {
-                int iz_shift = iz - shift;
-                while (iz_shift < 0)
-                    iz_shift += Nz;
-                while (iz_shift >= Nz)
-                    iz_shift -= Nz;
-
-                int iz2 = (iz_shift < Nz2) ? iz_shift : (Nz - 1 - iz_shift);
-                const int full_idx = (ix * Ny + iy) * Nz + iz;
-                const int reduced_idx = (ix * Ny + iy) * Nz2 + iz2;
-                full_to_reduced_map_[full_idx] = reduced_idx;
-                orbit_counts_[reduced_idx] += 1;
-            }
-        }
-    }
-
-    map_reduced_to_irreducible();
-    physical_basis_ = PhysicalBasis::ZMirror;
+    // The z half starting at the shift; the (x, y, -z) + t mirror of the shift folds the grid onto it
+    double t_z = 0.0;
+    get_z_mirror_translation(t_z);
+    const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
+    adopt_physical_basis(PhysicalBasis::ZMirror,
+        build_crysfft_mapping_z_mirror(nx3, orbit_of_, n_orbits_, shift),
+        grid_maps_where([t_z](const auto& R, const auto& t) {
+            return is_diagonal_with(R, MIRRORS[0]) && is_zero_mod1(t[0], 1e-10) && is_zero_mod1(t[1], 1e-10)
+                   && is_zero_mod1(wrap01(t[2]) - t_z, 1e-10);
+        }));
 }
 
 void SpaceGroup::check_cell(const std::vector<double>& lx, const std::vector<double>& angles_deg) const
