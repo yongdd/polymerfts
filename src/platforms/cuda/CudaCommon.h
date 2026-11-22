@@ -174,12 +174,11 @@ public:
  * Release calls are not checked: they run in destructors and release() paths,
  * which must not throw. cudaFree/cudaFreeHost go through ignore_release_error()
  * so a failed one is not reported by a later check; cuFFT plans are owned by
- * CufftPlan, and streams are created and destroyed through the counting
- * helpers count_cuda_stream() and release_cuda_stream().
+ * CufftPlan and streams by CudaStream.
  *
  * @example
  * @code
- * CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&stream)));   // counted handle
+ * CUDA_CHECK(stream.create());   // owning, counted handle (CudaStream)
  * CUDA_CHECK(cudaMemcpy(dst, src, size, cudaMemcpyDeviceToHost));
  * ker_multi<<<blocks, threads, 0, stream>>>(d_x, d_x, d_y, 2.0, n);
  * CUDA_CHECK_LAUNCH();
@@ -268,7 +267,7 @@ inline std::atomic<long long>& cuda_release_failures()
 /**
  * @brief Take the result of a release call (cudaFree, cudaFreeHost) without
  *        throwing; streams and cuFFT plans go through the counting
- *        release_cuda_stream() and release_cufft_plan().
+ *        release_cuda_stream() and release_cufft_plan() (CudaStream and CufftPlan).
  *
  * Releases run in destructors and release() paths, which must not throw, and a
  * failed release cannot be retried. A failed runtime call (cudaFree, ...) still
@@ -281,7 +280,7 @@ inline std::atomic<long long>& cuda_release_failures()
  *
  * @code
  * ignore_release_error(cudaFree(ptr));
- * release_cuda_stream(stream);       // counted handles have their own release
+ * stream.reset();       // owning handles (CudaStream, CufftPlan) have their own release
  * @endcode
  */
 inline void ignore_release_error(cudaError_t code) noexcept
@@ -439,19 +438,85 @@ private:
     cufftHandle handle_ = 0;
     bool created_ = false;
 };
-/// Count a created stream (pass the result of cudaStreamCreate through this).
+/// Count a created stream: CudaStream::create() passes the result of cudaStreamCreate
+/// through this, and a successful one is counted.
 inline cudaError_t count_cuda_stream(cudaError_t code) noexcept
 {
     if (code == cudaSuccess)
         cuda_handle_counters().streams.fetch_add(1, std::memory_order_relaxed);
     return code;
 }
-/// Destroy a stream counted by count_cuda_stream(), without throwing.
+/// Destroy a stream counted by count_cuda_stream(), without throwing (CudaStream calls it).
 inline void release_cuda_stream(cudaStream_t stream) noexcept
 {
     cuda_handle_counters().streams.fetch_sub(1, std::memory_order_relaxed);
     ignore_release_error(cudaStreamDestroy(stream));
 }
+
+/**
+ * @brief Owning CUDA stream handle.
+ *
+ * Move-only, like CufftPlan: the stream is destroyed (release_cuda_stream(), which does
+ * not throw) by the destructor, by reset() and before create() makes a new one. A class
+ * that keeps its streams in CudaStream members needs no cleanup code and leaks nothing
+ * when its constructor throws; members are destroyed in the reverse order of their
+ * declaration, so streams declared before the objects that run on them (a solver and its
+ * cuFFT plans) outlive those. create() makes a stream with cudaStreamCreate (blocking:
+ * the legacy default stream waits for it), counts it (count_cuda_stream()) and returns the
+ * CUDA result for CUDA_CHECK. The handle is lent by the implicit conversion, so kernel
+ * launches, cudaMemcpyAsync and cufftSetStream read as before.
+ *
+ * @code
+ * CudaStream stream;
+ * CUDA_CHECK(stream.create());
+ * ker_multi<<<blocks, threads, 0, stream>>>(d_x, d_x, d_y, 2.0, n);
+ * CUDA_CHECK(cudaStreamSynchronize(stream));
+ * @endcode
+ */
+class CudaStream
+{
+public:
+    CudaStream() = default;
+    ~CudaStream() { reset(); }
+
+    CudaStream(CudaStream&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+    CudaStream& operator=(CudaStream&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            handle_ = std::exchange(other.handle_, nullptr);
+        }
+        return *this;
+    }
+    CudaStream(const CudaStream&) = delete;
+    CudaStream& operator=(const CudaStream&) = delete;
+
+    /// Destroy the stream held, then create one; the object holds the new stream when the
+    /// returned result is cudaSuccess.
+    cudaError_t create() noexcept
+    {
+        reset();
+        cudaStream_t stream = nullptr;
+        const cudaError_t code = count_cuda_stream(cudaStreamCreate(&stream));
+        if (code == cudaSuccess)
+            handle_ = stream;
+        return code;
+    }
+    /// Destroy the stream (no-op when empty).
+    void reset() noexcept
+    {
+        if (handle_ != nullptr)
+            release_cuda_stream(handle_);
+        handle_ = nullptr;
+    }
+
+    operator cudaStream_t() const noexcept { return handle_; }   ///< lends the handle (no ownership transfer)
+    bool empty() const noexcept { return handle_ == nullptr; }
+
+private:
+    cudaStream_t handle_ = nullptr;   ///< nullptr when empty (a created stream is never the legacy default stream)
+};
 
 __global__ void ker_exp(double* dst, const double* src, double a, double exp_b, const int M);
 __global__ void ker_exp(cuDoubleComplex* dst, const cuDoubleComplex* src, double a, double exp_b, const int M);
@@ -572,7 +637,7 @@ void counted_cuda_release(void* p, size_t bytes) noexcept
  *
  * @code
  * CudaDeviceBuffer<double> d_q(M);            // allocated
- * ker_scale<<<B, T>>>(d_q, 2.0, M);           // lent as double*
+ * ker_multi<<<B, T>>>(d_q, d_q, d_w, 2.0, M);  // lent as double*
  * cub::DeviceReduce::Sum(d_tmp.get(), bytes, d_q.get(), d_out.get(), M);
  * CudaPinnedBuffer<double> h_q(M);            // page-locked host memory
  * @endcode

@@ -84,14 +84,7 @@ CudaFourierTransform<T>::CudaFourierTransform(ComputationBox<T>* cb, std::vector
     const long long field_doubles = this->n_grid_ * doubles_per_value;
     field_pitch_ = (field_doubles + field_doubles % 2) / doubles_per_value;
     coefficient_pitch_ = this->coefficient_stride() + this->coefficient_stride() % 2;
-    // Created last: nothing else can throw after it
-    CUDA_CHECK(count_cuda_stream(cudaStreamCreate(&stream_)));
-}
-
-template <typename T>
-CudaFourierTransform<T>::~CudaFourierTransform()
-{
-    release_cuda_stream(stream_);
+    CUDA_CHECK(stream_.create());
 }
 
 template <typename T>

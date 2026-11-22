@@ -50,7 +50,6 @@ public:
      * @param bc Transform of each axis (see FourierTransform)
      */
     CudaFourierTransform(ComputationBox<T>* cb, std::vector<BoundaryCondition> bc);
-    ~CudaFourierTransform();
 
 protected:
     std::unique_ptr<FourierMultiplier<T>> store_multiplier(
@@ -62,10 +61,10 @@ protected:
 private:
     using DeviceT = CuDeviceData<T>;
 
+    CudaStream stream_;         ///< declared first: outlives the plans and transforms
     CufftPlan plan_forward_;    ///< periodic boxes: D2Z (real fields) or Z2Z
     CufftPlan plan_backward_;   ///< periodic boxes: Z2D (real fields) or Z2Z
     std::unique_ptr<CudaMakhoulTransform<T>> series_;   ///< boxes with walls (and periodic axes)
-    cudaStream_t stream_ = nullptr;
 
     CudaDeviceBuffer<DeviceT> d_fields_;           ///< fields of a call (inputs, then outputs)
     CudaDeviceBuffer<double> d_coefficients_in_;   ///< coefficients of the inputs of a term

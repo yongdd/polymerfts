@@ -713,9 +713,9 @@ the allocators of the propagator handles and the reduce-memory checkpoints, whic
 computation classes free in one place; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
-`release_cufft_plan()`. CUDA streams are destroyed explicitly where their order
-matters (the solver before the streams it runs on); they are created through
-`count_cuda_stream(...)` and destroyed with `release_cuda_stream()`. These helpers keep live counts
+`release_cufft_plan()`, and CUDA streams by `CudaStream`, which counts them through
+`count_cuda_stream(...)` and `release_cuda_stream()`; an owner declares its streams before
+the objects that run on them (the backend's solver), so that those are destroyed first. These helpers keep live counts
 (`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
@@ -781,8 +781,7 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  hold cuFFT plans in `CufftPlan`, and destroy streams with the counting `release_cuda_stream()`
-  helper.
+  hold cuFFT plans in `CufftPlan` and streams in `CudaStream`.
 
 ### Python
 

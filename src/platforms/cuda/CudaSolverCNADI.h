@@ -14,15 +14,14 @@
  *
  * **ADI Splitting:**
  *
- * Multi-dimensional problems split into 1D tridiagonal systems:
- * - 2D: X-sweep → Y-sweep
- * - 3D: X-sweep → Y-sweep → Z-sweep
+ * Multi-dimensional problems split into 1D tridiagonal systems, one sweep per axis
+ * (x, then y, then z). Each sweep after the first corrects the right-hand side
+ * with the result of the sweep before it.
  *
  * **GPU Parallelization:**
  *
- * Each tridiagonal system solved independently in parallel:
- * - 2D: ny systems for X-sweep, nx systems for Y-sweep
- * - 3D: ny×nz, nx×nz, nx×ny systems respectively
+ * The lines of an axis are solved independently in parallel: one line per
+ * thread, or, along the contiguous axis, a warp of lines staged in shared memory.
  *
  * **Boundary Conditions:**
  *
@@ -50,134 +49,6 @@
 #include "CudaCommon.h"
 #include "SpaceGroup.h"
 
-/// Device function: max of two integers.
-__device__ int d_max_of_two(int x, int y);
-
-/// Device function: min of two integers.
-__device__ int d_min_of_two(int x, int y);
-
-/**
- * @brief CUDA kernel: 1D Crank-Nicolson RHS computation.
- *
- * Computes the right-hand side (I + ds/2 Lx) q for 1D problems.
- *
- * @param bc_xl  Boundary condition at x-low
- * @param bc_xh  Boundary condition at x-high
- * @param d_xl   Lower diagonal coefficients
- * @param d_xd   Main diagonal coefficients
- * @param d_xh   Upper diagonal coefficients
- * @param d_q_out Output RHS vector
- * @param d_q_in  Input propagator
- * @param M       Grid size
- */
-__global__ void compute_crank_1d(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    const double *d_xl, const double *d_xd, const double *d_xh,
-    double *d_q_out, const double *d_q_in, const int M);
-
-/**
- * @brief CUDA kernel: 2D ADI step 1 (X-direction).
- *
- * Computes RHS for X-sweep: (I + ds/2 Lx) q
- *
- * @param bc_xl, bc_xh  X-direction boundary conditions
- * @param bc_yl, bc_yh  Y-direction boundary conditions
- * @param d_xl, d_xd, d_xh  X-direction tridiagonal coefficients
- * @param I             X grid size
- * @param d_yl, d_yd, d_yh  Y-direction tridiagonal coefficients
- * @param J             Y grid size
- * @param d_q_out       Output RHS
- * @param d_q_in        Input propagator
- * @param M             Total grid size
- */
-__global__ void compute_crank_2d_step_1(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_xl, const double *d_xd, const double *d_xh, const int I,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    double *d_q_out, const double *d_q_in, const int M);
-
-/**
- * @brief CUDA kernel: 2D ADI step 2 (Y-direction).
- *
- * Computes RHS for Y-sweep using intermediate solution q*.
- *
- * @param bc_yl, bc_yh  Y-direction boundary conditions
- * @param d_yl, d_yd, d_yh  Y-direction tridiagonal coefficients
- * @param J             Y grid size
- * @param d_q_out       Output RHS
- * @param d_q_star      Intermediate solution from step 1
- * @param d_q_in        Original input propagator
- * @param M             Total grid size
- */
-__global__ void compute_crank_2d_step_2(
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    double *d_q_out, const double *d_q_star, const double *d_q_in, const int M);
-
-/**
- * @brief CUDA kernel: 3D ADI step 1 (X-direction).
- *
- * First ADI sweep in X-direction for 3D problems.
- *
- * @param bc_xl, bc_xh  X-direction boundary conditions
- * @param bc_yl, bc_yh  Y-direction boundary conditions
- * @param bc_zl, bc_zh  Z-direction boundary conditions
- * @param d_xl, d_xd, d_xh  X-direction coefficients
- * @param I             X grid size
- * @param d_yl, d_yd, d_yh  Y-direction coefficients
- * @param J             Y grid size
- * @param d_zl, d_zd, d_zh  Z-direction coefficients
- * @param K             Z grid size
- * @param d_q_out       Output RHS
- * @param d_q_in        Input propagator
- * @param M             Total grid size
- */
-__global__ void compute_crank_3d_step_1(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    BoundaryCondition bc_zl, BoundaryCondition bc_zh,
-    const double *d_xl, const double *d_xd, const double *d_xh, const int I,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    const double *d_zl, const double *d_zd, const double *d_zh, const int K,
-    double *d_q_out, const double *d_q_in, const int M);
-
-/**
- * @brief CUDA kernel: 3D ADI step 2 (Y-direction).
- *
- * Second ADI sweep in Y-direction using intermediate q*.
- *
- * @param bc_yl, bc_yh  Y-direction boundary conditions
- * @param d_yl, d_yd, d_yh  Y-direction coefficients
- * @param J, K          Y and Z grid sizes
- * @param d_q_out       Output RHS
- * @param d_q_star      Intermediate from step 1
- * @param d_q_in        Original input
- * @param M             Total grid size
- */
-__global__ void compute_crank_3d_step_2(
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J, const int K,
-    double *d_q_out, const double *d_q_star, const double *d_q_in, const int M);
-
-/**
- * @brief CUDA kernel: 3D ADI step 3 (Z-direction).
- *
- * Final ADI sweep in Z-direction using intermediate q**.
- *
- * @param bc_zl, bc_zh  Z-direction boundary conditions
- * @param d_zl, d_zd, d_zh  Z-direction coefficients
- * @param J, K          Y and Z grid sizes
- * @param d_q_out       Output RHS
- * @param d_q_dstar     Intermediate from step 2
- * @param d_q_in        Original input
- * @param M             Total grid size
- */
-__global__ void compute_crank_3d_step_3(
-    BoundaryCondition bc_zl, BoundaryCondition bc_zh,
-    const double *d_zl, const double *d_zd, const double *d_zh, const int J, const int K,
-    double *d_q_out, const double *d_q_dstar, const double *d_q_in, const int M);
-
 /**
  * @brief Thomas factors of the constant tridiagonal matrix of a line, computed once on the host.
  *
@@ -204,26 +75,16 @@ TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const
  * method with parallel tridiagonal solves on GPU. Supports non-periodic
  * boundary conditions.
  *
- * **Tridiagonal Systems:**
- *
- * For each direction (x, y, z), stores coefficients:
- * - d_xl: Lower diagonal (subdiagonal)
- * - d_xd: Main diagonal
- * - d_xh: Upper diagonal (superdiagonal)
+ * Each axis has one matrix per ds and monomer type (AxisMatrix): its diagonals, which
+ * the explicit half of a step reads, and its Thomas factors, computed once per box and
+ * ds, which the implicit sweep along the axis reads. The lines of an axis are found
+ * from its stride in the row-major grid.
  *
  * **Workspace Arrays:**
  *
  * Per-stream workspace for tridiagonal solves:
- * - d_q_star: Intermediate ADI solution (after the first sweep, and in 3D after the second)
- * - d_temp: Right-hand side of a sweep (2D and 3D)
- *
- * The Thomas factors of each axis (d_factors) are computed once per box and ds.
- *
- * **Offset Arrays:**
- *
- * Index mappings for parallel system solving:
- * - d_offset_xy, d_offset_yz, d_offset_xz: 3D sweeps
- * - d_offset_x, d_offset_y: 2D sweeps
+ * - d_temp: Right-hand side of a sweep
+ * - d_q_star: Result of a sweep before the last (2D and 3D)
  *
  * @note Only supports double type (not complex) as CN-ADI method
  *       is primarily for continuous chains with non-periodic BCs.
@@ -231,91 +92,39 @@ TridiagonalFactors factorize_tridiagonal(const double* l, const double* d, const
 class CudaSolverCNADI : public CudaSolver<double>
 {
 private:
-    int dim;                     ///< Dimensionality (1, 2, or 3)
+    int dim;                          ///< Dimensionality (1, 2, or 3)
+    std::array<int, 3> n_axis_{};     ///< Points on each axis
+    std::array<int, 3> stride_{};     ///< Distance in memory of neighbouring points of each axis
+    std::array<bool, 3> periodic_{};  ///< Periodic axes (ComputationBox pairs the two ends)
 
-    /// @name Tridiagonal Coefficients per ds_index per monomer_type
-    /// Nested map structure: [ds_index][monomer_type] -> coefficient array (device)
-    /// @{
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_xl;  ///< X-direction lower diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_xd;  ///< X-direction main diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_xh;  ///< X-direction upper diagonal
-
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_yl;  ///< Y-direction lower diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_yd;  ///< Y-direction main diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_yh;  ///< Y-direction upper diagonal
-
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_zl;  ///< Z-direction lower diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_zd;  ///< Z-direction main diagonal
-    std::map<int, std::map<std::string, CudaDeviceBuffer<double>>> d_zh;  ///< Z-direction upper diagonal
-    /// @}
-
+    /// The tridiagonal matrix of one axis for one ds and monomer type (device)
+    struct AxisMatrix
+    {
+        CudaDeviceBuffer<double> l;        ///< Lower diagonal
+        CudaDeviceBuffer<double> d;        ///< Main diagonal
+        CudaDeviceBuffer<double> h;        ///< Upper diagonal
+        CudaDeviceBuffer<double> factors;  ///< Thomas factors (TridiagonalFactors::table)
+        double v = 0.0;                    ///< Periodic: Sherman-Morrison scalars (TridiagonalFactors)
+        double denom = 1.0;
+    };
+    /// The matrices of the axes: [ds_index][monomer_type][axis]
+    std::map<int, std::map<std::string, std::array<AxisMatrix, 3>>> matrices_;
 
     /// @name Tridiagonal Solver Workspace (per stream)
     /// @{
-    CudaDeviceBuffer<double> d_q_star[MAX_STREAMS];  ///< Intermediate solutions of the sweeps
-    CudaDeviceBuffer<double> d_temp[MAX_STREAMS];  ///< Right-hand side of a sweep (2D, 3D)
+    CudaDeviceBuffer<double> d_temp[MAX_STREAMS];    ///< Right-hand side of a sweep
+    CudaDeviceBuffer<double> d_q_star[MAX_STREAMS];  ///< Result of a sweep before the last (2D, 3D)
     /// @}
-
-    /// @name Index Offset Arrays
-    /// @{
-    CudaDeviceBuffer<int> d_offset_xy;  ///< 3D: XY-plane offsets
-    CudaDeviceBuffer<int> d_offset_yz;  ///< 3D: YZ-plane offsets
-    CudaDeviceBuffer<int> d_offset_xz;  ///< 3D: XZ-plane offsets
-    CudaDeviceBuffer<int> d_offset_x;   ///< 2D: X-direction offsets
-    CudaDeviceBuffer<int> d_offset_y;   ///< 2D: Y-direction offsets
-    CudaDeviceBuffer<int> d_offset;     ///< 1D: System offsets
-    /// @}
-
-    /// Thomas factors of one axis on the device (see TridiagonalFactors)
-    struct DeviceFactors
-    {
-        CudaDeviceBuffer<double> table;
-        double v = 0.0;
-        double denom = 1.0;
-        bool periodic = false;
-    };
-    /// Factors of the x, y and z lines per ds_index and monomer type
-    std::map<int, std::map<std::string, std::array<DeviceFactors, 3>>> d_factors;
 
     int max_lines_shmem_;   ///< Dynamic shared memory allowed for tridiagonal_lines_shared()
 
     /**
-     * @brief Solve REPEAT systems of size M of one axis on the stream.
+     * @brief Solve the lines of an axis on the stream: x = A^-1 rhs with the matrix of the axis.
      *
-     * Contiguous systems (INTERVAL 1) go through tridiagonal_lines_shared(), the others, and
-     * systems too long for the shared memory, through tridiagonal_lines().
+     * Contiguous lines go through tridiagonal_lines_shared(), the others, and lines too long
+     * for the shared memory, through tridiagonal_lines().
      */
-    void solve_lines(
-        const int STREAM, const DeviceFactors& factors, const double *d_d, double *d_x,
-        const int *d_offset, const int REPEAT, const int INTERVAL, const int M);
-
-
-    /**
-     * @brief 3D ADI propagator advancement.
-     * @param ds_index Index for ds value (0-based) from ContourLengthMapping
-     */
-    void advance_propagator_3d(
-        std::vector<BoundaryCondition> bc,
-        const int STREAM,
-        double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index);
-
-    /**
-     * @brief 2D ADI propagator advancement.
-     * @param ds_index Index for ds value (0-based) from ContourLengthMapping
-     */
-    void advance_propagator_2d(
-        std::vector<BoundaryCondition> bc,
-        const int STREAM,
-        double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index);
-
-    /**
-     * @brief 1D Crank-Nicolson propagator advancement.
-     * @param ds_index Index for ds value (0-based) from ContourLengthMapping
-     */
-    void advance_propagator_1d(
-        std::vector<BoundaryCondition> bc,
-        const int STREAM,
-        double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index);
+    void solve_lines(const int STREAM, const AxisMatrix& matrix, int axis, const double *d_rhs, double *d_x);
 
 public:
     /**

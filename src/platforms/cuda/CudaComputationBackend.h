@@ -39,15 +39,15 @@ class CudaComputationBackend : public ComputationBackend<T>
 private:
     CudaComputationBox<T>* cb;
     SpaceGroup* space_group;
-    std::unique_ptr<CudaSolver<T>> solver;
-    CudaSolverPseudoDiscrete<T>* solver_discrete;  ///< the pseudo-spectral solver of discrete chains (not owning)
     bool discrete_chains;                          ///< the chains are discrete (exp(-w ds) also in the reduced basis)
     int n_streams;
     int n_basis;
     bool force_off_diagonal_stress;
     double exp_dw_ds;                              ///< Discrete chains with a space group: the ds of d_exp_dw_reduced
 
-    cudaStream_t streams[MAX_STREAMS];     ///< One stream per stream index
+    // Members are destroyed in the reverse order of their declaration: the streams, declared
+    // before everything that runs on them, outlive the solver and its cuFFT plans (declared last)
+    CudaStream streams[MAX_STREAMS];       ///< One stream per stream index
 
     CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (full grid)
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
@@ -64,6 +64,9 @@ private:
     /// solver stores it there itself (exp_dw_in_solver_basis())
     std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_exp_dw_reduced;
 
+    std::unique_ptr<CudaSolver<T>> solver;                    ///< The solver of the method (runs on the streams)
+    CudaSolverPseudoDiscrete<T>* solver_discrete = nullptr;   ///< The pseudo-spectral solver of discrete chains (not owning)
+
     /// The discrete solver's exp(-w ds) tables are in the reduced basis already (its CrysFFT path)
     bool exp_dw_in_solver_basis() const;
 
@@ -74,10 +77,6 @@ private:
     template <typename Source>
     void multiply_sources(int stream, BackendArray<T>* q, const std::vector<std::pair<Source*, double>>& sources);
     static BackendArray<T>* wrap(CuDeviceData<T>* a) { return reinterpret_cast<BackendArray<T>*>(a); }
-
-    /// Destroy the solver, then the streams it runs on (the device buffers are
-    /// owning members); safe on a partly constructed object.
-    void release();
 
 public:
     /**

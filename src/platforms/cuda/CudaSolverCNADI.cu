@@ -9,10 +9,10 @@
  *
  * **CN-ADI (Crank-Nicolson ADI):**
  *
- * The modified diffusion equation is split dimensionally:
- * - 3D: Three sequential tridiagonal solves (x, y, z directions)
- * - 2D: Two tridiagonal solves
- * - 1D: Single tridiagonal solve
+ * The modified diffusion equation is split dimensionally: the explicit half of
+ * a step gives the right-hand side of the first sweep, and one tridiagonal solve
+ * follows per axis (x, y, z); each sweep after the first corrects the right-hand
+ * side with the result of the sweep before it.
  *
  * **Tridiagonal Solvers:**
  *
@@ -45,11 +45,102 @@
 #include "CudaSolverCNADI.h"
 #include "CudaTridiagonalLines.cuh"
 
+namespace {
+
 // The line solvers below give one thread to each grid line, so a launch sized
 // for whole grids (CudaCommon blocks x threads) would leave most blocks idle:
 // a 64^3 grid has 4096 lines per direction. Launch one 64-thread block per 64 lines.
 constexpr int LINE_THREADS = 64;
-static inline int line_blocks(int n_lines) { return (n_lines + LINE_THREADS - 1)/LINE_THREADS; }
+inline int line_blocks(int n_lines) { return (n_lines + LINE_THREADS - 1)/LINE_THREADS; }
+
+/// An axis of the row-major grid as the kernels read it (passed by value): the diagonals
+/// of its matrix, its points and the distance in memory between neighbouring points
+struct AdiAxis
+{
+    const double* l;   ///< Lower diagonal
+    const double* d;   ///< Main diagonal
+    const double* h;   ///< Upper diagonal
+    int n;             ///< Points on the axis
+    int stride;        ///< Distance in memory of neighbouring points
+    bool periodic;     ///< Periodic axis
+};
+
+/// Index on the axis of grid point p
+__device__ __forceinline__ int axis_index(const AdiAxis& a, int p)
+{
+    return (p / a.stride) % a.n;
+}
+
+/// The grid point next to p (index i on the axis) one step below (step -1) or above (+1)
+/// along the axis: wrapped around a periodic axis, p itself beyond a wall (the wall rows of
+/// the matrix hold the boundary condition)
+__device__ __forceinline__ int neighbour(const AdiAxis& a, int p, int i, int step)
+{
+    int j = i + step;
+    if (j < 0)
+        j = a.periodic ? a.n - 1 : 0;
+    else if (j >= a.n)
+        j = a.periodic ? 0 : a.n - 1;
+    return p + (j - i) * a.stride;
+}
+
+// Each kernel below finds the neighbours of a point before it evaluates the point's
+// expression. Where nvcc contracts a product into an FMA depends on the code between the
+// product and its sum, and so does the last bit of the result: index code interleaved with
+// the terms changes the bits.
+
+// The explicit half of a step, the right-hand side of the first sweep (along x), in 1D
+__global__ void adi_rhs_1d(AdiAxis x, double *d_q_out, const double *d_q_in, const int M)
+{
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < M; n += blockDim.x * gridDim.x)
+    {
+        const int i = n;
+        const int im = neighbour(x, n, i, -1), ip = neighbour(x, n, i, +1);
+        d_q_out[n] = (2.0-x.d[i])*d_q_in[n] - x.l[i]*d_q_in[im] - x.h[i]*d_q_in[ip];
+    }
+}
+
+// The explicit half of a step in 2D
+__global__ void adi_rhs_2d(AdiAxis x, AdiAxis y, double *d_q_out, const double *d_q_in, const int M)
+{
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < M; n += blockDim.x * gridDim.x)
+    {
+        const int i = n / x.stride, j = n % y.n;   // y is contiguous
+        const int im = neighbour(x, n, i, -1), ip = neighbour(x, n, i, +1);
+        const int jm = neighbour(y, n, j, -1), jp = neighbour(y, n, j, +1);
+        d_q_out[n] = 2.0*((2.0-0.5*x.d[i]-y.d[j])*d_q_in[n] - y.l[j]*d_q_in[jm] - y.h[j]*d_q_in[jp])
+                   - x.l[i]*d_q_in[im] - x.h[i]*d_q_in[ip];
+    }
+}
+
+// The explicit half of a step in 3D
+__global__ void adi_rhs_3d(AdiAxis x, AdiAxis y, AdiAxis z, double *d_q_out, const double *d_q_in, const int M)
+{
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < M; n += blockDim.x * gridDim.x)
+    {
+        const int i = n / x.stride, j = (n / y.stride) % y.n, k = n % z.n;   // z is contiguous
+        const int im = neighbour(x, n, i, -1), ip = neighbour(x, n, i, +1);
+        const int jm = neighbour(y, n, j, -1), jp = neighbour(y, n, j, +1);
+        const int km = neighbour(z, n, k, -1), kp = neighbour(z, n, k, +1);
+        d_q_out[n] = 2.0*((3.0-0.5*x.d[i]-y.d[j]-z.d[k])*d_q_in[n]
+                - z.l[k]*d_q_in[km] - z.h[k]*d_q_in[kp] - y.l[j]*d_q_in[jm] - y.h[j]*d_q_in[jp])
+                - x.l[i]*d_q_in[im] - x.h[i]*d_q_in[ip];
+    }
+}
+
+// The right-hand side of the sweep along an axis after the first: the result of the sweep
+// before it (d_q_star) corrected by the matrix of the axis applied to the step's input
+__global__ void adi_correction(AdiAxis a, double *d_q_out, const double *d_q_star, const double *d_q_in, const int M)
+{
+    for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < M; n += blockDim.x * gridDim.x)
+    {
+        const int i = axis_index(a, n);
+        const int im = neighbour(a, n, i, -1), ip = neighbour(a, n, i, +1);
+        d_q_out[n] = d_q_star[n] + (a.d[i]-1.0)*d_q_in[n] + a.l[i]*d_q_in[im] + a.h[i]*d_q_in[ip];
+    }
+}
+
+}  // namespace
 
 CudaSolverCNADI::CudaSolverCNADI(
     ComputationBox<double>* cb,
@@ -76,114 +167,46 @@ CudaSolverCNADI::CudaSolverCNADI(
                                        + std::to_string(d) + "] = " + std::to_string(cb->get_nx(d)) + ".");
 
         const int M = cb->get_total_grid();
-        const int DIM = cb->get_dim();
-        this->dim = DIM;
-        std::vector<int> nx(DIM);
-        if (DIM == 3)
-            nx = {cb->get_nx(0), cb->get_nx(1), cb->get_nx(2)};
-        else if (DIM == 2)
-            nx = {cb->get_nx(0), cb->get_nx(1), 1};
-        else if (DIM == 1)
-            nx = {cb->get_nx(0), 1, 1};
+        dim = cb->get_dim();
+
+        // The axes of the row-major grid (the last one is contiguous)
+        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+        int stride = 1;
+        for (int a = dim - 1; a >= 0; --a)
+        {
+            n_axis_[a] = cb->get_nx(a);
+            stride_[a] = stride;
+            periodic_[a] = bc[2*a] == BoundaryCondition::PERIODIC;
+            stride *= n_axis_[a];
+        }
 
         // Ensure ContourLengthMapping is finalized
         molecules->finalize_contour_length_mapping();
+        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
 
-        // Get unique ds values from ContourLengthMapping
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // Map slots are owning buffers: a failed allocation leaves the slot empty
-        // Create exp_dw and tridiagonal coefficients for each ds_index
+        // exp(-w ds/2) and the matrices of the axes for each ds_index and monomer type
+        // (map slots are owning buffers: a failed allocation leaves the slot empty)
         for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
         {
             for(const auto& item: molecules->get_bond_lengths())
             {
-                std::string monomer_type = item.first;
-                d_exp_dw[ds_idx][monomer_type].allocate(M);
-
-                d_xl[ds_idx][monomer_type].allocate(nx[0]);
-                d_xd[ds_idx][monomer_type].allocate(nx[0]);
-                d_xh[ds_idx][monomer_type].allocate(nx[0]);
-
-                d_yl[ds_idx][monomer_type].allocate(nx[1]);
-                d_yd[ds_idx][monomer_type].allocate(nx[1]);
-                d_yh[ds_idx][monomer_type].allocate(nx[1]);
-
-                d_zl[ds_idx][monomer_type].allocate(nx[2]);
-                d_zd[ds_idx][monomer_type].allocate(nx[2]);
-                d_zh[ds_idx][monomer_type].allocate(nx[2]);
+                d_exp_dw[ds_idx][item.first].allocate(M);
+                std::array<AxisMatrix, 3>& matrices = matrices_[ds_idx][item.first];
+                for (int a = 0; a < dim; ++a)
+                {
+                    matrices[a].l.allocate(n_axis_[a]);
+                    matrices[a].d.allocate(n_axis_[a]);
+                    matrices[a].h.allocate(n_axis_[a]);
+                    matrices[a].factors.allocate(4*static_cast<size_t>(n_axis_[a]));
+                }
             }
         }
 
-        if(DIM == 3)
+        for(int i=0; i<n_streams; i++)
         {
-            for(int i=0; i<n_streams; i++)
-            {
+            d_temp[i].allocate(M);
+            if (dim > 1)
                 d_q_star[i].allocate(M);
-                d_temp[i].allocate(M);
-            }
-
-            std::vector<int> offset_xy(nx[0]*nx[1]);
-            std::vector<int> offset_yz(nx[1]*nx[2]);
-            std::vector<int> offset_xz(nx[0]*nx[2]);
-            int count;
-
-            count = 0;
-            for(int i=0;i<nx[0];i++)
-                for(int j=0;j<nx[1];j++)
-                    offset_xy[count++] = i*nx[1]*nx[2] + j*nx[2];
-
-            count = 0;
-            for(int j=0;j<nx[1];j++)
-                for(int k=0;k<nx[2];k++)
-                    offset_yz[count++] = j*nx[2] + k;
-
-            count = 0;
-            for(int i=0;i<nx[0];i++)
-                for(int k=0;k<nx[2];k++)
-                    offset_xz[count++] = i*nx[1]*nx[2] + k;
-
-            d_offset_xy.allocate(nx[0]*nx[1]);
-            d_offset_yz.allocate(nx[1]*nx[2]);
-            d_offset_xz.allocate(nx[0]*nx[2]);
-
-            CUDA_CHECK(cudaMemcpy(d_offset_xy, offset_xy.data(), sizeof(int)*nx[0]*nx[1], cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_offset_yz, offset_yz.data(), sizeof(int)*nx[1]*nx[2], cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_offset_xz, offset_xz.data(), sizeof(int)*nx[0]*nx[2], cudaMemcpyHostToDevice));
-        }
-        else if(DIM == 2)
-        {
-            for(int i=0; i<n_streams; i++)
-            {
-                d_q_star[i].allocate(M);
-                d_temp[i].allocate(M);
-            }
-
-            std::vector<int> offset_x(nx[0]);
-            std::vector<int> offset_y(nx[1]);
-
-            for(int i=0;i<nx[0];i++)
-                offset_x[i] = i*nx[1];
-
-            for(int j=0;j<nx[1];j++)
-                offset_y[j] = j;
-
-            d_offset_x.allocate(nx[0]);
-            d_offset_y.allocate(nx[1]);
-
-            CUDA_CHECK(cudaMemcpy(d_offset_x, offset_x.data(), sizeof(int)*nx[0], cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_offset_y, offset_y.data(), sizeof(int)*nx[1], cudaMemcpyHostToDevice));
-        }
-        else if(DIM == 1)
-        {
-            for(int i=0; i<n_streams; i++)
-            {
-                d_q_star[i].allocate(M);
-            }
-
-            d_offset.allocate(1);
-            CUDA_CHECK(cudaMemset(d_offset, 0, sizeof(int)));
         }
 
         // The full grid around the steps of a reduced-basis run, in which they work in place
@@ -214,73 +237,52 @@ void CudaSolverCNADI::update_laplacian_operator()
         if (!cb->is_orthogonal())
             throw_with_line_number("CN-ADI requires an orthogonal computation box.");
 
-        const int M = this->cb->get_total_grid();
-        const int DIM = this->cb->get_dim();
-        std::vector<int> nx(DIM);
-        if (DIM == 3)
-            nx = {this->cb->get_nx(0), this->cb->get_nx(1), this->cb->get_nx(2)};
-        else if (DIM == 2)
-            nx = {this->cb->get_nx(0), this->cb->get_nx(1), 1};
-        else if (DIM == 1)
-            nx = {this->cb->get_nx(0), 1, 1};
+        // The diagonals of the x, y and z axes (an axis the box does not have keeps one point)
+        std::array<std::vector<double>, 3> l, d, h;
+        for (int a = 0; a < 3; ++a)
+        {
+            const size_t n = a < dim ? n_axis_[a] : 1;
+            l[a].resize(n);
+            d[a].resize(n);
+            h[a].resize(n);
+        }
+        auto upload = [](CudaDeviceBuffer<double>& dst, const std::vector<double>& src)
+        {
+            CUDA_CHECK(cudaMemcpy(dst, src.data(), sizeof(double)*src.size(), cudaMemcpyHostToDevice));
+        };
 
-        std::vector<double> xl(nx[0]), xd(nx[0]), xh(nx[0]);
-        std::vector<double> yl(nx[1]), yd(nx[1]), yh(nx[1]);
-        std::vector<double> zl(nx[2]), zd(nx[2]), zh(nx[2]);
-
-        // Get unique ds values from ContourLengthMapping
+        // Coefficients for each unique ds value from ContourLengthMapping
         const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        int n_unique_ds = mapping.get_n_unique_ds();
-
-        // Compute coefficients for each unique ds value
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
+        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
         {
             double local_ds = mapping.get_ds_from_index(ds_idx);
 
             for(const auto& item: this->molecules->get_bond_lengths())
             {
-                std::string monomer_type = item.first;
                 double bond_length_sq = item.second*item.second;
 
                 // Full-step coefficients (local_ds)
                 FiniteDifference::get_laplacian_matrix(
                     this->cb->get_boundary_conditions(),
                     this->cb->get_nx(), this->cb->get_dx(),
-                    xl.data(), xd.data(), xh.data(),
-                    yl.data(), yd.data(), yh.data(),
-                    zl.data(), zd.data(), zh.data(),
+                    l[0].data(), d[0].data(), h[0].data(),
+                    l[1].data(), d[1].data(), h[1].data(),
+                    l[2].data(), d[2].data(), h[2].data(),
                     bond_length_sq, local_ds);
 
-                CUDA_CHECK(cudaMemcpy(d_xl.at(ds_idx).at(monomer_type), xl.data(), sizeof(double)*nx[0], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_xd.at(ds_idx).at(monomer_type), xd.data(), sizeof(double)*nx[0], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_xh.at(ds_idx).at(monomer_type), xh.data(), sizeof(double)*nx[0], cudaMemcpyHostToDevice));
-
-                CUDA_CHECK(cudaMemcpy(d_yl.at(ds_idx).at(monomer_type), yl.data(), sizeof(double)*nx[1], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_yd.at(ds_idx).at(monomer_type), yd.data(), sizeof(double)*nx[1], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_yh.at(ds_idx).at(monomer_type), yh.data(), sizeof(double)*nx[1], cudaMemcpyHostToDevice));
-
-                CUDA_CHECK(cudaMemcpy(d_zl.at(ds_idx).at(monomer_type), zl.data(), sizeof(double)*nx[2], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_zd.at(ds_idx).at(monomer_type), zd.data(), sizeof(double)*nx[2], cudaMemcpyHostToDevice));
-                CUDA_CHECK(cudaMemcpy(d_zh.at(ds_idx).at(monomer_type), zh.data(), sizeof(double)*nx[2], cudaMemcpyHostToDevice));
-
                 // The matrices do not change from step to step: factorize them once
-                const std::vector<BoundaryCondition> bc = this->cb->get_boundary_conditions();
-                const std::array<const double*, 3> lower = {xl.data(), yl.data(), zl.data()};
-                const std::array<const double*, 3> diagonal = {xd.data(), yd.data(), zd.data()};
-                const std::array<const double*, 3> upper = {xh.data(), yh.data(), zh.data()};
-                for (int axis = 0; axis < DIM; ++axis)
+                std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_idx).at(item.first);
+                for (int a = 0; a < dim; ++a)
                 {
-                    const TridiagonalFactors f = factorize_tridiagonal(lower[axis], diagonal[axis], upper[axis],
-                        nx[axis], bc[2*axis] == BoundaryCondition::PERIODIC);
-                    DeviceFactors& device_factors = d_factors[ds_idx][monomer_type][axis];
-                    if (device_factors.table.size() != f.table.size())
-                        device_factors.table.allocate(f.table.size());
-                    CUDA_CHECK(cudaMemcpy(device_factors.table, f.table.data(), sizeof(double)*f.table.size(), cudaMemcpyHostToDevice));
-                    device_factors.v = f.v;
-                    device_factors.denom = f.denom;
-                    device_factors.periodic = bc[2*axis] == BoundaryCondition::PERIODIC;
+                    const TridiagonalFactors f = factorize_tridiagonal(l[a].data(), d[a].data(), h[a].data(),
+                                                                       n_axis_[a], periodic_[a]);
+                    upload(matrices[a].l, l[a]);
+                    upload(matrices[a].d, d[a]);
+                    upload(matrices[a].h, h[a]);
+                    upload(matrices[a].factors, f.table);
+                    matrices[a].v = f.v;
+                    matrices[a].denom = f.denom;
                 }
-
             }
         }
     }
@@ -311,206 +313,88 @@ void CudaSolverCNADI::advance_propagator(
     {
         const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
         const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-
         const int M = this->cb->get_total_grid();
-        const int DIM = this->cb->get_dim();
+        const cudaStream_t stream = streams[STREAM];
 
         // Full-grid input/output (expanded from / reduced to the basis with a space group;
         // the steps then work in place in the expanded input)
         double *d_q_in_full = expand_to_full_grid(STREAM, d_q_in);
-        double *d_q_out_full = full_grid_output(STREAM, d_q_out);
+        double *q = full_grid_output(STREAM, d_q_out);
 
         // CN-ADI2: single full step only (2nd order accuracy)
-        double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
+        const double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
+        const std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_index).at(monomer_type);
+        std::array<AdiAxis, 3> axes{};
+        for (int a = 0; a < dim; ++a)
+            axes[a] = {matrices[a].l, matrices[a].d, matrices[a].h, n_axis_[a], stride_[a], periodic_[a]};
 
         // Apply exp(-w*local_ds/2) at start
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_out_full, d_q_in_full, _d_exp_dw, 1.0, M);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, d_q_in_full, _d_exp_dw, 1.0, M);
         CUDA_CHECK_LAUNCH();
 
-        // Diffusion with full-step coefficients
-        if(DIM == 3)
-            advance_propagator_3d(this->cb->get_boundary_conditions(), STREAM,
-                d_q_out_full, d_q_out_full, monomer_type, ds_index);
-        else if(DIM == 2)
-            advance_propagator_2d(this->cb->get_boundary_conditions(), STREAM,
-                d_q_out_full, d_q_out_full, monomer_type, ds_index);
-        else if(DIM == 1)
-            advance_propagator_1d(this->cb->get_boundary_conditions(), STREAM,
-                d_q_out_full, d_q_out_full, monomer_type, ds_index);
+        // Diffusion with full-step coefficients, in place in q: the explicit half of the step
+        // is the right-hand side of the first sweep ...
+        if (dim == 3)
+            adi_rhs_3d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], axes[2], d_temp[STREAM], q, M);
+        else if (dim == 2)
+            adi_rhs_2d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], d_temp[STREAM], q, M);
+        else
+            adi_rhs_1d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], d_temp[STREAM], q, M);
+        CUDA_CHECK_LAUNCH();
+
+        // ... then one implicit sweep per axis: each after the first corrects its right-hand
+        // side with the result of the sweep before it, and the last writes q
+        for (int a = 0; a < dim; ++a)
+        {
+            if (a > 0)
+            {
+                adi_correction<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[a], d_temp[STREAM], d_q_star[STREAM], q, M);
+                CUDA_CHECK_LAUNCH();
+            }
+            solve_lines(STREAM, matrices[a], a, d_temp[STREAM], a == dim - 1 ? q : d_q_star[STREAM].get());
+        }
 
         // Apply exp(-w*local_ds/2) at end
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_out_full, d_q_out_full, _d_exp_dw, 1.0, M);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, q, _d_exp_dw, 1.0, M);
         CUDA_CHECK_LAUNCH();
 
         // Reduce to the basis (with a space group) and multiply the mask
-        store_full_grid(STREAM, d_q_out_full, d_q_out, d_q_mask);
+        store_full_grid(STREAM, q, d_q_out, d_q_mask);
     }
     catch(std::exception& exc)
     {
         throw_without_line_number(exc.what());
     }
 }
-void CudaSolverCNADI::advance_propagator_3d(
-    std::vector<BoundaryCondition> bc,
-    const int STREAM,
-    double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index)
+void CudaSolverCNADI::solve_lines(const int STREAM, const AxisMatrix& matrix, int axis, const double *d_rhs, double *d_x)
 {
-    try
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = this->cb->get_total_grid();
-        const std::vector<int> nx = this->cb->get_nx();
-
-        double *_d_xl = d_xl.at(ds_index).at(monomer_type);
-        double *_d_xd = d_xd.at(ds_index).at(monomer_type);
-        double *_d_xh = d_xh.at(ds_index).at(monomer_type);
-        const auto& factors = d_factors.at(ds_index).at(monomer_type);
-
-        double *_d_yl = d_yl.at(ds_index).at(monomer_type);
-        double *_d_yd = d_yd.at(ds_index).at(monomer_type);
-        double *_d_yh = d_yh.at(ds_index).at(monomer_type);
-
-        double *_d_zl = d_zl.at(ds_index).at(monomer_type);
-        double *_d_zd = d_zd.at(ds_index).at(monomer_type);
-        double *_d_zh = d_zh.at(ds_index).at(monomer_type);
-
-        // Calculate q_star
-        compute_crank_3d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[0], bc[1], bc[2], bc[3], bc[4], bc[5], 
-            _d_xl, _d_xd, _d_xh, nx[0],
-            _d_yl, _d_yd, _d_yh, nx[1],
-            _d_zl, _d_zd, _d_zh, nx[2],
-            d_temp[STREAM], d_q_in, M);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_yz, nx[1]*nx[2], nx[1]*nx[2], nx[0]);
-
-        // Calculate q_dstar, into d_q_star: the right-hand side reads q_star point by point
-        compute_crank_3d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[2], bc[3], 
-            _d_yl, _d_yd, _d_yh, nx[1], nx[2],
-            d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[1], d_temp[STREAM], d_q_star[STREAM], d_offset_xz, nx[0]*nx[2], nx[2], nx[1]);
-
-        // Calculate q^(n+1)
-        compute_crank_3d_step_3<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[4], bc[5], 
-            _d_zl, _d_zd, _d_zh, nx[1], nx[2],
-            d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[2], d_temp[STREAM], d_q_out, d_offset_xy, nx[0]*nx[1], 1, nx[2]);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-void CudaSolverCNADI::advance_propagator_2d(
-    std::vector<BoundaryCondition> bc,
-    const int STREAM,
-    double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index)
-{
-    try
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = this->cb->get_total_grid();
-        const std::vector<int> nx = this->cb->get_nx();
-
-        double *_d_xl = d_xl.at(ds_index).at(monomer_type);
-        double *_d_xd = d_xd.at(ds_index).at(monomer_type);
-        double *_d_xh = d_xh.at(ds_index).at(monomer_type);
-        const auto& factors = d_factors.at(ds_index).at(monomer_type);
-
-        double *_d_yl = d_yl.at(ds_index).at(monomer_type);
-        double *_d_yd = d_yd.at(ds_index).at(monomer_type);
-        double *_d_yh = d_yh.at(ds_index).at(monomer_type);
-
-        // Calculate q_star
-        compute_crank_2d_step_1<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[0], bc[1], bc[2], bc[3],
-            _d_xl, _d_xd, _d_xh, nx[0],
-            _d_yl, _d_yd, _d_yh, nx[1],
-            d_temp[STREAM], d_q_in, M);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[0], d_temp[STREAM], d_q_star[STREAM], d_offset_y, nx[1], nx[1], nx[0]);
-
-        // Calculate q_dstar
-        compute_crank_2d_step_2<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[2], bc[3],
-            _d_yl, _d_yd, _d_yh, nx[1],
-            d_temp[STREAM], d_q_star[STREAM], d_q_in, M);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[1], d_temp[STREAM], d_q_out, d_offset_x, nx[0], 1, nx[1]);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-void CudaSolverCNADI::advance_propagator_1d(
-    std::vector<BoundaryCondition> bc,
-    const int STREAM,
-    double *d_q_in, double *d_q_out, std::string monomer_type, int ds_index)
-{
-    try
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = this->cb->get_total_grid();
-        const std::vector<int> nx = this->cb->get_nx();
-
-        double *_d_xl = d_xl.at(ds_index).at(monomer_type);
-        double *_d_xd = d_xd.at(ds_index).at(monomer_type);
-        double *_d_xh = d_xh.at(ds_index).at(monomer_type);
-        const auto& factors = d_factors.at(ds_index).at(monomer_type);
-
-        compute_crank_1d<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            bc[0], bc[1],
-            _d_xl, _d_xd, _d_xh,
-            d_q_star[STREAM], d_q_in, nx[0]);
-        CUDA_CHECK_LAUNCH();
-
-        solve_lines(STREAM, factors[0], d_q_star[STREAM], d_q_out, d_offset, 1, 1, nx[0]);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-void CudaSolverCNADI::solve_lines(
-    const int STREAM, const DeviceFactors& factors, const double *d_d, double *d_x, const int *d_offset,
-    const int REPEAT, const int INTERVAL, const int M)
-{
-    // Contiguous lines (one after another, M apart) go through shared memory, a warp of lines per
-    // block; lines along other axes, whose neighbouring values belong to neighbouring threads,
-    // and lines too long for the shared memory are solved one per thread in place
+    // The lines of the axis: n_lines lines of M points, stride apart. Contiguous lines go
+    // through shared memory, a warp of lines per block; lines along other axes, whose
+    // neighbouring values belong to neighbouring threads, and lines too long for the shared
+    // memory are solved one per thread in place
+    const int M = n_axis_[axis];
+    const int stride = stride_[axis];
+    const int n_lines = this->cb->get_total_grid() / M;
     const int pitch = (M % 2 == 1) ? M : M + 1;
     const int rows = std::min(32, max_lines_shmem_ / (pitch * static_cast<int>(sizeof(double))));
     cudaStream_t stream = streams[STREAM];
-    if (INTERVAL == 1 && rows >= 1)
+    if (stride == 1 && rows >= 1)
     {
         const size_t shmem = static_cast<size_t>(rows) * pitch * sizeof(double);
-        const int blocks = (REPEAT + rows - 1) / rows;
-        if (factors.periodic)
+        const int blocks = (n_lines + rows - 1) / rows;
+        if (periodic_[axis])
             tridiagonal_lines_shared<true><<<blocks, rows, shmem, stream>>>(
-                factors.table, M, factors.v, factors.denom, d_d, d_x, REPEAT);
+                matrix.factors, M, matrix.v, matrix.denom, d_rhs, d_x, n_lines);
         else
             tridiagonal_lines_shared<false><<<blocks, rows, shmem, stream>>>(
-                factors.table, M, factors.v, factors.denom, d_d, d_x, REPEAT);
+                matrix.factors, M, matrix.v, matrix.denom, d_rhs, d_x, n_lines);
     }
-    else if (factors.periodic)
-        tridiagonal_lines<true><<<line_blocks(REPEAT), LINE_THREADS, 0, stream>>>(
-            factors.table, M, factors.v, factors.denom, d_d, d_x, d_offset, REPEAT, INTERVAL);
+    else if (periodic_[axis])
+        tridiagonal_lines<true><<<line_blocks(n_lines), LINE_THREADS, 0, stream>>>(
+            matrix.factors, M, matrix.v, matrix.denom, d_rhs, d_x, n_lines, stride);
     else
-        tridiagonal_lines<false><<<line_blocks(REPEAT), LINE_THREADS, 0, stream>>>(
-            factors.table, M, factors.v, factors.denom, d_d, d_x, d_offset, REPEAT, INTERVAL);
+        tridiagonal_lines<false><<<line_blocks(n_lines), LINE_THREADS, 0, stream>>>(
+            matrix.factors, M, matrix.v, matrix.denom, d_rhs, d_x, n_lines, stride);
     CUDA_CHECK_LAUNCH();
 }
 void CudaSolverCNADI::compute_single_segment_stress(
@@ -525,246 +409,6 @@ void CudaSolverCNADI::compute_single_segment_stress(
     catch(std::exception& exc)
     {
         throw_without_line_number(exc.what());
-    }
-}
-
-__device__ int d_max_of_two(int x, int y)
-{
-   return (x > y) ? x : y;
-}
-__device__ int d_min_of_two(int x, int y)
-{
-   return (x < y) ? x : y;
-}
-
-__global__ void compute_crank_3d_step_1(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    BoundaryCondition bc_zl, BoundaryCondition bc_zh,
-    const double *d_xl, const double *d_xd, const double *d_xh, const int I,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    const double *d_zl, const double *d_zd, const double *d_zh, const int K,
-    double *d_q_out, const double *d_q_in, const int M)
-{
-    int im, ip, jm, jp, km, kp;
-
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    while(n < M)
-    {
-        int i = n / (J*K);
-        int j = (n-i*J*K) / K;
-        int k = n % K;
-
-        if (bc_xl == BoundaryCondition::PERIODIC)
-            im = (I+i-1) % I;
-        else
-            im = d_max_of_two(0,i-1);
-        if (bc_xh == BoundaryCondition::PERIODIC)
-            ip = (i+1) % I;
-        else
-            ip = d_min_of_two(I-1,i+1);
-
-        if (bc_yl == BoundaryCondition::PERIODIC)
-            jm = (J+j-1) % J;
-        else
-            jm = d_max_of_two(0,j-1);
-        if (bc_yh == BoundaryCondition::PERIODIC)
-            jp = (j+1) % J;
-        else
-            jp = d_min_of_two(J-1,j+1);
-
-        if (bc_zl == BoundaryCondition::PERIODIC)
-            km = (K+k-1) % K;
-        else
-            km = d_max_of_two(0,k-1);
-        if (bc_zh == BoundaryCondition::PERIODIC)
-            kp = (k+1) % K;
-        else
-            kp = d_min_of_two(K-1,k+1);
-
-        int im_j_k = im*J*K + j*K + k;
-        int ip_j_k = ip*J*K + j*K + k;
-        int i_jm_k = i*J*K + jm*K + k;
-        int i_jp_k = i*J*K + jp*K + k;
-        int i_j_km = i*J*K + j*K + km;
-        int i_j_kp = i*J*K + j*K + kp;
-
-        d_q_out[n] = 2.0*((3.0-0.5*d_xd[i]-d_yd[j]-d_zd[k])*d_q_in[n]
-                - d_zl[k]*d_q_in[i_j_km] - d_zh[k]*d_q_in[i_j_kp]
-                - d_yl[j]*d_q_in[i_jm_k] - d_yh[j]*d_q_in[i_jp_k])
-                - d_xl[i]*d_q_in[im_j_k] - d_xh[i]*d_q_in[ip_j_k];
-
-        n += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void compute_crank_3d_step_2(
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J, const int K,
-    double *d_q_out, const double *d_q_star, const double *d_q_in, const int M)
-{
-    int jm, jp;
-
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    while(n < M)
-    {
-        int i = n / (J*K);
-        int j = (n-i*J*K) / K;
-        int k = n % K;
-
-        if (bc_yl == BoundaryCondition::PERIODIC)
-            jm = (J+j-1) % J;
-        else
-            jm = d_max_of_two(0,j-1);
-        if (bc_yh == BoundaryCondition::PERIODIC)
-            jp = (j+1) % J;
-        else
-            jp = d_min_of_two(J-1,j+1);
-
-        int i_jm_k = i*J*K + jm*K + k;
-        int i_jp_k = i*J*K + jp*K + k;
-
-        d_q_out[n] = d_q_star[n] + (d_yd[j]-1.0)*d_q_in[n]
-            + d_yl[j]*d_q_in[i_jm_k] + d_yh[j]*d_q_in[i_jp_k];
-
-        n += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void compute_crank_3d_step_3(
-    BoundaryCondition bc_zl, BoundaryCondition bc_zh,
-    const double *d_zl, const double *d_zd, const double *d_zh, const int J, const int K,
-    double *d_q_out, const double *d_q_dstar, const double *d_q_in, const int M)
-{
-    int km, kp;
-
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    while(n < M)
-    {
-        int i = n / (J*K);
-        int j = (n-i*J*K) / K;
-        int k = n % K;
-
-        if (bc_zl == BoundaryCondition::PERIODIC)
-            km = (K+k-1) % K;
-        else
-            km = d_max_of_two(0,k-1);
-        if (bc_zh == BoundaryCondition::PERIODIC)
-            kp = (k+1) % K;
-        else
-            kp = d_min_of_two(K-1,k+1);
-
-        int i_j_km = i*J*K + j*K + km;
-        int i_j_kp = i*J*K + j*K + kp;
-
-        d_q_out[n] = d_q_dstar[n] + (d_zd[k]-1.0)*d_q_in[n]
-            + d_zl[k]*d_q_in[i_j_km] + d_zh[k]*d_q_in[i_j_kp];
-
-        n += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void compute_crank_2d_step_1(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_xl, const double *d_xd, const double *d_xh, const int I,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    double *d_q_out, const double *d_q_in, const int M)
-{
-    int im, ip, jm, jp;
-
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    while(n < M)
-    {
-        int i = n / J;
-        int j = n % J;
-
-        if (bc_xl == BoundaryCondition::PERIODIC)
-            im = (I+i-1) % I;
-        else
-            im = d_max_of_two(0,i-1);
-        if (bc_xh == BoundaryCondition::PERIODIC)
-            ip = (i+1) % I;
-        else
-            ip = d_min_of_two(I-1,i+1);
-
-        if (bc_yl == BoundaryCondition::PERIODIC)
-            jm = (J+j-1) % J;
-        else
-            jm = d_max_of_two(0,j-1);
-        if (bc_yh == BoundaryCondition::PERIODIC)
-            jp = (j+1) % J;
-        else
-            jp = d_min_of_two(J-1,j+1);
-
-        int i_jm = i*J + jm;
-        int i_jp = i*J + jp;
-        int im_j = im*J + j;
-        int ip_j = ip*J + j;
-
-        d_q_out[n] = 2.0*((2.0-0.5*d_xd[i]-d_yd[j])*d_q_in[n]
-                   - d_yl[j]*d_q_in[i_jm] - d_yh[j]*d_q_in[i_jp])
-                   - d_xl[i]*d_q_in[im_j] - d_xh[i]*d_q_in[ip_j];
-
-        n += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void compute_crank_2d_step_2(
-    BoundaryCondition bc_yl, BoundaryCondition bc_yh,
-    const double *d_yl, const double *d_yd, const double *d_yh, const int J,
-    double *d_q_out, const double *d_q_star, const double *d_q_in, const int M)
-{
-    int jm, jp;
-
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
-    while(n < M)
-    {
-        int i = n/J;
-        int j = n%J;
-
-        if (bc_yl == BoundaryCondition::PERIODIC)
-            jm = (J+j-1) % J;
-        else
-            jm = d_max_of_two(0,j-1);
-        if (bc_yh == BoundaryCondition::PERIODIC)
-            jp = (j+1) % J;
-        else
-            jp = d_min_of_two(J-1,j+1);
-
-        int i_jm = i*J + jm;
-        int i_jp = i*J + jp;
-
-        d_q_out[n] = d_q_star[n] + (d_yd[j]-1.0)*d_q_in[n]
-            + d_yl[j]*d_q_in[i_jm] + d_yh[j]*d_q_in[i_jp];
-
-        n += blockDim.x * gridDim.x;
-    }
-}
-
-__global__ void compute_crank_1d(
-    BoundaryCondition bc_xl, BoundaryCondition bc_xh,
-    const double *d_xl, const double *d_xd, const double *d_xh,
-    double *d_q_out, const double *d_q_in, const int M)
-{
-    int im, ip;
-
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    while(i < M)
-    {
-        if (bc_xl == BoundaryCondition::PERIODIC)
-            im = (M+i-1) % M;
-        else
-            im = d_max_of_two(0,i-1);
-        if (bc_xh == BoundaryCondition::PERIODIC)
-            ip = (i+1) % M;
-        else
-            ip = d_min_of_two(M-1,i+1);
-
-        // B part of Ax=B matrix equation
-        d_q_out[i] = (2.0-d_xd[i])*d_q_in[i] - d_xl[i]*d_q_in[im] - d_xh[i]*d_q_in[ip];
-
-        i += blockDim.x * gridDim.x;
     }
 }
 

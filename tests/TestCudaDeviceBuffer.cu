@@ -8,7 +8,9 @@
  *    allocation (its message names the caller and the size). The owning cuFFT
  *    plan handle CufftPlan: creation, replacement, moves, a failed creation,
  *    reset, lending and the destructor, by the live plan count, and plans created
- *    without a work area of their own that run in one shared area.
+ *    without a work area of their own that run in one shared area. The owning
+ *    stream handle CudaStream: creation, replacement, moves, reset, lending to a
+ *    kernel and a copy, and the destructor, by the live stream count.
  * 2. Every kind of CUDA object (propagator computations of all solvers, the CrysFFT
  *    engines, non-periodic transforms, complex fields, the Anderson mixers), built
  *    with 4 streams (reduce-memory computations use one), returns everything when
@@ -160,6 +162,13 @@ static std::vector<CudaDeviceBuffer<char>> hold_device_memory(size_t bytes)
         }
     }
     return chunks;
+}
+
+/// x *= 3 (the stream handle check)
+__global__ void ker_triple(double* x, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        x[i] *= 3.0;
 }
 
 static bool check(bool cond, const std::string& what)
@@ -673,6 +682,52 @@ int main(int argc, char** argv)
         }
         ok &= check(live_plans() == plans_start, "the destructor destroys the plan");
         ok &= check(no_cuda_error("the plan checks"), "no plan destroy failed (a double destroy would count)");
+    }
+
+    printf("--- CUDA stream handle ---\n");
+    {
+        auto live_streams = []() { return cuda_handle_counters().streams.load(); };
+        const long long streams_start = live_streams();
+        {
+            CudaStream a;
+            ok &= check(a.empty() && static_cast<cudaStream_t>(a) == nullptr && live_streams() == streams_start,
+                        "a new handle holds no stream");
+            ok &= check(a.create() == cudaSuccess && !a.empty() && live_streams() == streams_start + 1,
+                        "create() makes a stream and counts it");
+            ok &= check(a.create() == cudaSuccess && !a.empty() && live_streams() == streams_start + 1,
+                        "a second create() destroys the first stream");
+            CudaStream b(std::move(a));
+            ok &= check(a.empty() && !b.empty() && live_streams() == streams_start + 1, "move constructor transfers the stream");
+            CudaStream c;
+            CUDA_CHECK(c.create());
+            ok &= check(live_streams() == streams_start + 2, "a second handle counts its own stream");
+            const cudaStream_t held = b;
+            c = std::move(b);
+            ok &= check(b.empty() && static_cast<cudaStream_t>(c) == held && live_streams() == streams_start + 1,
+                        "move assignment over a stream destroys the stream it held");
+
+            // The handle is lent to a launch and a copy on the stream
+            CudaDeviceBuffer<double> x(256);
+            std::vector<double> ones(256, 1.0), back(256, 0.0);
+            CUDA_CHECK(cudaMemcpyAsync(x, ones.data(), x.bytes(), cudaMemcpyHostToDevice, c));
+            ker_triple<<<1, 256, 0, c>>>(x, 256);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaMemcpyAsync(back.data(), x, x.bytes(), cudaMemcpyDeviceToHost, c));
+            CUDA_CHECK(cudaStreamSynchronize(c));
+            ok &= check(std::all_of(back.begin(), back.end(), [](double v) { return v == 3.0; }),
+                        "a kernel and copies run on the lent stream");
+
+            c.reset();
+            ok &= check(c.empty() && live_streams() == streams_start, "reset() destroys the stream");
+            c.reset();
+            ok &= check(c.empty() && live_streams() == streams_start, "reset() of an empty handle does nothing");
+            std::vector<CudaStream> v(3);
+            for (CudaStream& s : v)
+                CUDA_CHECK(s.create());
+            ok &= check(live_streams() == streams_start + 3, "a vector of handles holds its streams");
+        }
+        ok &= check(live_streams() == streams_start, "the destructors destroy the streams");
+        ok &= check(no_cuda_error("the stream checks"), "no stream destroy failed (a double destroy would count)");
     }
 
     //--------------------------------------------------------------------------

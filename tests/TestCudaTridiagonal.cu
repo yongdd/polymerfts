@@ -52,12 +52,9 @@ int main()
         const TridiagonalFactors factors = factorize_tridiagonal(a, b, c, M, false);
         const TridiagonalFactors factors_periodic = factorize_tridiagonal(a, b, c, M, true);
         CudaDeviceBuffer<double> d_table(4*M), d_table_periodic(4*M), d_y(M), d_x(M);
-        CudaDeviceBuffer<int> d_offset(1);
-        const int offset = 0;
         CUDA_CHECK(cudaMemcpy(d_table, factors.table.data(), sizeof(double)*4*M, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_table_periodic, factors_periodic.table.data(), sizeof(double)*4*M, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_y, y, sizeof(double)*M, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_offset, &offset, sizeof(int), cudaMemcpyHostToDevice));
         // One line in shared memory: a row of M + 1 values (M is even)
         const size_t shmem_size = (M + 1) * sizeof(double);
 
@@ -108,9 +105,9 @@ int main()
             CUDA_CHECK_LAUNCH();
             CUDA_CHECK(cudaMemcpy(x_shared.data(), d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
             if (periodic)
-                tridiagonal_lines<true><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, d_offset, 1, 1);
+                tridiagonal_lines<true><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, 1, 1);
             else
-                tridiagonal_lines<false><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, d_offset, 1, 1);
+                tridiagonal_lines<false><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, 1, 1);
             CUDA_CHECK_LAUNCH();
             CUDA_CHECK(cudaMemcpy(x, d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
             std::cout << "Tridiagonal from global memory" << (periodic ? ", periodic" : "") << std::endl;
@@ -119,6 +116,55 @@ int main()
                 std::cout << "tridiagonal_lines differs from tridiagonal_lines_shared" << std::endl;
                 return -1;
             }
+        }
+
+        // The lines along the middle axis of a 3 x M x 4 grid: 12 lines with stride 4, line n
+        // starting at (n / 4) * 4M + n % 4, solved one per thread; each must give, bit for bit,
+        // the solution of its values solved as one contiguous line
+        {
+            const int outer = 3, inner = 4, n_lines = outer * inner;
+            std::vector<double> grid_y(n_lines * M), grid_x(n_lines * M);
+            for (int o = 0; o < outer; o++)
+                for (int i = 0; i < M; i++)
+                    for (int k = 0; k < inner; k++)
+                        grid_y[(o*M + i)*inner + k] = y[i] * (1.0 + 0.1*(o*inner + k)) + 0.01*(i - k);
+            CudaDeviceBuffer<double> d_grid_y(n_lines*M), d_grid_x(n_lines*M);
+            CUDA_CHECK(cudaMemcpy(d_grid_y, grid_y.data(), sizeof(double)*n_lines*M, cudaMemcpyHostToDevice));
+            for (bool periodic : {false, true})
+            {
+                const TridiagonalFactors& f = periodic ? factors_periodic : factors;
+                const double* table = periodic ? d_table_periodic.get() : d_table.get();
+                if (periodic)
+                    tridiagonal_lines<true><<<1, 64>>>(table, M, f.v, f.denom, d_grid_y, d_grid_x, n_lines, inner);
+                else
+                    tridiagonal_lines<false><<<1, 64>>>(table, M, f.v, f.denom, d_grid_y, d_grid_x, n_lines, inner);
+                CUDA_CHECK_LAUNCH();
+                CUDA_CHECK(cudaMemcpy(grid_x.data(), d_grid_x, sizeof(double)*n_lines*M, cudaMemcpyDeviceToHost));
+                int lines_equal = 0;
+                for (int o = 0; o < outer; o++)
+                    for (int k = 0; k < inner; k++)
+                    {
+                        std::array<double, M> line_y, line_x;
+                        for (int i = 0; i < M; i++)
+                            line_y[i] = grid_y[(o*M + i)*inner + k];
+                        CUDA_CHECK(cudaMemcpy(d_y, line_y.data(), sizeof(double)*M, cudaMemcpyHostToDevice));
+                        if (periodic)
+                            tridiagonal_lines<true><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, 1, 1);
+                        else
+                            tridiagonal_lines<false><<<1, 64>>>(table, M, f.v, f.denom, d_y, d_x, 1, 1);
+                        CUDA_CHECK_LAUNCH();
+                        CUDA_CHECK(cudaMemcpy(line_x.data(), d_x, sizeof(double)*M, cudaMemcpyDeviceToHost));
+                        bool equal = true;
+                        for (int i = 0; i < M; i++)
+                            equal &= (line_x[i] == grid_x[(o*M + i)*inner + k]);
+                        lines_equal += equal;
+                    }
+                std::cout << "Tridiagonal lines with stride " << inner << (periodic ? ", periodic" : "") << ": "
+                          << lines_equal << " of " << n_lines << " lines equal to the contiguous solves" << std::endl;
+                if (lines_equal != n_lines)
+                    return -1;
+            }
+            CUDA_CHECK(cudaMemcpy(d_y, y, sizeof(double)*M, cudaMemcpyHostToDevice));
         }
 
         // A long line, through global memory and through shared memory
@@ -142,7 +188,7 @@ int main()
                     d_long_table, L, long_factors.v, long_factors.denom, d_ly, d_lx, 1);
             else
                 tridiagonal_lines<false><<<1, 64>>>(d_long_table, L, long_factors.v, long_factors.denom,
-                                                    d_ly, d_lx, d_offset, 1, 1);
+                                                    d_ly, d_lx, 1, 1);
             CUDA_CHECK_LAUNCH();
             CUDA_CHECK(cudaMemcpy(lx.data(), d_lx, sizeof(double)*L, cudaMemcpyDeviceToHost));
             std::vector<double> residual(L);
