@@ -13,8 +13,8 @@
  * @file TestMoleculesValidation.cpp
  * @brief Input checks of Molecules, Polymer and the propagator keys.
  *
- * - A monomer name may end with an underscore: the length index that follows
- *   the name in a propagator code is split off after it.
+ * - A monomer name may end with an underscore: the keys and the branch codes
+ *   (the name, then a length index) are written and recorded with that name.
  * - Out-of-range solvent and block indices throw instead of reading past the end.
  * - A rejected polymer registers no contour lengths in the mapping.
  * - NaN lengths are rejected like non-positive ones.
@@ -81,8 +81,6 @@ int main()
         const double nan = std::numeric_limits<double>::quiet_NaN();
 
         std::cout << "=== Monomer names ending with an underscore ===" << std::endl;
-        ok &= check(PropagatorCode::get_key_from_code("A_3") == "A_", "key of code A_3");
-        ok &= check(PropagatorCode::get_key_from_code("(B12)A_13") == "(B12)A_", "key of code (B12)A_13");
         {
             // A linear chain and a star with two identical arms (aggregated keys)
             Molecules molecules("continuous", 0.1, {{"A_", 1.0}, {"B", 1.0}, {"_", 1.5}});
@@ -92,17 +90,34 @@ int main()
 
             bool types_ok = !optimizer.get_computation_propagators().empty();
             for (const auto& [key, edge] : optimizer.get_computation_propagators())
-            {
-                const std::string monomer_type = PropagatorCode::get_monomer_type_from_key(key);
-                types_ok = types_ok && monomer_type == edge.monomer_type
-                    && validation::contains(molecules.get_bond_lengths(), monomer_type);
-            }
-            ok &= check(types_ok, "every propagator key ends with a known monomer type");
+                types_ok = types_ok && validation::contains(molecules.get_bond_lengths(), edge.monomer_type)
+                    && key.ends_with(edge.monomer_type + "+" + std::to_string(edge.ds_index));
+            ok &= check(types_ok, "every propagator key ends with its known monomer type and ds index");
 
+            // The code of a branch is its key without "+M", then the length index of its block
             const ContourLengthMapping& mapping = molecules.get_contour_length_mapping();
-            const std::string code = "A_" + std::to_string(mapping.get_length_index(0.4));
-            const std::string key = "A_+" + std::to_string(mapping.get_ds_index(0.4));
-            ok &= check(PropagatorCode::get_key_from_code(code, mapping) == key, "key of code " + code + " with the mapping");
+            const std::string arm = "A_+" + std::to_string(mapping.get_ds_index(0.4));
+            const std::string junction = "(A_" + std::to_string(mapping.get_length_index(0.4)) + ":2)_+"
+                + std::to_string(mapping.get_ds_index(0.3));
+            ok &= check(optimizer.get_propagator_key(1, 1, 0) == arm, "key " + arm + " of a free arm");
+            ok &= check(optimizer.get_propagator_key(1, 0, 3) == junction, "key " + junction + " of the arms meeting");
+            const ComputationEdge& edge = optimizer.get_computation_propagator(junction);
+            ok &= check(edge.start == PropagatorStart::JUNCTION && edge.monomer_type == "_"
+                && edge.deps == std::vector<std::tuple<std::string, int, double>>{{arm, 4, 2.0}},
+                "the two A_ arms of 4 segments start " + junction);
+        }
+        {
+            // Labels of grafted ends are opaque names: their digits are no segment numbers
+            Molecules molecules("discrete", 0.1, {{"A_", 1.0}, {"B", 1.0}});
+            molecules.add_polymer(1.0, {{"A_", 0.4, 0, 1}, {"B", 0.2, 1, 2}, {"A_", 0.4, 1, 3}}, {{0, "G1"}, {2, "L10"}});
+            PropagatorComputationOptimizer optimizer(&molecules, false);
+            const std::string key = optimizer.get_propagator_key(0, 1, 3);
+            const ComputationEdge& edge = optimizer.get_computation_propagator(key);
+            const ComputationEdge& graft = optimizer.get_computation_propagator("{L10}B+0");
+            ok &= check(key == "({G1}A_2{L10}B1)A_+0" && edge.start == PropagatorStart::JUNCTION
+                && edge.deps == std::vector<std::tuple<std::string, int, double>>{{"{G1}A_+0", 4, 1.0}, {"{L10}B+0", 2, 1.0}}
+                && graft.start == PropagatorStart::GRAFTED && graft.graft_label == "L10" && graft.deps.empty(),
+                "junction " + key + " of the grafted ends G1 and L10");
         }
 
         std::cout << "=== Index checks ===" << std::endl;

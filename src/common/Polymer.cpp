@@ -17,8 +17,9 @@
  *
  * **Propagator Key Assignment:**
  *
- * Each directed edge (v→u) is assigned a unique propagator key
- * using PropagatorCode::generate_codes() for efficient computation.
+ * PropagatorComputationOptimizer assigns each directed edge (v→u) a propagator
+ * key with PropagatorCode::generate_keys(), once the contour lengths of all
+ * polymers are known.
  *
  * @see PropagatorCode for key generation algorithm
  * @see Molecules for polymer container
@@ -45,8 +46,7 @@
 /**
  * @brief Construct polymer from block specification.
  *
- * Builds the polymer graph, validates acyclicity and connectivity,
- * then generates optimized propagator codes.
+ * Builds the polymer graph and validates acyclicity and connectivity.
  *
  * @param ds                  Contour step size
  * @param bond_lengths        Segment lengths by monomer type
@@ -287,17 +287,6 @@ Polymer::Polymer(
         alpha += blocks[i].n_copies*blocks[i].contour_length;
     }
     this->alpha = alpha;
-
-    // Generate propagator codes and assign each of them to each of propagator
-    auto propagator_codes = PropagatorCode::generate_codes(*this, chain_end_to_q_init);
-    for(size_t i=0; i<propagator_codes.size(); i++)
-    {
-        int v = std::get<0>(propagator_codes[i]);
-        int u = std::get<1>(propagator_codes[i]);
-        std::string propagator_key = PropagatorCode::get_key_from_code(std::get<2>(propagator_codes[i]));
-        this->set_propagator_key(propagator_key, v, u);
-    }
-
 }
 int Polymer::get_n_blocks() const
 {
@@ -305,9 +294,7 @@ int Polymer::get_n_blocks() const
 }
 int Polymer::get_n_segment(const int idx) const
 {
-    if (idx < 0 || idx >= static_cast<int>(blocks.size()))
-        throw_with_line_number("Block index (" + std::to_string(idx) + ") must be in range [0, " +
-            std::to_string(static_cast<int>(blocks.size()) - 1) + "]");
+    validation::require_index(idx, static_cast<int>(blocks.size()), "Block index");
     return blocks[idx].n_segment;
 }
 double Polymer::get_n_segment_total() const
@@ -349,39 +336,6 @@ std::vector<Block>& Polymer::get_blocks()
 std::map<int, std::vector<int>>& Polymer::get_adjacent_nodes()
 {
     return adjacent_nodes;
-}
-void Polymer::set_propagator_key(const std::string code, const int v, const int u)
-{
-    edge_to_propagator_key[std::make_pair(v, u)] = code;
-}
-std::string Polymer::get_propagator_key(const int v, const int u) const {
-    validation::require_key(edge_to_propagator_key, std::make_pair(v,u),
-        "edge_to_propagator_key for (" + std::to_string(v) + ", " + std::to_string(u) + ")");
-    return edge_to_propagator_key.at(std::make_pair(v,u));
-}
-
-/**
- * @brief Regenerate propagator keys using contour length mapping.
- *
- * Replaces existing keys with new ones that use length indices.
- *
- * @param mapping Contour length mapping (must be finalized)
- */
-void Polymer::regenerate_propagator_keys(const ContourLengthMapping& mapping)
-{
-    // Clear existing keys
-    edge_to_propagator_key.clear();
-
-    // Generate new keys using the mapping
-    // Code format: DKN, Key format: DK+M
-    auto propagator_codes = PropagatorCode::generate_codes_with_mapping(*this, chain_end_to_q_init, mapping);
-    for(size_t i=0; i<propagator_codes.size(); i++)
-    {
-        int v = std::get<0>(propagator_codes[i]);
-        int u = std::get<1>(propagator_codes[i]);
-        std::string propagator_key = PropagatorCode::get_key_from_code(std::get<2>(propagator_codes[i]), mapping);
-        this->set_propagator_key(propagator_key, v, u);
-    }
 }
 
 /**

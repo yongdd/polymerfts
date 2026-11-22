@@ -3,9 +3,11 @@
  * @brief Platform-neutral base of the propagator computation classes.
  *
  * Holds what every chain model and storage mode shares: the platform backend,
- * the block and solvent concentrations, the fields kept for the solvents, and
- * the accessors that read them. The derived classes own the propagator storage,
- * the order of the propagators and the compute_* algorithms.
+ * the backend memory, the block and solvent concentrations, the fields kept
+ * for the solvents, the accessors that read them, and the bookkeeping of the
+ * four computations (partition-function samples, the chain propagator getter,
+ * concurrent jobs). The derived classes own the propagator storage, the order
+ * of the propagators and the compute_* algorithms.
  *
  * @see ComputationBackend for the platform interface
  * @see ComputationContinuous for the continuous-chain computation
@@ -70,20 +72,83 @@ public:
     }
 };
 
+/**
+ * @brief The owner of the fields and checkpoints of one computation in backend memory.
+ *
+ * Every array it allocates is freed when it is destroyed. A computation declares it
+ * after its backend, so the arrays go before the backend (and its CUDA streams),
+ * also when a constructor throws after allocating some of them.
+ */
+template <typename T>
+class BackendMemory
+{
+private:
+    const std::unique_ptr<ComputationBackend<T>>& backend;
+    std::vector<BackendArray<T>*> arrays;
+    std::vector<CheckpointArray<T>*> checkpoints;
+
+public:
+    explicit BackendMemory(const std::unique_ptr<ComputationBackend<T>>& backend) : backend(backend) {}
+    BackendMemory(const BackendMemory&) = delete;
+    BackendMemory& operator=(const BackendMemory&) = delete;
+    ~BackendMemory()
+    {
+        for (BackendArray<T>* a : arrays)
+            backend->deallocate(a);
+        for (CheckpointArray<T>* a : checkpoints)
+            backend->deallocate_checkpoint(a);
+    }
+
+    /// A field of get_n_basis() elements, set to zero
+    BackendArray<T>* allocate()
+    {
+        arrays.push_back(nullptr);  // room first, so that no allocation is lost
+        try
+        {
+            arrays.back() = backend->allocate();
+        }
+        catch (...)
+        {
+            arrays.pop_back();
+            throw;
+        }
+        return arrays.back();
+    }
+
+    /// A checkpoint of get_n_basis() elements (contents undefined)
+    CheckpointArray<T>* allocate_checkpoint()
+    {
+        checkpoints.push_back(nullptr);
+        try
+        {
+            checkpoints.back() = backend->allocate_checkpoint();
+        }
+        catch (...)
+        {
+            checkpoints.pop_back();
+            throw;
+        }
+        return checkpoints.back();
+    }
+};
+
 template <typename T>
 class ComputationCommon : public PropagatorComputation<T>
 {
 protected:
     NumericalMethodInfo numerical_method;            ///< The numerical method (check_stress_supported())
     std::unique_ptr<ComputationBackend<T>> backend;  ///< Platform operations
+    BackendMemory<T> memory;                         ///< Every field and checkpoint (freed before backend)
     int n_streams;                   ///< Number of propagators computed concurrently
+
+    using BlockMap = std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*>;
 
     /// Unnormalized segment-product integral of each block; getters apply the
     /// canonical or fugacity normalization, including when volume fraction is zero.
-    std::map<std::tuple<int, std::string, std::string>, BackendArray<T>*> phi_block;
+    BlockMap phi_block;
 
     /// Indexed access in map order. The block map is fixed after construction.
-    std::vector<typename decltype(phi_block)::const_iterator> phi_block_iterators;
+    std::vector<typename BlockMap::const_iterator> phi_block_iterators;
 
     std::vector<BackendArray<T>*> phi_solvent;     ///< Concentration of each solvent
     std::map<std::string, BackendArray<T>*> w;     ///< Fields of the last compute_propagators()
@@ -92,6 +157,8 @@ protected:
     /**
      * With complex fields every junction power must be an integer of at most 10^6
      * (junction_product::integer_power): the constructor refuses other powers.
+     * The space group of the computation is the one of the box (the factory's
+     * SpaceGroupGuard attaches it for the construction).
      *
      * @param numerical_method The numerical method of the solver
      * @param create_backend   Called after the space group is set on the box,
@@ -99,7 +166,7 @@ protected:
      */
     ComputationCommon(ComputationBox<T>* cb, Molecules* molecules,
                       PropagatorComputationOptimizer* propagator_computation_optimizer,
-                      const NumericalMethodInfo& numerical_method, SpaceGroup* space_group,
+                      const NumericalMethodInfo& numerical_method,
                       const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     /**
@@ -130,12 +197,6 @@ protected:
     /// norm = ds · volume fraction / alpha · n_repeated / Q.
     T concentration_norm(const std::tuple<int, std::string, std::string>& block_key) const;
 
-    /// Compare canonical Q relatively and zero-weight species on the scale of
-    /// their absolute contour integrands (which need not cancel when Q does).
-    std::vector<double> partition_errors_from_contours(
-        const std::vector<std::vector<T>>& values,
-        const std::vector<std::vector<double>>& absolute_integrals) const;
-
     /// Stress of a block: the sum over its segments times the contour step ds.
     void scale_by_contour_step(std::array<T, 6>& stress, const std::string& key_right) const;
 
@@ -156,10 +217,46 @@ protected:
     /// Throw if the numerical method computes no stress.
     void check_stress_supported() const;
 
-private:
-    /// Free the concentrations, the fields and the backend (also on a failed construction).
-    void release();
+    /**
+     * @brief body(stream, i) for i = 0..n-1, concurrently on n_streams streams.
+     *
+     * Synchronizes the backend after the loop and rethrows the first exception of
+     * a body (ParallelErrors).
+     */
+    void run_concurrently(size_t n, const std::function<void(int, size_t)>& body);
 
+    /// The first block of each polymer in phi_block: one segment of it gives Q of the polymer
+    std::vector<typename BlockMap::const_iterator> first_block_of_each_polymer() const;
+
+    /**
+     * @brief The key of the propagator of one block and direction, for get_chain_propagator().
+     *
+     * Checks that the propagators are computed, that the propagator exists (not
+     * aggregated away) and that n lies in [first_segment, max_n_segment].
+     */
+    const std::string& chain_propagator_key(int polymer, int v, int u, int n, int first_segment);
+
+    /// Q at every segment of every block, by polymer, for compute_partition_errors()
+    struct ContourPartitions
+    {
+        std::vector<std::vector<T>> values;
+        std::vector<std::vector<double>> absolute_integrals;  ///< Absent polymers: the scale of the integrands
+        explicit ContourPartitions(int n_polymers) : values(n_polymers), absolute_integrals(n_polymers) {}
+    };
+
+    /**
+     * @brief Add Q = ∫ q q† / bead_factor dr / V of one segment of a block, per propagator.
+     * @param bead_factor exp(-w ds) of discrete chains, which both propagators carry;
+     *                    nullptr for continuous chains
+     */
+    void add_partition_sample(ContourPartitions& partitions, int p, const ComputationBlock& block,
+                              BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>* bead_factor);
+
+    /// Compare canonical Q relatively and zero-weight species on the scale of
+    /// their absolute contour integrands (which need not cancel when Q does).
+    std::vector<double> partition_errors(const ContourPartitions& partitions) const;
+
+private:
     /**
      * @brief The block concentrations of one monomer type and their weights, for sum_to_host().
      *
@@ -172,10 +269,11 @@ private:
                                       std::vector<BackendArray<T>*>& arrays, std::vector<T>& weights) const;
 
 public:
-    virtual ~ComputationCommon();
-
     void update_laplacian_operator() override;
     void set_force_off_diagonal_stress(bool force) override;
+
+    /// One step of the propagator of block (v, u) of polymer p from q_init, in two temporary fields
+    void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
 
     /// The two computations in turn; the reduced-memory classes do both in one walk.
     void compute_concentrations_and_stress() override;

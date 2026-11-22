@@ -361,7 +361,7 @@ public:
      *
      * @pre compute_stress() must be called first.
      */
-    virtual std::vector<T> get_stress();
+    std::vector<T> get_stress();
 
     /**
      * @brief Get concentration for grand canonical ensemble.
@@ -381,7 +381,7 @@ public:
      * @param fugacities Vector of fugacities for each polymer type
      * @return Stress vector weighted by fugacities
      */
-    virtual std::vector<T> get_stress_gce(std::vector<double> fugacities);
+    std::vector<T> get_stress_gce(std::vector<double> fugacities);
 
     /**
      * @brief Relative partition function error of each polymer.

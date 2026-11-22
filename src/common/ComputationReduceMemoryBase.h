@@ -45,6 +45,7 @@ protected:
     const int first_segment;
     int checkpoint_interval;  ///< Segments between regular checkpoints
 
+    // In the backend memory of ComputationCommon
     /// q(r, n) of propagator key at the checkpointed segments n
     std::map<std::tuple<std::string, int>, CheckpointArray<T>*> checkpoint;
 
@@ -52,20 +53,14 @@ protected:
     BackendArray<T>* q_work[2]  = {nullptr, nullptr}; ///< Propagator being advanced (ping-pong)
     BackendArray<T>* q_right[2] = {nullptr, nullptr}; ///< The other propagator of a block, advanced along it
 
-    /// Free the checkpoints and the work fields (also on a failed construction).
-    void free_storage();
-
     /**
      * @param first_segment 0 for continuous chains, 1 for discrete chains
      * @param create_backend See ComputationCommon
      */
     ComputationReduceMemoryBase(ComputationBox<T>* cb, Molecules* molecules,
                                 PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                const NumericalMethodInfo& numerical_method, SpaceGroup* space_group, int first_segment,
+                                const NumericalMethodInfo& numerical_method, int first_segment,
                                 const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
-
-    /// Contour step index used to advance propagator key (discrete chains: 0).
-    virtual int propagator_ds_index(const std::string& key) const = 0;
 
     /// The concentrations, the stress or both, in one walk along each block.
     virtual void compute_blocks(bool with_concentrations, bool with_stress) = 0;
@@ -107,8 +102,6 @@ protected:
                                bool past_last = false);
 
 public:
-    virtual ~ComputationReduceMemoryBase();
-
     void compute_concentrations() override;
     void compute_stress() override;
     void compute_concentrations_and_stress() override;

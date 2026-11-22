@@ -5,10 +5,8 @@
 
 #include <cmath>
 #include <memory>
-#include <omp.h>
 
 #include "ComputationContinuous.h"
-#include "PropagatorCode.h"
 #include "Scheduler.h"
 #include "SimpsonRule.h"
 
@@ -18,79 +16,46 @@ ComputationContinuous<T>::ComputationContinuous(
     Molecules* molecules,
     PropagatorComputationOptimizer* propagator_computation_optimizer,
     const NumericalMethodInfo& method,
-    SpaceGroup* space_group,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, method, space_group, create_backend)
+    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, method, create_backend)
 {
-    try
+    // q(r, s) at every contour step of every propagator
+    for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
     {
-        // q(r, s) at every contour step of every propagator
-        for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
-        {
-            const int size = edge.max_n_segment + 1;
-            propagator[key].assign(size, nullptr);
-            for (int n = 0; n < size; n++)
-                propagator[key][n] = this->backend->allocate();
-        }
+        std::vector<BackendArray<T>*>& q = propagator[key];
+        for (int n = 0; n <= edge.max_n_segment; n++)
+            q.push_back(this->memory.allocate());
+    }
 
-        // The jobs of the scheduler: the propagator, its contour step and the sources of a junction.
-        // A job points to the key and edge of the optimizer, which outlive the scheduler.
-        const auto& propagators = this->propagator_computation_optimizer->get_computation_propagators();
-        Scheduler scheduler(propagators, this->n_streams);
-        for (const auto& parallel_job : scheduler.get_schedule())
+    // The jobs of the scheduler: the propagator, its storage and the sources of a junction.
+    // A job points to the edge of the optimizer, which outlives the scheduler.
+    const auto& propagators = this->propagator_computation_optimizer->get_computation_propagators();
+    Scheduler scheduler(propagators, this->n_streams);
+    for (const auto& parallel_job : scheduler.get_schedule())
+    {
+        std::vector<Job>& jobs = schedule.emplace_back();
+        for (const auto& [job_key, n_segment_from, n_segment_to] : parallel_job)
         {
-            std::vector<Job>& jobs = schedule.emplace_back();
-            for (const auto& [job_key, n_segment_from, n_segment_to] : parallel_job)
-            {
-                const auto& [key, edge] = *propagators.find(job_key);
-                std::vector<std::pair<BackendArray<T>*, double>> sources;
-                for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-                    sources.push_back({propagator.at(sub_key)[sub_n_segment], sub_n_repeated});
-                jobs.push_back({&key, &edge, propagator.at(key).data(), n_segment_from, n_segment_to,
-                                PropagatorCode::get_ds_index_from_key(key), std::move(sources)});
-            }
-        }
-
-        // One segment of each polymer gives its partition function
-        int current_p = 0;
-        for (const auto& [key, phi] : this->phi_block)
-        {
-            const int p = std::get<0>(key);
-            if (p != current_p)
-                continue;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const double n_aggregated = block.n_copies/block.n_repeated;
-            single_partition_segment.push_back(std::make_tuple(
-                p,
-                propagator.at(std::get<1>(key))[block.n_segment_left],  // q
-                propagator.at(std::get<2>(key))[0],                     // q†
-                n_aggregated));
-            current_p++;
+            const ComputationEdge& edge = propagators.at(job_key);
+            std::vector<std::pair<BackendArray<T>*, double>> sources;
+            for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
+                sources.push_back({propagator.at(sub_key)[sub_n_segment], sub_n_repeated});
+            jobs.push_back({&edge, propagator.at(job_key).data(), n_segment_from, n_segment_to, std::move(sources)});
         }
     }
-    catch (std::exception& exc)
+
+    // One segment of each polymer gives its partition function
+    for (const auto& it : this->first_block_of_each_polymer())
     {
-        // The destructor does not run for a partly constructed object
-        free_propagators();
-        throw_without_line_number(exc.what());
+        const auto& [p, key_left, key_right] = it->first;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+        const double n_aggregated = block.n_copies/block.n_repeated;
+        single_partition_segment.push_back(std::make_tuple(
+            p,
+            propagator.at(key_left)[block.n_segment_left],  // q
+            propagator.at(key_right)[0],                    // q†
+            n_aggregated));
     }
-}
-
-template <typename T>
-ComputationContinuous<T>::~ComputationContinuous()
-{
-    free_propagators();
-}
-
-template <typename T>
-void ComputationContinuous<T>::free_propagators()
-{
-    // Iterate the vectors themselves: an entry left by a failed assign() is empty
-    for (const auto& [key, q] : propagator)
-        for (BackendArray<T>* a : q)
-            if (a != nullptr)
-                this->backend->deallocate(a);
-    propagator.clear();
 }
 
 template <typename T>
@@ -104,42 +69,37 @@ void ComputationContinuous<T>::compute_propagators(
     // group only depend on propagators of earlier groups
     for (const std::vector<Job>& parallel_jobs : schedule)
     {
-        ParallelErrors errors;
-        #pragma omp parallel for num_threads(this->n_streams)
-        for (size_t j = 0; j < parallel_jobs.size(); j++)
+        this->run_concurrently(parallel_jobs.size(), [&](const int STREAM, const size_t j)
         {
-            errors.run([&]
+            const Job& job = parallel_jobs[j];
+            const ComputationEdge& edge = *job.edge;
+            BackendArray<T>** q = job.q;
+
+            // Initial condition q(r, 0)
+            if (job.n_segment_from == 0)
             {
-                const int STREAM = omp_get_thread_num();
-                const Job& job = parallel_jobs[j];
-                const std::string& key = *job.key;
-                BackendArray<T>** q = job.q;
-
-                // Initial condition q(r, 0)
-                if (job.n_segment_from == 0)
+                switch (edge.start)
                 {
-                    if (job.edge->deps.size() == 0)
-                    {
-                        if (key[0] == '{')  // grafting point
-                            this->backend->copy_from_host(STREAM, q[0], q_init.at(PropagatorCode::get_q_input_idx_from_key(key)));
-                        else                // free chain end
-                            this->backend->set_unity(STREAM, q[0]);
-                    }
-                    else if (key[0] == '[')  // aggregated propagators
-                        this->backend->junction_sum(STREAM, q[0], job.sources);
-                    else if (key[0] == '(')  // junction of branches
-                        this->backend->junction_product(STREAM, q[0], job.sources);
-
-                    this->backend->apply_mask(STREAM, q[0]);
+                case PropagatorStart::FREE_END:
+                    this->backend->set_unity(STREAM, q[0]);
+                    break;
+                case PropagatorStart::GRAFTED:
+                    this->backend->copy_from_host(STREAM, q[0], q_init.at(edge.graft_label));
+                    break;
+                case PropagatorStart::AGGREGATED:
+                    this->backend->junction_sum(STREAM, q[0], job.sources);
+                    break;
+                case PropagatorStart::JUNCTION:  // branches meeting at the start
+                    this->backend->junction_product(STREAM, q[0], job.sources);
+                    break;
                 }
+                this->backend->apply_mask(STREAM, q[0]);
+            }
 
-                // q(r, n+1) from q(r, n)
-                for (int n = job.n_segment_from; n < job.n_segment_to; n++)
-                    this->backend->advance_propagator(STREAM, q[n], q[n+1], job.edge->monomer_type, job.ds_index);
-            });
-        }
-        this->backend->synchronize();
-        errors.rethrow();
+            // q(r, n+1) from q(r, n)
+            for (int n = job.n_segment_from; n < job.n_segment_to; n++)
+                this->backend->advance_propagator(STREAM, q[n], q[n+1], edge.monomer_type, edge.ds_index);
+        });
     }
 
     // Partition function of each polymer: Q = ∫ q(r,s) q†(r,N-s) dr / V
@@ -152,37 +112,6 @@ void ComputationContinuous<T>::compute_propagators(
 }
 
 template <typename T>
-void ComputationContinuous<T>::advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u)
-{
-    this->check_box_space_group();
-    // The step uses the fields and the cell of the last compute_propagators()
-    this->require_propagators();
-    const Block& block = this->molecules->get_polymer(p).get_block(v, u);
-    const int ds_index = this->molecules->get_contour_length_mapping().get_ds_index(block.contour_length);
-
-    // Two temporary fields, freed also when a step throws
-    BackendArray<T>* q_in_b  = nullptr;
-    BackendArray<T>* q_out_b = nullptr;
-    try
-    {
-        q_in_b  = this->backend->allocate();
-        q_out_b = this->backend->allocate();
-        this->backend->copy_from_host(0, q_in_b, q_init);
-        this->backend->advance_propagator(0, q_in_b, q_out_b, block.monomer_type, ds_index);
-        this->backend->synchronize();
-        this->backend->copy_to_host(q_out, q_out_b);
-    }
-    catch (...)
-    {
-        this->backend->deallocate(q_in_b);
-        this->backend->deallocate(q_out_b);
-        throw;
-    }
-    this->backend->deallocate(q_in_b);
-    this->backend->deallocate(q_out_b);
-}
-
-template <typename T>
 void ComputationContinuous<T>::compute_concentrations()
 {
     this->check_box_space_group();
@@ -190,38 +119,30 @@ void ComputationContinuous<T>::compute_concentrations()
     try
     {
         // Concentration of each block (several blocks when propagators are aggregated)
-        ParallelErrors errors;
-        #pragma omp parallel for num_threads(this->n_streams)
-        for (size_t b = 0; b < this->phi_block_iterators.size(); b++)
+        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
         {
-            errors.run([&]
-            {
-                const int STREAM = omp_get_thread_num();
-                const auto it = this->phi_block_iterators[b];
-                const auto& [p, key_left, key_right] = it->first;
-                const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-                const int N_LEFT  = block.n_segment_left;
-                const int N_RIGHT = block.n_segment_right;
+            const auto it = this->phi_block_iterators[b];
+            const auto& [p, key_left, key_right] = it->first;
+            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+            const int N_LEFT  = block.n_segment_left;
+            const int N_RIGHT = block.n_segment_right;
 
-                // A block without segments has no concentration
-                this->backend->set_zero(STREAM, it->second);
-                if (N_RIGHT == 0)
-                    return;
+            // A block without segments has no concentration
+            this->backend->set_zero(STREAM, it->second);
+            if (N_RIGHT == 0)
+                return;
 
-                // φ = Σ_n c_n q(N_LEFT-n) q†(n), Simpson's rule over the segments of the block
-                const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-                BackendArray<T>** q_left  = propagator.at(key_left).data();
-                BackendArray<T>** q_right = propagator.at(key_right).data();
-                std::vector<SegmentPair<T>> pairs;
-                for (int n = 0; n <= N_RIGHT; n++)
-                    pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]});
-                this->backend->add_segment_products(STREAM, it->second, pairs);
+            // φ = Σ_n c_n q(N_LEFT-n) q†(n), Simpson's rule over the segments of the block
+            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
+            BackendArray<T>** q_left  = propagator.at(key_left).data();
+            BackendArray<T>** q_right = propagator.at(key_right).data();
+            std::vector<SegmentPair<T>> pairs;
+            for (int n = 0; n <= N_RIGHT; n++)
+                pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]});
+            this->backend->add_segment_products(STREAM, it->second, pairs);
 
-                // Getters normalize the integral for the requested ensemble.
-            });
-        }
-        this->backend->synchronize();
-        errors.rethrow();
+            // Getters normalize the integral for the requested ensemble.
+        });
 
         this->compute_solvent_concentrations();
         this->concentrations_computed_ = true;
@@ -244,38 +165,30 @@ void ComputationContinuous<T>::compute_stress()
 
         // Stress of each block: Simpson's rule over the segment stresses
         std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
-        ParallelErrors errors;
-        #pragma omp parallel for num_threads(this->n_streams)
-        for (size_t b = 0; b < this->phi_block_iterators.size(); b++)
+        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
         {
-            errors.run([&]
-            {
-                const int STREAM = omp_get_thread_num();
-                const auto it = this->phi_block_iterators[b];
-                const auto& [p, key_left, key_right] = it->first;
-                const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-                const int N_LEFT  = block.n_segment_left;
-                const int N_RIGHT = block.n_segment_right;
+            const auto it = this->phi_block_iterators[b];
+            const auto& [p, key_left, key_right] = it->first;
+            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+            const int N_LEFT  = block.n_segment_left;
+            const int N_RIGHT = block.n_segment_right;
 
-                stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-                if (N_RIGHT == 0)
-                    return;
+            stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            if (N_RIGHT == 0)
+                return;
 
-                // Every segment contributes, the chain ends included: q(r,0) = 1 has no
-                // stress only for periodic or reflecting walls, not for absorbing
-                // walls, masks or grafting points.
-                const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-                BackendArray<T>** q_left  = propagator.at(key_left).data();
-                BackendArray<T>** q_right = propagator.at(key_right).data();
-                std::vector<SegmentPair<T>> pairs;
-                for (int n = 0; n <= N_RIGHT; n++)
-                    pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]*block.n_repeated});
-                stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
-                this->scale_by_contour_step(stress_of_block[b], key_right);
-            });
-        }
-        this->backend->synchronize();
-        errors.rethrow();
+            // Every segment contributes, the chain ends included: q(r,0) = 1 has no
+            // stress only for periodic or reflecting walls, not for absorbing
+            // walls, masks or grafting points.
+            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
+            BackendArray<T>** q_left  = propagator.at(key_left).data();
+            BackendArray<T>** q_right = propagator.at(key_right).data();
+            std::vector<SegmentPair<T>> pairs;
+            for (int n = 0; n <= N_RIGHT; n++)
+                pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]*block.n_repeated});
+            stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
+            this->scale_by_contour_step(stress_of_block[b], key_right);
+        });
 
         // Sum the blocks of each polymer
         this->set_stress_from_blocks(stress_of_block);
@@ -290,20 +203,8 @@ void ComputationContinuous<T>::compute_stress()
 template <typename T>
 void ComputationContinuous<T>::get_chain_propagator(T* q_out, int polymer, int v, int u, int n)
 {
-    this->check_box_space_group();
-    this->require_propagators();
-    // For debugging and testing: the propagator of one block and direction
-    Polymer& pc = this->molecules->get_polymer(polymer);
-    const std::string dep = pc.get_propagator_key(v, u);
-
-    if (!this->propagator_computation_optimizer->get_computation_propagators().contains(dep))
-        throw_with_line_number("Could not find the propagator code '" + dep + "'. Disable 'aggregation' option to obtain propagator_computation_optimizer.");
-
-    const int N_RIGHT = this->propagator_computation_optimizer->get_computation_propagator(dep).max_n_segment;
-    if (n < 0 || n > N_RIGHT)
-        throw_with_line_number("n (" + std::to_string(n) + ") must be in range [0, " + std::to_string(N_RIGHT) + "]");
-
-    this->backend->copy_to_host(q_out, propagator.at(dep)[n]);
+    const std::string& key = this->chain_propagator_key(polymer, v, u, n, 0);
+    this->backend->copy_to_host(q_out, propagator.at(key)[n]);
 }
 
 template <typename T>
@@ -312,37 +213,17 @@ std::vector<double> ComputationContinuous<T>::compute_partition_errors()
     this->check_box_space_group();
     this->require_propagators();
     // Q must be the same at every segment of every block
-    const int n_polymer_types = this->molecules->get_n_polymer_types();
-    std::vector<std::vector<T>> total_partitions(n_polymer_types);
-    std::vector<std::vector<double>> absolute_integrals(n_polymer_types);
-
+    typename ComputationCommon<T>::ContourPartitions partitions(this->molecules->get_n_polymer_types());
     for (const auto& [key, phi] : this->phi_block)
     {
         const auto& [p, key_left, key_right] = key;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-        const double n_propagators = block.n_copies;
         BackendArray<T>** q_left  = propagator.at(key_left).data();
         BackendArray<T>** q_right = propagator.at(key_right).data();
-
         for (int n = 0; n <= block.n_segment_right; n++)
-        {
-            BackendArray<T>* q = q_left[block.n_segment_left-n];
-            BackendArray<T>* q_dagger = q_right[n];
-            T total_partition = this->backend->inner_product(
-                q, q_dagger)*(block.n_repeated/this->cb->get_volume());
-            total_partition /= n_propagators;
-            total_partitions[p].push_back(total_partition);
-            if (this->molecules->get_polymer(p).is_absent())
-            {
-                double integral = this->backend->absolute_inner_product(q, q_dagger)
-                                  *(block.n_repeated/this->cb->get_volume());
-                integral /= n_propagators;
-                absolute_integrals[p].push_back(integral);
-            }
-        }
+            this->add_partition_sample(partitions, p, block, q_left[block.n_segment_left-n], q_right[n], nullptr);
     }
-
-    return this->partition_errors_from_contours(total_partitions, absolute_integrals);
+    return this->partition_errors(partitions);
 }
 
 // Explicit template instantiation

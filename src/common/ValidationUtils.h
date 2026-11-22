@@ -93,6 +93,21 @@ inline void require_in_range(T value, T min_val, T max_val, const std::string& n
 }
 
 /**
+ * @brief Validate an index into a sequence of size elements.
+ *
+ * @param index Index to check
+ * @param size  Number of elements
+ * @param name  Name of the index for the error message, e.g. "Polymer index"
+ * @throws Exception unless 0 <= index < size
+ */
+inline void require_index(int index, int size, const std::string& name)
+{
+    if (index < 0 || index >= size)
+        throw_with_line_number(name + " (" + std::to_string(index) + ") must be in range [0, " +
+            std::to_string(size - 1) + "]");
+}
+
+/**
  * @brief Validate that all elements in a vector are finite and positive.
  *
  * @tparam T Numeric type

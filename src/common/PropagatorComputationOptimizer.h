@@ -9,20 +9,13 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <utility>
 
 #include "Molecules.h"
 #include "Polymer.h"
+#include "PropagatorCode.h"
 #include "PropagatorAggregator.h"
 
-struct ComputationEdge{
-    int max_n_segment;                                    // The maximum segment number
-    std::string monomer_type;                             // Monomer_type
-    // Tuple <key, n_segment, n_repeated>: n_repeated is the power of the dependency in a junction
-    // product or its weight in an aggregated sum; block multiplicities make it real
-    std::vector<std::tuple<std::string, int, double>> deps;
-    int height;                                           // Height of propagator (height of tree data Structure)
-    std::set<int> junction_ends;                          // Indices where additional half bond step computation is required.
-};
 struct ComputationBlock{
     std::string monomer_type;  // monomer_type
 
@@ -41,7 +34,7 @@ struct ComputationBlock{
     // Copies of the blocks in v_u (the sum of their Block::n_copies): n_repeated ∫ q q† dr is
     // n_copies times the integral of one block
     double n_copies = 0.0;
-    std::vector<std::tuple<int ,int>> v_u; // node pair <polymer id, v, u>
+    std::vector<std::tuple<int ,int>> v_u; // node pairs <v, u> of the blocks it holds
 };
 
 /* This stucture defines comparison function for branched key */
@@ -57,57 +50,59 @@ private:
                             // "discrete": discrete bead-spring model
     bool aggregate_propagator_computation; // compute multiple propagators using property of linearity of the diffusion equation.
 
-    // Pointer to contour length mapping for converting length_index to n_segment
+    // The contour length mapping, whose length and ds indices the keys contain
     const ContourLengthMapping* contour_length_mapping;
 
     // The Molecules this schedule was built from; its polymer indices size the computation's arrays
     const Molecules* molecules;
 
+    // The key of each directed edge (v, u) of each polymer: the propagator that leaves v along the block (v, u)
+    std::vector<std::map<std::pair<int, int>, std::string>> propagator_keys;
+
     // set{key: (polymer id, key_left, key_right) (assert(key_left <= key_right))}
     std::map<std::tuple<int, std::string, std::string>, ComputationBlock> computation_blocks;
 
     // dictionary{key:non-duplicated unique propagator_codes, value: ComputationEdge}
-    std::map<std::string, ComputationEdge, ComparePropagatorKey> computation_propagators; 
+    std::map<std::string, ComputationEdge, ComparePropagatorKey> computation_propagators;
 
     // Total segment number
     std::vector<int> total_segment_numbers;
 
-    // Substitute right keys of lower left key with aggregated keys
+    // Substitute right keys of lower left key with aggregated keys; the new keys are recorded in edges
     void substitute_right_keys(
-        Polymer& pc, 
+        Polymer& pc,
+        const std::map<std::pair<int, int>, std::string>& keys,
         std::map<std::tuple<int, int>, std::string>& v_u_to_right_key,
         std::map<std::string, std::map<std::string, ComputationBlock>> & computation_blocks_new_polymer,
         std::map<std::string, std::vector<std::string>>& aggregated_blocks,
+        std::map<std::string, ComputationEdge>& edges,
         std::string left_key);
 
-    // Add new key. if it already exists and 'new_n_segment' is larger than 'max_n_segment', update it.
-    void update_computation_propagator_map(
-        std::map<std::string, ComputationEdge, ComparePropagatorKey>& computation_propagators,
-        const std::string& new_key, int new_n_segment, bool is_junction_end);
+    // Add a use of the propagator 'key', which 'built' describes: it is added if new, and its
+    // max_n_segment grows to new_n_segment
+    void add_propagator_use(const std::string& key, const ComputationEdge& built,
+                            int new_n_segment, bool is_junction_end);
 
     bool is_junction(Polymer& pc, int node);
 
     // MDE (or integral equation) steps of the polymers without and with the optimization
     std::pair<int, int> count_steps() const;
 
-    // Convert length_index to n_segment in deps using contour_length_mapping
-    std::vector<std::tuple<std::string, int, double>> convert_deps_to_n_segment(
-        const std::vector<std::tuple<std::string, int, double>>& deps) const;
+    // Add the polymers in their order in Molecules (the constructor does)
+    void add_polymer(Polymer& pc, int polymer_id);
 
 public:
     PropagatorComputationOptimizer(Molecules* molecules, bool aggregate_propagator_computation);
-    // ~PropagatorComputationOptimizer() {};
-
-    // Add new polymers
-    void add_polymer(Polymer& pc, int polymer_count);
 
     // Get information of computation propagators and blocks
     bool use_aggregation() const;
     bool is_built_from(const Molecules* molecules) const;
     int get_n_computation_propagator_codes() const;
-    std::map<std::string, ComputationEdge, ComparePropagatorKey>& get_computation_propagators(); 
+    // The key of the propagator that leaves v along the block (v, u) of a polymer
+    const std::string& get_propagator_key(int polymer, int v, int u) const;
+    std::map<std::string, ComputationEdge, ComparePropagatorKey>& get_computation_propagators();
     ComputationEdge& get_computation_propagator(const std::string& key);
-    std::map<std::tuple<int, std::string, std::string>, ComputationBlock>& get_computation_blocks(); 
+    std::map<std::tuple<int, std::string, std::string>, ComputationBlock>& get_computation_blocks();
     ComputationBlock& get_computation_block(const std::tuple<int, std::string, std::string>& key);
 
     // Display

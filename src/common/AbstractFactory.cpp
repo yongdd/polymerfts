@@ -65,13 +65,13 @@ std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_
         typename ComputationBox<T>::SpaceGroupGuard group_change(cb, space_group);
         std::unique_ptr<PropagatorComputation<T>> computation;
         if (discrete && !this->reduce_memory)
-            computation = std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
+            computation = std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
         else if (discrete)
-            computation = std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
+            computation = std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
         else if (!this->reduce_memory)
-            computation = std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
+            computation = std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
         else
-            computation = std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
+            computation = std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
         if (method_info.requires_orthogonal_cell)
             computation->hold_orthogonal_cell();
         group_change.commit();

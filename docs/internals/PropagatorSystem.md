@@ -25,6 +25,10 @@ The propagator system:
 2. **Optimizes** by detecting and reusing equivalent computations
 3. **Schedules** parallel execution across multiple streams/threads
 
+A key is an identity: equal keys are one computation. What a key computes is recorded
+where the key is written (section 2.6); the computations read that record and never
+parse a key.
+
 **Measured speedup** (A10 GPU, ds = 0.01, time of one propagator and concentration computation): computing independent propagators on 4 CUDA streams instead of 1 gives 1.9x for the bottle-brush of `examples/block_copolymer/scft/BottleBrushLamella3D.py` (50 side chains, discrete chains) on a 32³ grid but 1.1x on 64³, and 1.0–1.1x for the 9-arm star of `examples/block_copolymer/scft/Star9ArmsGyroid.py` and for a comb with 9 side chains on either grid. Merging equivalent propagators (item 2, `aggregate_propagator_computation`) saves more: with one stream it gives 3.6x for the bottle-brush and 2.0x for the comb, and nothing for the star, whose identical arms are computed once either way.
 
 ---
@@ -36,7 +40,8 @@ The propagator system:
 | Aspect | Continuous Chain | Discrete Chain |
 |--------|------------------|----------------|
 | Block length constraint | Arbitrary (non-integer multiples of ds allowed) | Must be integer multiple of ds |
-| Numbers in aggregated keys | `length_index` (0 for sliced) | `n_segment` directly |
+| Numbers in aggregated keys | 0 (the sliced `n_segment`) | sliced `n_segment` |
+| Numbers in re-keyed junctions (2.5) | `length_index` | `n_segment` |
 | Minimum sliced segments | 0 | 1 |
 
 ### 2.2 ContourLengthMapping
@@ -60,7 +65,8 @@ The `ContourLengthMapping` class manages the relationship between contour length
 
 ### 2.3 Code Format: DKN
 
-The code format is used during propagator code generation and encodes the polymer topology.
+A code is how a branch is written inside the key of the propagator that starts where it ends:
+the key of the branch without its `+M`, followed by the length index of its block.
 
 **Structure:**
 ```
@@ -89,7 +95,10 @@ Where N is the block's `length_index` for both chain models (the keys are genera
 
 ### 2.4 Key Format: DK+M
 
-The key format is derived from the code format and includes the ds_index for computation lookup.
+The optimizer writes the keys of every polymer once, after the contour lengths of all
+polymers are mapped (`PropagatorCode::generate_keys`, called by `PropagatorComputationOptimizer`):
+the key of each directed block (v, u) is its dependency part D, its monomer type K and the
+ds_index M of its block. `PropagatorComputationOptimizer::get_propagator_key(p, v, u)` returns it.
 
 **Structure:**
 ```
@@ -150,11 +159,34 @@ Aggregated key: [(D4)B1,(E4)B1]B+0
                   n_segment=1 (for discrete chains)
 ```
 
+**Re-keyed junctions:** the blocks downstream of a full-length aggregated propagator get new
+right keys that start from it: `(` + the aggregated code + the sorted codes of the other branches
+at the junction + `)` + monomer type + `+M`, e.g. `([(D4)B1,(E4)B1]B3A2)C+0`. A code here ends
+with the length index of its block (continuous chains) or its number of segments (discrete chains).
+
+### 2.6 What a Key Computes
+
+Wherever a key is written (`PropagatorCode` for the keys of the blocks, `PropagatorAggregator`
+for aggregated keys, `PropagatorComputationOptimizer::substitute_right_keys` for re-keyed
+junctions), its `ComputationEdge` (section 5) is recorded with it:
+
+| Field | Meaning |
+|-------|---------|
+| `monomer_type` | Monomer type of the block the propagator runs along |
+| `ds_index` | Contour step index of that block (`M` of the key) |
+| `start` | `FREE_END`, `GRAFTED`, `JUNCTION` (keys `(...)`) or `AGGREGATED` (keys `[...]`) |
+| `graft_label` | The `q_init` label of a grafted end (`{label}` of the key) |
+| `deps` | The propagators it starts from, in the order of the key: (key, n_segment, n_repeated) |
+
+The computations read the initial condition, the contour step and the junction sources from
+these fields. Besides its identity a key gives only its height (section 4), which orders the
+propagators.
+
 ---
 
 ## 3. Initial Conditions
 
-The dependency part **D** of the propagator code determines the initial condition. The formulas below are for continuous chains, which start at $`q(\mathbf{r}, 0)`$; the discrete case follows at the end of this section.
+The dependency part **D** of a key shows the initial condition, which the computations read from `ComputationEdge::start`. The formulas below are for continuous chains, which start at $`q(\mathbf{r}, 0)`$; the discrete case follows at the end of this section.
 
 ### Free End (Empty D)
 
@@ -274,10 +306,15 @@ Time 20-30: F+0 (stream 0)
 
 ```cpp
 struct ComputationEdge {
-    int max_n_segment;  // Number of contour steps
+    // Recorded where the key is written (section 2.6)
     std::string monomer_type;
+    int ds_index;
+    PropagatorStart start;    // FREE_END, GRAFTED, JUNCTION or AGGREGATED
+    std::string graft_label;  // q_init label of a grafted end
     std::vector<std::tuple<std::string, int, double>> deps;  // (key, n_segment, n_repeated)
+    // From the blocks that use the propagator
     int height;         // Height of the propagator in the dependency tree (orders the map; used by the scheduler)
+    int max_n_segment;  // Number of contour steps
     std::set<int> junction_ends;  // Indices where additional half-bond-step computation
                                   // is required (discrete chains)
 };
@@ -402,7 +439,7 @@ Keys are compared using `ComparePropagatorKey`:
 
 ## 9. References
 
-- `PropagatorCode.h/cpp`: Code generation and parsing
+- `PropagatorCode.h/cpp`: Key generation and the `ComputationEdge` record
 - `PropagatorComputationOptimizer.h/cpp`: Optimization using keys
 - `PropagatorAggregator.h/cpp`: Aggregated key generation
 - `Scheduler.h/cpp`: Parallel computation scheduling

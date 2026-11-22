@@ -29,7 +29,7 @@
  * @note The polymer graph must be acyclic (a tree structure).
  *
  * @see Molecules for managing collections of polymer types
- * @see PropagatorCode for generating propagator computation codes from topology
+ * @see PropagatorCode for writing the propagator keys of a topology
  *
  * @example
  * @code
@@ -63,9 +63,6 @@
 #include <map>
 
 #include "JunctionProduct.h"   // MAX_BLOCK_MULTIPLICITY
-
-// Forward declaration
-class ContourLengthMapping;
 
 /**
  * @struct BlockInput
@@ -124,8 +121,8 @@ struct Block{
  * The Polymer class stores the topology and parameters of a polymer chain type.
  * It uses a graph representation where vertices are junction points or chain ends,
  * and edges are polymer blocks. The class provides methods to query topology
- * information and generates propagator computation codes for efficient solver
- * scheduling.
+ * information; PropagatorComputationOptimizer writes the propagator keys of its
+ * blocks (PropagatorCode) after the contour lengths of all polymers are known.
  *
  * **Key Concepts:**
  *
@@ -143,9 +140,9 @@ struct Block{
  *
  * **Propagator Computation:**
  *
- * The class generates "propagator codes" that encode dependencies between
- * propagators for efficient dynamic programming computation. This is described
- * in J. Chem. Theory Comput. 2025, 21, 3676.
+ * PropagatorCode writes from the graph the keys that encode the dependencies
+ * between propagators for efficient dynamic programming computation. This is
+ * described in J. Chem. Theory Comput. 2025, 21, 3676.
  *
  * **Grafting:**
  *
@@ -155,7 +152,7 @@ struct Block{
  *
  * @see BlockInput, Block for block specification structures
  * @see Molecules for managing multiple polymer types
- * @see PropagatorCode for code generation algorithm
+ * @see PropagatorCode for key generation algorithm
  */
 class Polymer
 {
@@ -184,13 +181,6 @@ private:
      * Both (v,u) and (u,v) map to the same block index.
      */
     std::map<std::pair<int, int>, int> edge_to_block_index;
-
-    /**
-     * @brief Maps edge (v,u) to its propagator computation code.
-     *
-     * The code encodes dependencies for dynamic programming optimization.
-     */
-    std::map<std::pair<int, int>, std::string> edge_to_propagator_key;
 
     /**
      * @brief Maps chain end vertices to initial condition labels.
@@ -318,31 +308,10 @@ public:
     std::map<int, std::vector<int>>& get_adjacent_nodes();
 
     /**
-     * @brief Set propagator computation code for an edge.
-     * @param deps Dependency code string
-     * @param v First vertex
-     * @param u Second vertex
+     * @brief Initial condition labels of the grafted chain ends.
+     * @return Map from chain-end vertex to its q_init label
      */
-    void set_propagator_key(const std::string deps, const int v, const int u);
-
-    /**
-     * @brief Get propagator computation code for an edge.
-     * @param v First vertex
-     * @param u Second vertex
-     * @return Propagator code string encoding dependencies
-     */
-    std::string get_propagator_key(const int v, const int u) const;
-
-    /**
-     * @brief Regenerate propagator keys using contour length mapping.
-     *
-     * Replaces the propagator keys with new ones that use length indices
-     * instead of segment counts. This enables support for floating-point
-     * block lengths.
-     *
-     * @param mapping Contour length mapping (must be finalized)
-     */
-    void regenerate_propagator_keys(const ContourLengthMapping& mapping);
+    const std::map<int, std::string>& get_chain_end_to_q_init() const { return chain_end_to_q_init; }
 
     /**
      * @brief Display polymer architecture as ASCII art diagram.

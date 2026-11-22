@@ -33,14 +33,14 @@ class ComputationReduceMemoryDiscrete : public ComputationReduceMemoryBase<T>
 {
 private:
     /// q(r, n+1/2) of propagator key: n = 0 of a junction propagator and the junction ends
+    /// (in the backend memory of ComputationCommon)
     std::map<std::tuple<std::string, int>, CheckpointArray<T>*> half_checkpoint;
 
     /// A propagator with what it reads, resolved once: the checkpoints are fixed after
     /// construction, and keys grow with the size of a polymer
     struct Job
     {
-        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
-        const ComputationEdge* edge;  ///< Its monomer type, dependencies and max_n_segment
+        const ComputationEdge* edge;  ///< Its start, monomer type, dependencies and max_n_segment
         /// (q_i, n_i) of an aggregation (segments) or of a junction (half-bond states)
         std::vector<std::pair<CheckpointArray<T>*, double>> sources;
         std::vector<CheckpointArray<T>*> checkpoints;       ///< Checkpoint of q(n), or nullptr
@@ -53,23 +53,19 @@ private:
     std::vector<std::tuple<int, std::string, int, std::string, std::string, double>> single_partition_segment;
 
     void add_half_checkpoint(const std::string& key, int n);
-    void free_half_checkpoints();
     CheckpointArray<T>* half_checkpoint_at(const std::string& key, int n);
 
 protected:
-    int propagator_ds_index(const std::string&) const override { return 0; }
     void compute_blocks(bool with_concentrations, bool with_stress) override;
 
 public:
     ComputationReduceMemoryDiscrete(ComputationBox<T>* cb, Molecules* molecules,
                                     PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                    const NumericalMethodInfo& method, SpaceGroup* space_group,
+                                    const NumericalMethodInfo& method,
                                     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
-    ~ComputationReduceMemoryDiscrete();
 
     void compute_propagators(std::map<std::string, const T*> w_input,
                              std::map<std::string, const T*> q_init = {}) override;
-    void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;
     std::vector<double> compute_partition_errors() override;
 };

@@ -32,6 +32,7 @@
 
 // Forward declaration
 struct ComputationBlock;
+struct ComputationEdge;
 struct ComparePropagatorKey;
 
 /**
@@ -50,8 +51,8 @@ public:
      * Merges branches with the same segment count into aggregated computations.
      * Creates new keys with bracket notation (e.g., "[A0:2,B0]C+0").
      *
-     * For continuous chains, sliced propagators always have n_segment=0,
-     * which corresponds to length_index=0. Numbers inside brackets are "0".
+     * For continuous chains, sliced propagators always have n_segment=0.
+     * Numbers inside brackets are "0".
      *
      * **Algorithm:**
      *
@@ -61,10 +62,11 @@ public:
      * 3. Set individual branch segment counts to 0
      *
      * @param set_I Input set of computation blocks
+     * @param edges What each key computes; gets the aggregated keys
      * @return Modified set with aggregated blocks
      */
     static std::map<std::string, ComputationBlock> aggregate_continuous_chain(
-        std::map<std::string, ComputationBlock> set_I);
+        std::map<std::string, ComputationBlock> set_I, std::map<std::string, ComputationEdge>& edges);
 
     /**
      * @brief Aggregate propagators for discrete chain model.
@@ -78,10 +80,11 @@ public:
      * aggregated propagator remains, creating a hierarchical structure.
      *
      * @param set_I Input set of computation blocks
+     * @param edges What each key computes; gets the aggregated keys
      * @return Modified set with aggregated blocks
      */
     static std::map<std::string, ComputationBlock> aggregate_discrete_chain(
-        std::map<std::string, ComputationBlock> set_I);
+        std::map<std::string, ComputationBlock> set_I, std::map<std::string, ComputationEdge>& edges);
 };
 
 #endif

@@ -47,7 +47,6 @@ SET(BASIC_TESTS
     TestConcentrationsAndStress
     TestInputChecks
     TestErrorMessages
-    TestPropagatorParserSafety
     TestMoleculesValidation
     TestPartitionGuard
     TestPartitionIntegrand

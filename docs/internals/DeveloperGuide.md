@@ -701,8 +701,8 @@ Raw pointers are lent, never owned. The factory functions (`create_computation_b
 take over as the holders of their objects. Two places hand out ownership through raw
 pointers on purpose: the backends' `allocate()`/`deallocate()` and
 `allocate_checkpoint()`/`deallocate_checkpoint()` pairs,
-the allocators of the propagator handles and the reduce-memory checkpoints, which the
-computation classes free in one place; and the `CudaCommon` singleton, which is created
+the allocators of the propagator handles and the reduce-memory checkpoints, which one owner
+per computation (`BackendMemory` in `ComputationCommon`) frees before the backend; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
 `release_cufft_plan()`, and CUDA streams by `CudaStream`, which counts them through
@@ -739,7 +739,7 @@ may accept it.
 
 ### Propagator Computation Optimizer
 
-The `PropagatorComputationOptimizer` automatically detects redundant calculations using hash tables of `PropagatorCode` objects. Avoid manual optimization.
+The `PropagatorComputationOptimizer` automatically detects redundant calculations: equal propagator keys (`PropagatorCode`) are one computation. Each key is written once, with a `ComputationEdge` that records what it computes (monomer type, ds index, start, graft label, dependencies); code that needs these reads the record, never the key string. Avoid manual optimization.
 
 ### New Monomer Types or Interactions
 

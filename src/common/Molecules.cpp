@@ -148,9 +148,7 @@ int Molecules::get_n_polymer_types() const
 }
 Polymer& Molecules::get_polymer(const int p)
 {
-    if (p < 0 || p >= static_cast<int>(polymer_types.size()))
-        throw_with_line_number("Polymer index (" + std::to_string(p) + ") must be in range [0, " +
-            std::to_string(static_cast<int>(polymer_types.size()) - 1) + "]");
+    validation::require_index(p, static_cast<int>(polymer_types.size()), "Polymer index");
     return polymer_types[p];
 }
 const std::map<std::string, double>& Molecules::get_bond_lengths() const
@@ -163,9 +161,7 @@ int Molecules::get_n_solvent_types() const
 }
 std::tuple<double, std::string> Molecules::get_solvent(const int s) const
 {
-    if (s < 0 || s >= static_cast<int>(solvent_types.size()))
-        throw_with_line_number("Solvent index (" + std::to_string(s) + ") must be in range [0, " +
-            std::to_string(static_cast<int>(solvent_types.size()) - 1) + "]");
+    validation::require_index(s, static_cast<int>(solvent_types.size()), "Solvent index");
     return solvent_types[s];
 }
 
@@ -174,20 +170,11 @@ std::tuple<double, std::string> Molecules::get_solvent(const int s) const
  *
  * Builds the integer index mappings for all unique contour lengths
  * and local Δs values collected from the added polymers.
- * Also regenerates propagator keys for all polymers using the length indices.
  */
 void Molecules::finalize_contour_length_mapping()
 {
     if (!contour_length_mapping.finalized())
-    {
         contour_length_mapping.finalize();
-
-        // Regenerate propagator keys for all polymers using length indices
-        for (auto& polymer : polymer_types)
-        {
-            polymer.regenerate_propagator_keys(contour_length_mapping);
-        }
-    }
 }
 
 /**

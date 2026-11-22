@@ -1,20 +1,19 @@
 /**
  * @file PropagatorCode.h
- * @brief Generates dependency codes for efficient propagator computation.
+ * @brief Writes the propagator keys of a polymer and records what each key computes.
  *
- * This header provides the PropagatorCode class which generates string-based
- * codes that encode the computational dependencies between chain propagators.
- * These codes enable efficient scheduling of propagator computations using
- * dynamic programming (memoization) to avoid redundant calculations.
+ * A propagator key is a string that identifies a propagator: equal keys of
+ * different blocks or polymers are one computation. For example:
+ * - "A+0" - A-type propagator from a free end (ds index 0)
+ * - "(B2)A+0" - A-type propagator that starts where a B branch of length index 2 ends
+ * - "(B2C1)A+0" - Junction: A-type propagator starting where B and C branches meet
+ * - "{wall}A+0" - A-type propagator from the grafting point labelled "wall"
  *
- * **Propagator Codes:**
- *
- * A propagator code is a string that uniquely identifies a propagator and
- * encodes its dependencies. For example:
- * - "A10" - A-type propagator of length index 10 from a free end
- * - "(B20)A10" - A-type propagator depending on a B-type sub-propagator
- * - "(B20C15)A10" - Junction: A-type depending on both B and C branches
- * - "{wall}A10" - A-type propagator from the grafting point labelled "wall"
+ * A key is written once, where its propagator is built, together with its
+ * ComputationEdge: the monomer type, the ds index, how it starts and the
+ * propagators it starts from. The computations read these fields; a key is
+ * never parsed back. Besides its identity a key gives only its height
+ * (get_height_from_key), which orders the propagators.
  *
  * **Dynamic Programming:**
  *
@@ -26,65 +25,75 @@
  * J. Chem. Theory Comput. 2025, 21, 3676.
  *
  * @see Polymer for chain topology definition
- * @see PropagatorComputationOptimizer for using codes in scheduling
- *
- * @example
- * @code
- * // Generate propagator codes for a polymer
- * Polymer& polymer = molecules.get_polymer(0);
- * std::map<int, std::string> q_init;  // empty for free ends
- *
- * auto codes = PropagatorCode::generate_codes(polymer, q_init);
- *
- * // Each entry is (from_vertex, to_vertex, code_string)
- * for (auto& [v, u, code] : codes) {
- *     std::cout << "Edge " << v << "->" << u << ": " << code << std::endl;
- * }
- *
- * // Parse a code to get dependencies
- * std::string key = PropagatorCode::get_key_from_code(code);
- * auto deps = PropagatorCode::get_deps_from_key(key);
- * std::string monomer = PropagatorCode::get_monomer_type_from_key(key);
- * @endcode
+ * @see PropagatorComputationOptimizer for using keys in scheduling
+ * @see docs/internals/PropagatorSystem.md for the key format
  */
 
 #ifndef PROPAGATOR_CODE_H_
 #define PROPAGATOR_CODE_H_
 
-#include <string>
-#include <vector>
 #include <map>
+#include <set>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 #include "Polymer.h"
 
 // Forward declaration
 class ContourLengthMapping;
 
+/// How a propagator starts: q(r, 0) of a continuous chain, q(r, 1) of a discrete chain
+enum class PropagatorStart
+{
+    FREE_END,    ///< q = 1 at a free chain end
+    GRAFTED,     ///< q = q_init[graft_label] at a grafted chain end
+    JUNCTION,    ///< Product of the branches that meet at its start, key "(...)..."
+    AGGREGATED,  ///< Weighted sum of sliced propagators that continue one block, key "[...]..."
+};
+
+/**
+ * @brief One propagator: what its key computes and how far its users need it.
+ *
+ * The first five fields are recorded where the key is written (PropagatorCode,
+ * PropagatorAggregator, PropagatorComputationOptimizer::substitute_right_keys);
+ * the optimizer adds the others from the blocks that use the propagator.
+ */
+struct ComputationEdge
+{
+    std::string monomer_type;                          ///< Monomer type of the block it runs along
+    int ds_index = 0;                                  ///< Contour step index (ContourLengthMapping)
+    PropagatorStart start = PropagatorStart::FREE_END; ///< Its initial condition
+    std::string graft_label;                           ///< q_init label of a GRAFTED propagator
+    /// The propagators it starts from, in the order of its key, as <key, n_segment, n_repeated>:
+    /// the segment of the dependency that enters (a junction of discrete chains reads the
+    /// half-bond state there), and its power in a junction product or its weight in an
+    /// aggregated sum (block multiplicities make it real)
+    std::vector<std::tuple<std::string, int, double>> deps;
+    int height = 0;               ///< get_height_from_key(): orders the propagators and the scheduler's groups
+    int max_n_segment = 0;        ///< The last segment its users need
+    std::set<int> junction_ends;  ///< Segments where a junction attaches (discrete chains: half-bond states)
+};
+
 /**
  * @class PropagatorCode
- * @brief Static utility class for generating and parsing propagator codes.
+ * @brief Static utility class for writing propagator keys.
  *
  * All methods are static; the class should not be instantiated.
- * Propagator codes are strings that encode:
- * - Monomer type of the propagator
- * - Number of contour steps
- * - Dependencies on other propagators (for branched polymers)
- * - Initial condition type (for grafted chains)
  *
- * **Code Format:**
- *
- * The code format is DKN: `{INIT}` or `(DEPS)`, then `TYPE` and `N`
+ * **Key Format:** `{INIT}` or `(DEPS)`, then `TYPE`, then `+M`
  * - {INIT}: Initial condition label of a grafted end
  * - (DEPS): The sorted codes of the branches that meet at the start, concatenated;
- *   "B2:3" stands for three identical B2 branches
+ *   "B2:3" stands for three identical B2 branches. The code of a branch is its key
+ *   without "+M", followed by the length index of its block (ContourLengthMapping)
  * - TYPE: Monomer type (e.g., "A", "B")
- * - N: Length index of the block (ContourLengthMapping)
+ * - M: ds index of the block
  *
- * The key of a propagator replaces N by "+ds_index" (DK+M, e.g. "(B20C15)A+0").
  * See docs/internals/PropagatorSystem.md for aggregated keys "[...]".
  *
  * **Height:**
  *
- * The "height" of a propagator is the depth in the dependency tree:
+ * The "height" of a propagator is the number of brackets that open its key:
  * - Free end propagators have height 0
  * - Junction propagators have height = max(child heights) + 1
  * Height is used for scheduling independent propagators in parallel.
@@ -93,73 +102,35 @@ class PropagatorCode
 {
 public:
     /**
-     * @brief Generate all propagator codes for a polymer.
+     * @brief Write the keys of a polymer from the finalized contour length mapping.
      *
-     * Traverses the polymer graph and generates codes for all propagators
-     * needed to compute partition functions and concentrations.
+     * Traverses the polymer graph from the chain ends, memoized per directed edge,
+     * and records the ComputationEdge of every key it writes.
      *
-     * @param pc               Polymer to generate codes for
-     * @param chain_end_to_q_init Map of chain end vertices to initial condition labels
-     * @return Vector of (from_vertex, to_vertex, code) tuples
-     *
-     * @note Uses top-down dynamic programming (memoization) to avoid
-     *       redundant code generation for shared sub-propagators.
-     *
-     * @example
-     * @code
-     * Polymer& p = molecules.get_polymer(0);
-     * std::map<int, std::string> q_init;
-     * auto codes = PropagatorCode::generate_codes(p, q_init);
-     * @endcode
-     */
-    static std::vector<std::tuple<int, int, std::string>> generate_codes(Polymer& pc, std::map<int, std::string>& chain_end_to_q_init);
-
-    /**
-     * @brief Generate propagator codes using length index mapping.
-     *
-     * This version uses ContourLengthMapping to generate codes with integer
-     * indices representing block lengths, rather than segment counts.
-     *
-     * @param pc                  Polymer to generate codes for
-     * @param chain_end_to_q_init Map of chain end vertices to initial condition labels
-     * @param mapping             Contour length to index mapping (must be finalized)
-     * @return Vector of (from_vertex, to_vertex, code) tuples
-     */
-    static std::vector<std::tuple<int, int, std::string>> generate_codes_with_mapping(
-        Polymer& pc,
-        std::map<int, std::string>& chain_end_to_q_init,
-        const ContourLengthMapping& mapping);
-
-    /**
-     * @brief Extract the key (unique identifier) from a full code.
-     * @param code Full propagator code string (format: DKN)
-     * @return Key string in DK format (without ds_index)
-     */
-    static std::string get_key_from_code(const std::string& code);
-
-    /**
-     * @brief Extract key from code with ds_index computation.
-     * @param code Full propagator code string (format: DKN)
-     * @param mapping ContourLengthMapping for ds_index lookup
-     * @return Key string in DK+M format (with ds_index)
-     */
-    static std::string get_key_from_code(const std::string& code, const ContourLengthMapping& mapping);
-
-    /**
-     * @brief Parse dependencies from a propagator key.
-     *
-     * @param key Propagator key string
-     * @return Vector of (dependency_key, n_segment, n_repeated) tuples; n_repeated is the
-     *         power of the dependency in a junction product or its weight in an aggregated sum
+     * @param pc        Polymer to write the keys of
+     * @param mapping   Finalized contour length mapping
+     * @param edge_keys Gets the key of each directed edge (v, u): the propagator that
+     *                  leaves v along the block (v, u)
+     * @param edges     Gets the ComputationEdge of each key
      *
      * @example
      * @code
-     * // For key "(B20C10)A+0"
-     * auto deps = PropagatorCode::get_deps_from_key(key);
-     * // deps holds ("B", 20, 1) and ("C", 10, 1)
+     * std::map<std::pair<int, int>, std::string> edge_keys;
+     * std::map<std::string, ComputationEdge> edges;
+     * PropagatorCode::generate_keys(polymer, molecules.get_contour_length_mapping(), edge_keys, edges);
      * @endcode
      */
-    static std::vector<std::tuple<std::string, int, double>> get_deps_from_key(const std::string& key);
+    static void generate_keys(Polymer& pc, const ContourLengthMapping& mapping,
+                              std::map<std::pair<int, int>, std::string>& edge_keys,
+                              std::map<std::string, ComputationEdge>& edges);
+
+    /**
+     * @brief The code of a propagator as written inside another key.
+     * @param key    Propagator key "DK+M"
+     * @param number Length index (continuous chains) or number of segments written after it
+     * @return "DK" followed by number
+     */
+    static std::string dependency_code(const std::string& key, int number);
 
     /**
      * @brief Text of a branch count in a key, "n" of "A10:n".
@@ -174,32 +145,10 @@ public:
     static std::string format_count(double count);
 
     /**
-     * @brief Extract monomer type from key.
-     * @param key Propagator key in DK+M format (e.g., "(A3B3)C+1")
-     * @return Monomer type string (e.g., "A", "B", "C")
-     */
-    static std::string get_monomer_type_from_key(const std::string& key);
-
-    /**
-     * @brief Extract ds_index from key.
-     * @param key Propagator key in DK+M format (e.g., "(A3B3)C+1")
-     * @return ds_index value (e.g., 1), or -1 if not present
-     */
-    static int get_ds_index_from_key(const std::string& key);
-
-    /**
-     * @brief Extract initial condition label from key.
-     * @param key Propagator key
-     * @return Initial condition label, or empty string if none
-     */
-    static std::string get_q_input_idx_from_key(const std::string& key);
-
-    /**
      * @brief Get height (tree depth) from key.
      * @param key Propagator key
      * @return Height: 0 for leaf nodes, max(child heights)+1 otherwise
      */
     static int get_height_from_key(const std::string& key);
-
 };
 #endif

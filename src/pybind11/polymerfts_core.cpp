@@ -87,6 +87,7 @@
 #include "PlatformSelector.h"
 #include "SpaceGroup.h"
 #include "Exception.h"
+#include "ValidationUtils.h"
 
 namespace py = pybind11;
 
@@ -191,6 +192,35 @@ template <typename... Args>
 using overload_cast_ = py::detail::overload_cast_impl<Args...>;
 
 /**
+ * @brief The data of an input array, which must hold n values.
+ *
+ * @param what      The input, for the error message (e.g. "input w[A]")
+ * @param size_name The size it must have (e.g. "n_basis", the size of the basis of the box)
+ */
+template <typename T, int Flags>
+T* checked_data(const py::array_t<T, Flags>& array, long long n, const std::string& what, const std::string& size_name)
+{
+    const py::buffer_info buf = array.request();
+    if (buf.size != n)
+        throw_with_line_number("Size of " + what + " (" + std::to_string(buf.size) + ") and '" + size_name
+            + "' (" + std::to_string(n) + ") must match.");
+    return static_cast<T*>(buf.ptr);
+}
+
+/**
+ * @brief A new array of fields in the basis of a computation (reduced with a space group), shaped
+ *        lead + (n_basis,), which fill(data) fills.
+ */
+template <typename T, typename Fill>
+py::array_t<T> basis_fields(PropagatorComputation<T>& obj, std::vector<py::ssize_t> lead, Fill&& fill)
+{
+    lead.push_back(obj.get_cb()->get_n_basis());
+    py::array_t<T> result(lead);
+    fill(result.mutable_data());
+    return result;
+}
+
+/**
  * @brief Bind ComputationBox<T> class to Python.
  *
  * Creates Python class "ComputationBox{Real|Complex}" with methods:
@@ -225,8 +255,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
         .def("get_dx", py::overload_cast<int>(&ComputationBox<T>::get_dx, py::const_))
         .def("get_dv", [](const ComputationBox<T>& obj, int i)
         {
-            if (i < 0 || i >= obj.get_total_grid())
-                throw_with_line_number("Index (" + std::to_string(i) + ") must be in range [0, " + std::to_string(obj.get_total_grid() - 1) + "]");
+            validation::require_index(i, obj.get_total_grid(), "Index");
             return obj.get_dv(i);
         })
         .def("get_dv_base", &ComputationBox<T>::get_dv_base)
@@ -252,58 +281,28 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
         // Field operations: use get_n_basis() for size (n_reduced if space group set, else total_grid)
         .def("integral", [](ComputationBox<T>& obj, array_in<T> g)
         {
-            const int N = obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            if (buf_g.size != N) {
-                throw_with_line_number("Size of input (" + std::to_string(buf_g.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-            }
-            return obj.integral(static_cast<T*>(buf_g.ptr));
+            return obj.integral(checked_data(g, obj.get_n_basis(), "input", "n_basis"));
         })
         .def("mean", [](ComputationBox<T>& obj, array_in<T> g)
         {
-            const int N = obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            if (buf_g.size != N) {
-                throw_with_line_number("Size of input (" + std::to_string(buf_g.size) + ") and 'n_basis' (" + std::to_string(N) + ") must match.");
-            }
-            return obj.mean(static_cast<T*>(buf_g.ptr));
+            return obj.mean(checked_data(g, obj.get_n_basis(), "input", "n_basis"));
         })
         .def("inner_product", [](ComputationBox<T>& obj, array_in<T> g, array_in<T> h)
         {
             const int N = obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            py::buffer_info buf_h = h.request();
-            if (buf_g.size != N) {
-                throw_with_line_number("Size of input g (" + std::to_string(buf_g.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-            }
-            if (buf_h.size != N) {
-                throw_with_line_number("Size of input h (" + std::to_string(buf_h.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-            }
-            return obj.inner_product(static_cast<T*>(buf_g.ptr), static_cast<T*>(buf_h.ptr));
+            return obj.inner_product(checked_data(g, N, "input g", "n_basis"), checked_data(h, N, "input h", "n_basis"));
         })
         .def("inner_product_inverse_weight", [](ComputationBox<T>& obj, array_in<T> g, array_in<T> h, array_in<T> w)
         {
             const int N = obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            py::buffer_info buf_h = h.request();
-            py::buffer_info buf_w = w.request();
-            if (buf_g.size != N || buf_h.size != N || buf_w.size != N) {
-                throw_with_line_number("All input arrays must have size " + std::to_string(N));
-            }
-            return obj.inner_product_inverse_weight(static_cast<T*>(buf_g.ptr), static_cast<T*>(buf_h.ptr), static_cast<T*>(buf_w.ptr));
+            return obj.inner_product_inverse_weight(checked_data(g, N, "input g", "n_basis"),
+                checked_data(h, N, "input h", "n_basis"), checked_data(w, N, "input w", "n_basis"));
         })
         .def("multi_inner_product", [](ComputationBox<T>& obj, int n_comp, array_in<T> g, array_in<T> h)
         {
             const long long n_total = static_cast<long long>(n_comp) * obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            py::buffer_info buf_h = h.request();
-            if (buf_g.size != n_total) {
-                throw_with_line_number("Size of g (" + std::to_string(buf_g.size) + ") and n_comp * n_grid (" + std::to_string(n_total) + ") must match.");
-            }
-            if (buf_h.size != n_total) {
-                throw_with_line_number("Size of h (" + std::to_string(buf_h.size) + ") and n_comp * n_grid (" + std::to_string(n_total) + ") must match.");
-            }
-            return obj.multi_inner_product(n_comp, static_cast<T*>(buf_g.ptr), static_cast<T*>(buf_h.ptr));
+            return obj.multi_inner_product(n_comp, checked_data(g, n_total, "g", "n_comp * n_basis"),
+                                           checked_data(h, n_total, "h", "n_comp * n_basis"));
         })
         .def("zero_mean", [](ComputationBox<T>& obj, array_inout<T> g)
         {
@@ -314,12 +313,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
             // crash, an immutable buffer would change).
             if (!(g.flags() & py::array::c_style) || !g.writeable())
                 throw_with_line_number("zero_mean modifies the array in place; pass a writable C-contiguous array.");
-            const int N = obj.get_n_basis();
-            py::buffer_info buf_g = g.request();
-            if (buf_g.size != N) {
-                throw_with_line_number("Size of input (" + std::to_string(buf_g.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-            }
-            obj.zero_mean(static_cast<T*>(buf_g.ptr));
+            obj.zero_mean(checked_data(g, obj.get_n_basis(), "input", "n_basis"));
         }, py::arg("g").noconvert());
 }
 
@@ -368,166 +362,55 @@ void bind_propagator_computation(py::module &m, const std::string &type_name) {
         // otherwise accepts full grid w (total_grid)
         .def("compute_propagators", [](PropagatorComputation<T>& obj, std::map<std::string, array_in<const T>> w_input, py::object q_init)
         {
-            // Casts can own temporary dtype/contiguity conversions. Keep them alive until
-            // the computation has finished reading their buffers. Converted outside the
-            // try below, so that a complex q_init of real fields raises the ValueError of
-            // real_array, like w_input.
-            std::map<std::string, array_in<const T>> q_init_map;
+            // The casts own the dtype/contiguity conversions of their arrays until the
+            // computation has read them; a complex q_init of real fields raises the
+            // ValueError of real_array, like w_input
+            std::map<std::string, array_in<const T>> q_init_arrays;
             if (!q_init.is_none())
-                q_init_map = q_init.cast<std::map<std::string, array_in<const T>>>();
-            try{
-                const int N = obj.get_cb()->get_n_basis();
+                q_init_arrays = q_init.cast<std::map<std::string, array_in<const T>>>();
 
-                std::map<std::string, const T*> map_buf_w_input;
-                std::map<std::string, const T*> map_buf_q_init;
-
-                // Validate and collect w_input
-                for (auto it = w_input.begin(); it != w_input.end(); ++it)
-                {
-                    py::buffer_info buf_w_input = it->second.request();
-                    if (buf_w_input.size != N) {
-                        throw_with_line_number("Size of input w[" + it->first + "] (" + std::to_string(buf_w_input.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-                    }
-                    map_buf_w_input[it->first] = (const T*)buf_w_input.ptr;
-                }
-
-                // Handle q_init if provided: in the same basis as w (reduced with a space group),
-                // which is the layout the computations copy
-                for (auto it = q_init_map.begin(); it != q_init_map.end(); ++it)
-                {
-                    py::buffer_info buf_q_init = it->second.request();
-                    if (buf_q_init.size != N) {
-                        throw_with_line_number("Size of input q[" + it->first + "] (" + std::to_string(buf_q_init.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-                    }
-                    map_buf_q_init[it->first] = (const T*)buf_q_init.ptr;
-                }
-
-                obj.compute_propagators(map_buf_w_input, map_buf_q_init);
-            }
-            catch(std::exception& exc)
-            {
-                throw_without_line_number(exc.what());
-            }
+            // q_init is in the same basis as w (reduced with a space group), the layout the computations copy
+            const int N = obj.get_cb()->get_n_basis();
+            std::map<std::string, const T*> w, q;
+            for (const auto& [monomer_type, values] : w_input)
+                w[monomer_type] = checked_data(values, N, "input w[" + monomer_type + "]", "n_basis");
+            for (const auto& [label, values] : q_init_arrays)
+                q[label] = checked_data(values, N, "input q[" + label + "]", "n_basis");
+            obj.compute_propagators(w, q);
         }, py::arg("w_input"), py::arg("q_init") = py::none())
         .def("advance_propagator_single_segment", [](PropagatorComputation<T>& obj, array_in<T> q_in, int p, int v, int u)
         {
-            try{
-                // Request input buffer
-                py::buffer_info buf_q_in = q_in.request();
-                T* q_in_ptr = static_cast<T*>(buf_q_in.ptr);
-
-                // Allocate output buffer: reduced basis with a space group, as in compute_propagators
-                const int N = obj.get_cb()->get_n_basis();
-                py::array_t<T> q_out(N);
-                py::buffer_info buf_q_out = q_out.request();
-                T* q_out_ptr = static_cast<T*>(buf_q_out.ptr);
-
-                // Call C++ implementation
-                if (buf_q_in.size != N)
-                {
-                    throw_with_line_number("Size of input q_in (" + std::to_string(buf_q_in.size) + ") and 'n_grid' (" + std::to_string(N) + ") must match.");
-                }
-                else
-                {
-                    obj.advance_propagator_single_segment(q_in_ptr, q_out_ptr, p, v, u);
-                }
-                return q_out;
-
-            }
-            catch(std::exception& exc)
-            {
-                throw_without_line_number(exc.what());
-            }
+            // In the basis of the box (reduced with a space group), as in compute_propagators
+            T* q = checked_data(q_in, obj.get_cb()->get_n_basis(), "input q_in", "n_basis");
+            return basis_fields(obj, {}, [&](T* q_out) { obj.advance_propagator_single_segment(q, q_out, p, v, u); });
         })
         .def("compute_concentrations", &PropagatorComputation<T>::compute_concentrations)
+        // The getters return fields in the basis of the box: reduced with a space group, else the full grid
         .def("get_total_concentration", [](PropagatorComputation<T>& obj, std::string monomer_type)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-                py::array_t<T> phi(N);
-                py::buffer_info buf_phi = phi.request();
-                obj.get_total_concentration(monomer_type, static_cast<T*>(buf_phi.ptr));
-                return phi;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {}, [&](T* phi) { obj.get_total_concentration(monomer_type, phi); });
         })
         .def("get_total_concentration", [](PropagatorComputation<T>& obj, int polymer, std::string monomer_type)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-                py::array_t<T> phi = py::array_t<T>(N);
-                py::buffer_info buf_phi = phi.request();
-                obj.get_total_concentration(polymer, monomer_type, static_cast<T*>(buf_phi.ptr));
-                return phi;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {}, [&](T* phi) { obj.get_total_concentration(polymer, monomer_type, phi); });
         })
         .def("get_total_concentration_gce", [](PropagatorComputation<T>& obj, double fugacity, int polymer, std::string monomer_type)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-                py::array_t<T> phi = py::array_t<T>(N);
-                py::buffer_info buf_phi = phi.request();
-                obj.get_total_concentration_gce(fugacity, polymer, monomer_type, static_cast<T*>(buf_phi.ptr));
-                return phi;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {}, [&](T* phi) { obj.get_total_concentration_gce(fugacity, polymer, monomer_type, phi); });
         })
         .def("get_block_concentration", [](PropagatorComputation<T>& obj, int polymer)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-                const int N_B = obj.get_n_blocks(polymer);
-
-                py::array_t<T> phi = py::array_t<T>({N_B,N});
-                py::buffer_info buf_phi = phi.request();
-                obj.get_block_concentration(polymer, static_cast<T*>(buf_phi.ptr));
-                return phi;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {obj.get_n_blocks(polymer)}, [&](T* phi) { obj.get_block_concentration(polymer, phi); });
         })
         .def("get_total_partition", &PropagatorComputation<T>::get_total_partition)
         .def("get_solvent_partition", &PropagatorComputation<T>::get_solvent_partition)
         .def("get_solvent_concentration", [](PropagatorComputation<T>& obj, int s)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-
-                py::array_t<T> phi = py::array_t<T>({N});
-                py::buffer_info buf_phi = phi.request();
-                obj.get_solvent_concentration(s, static_cast<T*>(buf_phi.ptr));
-                return phi;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {}, [&](T* phi) { obj.get_solvent_concentration(s, phi); });
         })
         .def("get_chain_propagator", [](PropagatorComputation<T>& obj, int polymer, int v, int u, int n)
         {
-            try{
-                const int N = obj.get_cb()->get_n_basis();  // n_reduced (with space group) or total_grid
-                py::array_t<T> q1 = py::array_t<T>(N);
-                py::buffer_info buf_q1 = q1.request();
-                obj.get_chain_propagator(static_cast<T*>(buf_q1.ptr), polymer, v, u, n);
-                return q1;
-            }
-            catch(std::exception& exc)
-            {
-                throw_with_line_number(exc.what());
-            }
+            return basis_fields(obj, {}, [&](T* q) { obj.get_chain_propagator(q, polymer, v, u, n); });
         })
         .def("compute_stress", &PropagatorComputation<T>::compute_stress)
         .def("compute_concentrations_and_stress", &PropagatorComputation<T>::compute_concentrations_and_stress,
@@ -572,28 +455,12 @@ void bind_anderson_mixing(py::module &m, const std::string &type_name) {
                 array_in<T> w_current, array_in<T> w_deriv,
                 double old_error_level, double error_level)
         {
-            try{
-                int n_var = obj.get_n_var();
-                py::array_t<T> w_new = py::array_t<T>(n_var);
-
-                py::buffer_info buf_w_new = w_new.request();
-                py::buffer_info buf_w_current = w_current.request();
-                py::buffer_info buf_w_deriv = w_deriv.request();
-
-                if (buf_w_current.size != n_var)
-                    throw_with_line_number("Size of input w_current (" + std::to_string(buf_w_current.size) + ") and 'n_var' (" + std::to_string(n_var) + ") must match.");
-                if (buf_w_deriv.size != n_var)
-                    throw_with_line_number("Size of input w_deriv (" + std::to_string(buf_w_deriv.size) + ") and 'n_var' (" + std::to_string(n_var) + ") must match.");
-
-                obj.calculate_new_fields(static_cast<T*>(buf_w_new.ptr), 
-                                         static_cast<T*>(buf_w_current.ptr),
-                                         static_cast<T*>(buf_w_deriv.ptr), old_error_level, error_level);
-                return w_new;
-            }
-            catch(std::exception& exc)
-            {
-                throw_without_line_number(exc.what());
-            }
+            const int n_var = obj.get_n_var();
+            T* current = checked_data(w_current, n_var, "input w_current", "n_var");
+            T* deriv = checked_data(w_deriv, n_var, "input w_deriv", "n_var");
+            py::array_t<T> w_new(n_var);
+            obj.calculate_new_fields(w_new.mutable_data(), current, deriv, old_error_level, error_level);
+            return w_new;
         });
 }
 
@@ -791,73 +658,38 @@ template<typename T>
 void bind_abstract_factory(py::module &m, const std::string &type_name)
 {
     std::string class_name = "AbstractFactory_" + type_name;
-    
+
+    // Positions of py::keep_alive<nurse, patient>: 0 is the created object, 1 the factory and 2...
+    // the arguments; those of create_propagator_computation:
+    constexpr size_t CREATED = 0, CB = 2, MOLECULES = 3, OPTIMIZER = 4, SPACE_GROUP = 6;
+
     py::class_<AbstractFactory<T>>(m, class_name.c_str())
         .def("create_computation_box", [](
             AbstractFactory<T>& obj,
             std::vector<int> nx, std::vector<double> lx,
-            py::object angles,
-            py::object bc,
-            py::object mask)
+            std::optional<std::vector<double>> angles,
+            std::optional<std::vector<std::string>> bc,
+            std::optional<real_in> mask)  // real for both field types
         {
-            // The mask is real for both field types. Converted outside the try below, so
-            // that a complex mask raises the ValueError of real_array.
-            std::optional<real_in> mask_values;
-            if (!mask.is_none())
-                mask_values = mask.cast<real_in>();
-            try {
-                const int M = checked_grid_points(nx);
-
-                py::buffer_info buf_mask;
-
-                // Check if bc is not None
-                std::vector<std::string> bc_vec;
-                if (!bc.is_none())
-                {
-                    py::list bc_list = py::cast<py::list>(bc);
-                    for (size_t i = 0; i < py::len(bc_list); ++i)
-                        bc_vec.push_back(py::cast<std::string>(bc_list[i]));
-                }
-
-                // Check if mask is not None
-                if (mask_values)
-                {
-                    buf_mask = mask_values->request();
-                    if (buf_mask.size != M) {
-                        throw_with_line_number("Size of input (" + std::to_string(buf_mask.size) + ") and 'total_grid' (" + std::to_string(M) + ") must match");
-                    }
-                }
-
-                // Check if angles is provided
-                if (!angles.is_none())
-                {
-                    py::list angles_list = py::cast<py::list>(angles);
-                    std::vector<double> angles_vec;
-                    for (size_t i = 0; i < py::len(angles_list); ++i)
-                        angles_vec.push_back(py::cast<double>(angles_list[i]));
-                    return obj.create_computation_box(nx, lx, bc_vec, angles_vec, static_cast<double*>(buf_mask.ptr));
-                }
-                else
-                {
-                    return obj.create_computation_box(nx, lx, bc_vec, static_cast<double*>(buf_mask.ptr));
-                }
-            }
-            catch(std::exception& exc)
-            {
-                throw_without_line_number(exc.what());
-            }
+            const int M = checked_grid_points(nx);
+            const double* mask_data = mask ? checked_data(*mask, M, "input mask", "total_grid") : nullptr;
+            const std::vector<std::string> bc_names = bc.value_or(std::vector<std::string>{});
+            if (angles)
+                return obj.create_computation_box(nx, lx, bc_names, *angles, mask_data);
+            return obj.create_computation_box(nx, lx, bc_names, mask_data);
         }, py::arg("nx"), py::arg("lx"), py::arg("angles") = py::none(), py::arg("bc") = py::none(), py::arg("mask") = py::none())
         .def("create_molecules_information", &AbstractFactory<T>::create_molecules_information)
         // keep_alive: the C++ objects hold raw pointers to their arguments, so the
         // Python wrappers of those arguments must outlive the created object
         .def("create_propagator_computation_optimizer", &AbstractFactory<T>::create_propagator_computation_optimizer,
             py::arg("molecules").none(false), py::arg("aggregate_propagator_computation"),
-            py::keep_alive<0, 2>())
+            py::keep_alive<CREATED, 2>())  // molecules
         .def("create_propagator_computation", &AbstractFactory<T>::create_propagator_computation,
             py::arg("cb"), py::arg("molecules"), py::arg("propagator_computation_optimizer"),
             py::arg("numerical_method"), py::arg("space_group") = nullptr,
-            py::keep_alive<0, 2>(), py::keep_alive<0, 3>(), py::keep_alive<0, 4>(), py::keep_alive<0, 6>(),
-            py::keep_alive<2, 6>())  // the constructor also sets the space group on the box
+            py::keep_alive<CREATED, CB>(), py::keep_alive<CREATED, MOLECULES>(), py::keep_alive<CREATED, OPTIMIZER>(),
+            py::keep_alive<CREATED, SPACE_GROUP>(),
+            py::keep_alive<CB, SPACE_GROUP>())  // the constructor also sets the space group on the box
         .def("create_anderson_mixing", [](AbstractFactory<T>& obj, long long n_var, int max_hist,
                                           double start_error, double mix_min, double mix_init)
         {
@@ -882,41 +714,10 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
                     throw_with_line_number("Unknown transform '" + name + "': use periodic, reflecting or absorbing.");
             }
             return obj.create_fourier_transform(cb, bc_vec);
-        }, py::arg("cb"), py::arg("bc"), py::keep_alive<0, 2>())
+        }, py::arg("cb"), py::arg("bc"), py::keep_alive<CREATED, 2>())  // cb
         .def("display_info", &AbstractFactory<T>::display_info);
 }
 
-/**
- * @brief Main pybind11 module definition.
- *
- * Creates the `_core` Python module containing all bindings.
- *
- * **Module Contents:**
- *
- * Classes (non-templated):
- * - Polymer: Single polymer chain with topology
- * - Molecules: Container for all polymers and solvents
- * - PropagatorComputationOptimizer: Optimized propagator scheduling
- * - SpaceGroup: Space-group symmetry and reduced bases
- * - PlatformSelector: Platform detection and factory creation
- *
- * Template classes (Real and Complex variants):
- * - ComputationBoxReal, ComputationBoxComplex
- * - PropagatorComputation_Real, PropagatorComputation_Complex
- * - AndersonMixing_Real, AndersonMixing_Complex
- * - FourierTransform_Real, FourierTransform_Complex (with FourierMultiplier_*)
- * - AbstractFactory_Real, AbstractFactory_Complex
- *
- * **Platform Selection:**
- *
- * Use PlatformSelector.create_factory() to get the appropriate factory:
- * @code{.py}
- * factory = _core.PlatformSelector.create_factory("cuda", type="real")
- * factory = _core.PlatformSelector.create_factory("cpu-fftw", type="complex")
- * @endcode
- *
- * The factory then creates all necessary platform-specific objects.
- */
 // Field conversions of SpaceGroup. The input holds n_fields fields of n_in values
 // each, either flat (1-D) or as (n_fields, n_in); the output keeps the layout of
 // the input: a 1-D input gives a 1-D output, a 2-D input an (n_fields, n_out) array.
@@ -968,128 +769,12 @@ static std::vector<BlockInput> to_block_inputs(const std::vector<std::vector<py:
     return block_inputs;
 }
 
-PYBIND11_MODULE(_core, m)
+/**
+ * @brief Bind Block, Polymer, Molecules and the propagator computation optimizer
+ *        (ComputationEdge, ComputationBlock) to Python.
+ */
+static void bind_molecules(py::module& m)
 {
-    m.attr("build_info") = polymerfts_build_info();
-    m.def("numerical_methods", []() {
-        py::dict result;
-        for (const auto& info : numerical_methods)
-        {
-            py::dict entry;
-            entry["chain_model"] = info.chain_model;
-            entry["solver_type"] = info.solver_type;
-            entry["contour_order"] = info.contour_order;
-            entry["supports_complex"] = info.supports_complex;
-            entry["requires_orthogonal_cell"] = info.requires_orthogonal_cell;
-            entry["supports_mixed_boundaries"] = info.supports_mixed_boundaries;
-            entry["supports_stress"] = info.supports_stress;
-            py::list backends;
-#ifdef USE_CPU_MKL
-            backends.append("cpu-mkl");
-#endif
-#ifdef USE_CPU_FFTW
-            backends.append("cpu-fftw");
-#endif
-#ifdef USE_CUDA
-            backends.append("cuda");
-#endif
-            entry["compiled_backends"] = backends;
-            result[py::str(info.name)] = entry;
-        }
-        return result;
-    }, "Registered propagator methods and their compiled capabilities.");
-    m.def("resolve_numerical_method", [](const std::string& chain_model, const std::string& numerical_method) {
-        return std::string(resolve_numerical_method(chain_model, numerical_method).name);
-    }, py::arg("chain_model"), py::arg("numerical_method") = "",
-       "The method the factories use; an empty name gives rqm4 (continuous) or ps (discrete).");
-    m.def("runtime_info", [](bool include_cuda) {
-        py::dict info;
-#ifdef USE_CPU_FFTW
-        info["fftw"] = std::string(fftw_version);
-#endif
-#ifdef USE_CPU_MKL
-        char mkl_version[256] = {};
-        MKL_Get_Version_String(mkl_version, sizeof(mkl_version));
-        info["mkl"] = std::string(mkl_version);
-#endif
-#ifdef USE_CUDA
-        if (include_cuda)
-        {
-            int version = 0;
-            CUDA_CHECK(cudaRuntimeGetVersion(&version));
-            info["cuda_runtime"] = version;
-            CUDA_CHECK(cudaDriverGetVersion(&version));
-            info["cuda_driver_api"] = version;
-            CUFFT_CHECK(cufftGetVersion(&version));
-            info["cufft"] = version;
-            int device = 0;
-            cudaDeviceProp properties{};
-            CUDA_CHECK(cudaGetDevice(&device));
-            CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
-            info["cuda_device_name"] = std::string(properties.name);
-            info["cuda_compute_capability"] = std::to_string(properties.major) + "." + std::to_string(properties.minor);
-            info["cuda_device_memory"] = properties.totalGlobalMem;
-            std::string uuid;
-            constexpr char hex[] = "0123456789abcdef";
-            for (unsigned char byte : properties.uuid.bytes)
-            {
-                uuid.push_back(hex[byte >> 4]);
-                uuid.push_back(hex[byte & 15]);
-            }
-            info["cuda_device_uuid"] = uuid;
-        }
-#else
-        (void)include_cuda;
-#endif
-        return info;
-    }, py::arg("include_cuda") = false);
-    // Grid-size limits of the 32-bit grid indices (GridLimits.h)
-    m.attr("MAX_GRID_POINTS") = MAX_GRID_POINTS;
-    m.attr("MAX_GRID_ARRAY") = MAX_GRID_ARRAY;
-    // Default tolerance of check_total_partition (PropagatorComputation.h)
-    m.attr("PARTITION_TOLERANCE") = PARTITION_TOLERANCE;
-    // The alias search of the propagator solvers (MinimalFormAlias.h) on a periodic grid of a cell
-    // that need not be the simulation box: the smearing in SCFT box relaxation, and WTMD. A box of
-    // the cell gives its reciprocal metric, from the angles in degrees as every box.
-    struct AliasGrid
-    {
-        int dim;
-        std::array<int, 3> grid;
-        IndexMetric metric;
-        AliasGrid(const std::vector<int>& nx, const std::vector<double>& lx, const std::vector<double>& angles)
-        {
-            const ComputationBox<double> box(nx, lx, std::vector<std::string>(2 * nx.size(), "periodic"), angles);
-            dim = box.get_dim();
-            grid = padded_grid(nx);
-            metric = index_metric_of(box.get_recip_metric(), dim);
-        }
-    };
-    m.def("minimal_alias_k_squared", [](const std::vector<int>& nx, const std::vector<double>& lx,
-                                        const std::vector<double>& angles)
-    {
-        const AliasGrid cell(nx, lx, angles);
-        py::array_t<double> k_squared(std::vector<py::ssize_t>(nx.begin(), nx.end()));
-        alias_k_squared(cell.grid, cell.grid, cell.metric, k_squared.mutable_data());
-        return k_squared;
-    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
-       "|k|^2 = 4 pi^2 u^T G u of every mode of the periodic grid nx on the cell lx, angles ([alpha, beta, gamma] "
-       "or [gamma] in degrees), u the alias of least |k|^2 and G the reciprocal metric of the box; shape nx. "
-       "The values of PropagatorSolver.fourier.k_squared() on every mode.");
-    m.def("minimal_alias_moments", [](const std::vector<int>& nx, const std::vector<double>& lx,
-                                      const std::vector<double>& angles)
-    {
-        const AliasGrid cell(nx, lx, angles);
-        std::vector<py::ssize_t> shape(nx.begin(), nx.end());
-        shape.insert(shape.begin(), {cell.dim, cell.dim});
-        py::array_t<double> moments(shape);
-        alias_moments(cell.grid, cell.grid, cell.metric, cell.dim, moments.mutable_data());
-        return moments;
-    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
-       "<v_a v_b>, v = G u, over the aliases u tied for the least |k|^2 of every mode of the periodic grid nx on "
-       "the cell lx, angles ([alpha, beta, gamma] or [gamma] in degrees), G the reciprocal metric of the box; "
-       "shape (dim, dim) + nx. The values of PropagatorSolver.fourier.alias_moments() on every mode.");
-
-
     py::class_<Block>(m, "Block")
         .def_readonly("monomer_type", &Block::monomer_type)
         .def_readonly("n_segment", &Block::n_segment)
@@ -1100,14 +785,10 @@ PYBIND11_MODULE(_core, m)
 
     py::class_<ComputationEdge>(m, "ComputationEdge")
         .def_readonly("max_n_segment", &ComputationEdge::max_n_segment)
-        .def_readonly("monomer_type", &ComputationEdge::monomer_type)
-        .def_readonly("deps", &ComputationEdge::deps)
-        .def_readonly("height", &ComputationEdge::height)
-        .def_readonly("junction_ends", &ComputationEdge::junction_ends);
+        .def_readonly("monomer_type", &ComputationEdge::monomer_type);
 
     py::class_<ComputationBlock>(m, "ComputationBlock")
         .def_readonly("monomer_type", &ComputationBlock::monomer_type)
-        .def_readonly("n_segment_right", &ComputationBlock::n_segment_right)
         .def_readonly("n_repeated", &ComputationBlock::n_repeated);
 
     py::class_<Polymer>(m, "Polymer")
@@ -1116,9 +797,7 @@ PYBIND11_MODULE(_core, m)
         .def("get_n_blocks", &Polymer::get_n_blocks)
         .def("get_blocks", &Polymer::get_blocks)
         .def("get_block", &Polymer::get_block)
-        .def("get_n_segment_total", &Polymer::get_n_segment_total)
-        .def("get_propagator_key", &Polymer::get_propagator_key)
-        .def("display_architecture", &Polymer::display_architecture);
+        .def("get_n_segment_total", &Polymer::get_n_segment_total);
 
     py::class_<Molecules>(m, "Molecules")
         .def(py::init<std::string, double, std::map<std::string, double>>())
@@ -1137,15 +816,22 @@ PYBIND11_MODULE(_core, m)
         .def("get_solvent", &Molecules::get_solvent)
         .def("add_solvent", &Molecules::add_solvent)
         .def("display_architectures", &Molecules::display_architectures);
-        
+
     py::class_<PropagatorComputationOptimizer>(m, "PropagatorComputationOptimizer")
+        .def("get_propagator_key", &PropagatorComputationOptimizer::get_propagator_key,
+             py::arg("polymer"), py::arg("v"), py::arg("u"),
+             "Key of the propagator that leaves v along the block (v, u) of a polymer.")
         .def("get_computation_propagators", &PropagatorComputationOptimizer::get_computation_propagators)
         .def("get_computation_propagator", &PropagatorComputationOptimizer::get_computation_propagator)
         .def("get_computation_blocks", &PropagatorComputationOptimizer::get_computation_blocks)
-        .def("display_statistics", &PropagatorComputationOptimizer::display_statistics)
-        .def_static("get_deps_from_key", &PropagatorCode::get_deps_from_key);
+        .def("display_statistics", &PropagatorComputationOptimizer::display_statistics);
+}
 
-    // Bind SpaceGroup
+/**
+ * @brief Bind SpaceGroup to Python: reduced bases, physical bases and field conversions.
+ */
+static void bind_space_group(py::module& m)
+{
     py::class_<SpaceGroup>(m, "SpaceGroup",
         R"doc(Space group symmetry for reduced basis representation.
 
@@ -1267,6 +953,163 @@ Example:
             obj.symmetrize(static_cast<double*>(buf.ptr), static_cast<double*>(result.request().ptr), n_fields);
             return result;
         }, "Average field(s) over the space-group orbits. Returns an array of the same shape as the input.");
+}
+
+/**
+ * @brief Main pybind11 module definition.
+ *
+ * Creates the `_core` Python module containing all bindings.
+ *
+ * **Module Contents:**
+ *
+ * Classes (non-templated):
+ * - Polymer: Single polymer chain with topology
+ * - Molecules: Container for all polymers and solvents
+ * - PropagatorComputationOptimizer: Optimized propagator scheduling
+ * - SpaceGroup: Space-group symmetry and reduced bases
+ * - PlatformSelector: Platform detection and factory creation
+ *
+ * Template classes (Real and Complex variants):
+ * - ComputationBoxReal, ComputationBoxComplex
+ * - PropagatorComputation_Real, PropagatorComputation_Complex
+ * - AndersonMixing_Real, AndersonMixing_Complex
+ * - FourierTransform_Real, FourierTransform_Complex (with FourierMultiplier_*)
+ * - AbstractFactory_Real, AbstractFactory_Complex
+ *
+ * **Platform Selection:**
+ *
+ * Use PlatformSelector.create_factory() to get the appropriate factory:
+ * @code{.py}
+ * factory = _core.PlatformSelector.create_factory("cuda", type="real")
+ * factory = _core.PlatformSelector.create_factory("cpu-fftw", type="complex")
+ * @endcode
+ *
+ * The factory then creates all necessary platform-specific objects.
+ */
+PYBIND11_MODULE(_core, m)
+{
+    m.attr("build_info") = polymerfts_build_info();
+    m.def("numerical_methods", []() {
+        py::dict result;
+        for (const auto& info : numerical_methods)
+        {
+            py::dict entry;
+            entry["chain_model"] = info.chain_model;
+            entry["solver_type"] = info.solver_type;
+            entry["contour_order"] = info.contour_order;
+            entry["supports_complex"] = info.supports_complex;
+            entry["requires_orthogonal_cell"] = info.requires_orthogonal_cell;
+            entry["supports_mixed_boundaries"] = info.supports_mixed_boundaries;
+            entry["supports_stress"] = info.supports_stress;
+            py::list backends;
+#ifdef USE_CPU_MKL
+            backends.append("cpu-mkl");
+#endif
+#ifdef USE_CPU_FFTW
+            backends.append("cpu-fftw");
+#endif
+#ifdef USE_CUDA
+            backends.append("cuda");
+#endif
+            entry["compiled_backends"] = backends;
+            result[py::str(info.name)] = entry;
+        }
+        return result;
+    }, "Registered propagator methods and their compiled capabilities.");
+    m.def("resolve_numerical_method", [](const std::string& chain_model, const std::string& numerical_method) {
+        return std::string(resolve_numerical_method(chain_model, numerical_method).name);
+    }, py::arg("chain_model"), py::arg("numerical_method") = "",
+       "The method the factories use; an empty name gives rqm4 (continuous) or ps (discrete).");
+    m.def("runtime_info", [](bool include_cuda) {
+        py::dict info;
+#ifdef USE_CPU_FFTW
+        info["fftw"] = std::string(fftw_version);
+#endif
+#ifdef USE_CPU_MKL
+        char mkl_version[256] = {};
+        MKL_Get_Version_String(mkl_version, sizeof(mkl_version));
+        info["mkl"] = std::string(mkl_version);
+#endif
+#ifdef USE_CUDA
+        if (include_cuda)
+        {
+            int version = 0;
+            CUDA_CHECK(cudaRuntimeGetVersion(&version));
+            info["cuda_runtime"] = version;
+            CUDA_CHECK(cudaDriverGetVersion(&version));
+            info["cuda_driver_api"] = version;
+            CUFFT_CHECK(cufftGetVersion(&version));
+            info["cufft"] = version;
+            int device = 0;
+            cudaDeviceProp properties{};
+            CUDA_CHECK(cudaGetDevice(&device));
+            CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
+            info["cuda_device_name"] = std::string(properties.name);
+            info["cuda_compute_capability"] = std::to_string(properties.major) + "." + std::to_string(properties.minor);
+            info["cuda_device_memory"] = properties.totalGlobalMem;
+            std::string uuid;
+            constexpr char hex[] = "0123456789abcdef";
+            for (unsigned char byte : properties.uuid.bytes)
+            {
+                uuid.push_back(hex[byte >> 4]);
+                uuid.push_back(hex[byte & 15]);
+            }
+            info["cuda_device_uuid"] = uuid;
+        }
+#else
+        (void)include_cuda;
+#endif
+        return info;
+    }, py::arg("include_cuda") = false);
+    // Grid-size limits of the 32-bit grid indices (GridLimits.h)
+    m.attr("MAX_GRID_POINTS") = MAX_GRID_POINTS;
+    m.attr("MAX_GRID_ARRAY") = MAX_GRID_ARRAY;
+    // Default tolerance of check_total_partition (PropagatorComputation.h)
+    m.attr("PARTITION_TOLERANCE") = PARTITION_TOLERANCE;
+    // The alias search of the propagator solvers (MinimalFormAlias.h) on a periodic grid of a cell
+    // that need not be the simulation box: the smearing in SCFT box relaxation, and WTMD. A box of
+    // the cell gives its reciprocal metric, from the angles in degrees as every box.
+    struct AliasGrid
+    {
+        int dim;
+        std::array<int, 3> grid;
+        IndexMetric metric;
+        AliasGrid(const std::vector<int>& nx, const std::vector<double>& lx, const std::vector<double>& angles)
+        {
+            const ComputationBox<double> box(nx, lx, std::vector<std::string>(2 * nx.size(), "periodic"), angles);
+            dim = box.get_dim();
+            grid = padded_grid(nx);
+            metric = index_metric_of(box.get_recip_metric(), dim);
+        }
+    };
+    m.def("minimal_alias_k_squared", [](const std::vector<int>& nx, const std::vector<double>& lx,
+                                        const std::vector<double>& angles)
+    {
+        const AliasGrid cell(nx, lx, angles);
+        py::array_t<double> k_squared(std::vector<py::ssize_t>(nx.begin(), nx.end()));
+        alias_k_squared(cell.grid, cell.grid, cell.metric, k_squared.mutable_data());
+        return k_squared;
+    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
+       "|k|^2 = 4 pi^2 u^T G u of every mode of the periodic grid nx on the cell lx, angles ([alpha, beta, gamma] "
+       "or [gamma] in degrees), u the alias of least |k|^2 and G the reciprocal metric of the box; shape nx. "
+       "The values of PropagatorSolver.fourier.k_squared() on every mode.");
+    m.def("minimal_alias_moments", [](const std::vector<int>& nx, const std::vector<double>& lx,
+                                      const std::vector<double>& angles)
+    {
+        const AliasGrid cell(nx, lx, angles);
+        std::vector<py::ssize_t> shape(nx.begin(), nx.end());
+        shape.insert(shape.begin(), {cell.dim, cell.dim});
+        py::array_t<double> moments(shape);
+        alias_moments(cell.grid, cell.grid, cell.metric, cell.dim, moments.mutable_data());
+        return moments;
+    }, py::arg("nx"), py::arg("lx"), py::arg("angles"),
+       "<v_a v_b>, v = G u, over the aliases u tied for the least |k|^2 of every mode of the periodic grid nx on "
+       "the cell lx, angles ([alpha, beta, gamma] or [gamma] in degrees), G the reciprocal metric of the box; "
+       "shape (dim, dim) + nx. The values of PropagatorSolver.fourier.alias_moments() on every mode.");
+
+    // Bind Block, Polymer, Molecules and the optimizer; SpaceGroup
+    bind_molecules(m);
+    bind_space_group(m);
 
     // Bind ComputationBox
     bind_computation_box<double>(m, "Real");

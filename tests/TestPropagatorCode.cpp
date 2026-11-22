@@ -15,6 +15,7 @@
 #include <stdexcept>
 
 #include "Molecules.h"
+#include "PropagatorCode.h"
 #include "PropagatorComputationOptimizer.h"
 #include "Polymer.h"
 
@@ -64,63 +65,47 @@ int main()
         propagator_computation_optimizer.display_blocks();
         propagator_computation_optimizer.display_propagators();
 
-        // Test get_deps_from_key
-        std::string key;
-        std::vector<std::tuple<std::string, int, double>> sub_deps;
-        // sub_deps: []
-        key = "B";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(sub_deps.size() != 0)
+        // What a key computes is recorded where the key is written: its monomer type, its
+        // start and its dependencies <key, n_segment, n_repeated> in the order of the key
+        // (length indices 3, 2, 1 are 12, 9 and 4 segments)
+        using Deps = std::vector<std::tuple<std::string, int, double>>;
+        auto edge_is = [&](const std::string& key, const std::string& monomer_type, PropagatorStart start, const Deps& deps)
+        {
+            const ComputationEdge& edge = propagator_computation_optimizer.get_computation_propagator(key);
+            const bool ok = edge.monomer_type == monomer_type && edge.start == start && edge.deps == deps
+                && edge.ds_index == 0 && edge.graft_label.empty();
+            if (!ok)
+                std::cout << "Unexpected edge of " << key << std::endl;
+            return ok;
+        };
+        if (!edge_is("B+0", "B", PropagatorStart::FREE_END, {}))
             return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "B")
+        if (!edge_is("(A3B3)A+0", "A", PropagatorStart::JUNCTION, {{"A+0", 12, 1.0}, {"B+0", 12, 1.0}}))
             return -1;
-
-        // sub_deps: [A:3, B:3] (using length_index: 3 = 1.2/0.1 = 12 segments)
-        key = "(A3B3)A";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(std::get<0>(sub_deps[0]) != "A" || std::get<1>(sub_deps[0]) != 3)
+        if (!edge_is("((A3)B3(B3)A2(B3)B3)A+0", "A", PropagatorStart::JUNCTION,
+                     {{"(A3)B+0", 12, 1.0}, {"(B3)A+0", 9, 1.0}, {"(B3)B+0", 12, 1.0}}))
             return -1;
-        if(std::get<0>(sub_deps[1]) != "B" || std::get<1>(sub_deps[1]) != 3)
-            return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "A")
-            return -1;
-
-        // sub_deps: [(A3)B:3, (B3)A:2, (B3)B:3] (length_index: 3=12 segs, 2=9 segs)
-        key = "((A3)B3(B3)A2(B3)B3)A";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(std::get<0>(sub_deps[0]) != "(A3)B" || std::get<1>(sub_deps[0]) != 3)
-            return -1;
-        if(std::get<0>(sub_deps[1]) != "(B3)A" || std::get<1>(sub_deps[1]) != 2)
-            return -1;
-       if(std::get<0>(sub_deps[2]) != "(B3)B" || std::get<1>(sub_deps[2]) != 3)
-            return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "A")
+        if (!edge_is("((((((A3B3)A2)A2(A3B3)A3)A2A3)A1B2B3)A3(A3)B3(B3)B3)A+0", "A", PropagatorStart::JUNCTION,
+                     {{"(((((A3B3)A2)A2(A3B3)A3)A2A3)A1B2B3)A+0", 12, 1.0}, {"(A3)B+0", 12, 1.0}, {"(B3)B+0", 12, 1.0}}))
             return -1;
 
-        // sub_deps: [(((((A3B3)A2)A2(A3B3)A3)A2A3)A1B3B2)A:3, (A3)B:3, (B3)B:3]
-        // (length_index: 3=12 segs, 2=9 segs, 1=4 segs)
-        key = "((((((A3B3)A2)A2(A3B3)A3)A2A3)A1B3B2)A3(A3)B3(B3)B3)A";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(std::get<0>(sub_deps[0]) != "(((((A3B3)A2)A2(A3B3)A3)A2A3)A1B3B2)A" || std::get<1>(sub_deps[0]) != 3)
-            return -1;
-        if(std::get<0>(sub_deps[1]) != "(A3)B" || std::get<1>(sub_deps[1]) != 3)
-            return -1;
-        if(std::get<0>(sub_deps[2]) != "(B3)B" || std::get<1>(sub_deps[2]) != 3)
-            return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "A")
-            return -1;
-
-        // Print sub propagator_codes
+        // Print the propagators and their dependencies
         std::map<std::string, ComputationEdge, ComparePropagatorKey> computation_propagators = propagator_computation_optimizer.get_computation_propagators();
         for(const auto& item : computation_propagators)
         {
             std::cout << item.first << ":\n\t";
             std::cout << "{max_n_segment: " << item.second.max_n_segment << ",\n\tsub_deps: [";
-            sub_deps = PropagatorCode::get_deps_from_key(item.first);
-            for(size_t i=0; i<sub_deps.size(); i++)
-                std::cout << std::get<0>(sub_deps[i]) << ":" << std::get<1>(sub_deps[i]) << ", " ;
+            for(const auto& [dep_key, dep_n_segment, dep_n_repeated] : item.second.deps)
+                std::cout << dep_key << ":" << dep_n_segment << ", " ;
             std::cout << "]}" << std::endl;
         }
+
+        // Every dependency is a propagator of the table, computed at least as far as it is read
+        for(const auto& item : computation_propagators)
+            for(const auto& [dep_key, dep_n_segment, dep_n_repeated] : item.second.deps)
+                if(!computation_propagators.contains(dep_key)
+                    || computation_propagators.at(dep_key).max_n_segment < dep_n_segment)
+                    return -1;
 
         // Check size of sub_deps dictionary
         if(propagator_computation_optimizer.get_n_computation_propagator_codes() != 29)
