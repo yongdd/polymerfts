@@ -45,6 +45,19 @@
 #include "Exception.h"
 #include "ValidationUtils.h"
 
+namespace
+{
+/// The computational cost reduction of the optimization in percent, rounded to two decimals;
+/// zero when there is nothing to reduce (chains of one discrete segment need no steps)
+double reduction_percent(int total_steps, int reduced_steps)
+{
+    double percent = 0.0;
+    if (total_steps > 0)
+        percent = 100*(1.0 - static_cast<double>(reduced_steps)/static_cast<double>(total_steps));
+    return std::round(percent*100)/100;
+}
+}  // namespace
+
 /**
  * @brief Compare propagator keys for ordered storage.
  *
@@ -96,7 +109,7 @@ PropagatorComputationOptimizer::PropagatorComputationOptimizer(Molecules* molecu
     this->molecules = molecules;
 
     this->aggregate_propagator_computation = aggregate_propagator_computation;
-    this->model_name = molecules->get_model_name();
+    this->continuous = (molecules->get_model_name() == "continuous");  // Molecules takes "continuous" or "discrete"
     for(int p=0; p<molecules->get_n_polymer_types();p++)
     {
         add_polymer(molecules->get_polymer(p), p);
@@ -153,26 +166,6 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
         v_u_to_right_key[std::make_tuple(v,u)] = key_right;
     }
 
-    // Total segment number
-    int total_segment_number = 0;
-    if (this->model_name == "continuous")
-    {
-        for(size_t b=0; b<blocks.size(); b++)
-            total_segment_number += blocks[b].n_segment;
-    }
-    else if (this->model_name == "discrete")
-    {
-        for(size_t b=0; b<blocks.size(); b++)
-        {
-            total_segment_number += blocks[b].n_segment-1;
-            if(is_junction(pc, blocks[b].v))
-                total_segment_number ++;
-            if(is_junction(pc, blocks[b].u))
-                total_segment_number ++;
-        }
-    }
-    this->total_segment_numbers.push_back(total_segment_number);
-
     // Aggregation. Its re-keying of downstream blocks (substitute_right_keys) assumes one copy of
     // each branch at a junction, so polymers with block multiplicities are computed without it.
     bool has_multiplicity = false;
@@ -191,9 +184,9 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
             std::map<std::string, ComputationBlock> right_keys = item.second;
 
 
-            // Aggregate propagators for given left key (Molecules accepts no other chain model)
+            // Aggregate propagators for given left key
             std::map<std::string, ComputationBlock> set_I;
-            if (model_name == "continuous")
+            if (continuous)
                 set_I = PropagatorAggregator::aggregate_continuous_chain(right_keys, edges);
             else
                 set_I = PropagatorAggregator::aggregate_discrete_chain(right_keys, edges);
@@ -252,14 +245,11 @@ void PropagatorComputationOptimizer::add_polymer(Polymer& pc, int polymer_id)
             computation_blocks[key].v_u = u_item.second.v_u;
             computation_blocks[key].n_repeated = n_repeated;
             computation_blocks[key].n_copies = n_copies;
-            bool is_junction_left = false;
-            bool is_junction_right = false;
-            if (PropagatorCode::get_height_from_key(key_v) > 0)
-                is_junction_left = true;
-            if (PropagatorCode::get_height_from_key(key_u) > 0)
-                is_junction_right = true;
 
-            // Update propagators
+            // Update propagators. A propagator that starts from others (a junction or an
+            // aggregation, height above zero) makes the other one of the block end there.
+            const bool is_junction_left  = !edges.at(key_v).deps.empty();
+            const bool is_junction_right = !edges.at(key_u).deps.empty();
             add_propagator_use(key_v, edges.at(key_v), n_segment_left,  is_junction_right);
             add_propagator_use(key_u, edges.at(key_u), n_segment_right, is_junction_left);
         }
@@ -305,7 +295,6 @@ void PropagatorComputationOptimizer::substitute_right_keys(
     std::map<std::string, ComputationEdge>& edges,
     std::string left_key)
 {
-    const bool continuous = (this->model_name == "continuous");
     for(auto& aggregated_key : aggregated_blocks[left_key])
     {
         auto& computation_block = computation_blocks_new_polymer[left_key][aggregated_key];
@@ -545,14 +534,14 @@ void PropagatorComputationOptimizer::display_blocks() const
         else
             std::cout << "O, ";
 
-        // Print is_free_end (left, right)
+        // Print is_junction (left, right)
         std::cout << "(";
-        if (PropagatorCode::get_height_from_key(v_string) > 0)
+        if (computation_propagators.at(v_string).height > 0)
             std::cout << "O, ";
         else
             std::cout << "X, ";
 
-        if (PropagatorCode::get_height_from_key(u_string) > 0)
+        if (computation_propagators.at(u_string).height > 0)
             std::cout << "O), ";
         else
             std::cout << "X), ";
@@ -586,19 +575,36 @@ void PropagatorComputationOptimizer::display_blocks() const
  */
 std::pair<int, int> PropagatorComputationOptimizer::count_steps() const
 {
+    // Without the optimization: the segments of every block of every polymer, twice. A discrete
+    // block of n segments takes n-1 bonds and a half bond to each junction at its ends.
     int total_mde_steps_without_reduction = 0;
-    int reduced_mde_steps = 0;
-
-    for(const auto& n_segment : total_segment_numbers)
+    for(int p = 0; p < molecules->get_n_polymer_types(); p++)
     {
-        total_mde_steps_without_reduction += 2*n_segment;
+        Polymer& pc = molecules->get_polymer(p);
+        int total_segment_number = 0;
+        for(const Block& block : pc.get_blocks())
+        {
+            if (continuous)
+                total_segment_number += block.n_segment;
+            else
+            {
+                total_segment_number += block.n_segment-1;
+                if(is_junction(pc, block.v))
+                    total_segment_number ++;
+                if(is_junction(pc, block.u))
+                    total_segment_number ++;
+            }
+        }
+        total_mde_steps_without_reduction += 2*total_segment_number;
     }
 
+    // With it: the steps of the computation propagators
+    int reduced_mde_steps = 0;
     for(const auto& item : computation_propagators)
     {
-        if (this->model_name == "continuous")
+        if (continuous)
             reduced_mde_steps += item.second.max_n_segment;
-        else if (this->model_name == "discrete")
+        else
         {
             reduced_mde_steps += item.second.max_n_segment-1;
             reduced_mde_steps += item.second.junction_ends.size();
@@ -619,19 +625,13 @@ void PropagatorComputationOptimizer::display_statistics() const
 {
     const auto [total_mde_steps_without_reduction, reduced_mde_steps] = count_steps();
 
-    if (this->model_name == "continuous")
+    if (continuous)
         std::cout << "Propagator solver: total MDE steps = " << total_mde_steps_without_reduction;
-    else if (this->model_name == "discrete")
+    else
         std::cout << "Propagator solver: total integral equation steps = " << total_mde_steps_without_reduction;
 
     std::cout << ", after optimization = " << reduced_mde_steps;
-
-    // Chains of one discrete segment need no steps: nothing to reduce
-    double percent = 0.0;
-    if (total_mde_steps_without_reduction > 0)
-        percent = 100*(1.0 - static_cast<double>(reduced_mde_steps)/static_cast<double>(total_mde_steps_without_reduction));
-    percent = std::round(percent*100)/100;
-    std::cout << ", reduction = " << percent << " %" << std::endl;
+    std::cout << ", reduction = " << reduction_percent(total_mde_steps_without_reduction, reduced_mde_steps) << " %" << std::endl;
 }
 
 /**
@@ -681,15 +681,11 @@ void PropagatorComputationOptimizer::display_propagators() const
         }
         std::cout << "}, "<< std::endl;
     }
-    if (this->model_name == "continuous")
-        std::cout << "Total number of modified diffusion equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;    
-    else if (this->model_name == "discrete")
+    if (continuous)
+        std::cout << "Total number of modified diffusion equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;
+    else
         std::cout << "Total number of integral equation steps (time complexity) to compute propagators: " << total_mde_steps_without_reduction << std::endl;
     std::cout << "Total number of steps after optimizing computation : " << reduced_mde_steps << std::endl;
-
-    double percent = 0.0;
-    if (total_mde_steps_without_reduction > 0)
-        percent = 100*(1.0 - static_cast<double>(reduced_mde_steps)/static_cast<double>(total_mde_steps_without_reduction));
-    percent = std::round(percent*100)/100; //rounding
-    std::cout << "Computational cost reduction (higher is better) : " << percent << " %" << std::endl;
+    std::cout << "Computational cost reduction (higher is better) : "
+              << reduction_percent(total_mde_steps_without_reduction, reduced_mde_steps) << " %" << std::endl;
 }

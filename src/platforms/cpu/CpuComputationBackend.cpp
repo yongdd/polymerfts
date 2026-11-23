@@ -201,7 +201,7 @@ template <typename T>
 template <typename Source>
 void CpuComputationBackend<T>::multiply_sources(T* q, const std::vector<std::pair<Source*, double>>& sources)
 {
-    // Complex powers are integers (ComputationCommon checks them when it is built)
+    // Complex powers are integers (PropagatorComputation checks them when it is built)
     for (int i = 0; i < n_basis; i++)
     {
         junction_product::Accumulator<T> product;

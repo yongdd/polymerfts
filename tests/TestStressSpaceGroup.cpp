@@ -103,12 +103,12 @@ int run_case(const std::string& platform, const std::string& chain_model, const 
     std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, false);
 
     // Solver 1: WITH space group; fields are passed in the reduced basis
-    std::unique_ptr<ComputationBox<double>> cb_sg = factory->create_computation_box(cs.nx, cs.lx, {});
+    std::unique_ptr<ComputationBox<double>> cb_sg = factory->create_computation_box(cs.nx, cs.lx, {}, {}, nullptr, cs.sg);
     std::unique_ptr<Molecules> molecules_sg = factory->create_molecules_information(chain_model, ds, {{"A",1.0}, {"B",1.0}});
     molecules_sg->add_polymer(1.0, blocks, {});
     auto optimizer_sg = std::make_unique<PropagatorComputationOptimizer>(molecules_sg.get(), false);
     std::unique_ptr<PropagatorComputation<double>> solver_sg = factory->create_propagator_computation(
-        cb_sg.get(), molecules_sg.get(), optimizer_sg.get(), "", cs.sg);
+        cb_sg.get(), molecules_sg.get(), optimizer_sg.get(), "");
 
     // Solver 2: WITHOUT space group; fed the same symmetrized full-grid fields
     std::unique_ptr<ComputationBox<double>> cb_std = factory->create_computation_box(cs.nx, cs.lx, {});

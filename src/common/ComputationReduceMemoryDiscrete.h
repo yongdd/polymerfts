@@ -33,8 +33,8 @@ class ComputationReduceMemoryDiscrete : public ComputationReduceMemoryBase<T>
 {
 private:
     /// q(r, n+1/2) of propagator key: n = 0 of a junction propagator and the junction ends
-    /// (in the backend memory of ComputationCommon)
-    std::map<std::tuple<std::string, int>, CheckpointArray<T>*> half_checkpoint;
+    /// (in the backend memory of PropagatorComputation)
+    typename ComputationReduceMemoryBase<T>::CheckpointMap half_checkpoint;
 
     /// A propagator with what it reads, resolved once: the checkpoints are fixed after
     /// construction, and keys grow with the size of a polymer
@@ -51,9 +51,6 @@ private:
 
     /// One segment per polymer for its partition function: (polymer, key, n, key†, monomer type, n_aggregated)
     std::vector<std::tuple<int, std::string, int, std::string, std::string, double>> single_partition_segment;
-
-    void add_half_checkpoint(const std::string& key, int n);
-    CheckpointArray<T>* half_checkpoint_at(const std::string& key, int n);
 
 protected:
     void compute_blocks(bool with_concentrations, bool with_stress) override;

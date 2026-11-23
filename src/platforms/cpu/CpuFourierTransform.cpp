@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-#include "ComputationCommon.h"   // ParallelErrors
+#include "ComputationSupport.h"   // ParallelErrors
 #include "CpuFourierTransform.h"
 #include "FFTFactory.h"
 

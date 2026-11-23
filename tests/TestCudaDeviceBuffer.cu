@@ -231,14 +231,13 @@ static void run_computation(const ComputationSpec& c)
         if (c.basis == "pmmm")     sg->enable_pmmm_physical_basis();
         if (c.basis == "z-mirror") sg->enable_z_mirror_physical_basis();
     }
-    std::unique_ptr<ComputationBox<T>> cb(c.angles.empty()
-        ? factory->create_computation_box(c.nx, c.lx, c.bc)
-        : factory->create_computation_box(c.nx, c.lx, c.bc, c.angles));
+    // The box allocates the device weights of its space group, the computation everything else
+    std::unique_ptr<ComputationBox<T>> cb(factory->create_computation_box(c.nx, c.lx, c.bc, c.angles, nullptr, sg.get()));
     std::unique_ptr<Molecules> molecules(factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", 1.0}}));
     molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
     std::unique_ptr<PropagatorComputationOptimizer> optimizer(factory->create_propagator_computation_optimizer(molecules.get(), true));
     std::unique_ptr<PropagatorComputation<T>> computation(
-        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), c.method, sg.get()));
+        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), c.method));
     std::vector<T> w(cb->get_n_basis(), T(0.1));
     computation->compute_propagators({{"A", w.data()}, {"B", w.data()}});
     computation->compute_concentrations();

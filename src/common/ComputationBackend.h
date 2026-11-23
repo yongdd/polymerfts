@@ -161,7 +161,7 @@ public:
     /// q = Π_i q_i^{n_i} over sources (q_i, n_i): propagators meeting at a junction, which has at
     /// least one branch, so sources is never empty. A block multiplicity makes n_i real; a real
     /// power needs real propagators. For complex ones every n_i is an integer of at most 10^6,
-    /// which ComputationCommon checks when the computation is built.
+    /// which PropagatorComputation checks when the computation is built.
     virtual void junction_product(int stream, BackendArray<T>* q,
                                   const std::vector<std::pair<BackendArray<T>*, double>>& sources) = 0;
 

@@ -49,19 +49,13 @@ std::vector<std::vector<std::string>> Scheduler::group_by_height(
 {
     // Find maximum height
     int max_height = 0;
-    for (const auto& [key, _] : propagators)
-    {
-        int height = PropagatorCode::get_height_from_key(key);
-        max_height = std::max(max_height, height);
-    }
+    for (const auto& [key, edge] : propagators)
+        max_height = std::max(max_height, edge.height);
 
     // Group by height
     std::vector<std::vector<std::string>> groups(max_height + 1);
-    for (const auto& [key, _] : propagators)
-    {
-        int height = PropagatorCode::get_height_from_key(key);
-        groups[height].push_back(key);
-    }
+    for (const auto& [key, edge] : propagators)
+        groups[edge.height].push_back(key);
 
     return groups;
 }

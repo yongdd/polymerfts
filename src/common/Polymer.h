@@ -198,6 +198,24 @@ private:
      */
     std::map<int, std::string> chain_end_to_q_init;
 
+    /// The checks of the inputs that need no graph: monomer type names, bond lengths, volume
+    /// fraction, the length, multiplicity and monomer type of each block, initial condition labels
+    static void check_inputs(const std::map<std::string, double>& bond_lengths, double volume_fraction,
+                             const std::vector<BlockInput>& block_inputs,
+                             const std::map<int, std::string>& chain_end_to_q_init);
+
+    /// adjacent_nodes and edge_to_block_index of the blocks; throws for an invalid node, an
+    /// initial condition away from a chain end, or a duplicated edge
+    void build_graph();
+
+    /// Throws unless the blocks form a tree: a block that closes a loop, or nodes that no
+    /// route joins (union-find over the blocks)
+    void check_tree() const;
+
+    /// Block::n_copies from the multiplicities: the product of the multiplicities of the
+    /// blocks that replicate a block (itself and those whose u side contains it)
+    void count_copies();
+
 public:
     /**
      * @brief Construct a Polymer from block specifications.

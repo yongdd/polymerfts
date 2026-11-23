@@ -233,7 +233,7 @@ py::array_t<T> basis_fields(PropagatorComputation<T>& obj, std::vector<py::ssize
  * - get_angles_degrees(), get_lattice_vectors(), is_orthogonal(), get_recip_metric(): Cell geometry
  * - set_lx(): Update box dimensions
  * - set_lattice_parameters(): Update box dimensions and angles
- * - set_space_group(), get_space_group(), get_n_basis(), get_orbit_counts(): Reduced basis
+ * - get_space_group(), get_n_basis(), get_orbit_counts(): Reduced basis of the space group given at creation
  * - integral(), mean(): Volume integral / average of a field
  * - inner_product(), inner_product_inverse_weight(), multi_inner_product(): Inner products
  * - zero_mean(): Subtract the mean in place (C-contiguous array required)
@@ -273,8 +273,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
         .def("get_recip_metric", &ComputationBox<T>::get_recip_metric)
         .def("set_lx", &ComputationBox<T>::set_lx)
         .def("set_lattice_parameters", overload_cast_<std::vector<double>, std::vector<double>>()(&ComputationBox<T>::set_lattice_parameters))
-        // Space group methods
-        .def("set_space_group", &ComputationBox<T>::set_space_group, py::keep_alive<1, 2>())
+        // The reduced basis of the space group given at creation
         .def("get_space_group", &ComputationBox<T>::get_space_group, py::return_value_policy::reference_internal)
         .def("get_n_basis", &ComputationBox<T>::get_n_basis)
         .def("get_orbit_counts", &ComputationBox<T>::get_orbit_counts)
@@ -639,7 +638,7 @@ void bind_fourier_transform(py::module &m, const std::string &type_name)
  * @brief Bind AbstractFactory<T> class to Python.
  *
  * Creates Python class "AbstractFactory_{Real|Complex}" with factory methods:
- * - create_computation_box(nx, lx, bc=None, mask=None): Create ComputationBox
+ * - create_computation_box(nx, lx, angles=None, bc=None, mask=None, space_group=None): Create ComputationBox
  * - create_molecules_information(): Create Molecules container
  * - create_propagator_computation_optimizer(): Create optimizer
  * - create_propagator_computation(): Create propagator solver
@@ -660,8 +659,9 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
     std::string class_name = "AbstractFactory_" + type_name;
 
     // Positions of py::keep_alive<nurse, patient>: 0 is the created object, 1 the factory and 2...
-    // the arguments; those of create_propagator_computation:
-    constexpr size_t CREATED = 0, CB = 2, MOLECULES = 3, OPTIMIZER = 4, SPACE_GROUP = 6;
+    // the arguments; that of the space group of create_computation_box and those of
+    // create_propagator_computation:
+    constexpr size_t CREATED = 0, BOX_SPACE_GROUP = 7, CB = 2, MOLECULES = 3, OPTIMIZER = 4;
 
     py::class_<AbstractFactory<T>>(m, class_name.c_str())
         .def("create_computation_box", [](
@@ -669,15 +669,16 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
             std::vector<int> nx, std::vector<double> lx,
             std::optional<std::vector<double>> angles,
             std::optional<std::vector<std::string>> bc,
-            std::optional<real_in> mask)  // real for both field types
+            std::optional<real_in> mask,  // real for both field types
+            SpaceGroup* space_group)
         {
             const int M = checked_grid_points(nx);
             const double* mask_data = mask ? checked_data(*mask, M, "input mask", "total_grid") : nullptr;
-            const std::vector<std::string> bc_names = bc.value_or(std::vector<std::string>{});
-            if (angles)
-                return obj.create_computation_box(nx, lx, bc_names, *angles, mask_data);
-            return obj.create_computation_box(nx, lx, bc_names, mask_data);
-        }, py::arg("nx"), py::arg("lx"), py::arg("angles") = py::none(), py::arg("bc") = py::none(), py::arg("mask") = py::none())
+            return obj.create_computation_box(nx, lx, bc.value_or(std::vector<std::string>{}),
+                                              angles.value_or(std::vector<double>{}), mask_data, space_group);
+        }, py::arg("nx"), py::arg("lx"), py::arg("angles") = py::none(), py::arg("bc") = py::none(), py::arg("mask") = py::none(),
+           py::arg("space_group") = nullptr,
+           py::keep_alive<CREATED, BOX_SPACE_GROUP>())  // the box keeps a pointer to its space group
         .def("create_molecules_information", &AbstractFactory<T>::create_molecules_information)
         // keep_alive: the C++ objects hold raw pointers to their arguments, so the
         // Python wrappers of those arguments must outlive the created object
@@ -686,10 +687,8 @@ void bind_abstract_factory(py::module &m, const std::string &type_name)
             py::keep_alive<CREATED, 2>())  // molecules
         .def("create_propagator_computation", &AbstractFactory<T>::create_propagator_computation,
             py::arg("cb"), py::arg("molecules"), py::arg("propagator_computation_optimizer"),
-            py::arg("numerical_method"), py::arg("space_group") = nullptr,
-            py::keep_alive<CREATED, CB>(), py::keep_alive<CREATED, MOLECULES>(), py::keep_alive<CREATED, OPTIMIZER>(),
-            py::keep_alive<CREATED, SPACE_GROUP>(),
-            py::keep_alive<CB, SPACE_GROUP>())  // the constructor also sets the space group on the box
+            py::arg("numerical_method"),
+            py::keep_alive<CREATED, CB>(), py::keep_alive<CREATED, MOLECULES>(), py::keep_alive<CREATED, OPTIMIZER>())
         .def("create_anderson_mixing", [](AbstractFactory<T>& obj, long long n_var, int max_hist,
                                           double start_error, double mix_min, double mix_init)
         {

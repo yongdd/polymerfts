@@ -20,12 +20,12 @@ def solve(platform, reduced, method, field_type, nx, mask, field, segments,
           canonical_weight, group=None, regular=True):
     dtype = np.complex128 if field_type == "complex" else np.float64
     factory = PlatformSelector.create_factory(platform, reduced, field_type)
-    box = factory.create_computation_box(nx, [4.0] * len(nx), mask=mask)
+    box = factory.create_computation_box(nx, [4.0] * len(nx), mask=mask, space_group=group)
     molecules = factory.create_molecules_information("discrete", 1.0, {"A": 1.0, "B": 1.2})
     molecules.add_polymer(canonical_weight, [["A", float(segments), 0, 1]])
     molecules.add_polymer(1.0 - canonical_weight, [["B", 1.0, 0, 1]])
     optimizer = factory.create_propagator_computation_optimizer(molecules, False)
-    solver = factory.create_propagator_computation(box, molecules, optimizer, method, group)
+    solver = factory.create_propagator_computation(box, molecules, optimizer, method)
     full_field = np.asarray(field, dtype=dtype)
     basis = (lambda values: values) if group is None else group.to_reduced_basis
     solver.compute_propagators({"A": basis(full_field), "B": basis(np.zeros_like(full_field))})

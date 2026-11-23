@@ -19,7 +19,7 @@
  * **Propagator storage:** propagator[key][n] for n = 0..max_n_segment, where
  * n = 0 is the initial condition.
  *
- * @see ComputationCommon for the shared concentration accessors
+ * @see PropagatorComputation for the shared concentration accessors
  * @see ComputationBackend for the platform operations
  */
 
@@ -32,13 +32,13 @@
 #include <tuple>
 #include <vector>
 
-#include "ComputationCommon.h"
+#include "PropagatorComputation.h"
 
 template <typename T>
-class ComputationContinuous : public ComputationCommon<T>
+class ComputationContinuous : public PropagatorComputation<T>
 {
 private:
-    /// propagator[key][n], n = 0..max_n_segment (in the backend memory of ComputationCommon)
+    /// propagator[key][n], n = 0..max_n_segment (in the backend memory of PropagatorComputation)
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;
 
     /// A job of the scheduler with what it reads, resolved once: the schedule and the
@@ -58,8 +58,8 @@ private:
 
 public:
     /**
-     * @param method         The numerical method (see ComputationCommon)
-     * @param create_backend Creates the platform backend (see ComputationCommon)
+     * @param method         The numerical method (see PropagatorComputation)
+     * @param create_backend Creates the platform backend (see PropagatorComputation)
      */
     ComputationContinuous(ComputationBox<T>* cb, Molecules* molecules,
                           PropagatorComputationOptimizer* propagator_computation_optimizer,

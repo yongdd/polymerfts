@@ -127,7 +127,7 @@ class CLFTS:
         self.grand_canonical = [p for p, polymer in enumerate(self.polymers) if "chemical_potential" in polymer]
         self.canonical_fraction = sum(polymer.get("volume_fraction", 0.0) for polymer in self.polymers)
 
-        # Computation box as a public attribute (this creates the C++ objects)
+        # Computation box as a public attribute (the propagator computation is created on first use)
         self.cb = self.prop_solver.computation_box
 
         # Display factory info

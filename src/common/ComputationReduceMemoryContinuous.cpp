@@ -23,9 +23,9 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
     // The start of every propagator and the segments other propagators start from
     for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
     {
-        this->add_checkpoint(key, 0);
+        this->add_checkpoint(this->checkpoint, key, 0);
         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-            this->add_checkpoint(sub_key, sub_n_segment);
+            this->add_checkpoint(this->checkpoint, sub_key, sub_n_segment);
     }
     this->add_regular_checkpoints();
 
@@ -35,8 +35,8 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
         const auto& [p, key_left, key_right] = it->first;
         const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
         const double n_aggregated = block.n_copies/block.n_repeated;
-        this->add_checkpoint(key_left, block.n_segment_left);
-        this->add_checkpoint(key_right, 0);
+        this->add_checkpoint(this->checkpoint, key_left, block.n_segment_left);
+        this->add_checkpoint(this->checkpoint, key_right, 0);
         single_partition_segment.push_back(std::make_tuple(
             p, key_left, block.n_segment_left, key_right, n_aggregated));
     }
@@ -46,7 +46,7 @@ ComputationReduceMemoryContinuous<T>::ComputationReduceMemoryContinuous(
     {
         std::vector<std::pair<CheckpointArray<T>*, double>> sources;
         for (const auto& [sub_key, sub_n_segment, sub_n_repeated] : edge.deps)
-            sources.push_back({this->checkpoint_at(sub_key, sub_n_segment), sub_n_repeated});
+            sources.push_back({this->checkpoint_at(this->checkpoint, sub_key, sub_n_segment), sub_n_repeated});
         jobs.push_back({&edge, std::move(sources), this->stored_segments(this->checkpoint, key, 0, edge.max_n_segment)});
     }
 }
@@ -97,8 +97,8 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
     // Partition function of each polymer: Q = ∫ q(r,s) q†(r,N-s) dr / V
     for (const auto& [p, key_left, n_left, key_right, n_aggregated] : single_partition_segment)
     {
-        this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(key_left, n_left));
-        this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(key_right, 0));
+        this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(this->checkpoint, key_left, n_left));
+        this->backend->load_checkpoint(0, this->q_work[1], this->checkpoint_at(this->checkpoint, key_right, 0));
         this->backend->synchronize();
         this->single_polymer_partitions[p] = this->backend->inner_product(this->q_work[0], this->q_work[1])
                                              /(n_aggregated*this->cb->get_volume());
@@ -111,7 +111,6 @@ void ComputationReduceMemoryContinuous<T>::compute_propagators(
 template <typename T>
 void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentrations, bool with_stress)
 {
-    this->check_box_space_group();
     this->require_propagators();
     try
     {
@@ -190,10 +189,9 @@ void ComputationReduceMemoryContinuous<T>::get_chain_propagator(T* q_out, int po
 template <typename T>
 std::vector<double> ComputationReduceMemoryContinuous<T>::compute_partition_errors()
 {
-    this->check_box_space_group();
     this->require_propagators();
     // Q must be the same at every segment of every block
-    typename ComputationCommon<T>::ContourPartitions partitions(this->molecules->get_n_polymer_types());
+    typename PropagatorComputation<T>::ContourPartitions partitions(this->molecules->get_n_polymer_types());
     for (const auto& [key, phi] : this->phi_block)
     {
         const auto& [p, key_left, key_right] = key;

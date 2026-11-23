@@ -30,7 +30,7 @@
  * **Propagator storage:** propagator[key][n] for n = 1..max_n_segment
  * (segment n; index 0 is unused).
  *
- * @see ComputationCommon for the shared concentration accessors
+ * @see PropagatorComputation for the shared concentration accessors
  * @see ComputationBackend for the platform operations
  */
 
@@ -43,13 +43,13 @@
 #include <tuple>
 #include <vector>
 
-#include "ComputationCommon.h"
+#include "PropagatorComputation.h"
 
 template <typename T>
-class ComputationDiscrete : public ComputationCommon<T>
+class ComputationDiscrete : public PropagatorComputation<T>
 {
 private:
-    // In the backend memory of ComputationCommon
+    // In the backend memory of PropagatorComputation
     std::map<std::string, std::vector<BackendArray<T>*>> propagator;             ///< q(r, n), n = 1..max_n_segment
     std::map<std::string, std::vector<BackendArray<T>*>> propagator_half_steps;  ///< q(r, n+1/2) where needed, else nullptr
 

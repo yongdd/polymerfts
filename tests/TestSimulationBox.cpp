@@ -163,9 +163,8 @@ static bool check_device_reductions()
                 mask[i] = 0.0;
         }
     }
-    CudaComputationBox<double> cb_sg({n,n,n}, {3.0,3.0,3.0}, {}, mask.data());
     SpaceGroup sg({n,n,n}, "Im-3m", 529);
-    cb_sg.set_space_group(&sg);
+    CudaComputationBox<double> cb_sg({n,n,n}, {3.0,3.0,3.0}, {}, {}, mask.data(), &sg);
     double diff_sg = device_host_difference(cb_sg, cb_sg.get_n_basis());
     std::cout<< "device - host reductions, Im-3m reduced basis with a mask: " << diff_sg << std::endl;
     return diff_sg <= 1e-10;

@@ -166,16 +166,16 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `create_computation_box(nx, lx, bc, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Orthogonal simulation grid with boundary conditions; optional mask for impenetrable regions |
-| `create_computation_box(nx, lx, bc, angles, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask |
+| `create_computation_box(nx, lx, bc, angles, mask=nullptr, space_group=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask; optional `SpaceGroup*` whose reduced basis the box and its computations use (real fields only) |
 | `create_propagator_computation_optimizer(molecules, aggregate)` | `std::unique_ptr<PropagatorComputationOptimizer>` | Propagator dependency graph with optional aggregation (concrete method of the base class) |
 | `create_molecules_information(model, ds, bond_lengths)` | `std::unique_ptr<Molecules>` | Polymer/solvent container (concrete method of the base class) |
-| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
+| `create_propagator_computation(box, molecules, optimizer, method)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default), in the basis of the box (concrete method of the base class; the platform supplies the backend) |
 | `create_anderson_mixing(n_var, max_hist, ...)` | `std::unique_ptr<AndersonMixing<T>>` | Field update accelerator |
 | `create_fourier_transform(box, bc)` | `std::unique_ptr<FourierTransform<T>>` | Transforms and Fourier multipliers of whole fields (one transform per axis, see Section 3.4) |
 
 The caller owns the created objects. An object created from others keeps raw pointers
-to them (the optimizer to its molecules; the computation to its box, molecules,
-optimizer and space group), so they must outlive it. Local `unique_ptr`s are destroyed
+to them (the optimizer to its molecules; the box to its space group; the computation
+to its box, molecules and optimizer), so they must outlive it. Local `unique_ptr`s are destroyed
 in reverse order of declaration, so creating the objects in this order destroys each
 computation before the objects it points to. The Python bindings keep these arguments
 alive with `py::keep_alive`.
@@ -198,26 +198,21 @@ ComputationBox<T>                     [CPU memory; the CPU platforms use it dire
 │   ├── dx[3]           - grid spacing
 │   ├── bc[6]           - boundary conditions
 │   ├── mask_full_      - impenetrable regions on the full grid (optional)
-│   └── mask            - the same, reduced, while a space group is set
+│   └── mask            - the same, reduced, with a space group
 ├── Methods:
 │   ├── integral(g)              - ∫g(r)dr
 │   ├── inner_product(g, h)      - ∫g(r)h(r)dr
 │   ├── multi_inner_product()    - sum of inner products
 │   ├── zero_mean(g)             - remove spatial mean
 │   ├── set_lx(lx)               - update box lengths [virtual]
-│   ├── set_lattice_parameters() - update with angles [virtual]
-│   └── set_space_group(sg)      - reduced basis on/off [virtual]
+│   └── set_lattice_parameters() - update with angles [virtual]
         │
         └── CudaComputationBox<T>     [GPU Memory]
 ```
 
-**Space groups.** `set_space_group(sg)` switches the box to the reduced basis of `sg`
-(or back to the full grid for `nullptr`): `get_n_basis()`, the orbit counts and
-`get_mask()` follow it. It rejects a group built for another grid, reduces the
-full-grid mask afresh every time, and changes nothing if a step fails. A propagator
-computation sets the box's group (also to none) when it is created and refuses to run
-if the box got another group afterwards, so a box can be reused one computation at a
-time but not shared by computations with different groups.
+**Space groups.** A box made with a space group (`create_computation_box(..., space_group)`)
+works in its reduced basis for its whole life, and so do its computations: `get_n_basis()`,
+the orbit counts and `get_mask()` follow it.
 
 **Boundary Conditions:**
 
@@ -234,26 +229,23 @@ time but not shared by computations with different groups.
 Central computational engine for solving modified diffusion equations and computing polymer statistics.
 
 ```
-PropagatorComputation<T>                      [Abstract Base]
+PropagatorComputation<T>                      [Abstract Base: backend, φ storage, getters, solvents]
 ├── compute_propagators(w, q_init)            [pure virtual]
 ├── compute_concentrations()                  [pure virtual]
 ├── compute_stress()                          [pure virtual]
-├── compute_concentrations_and_stress()       [pure virtual]
-├── get_total_partition(polymer)              [pure virtual]
+├── compute_concentrations_and_stress()       [virtual]
 ├── get_chain_propagator(p, v, u, n)          [pure virtual]
-├── get_total_concentration(monomer)          [pure virtual]
 ├── compute_partition_errors()                [pure virtual]
+├── get_total_partition(polymer), get_total_concentration(monomer), ...
 ├── check_total_partition(tolerance)
-└── update_laplacian_operator()               [pure virtual]
+└── update_laplacian_operator()
         │
-        └── ComputationCommon<T>              [backend, φ storage, getters, solvents]
-            │
-            ├── ComputationContinuous<T>      full storage, scheduler groups; RQM4, RK2 or CN-ADI2
-            ├── ComputationDiscrete<T>        full storage, scheduler groups; bond convolution and half bonds
-            │
-            └── ComputationReduceMemoryBase<T> [checkpoints and recomputation]
-                ├── ComputationReduceMemoryContinuous<T>
-                └── ComputationReduceMemoryDiscrete<T>
+        ├── ComputationContinuous<T>          full storage, scheduler groups; RQM4, RK2 or CN-ADI2
+        ├── ComputationDiscrete<T>            full storage, scheduler groups; bond convolution and half bonds
+        │
+        └── ComputationReduceMemoryBase<T>    [checkpoints and recomputation]
+            ├── ComputationReduceMemoryContinuous<T>
+            └── ComputationReduceMemoryDiscrete<T>
 
 ComputationBackend<T>                         [Abstract Base, grid operations]
         ├── CpuComputationBackend<T>          host arrays, OpenMP threads, CpuSolver
@@ -703,7 +695,7 @@ take over as the holders of their objects. Two places hand out ownership through
 pointers on purpose: the backends' `allocate()`/`deallocate()` and
 `allocate_checkpoint()`/`deallocate_checkpoint()` pairs,
 the allocators of the propagator handles and the reduce-memory checkpoints, which one owner
-per computation (`BackendMemory` in `ComputationCommon`) frees before the backend; and the `CudaCommon` singleton, which is created
+per computation (`BackendMemory` in `PropagatorComputation`) frees before the backend; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
 `release_cufft_plan()`, and CUDA streams by `CudaStream`, which counts them through

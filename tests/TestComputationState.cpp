@@ -30,12 +30,17 @@ void check_space_group(const std::string& platform, bool reduced, bool with_grou
     std::unique_ptr<Molecules> mol(factory->create_molecules_information("continuous", 0.05, {{"A", 1.0}}));
     mol->add_polymer(1.0, {{"A", 1.0, 0, 1}});
     std::unique_ptr<PropagatorComputationOptimizer> opt(factory->create_propagator_computation_optimizer(mol.get(), false));
-    std::unique_ptr<ComputationBox<double>> cb(factory->create_computation_box({8, 8, 8}, {3.0, 3.0, 3.0}, {}, nullptr));
-    SpaceGroup initial({8, 8, 8}, "Im-3m", 529), replacement({8, 8, 8}, "P1", 1);
+    SpaceGroup initial({8, 8, 8}, "Im-3m", 529);
     SpaceGroup* group = with_group ? &initial : nullptr;
-    std::unique_ptr<PropagatorComputation<double>> pc(factory->create_propagator_computation(
-        cb.get(), mol.get(), opt.get(), "rqm4", group));
+    std::unique_ptr<ComputationBox<double>> cb(factory->create_computation_box({8, 8, 8}, {3.0, 3.0, 3.0}, {}, {}, nullptr, group));
     const int n = cb->get_n_basis();
+    // The box has the basis of its group from its creation, and the group's basis is frozen
+    // (before any solver, which may freeze it too)
+    if (cb->get_space_group() != group || n != (with_group ? initial.get_n_reduced_basis() : 512)
+        || initial.in_use() != with_group)
+        throw std::runtime_error("The box does not have the basis of the space group it was created with.");
+    std::unique_ptr<PropagatorComputation<double>> pc(factory->create_propagator_computation(
+        cb.get(), mol.get(), opt.get(), "rqm4"));
     std::vector<double> full(512), w(n), before(n), after(n);
     for (int i = 0; i < 512; ++i)
         full[i] = std::sqrt(2.0)*5.0*std::sin(i);
@@ -50,17 +55,16 @@ void check_space_group(const std::string& platform, bool reduced, bool with_grou
     pc->compute_concentrations();
     pc->get_total_concentration("A", before.data());
 
-    // The computation refuses its results while another user of the box changed its group,
-    // and gives them again once the box holds the group of the computation.
-    cb->set_space_group(&replacement);
-    rejects([&] { pc->get_total_partition(0); });
-    rejects([&] { pc->get_total_concentration("A", after.data()); });
-    cb->set_space_group(group);
+    // A second computation of the box shares its basis and gives the same results
+    std::unique_ptr<PropagatorComputation<double>> second(factory->create_propagator_computation(
+        cb.get(), mol.get(), opt.get(), "rqm4"));
+    second->compute_propagators({{"A", w.data()}});
+    second->compute_concentrations();
+    second->get_total_concentration("A", after.data());
     if (cb->get_n_basis() != n)
-        throw std::runtime_error("Restoring the space group of the box changed its basis size.");
-    pc->get_total_concentration("A", after.data());
+        throw std::runtime_error("A second computation changed the basis size of the box.");
     if (before != after || !pc->check_total_partition() || !(std::abs(cb->mean(after.data()) - 1.0) <= 1e-10))
-        throw std::runtime_error("The results changed while the box held another space group.");
+        throw std::runtime_error("Two computations of one box gave different results.");
 }
 
 void check_cnadi(const std::string& platform, bool reduced)

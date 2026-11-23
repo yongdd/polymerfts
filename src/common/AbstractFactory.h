@@ -108,13 +108,12 @@ protected:
      * @brief Create the computation backend of the platform.
      *
      * The only platform-specific step of create_propagator_computation(). The
-     * computation calls it once while it is constructed, after the space group
-     * is set on the box.
+     * computation calls it once while it is constructed.
      *
      * @param cb            Computation box
      * @param molecules     Molecules container
      * @param method_info   Numerical method, already resolved and validated
-     * @param space_group   Space group (nullptr if none)
+     * @param space_group   Space group of the box (nullptr if none)
      * @param max_n_streams Upper limit of concurrent propagator streams
      */
     virtual std::unique_ptr<ComputationBackend<T>> create_backend(
@@ -159,6 +158,9 @@ public :
      *               - 1 element: [gamma] for 2D (alpha=beta=90°)
      *               - 3 elements: [alpha, beta, gamma] for full specification
      * @param mask   Optional mask for impenetrable regions
+     * @param space_group Optional space group (real fields only): the fields of the box
+     *               and of its computations are in its reduced basis. It must outlive
+     *               the box, and its physical basis is frozen from now on
      * @return Platform-specific ComputationBox instance
      */
     virtual std::unique_ptr<ComputationBox<T>> create_computation_box(
@@ -166,7 +168,8 @@ public :
         std::vector<double> lx,
         std::vector<std::string> bc,
         std::vector<double> angles,
-        const double* mask=nullptr) = 0;
+        const double* mask=nullptr,
+        SpaceGroup* space_group=nullptr) = 0;
 
     /**
      * @brief Create a Molecules container.
@@ -228,16 +231,16 @@ public :
      *                                        - "ps": bond convolution through FFTs (discrete chains, default)
      *                                        - "rs": bond convolution summed on the grid (real-space, discrete)
      *                                        A method of the other chain model throws.
-     * @param space_group                     Optional space group (reduced basis, real fields only)
-     * @return PropagatorComputation solver with the platform's backend. The box,
-     *         molecules, optimizer and space group must outlive it.
+     * @return PropagatorComputation solver with the platform's backend, in the basis of the
+     *         box (the reduced basis of its space group, if it has one). The box,
+     *         molecules and optimizer must outlive it.
      *
      * @note The real-space methods (cn-adi2, rs) mix periodic and non-periodic boundary
      *       conditions and need an orthogonal cell.
      */
     std::unique_ptr<PropagatorComputation<T>> create_propagator_computation(
         ComputationBox<T>* cb, Molecules *molecules, PropagatorComputationOptimizer* propagator_computation_optimizer,
-        std::string numerical_method, SpaceGroup* space_group=nullptr);
+        std::string numerical_method);
 
     /**
      * @brief Create an Anderson Mixing optimizer.

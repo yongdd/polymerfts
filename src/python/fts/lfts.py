@@ -109,7 +109,7 @@ class LFTS:
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
         self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers)
 
-        # Computation box as a public attribute (this creates the C++ objects)
+        # Computation box as a public attribute (the propagator computation is created on first use)
         self.cb = self.prop_solver.computation_box
 
         # Display factory info

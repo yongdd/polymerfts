@@ -269,7 +269,6 @@ ADD_LIBRARY(common
     src/common/FiniteDifference.cpp
     src/common/RealSpaceBond.cpp
     src/common/PropagatorComputation.cpp
-    src/common/ComputationCommon.cpp
     src/common/ComputationContinuous.cpp
     src/common/ComputationDiscrete.cpp
     src/common/ComputationReduceMemoryBase.cpp

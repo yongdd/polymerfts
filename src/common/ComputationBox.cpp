@@ -36,6 +36,7 @@
 #include <iomanip>
 #include <limits>
 #include <numbers>
+#include <type_traits>
 
 #include "ComputationBox.h"
 #include "GridLimits.h"
@@ -188,12 +189,14 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
  * @param bc        Boundary conditions (2 per dimension: low, high)
  * @param angles    Lattice angles [alpha, beta, gamma] in DEGREES (empty: all 90 degrees)
  * @param mask      Optional mask for impenetrable regions (nullptr = no mask)
+ * @param space_group Optional space group of the reduced basis (nullptr = full grid)
  *
- * @throws Exception if dimensions mismatch, invalid parameters, or invalid angles
+ * @throws Exception if dimensions mismatch, invalid parameters, invalid angles, or a
+ *         space group that does not fit the box
  */
 template <typename T>
 ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> new_lx,
-    std::vector<std::string> bc, std::vector<double> angles, const double* mask)
+    std::vector<std::string> bc, std::vector<double> angles, const double* mask, SpaceGroup* space_group)
 {
     validation::require_same_size(new_nx.size(), new_lx.size(), "nx", "lx");
     if ( new_nx.size() != 3 && new_nx.size() != 2 && new_nx.size() != 1)
@@ -294,9 +297,11 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
         }
         require_orthogonal_with_walls(this->bc, is_orthogonal_);
 
-        // Initialize space group (disabled by default)
+        // The full grid, or the reduced basis of the space group for the whole life of the box
         space_group_ = nullptr;
         n_basis_ = total_grid;
+        if (space_group != nullptr)
+            use_space_group(space_group);
     }
     catch(std::exception& exc)
     {
@@ -535,135 +540,53 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
 // ==================== Space Group Methods ====================
 
 template <typename T>
-void ComputationBox<T>::check_space_group(SpaceGroup* sg) const
+void ComputationBox<T>::use_space_group(SpaceGroup* sg)
 {
-    if (sg != nullptr)
+    // The reduced basis holds the symmetric part of real fields only
+    if constexpr (!std::is_same_v<T, double>)
+        throw_with_line_number("Space group reduced basis is only supported for real fields.");
+
+    // Walls do not commute with the group's translations, rotations and glides
+    if (has_wall(bc))
+        throw_with_line_number("Space group symmetry needs periodic boundary conditions in all directions.")
+
+    // The group's maps index the grid it was built for
+    if (sg->get_nx() != nx)
     {
-        // Walls do not commute with the group's translations, rotations and glides
-        if (has_wall(bc))
-            throw_with_line_number("Space group symmetry needs periodic boundary conditions in all directions.")
-
-        // The group's maps index the grid it was built for
-        if (sg->get_nx() != nx)
-        {
-            auto join = [](const std::vector<int>& v) {
-                std::string text;
-                for (size_t d = 0; d < v.size(); ++d)
-                    text += (d ? "x" : "") + std::to_string(v[d]);
-                return text;
-            };
-            throw_with_line_number("The space group was built for a " + join(sg->get_nx())
-                + " grid, but the computation box has " + join(nx) + ".");
-        }
-        sg->check_cell(lx, get_angles_degrees());
-
-        // The reduced basis stores one value per orbit: a mask without the symmetry of
-        // the group would silently become another one
-        if (!mask_full_.empty() && !sg->is_invariant(mask_full_.data(), MASK_TOLERANCE))
-            throw_with_line_number("The mask is not invariant under the space group; "
-                "a mask used with a space group must have the symmetry of the group.")
+        auto join = [](const std::vector<int>& v) {
+            std::string text;
+            for (size_t d = 0; d < v.size(); ++d)
+                text += (d ? "x" : "") + std::to_string(v[d]);
+            return text;
+        };
+        throw_with_line_number("The space group was built for a " + join(sg->get_nx())
+            + " grid, but the computation box has " + join(nx) + ".");
     }
-}
+    sg->check_cell(lx, get_angles_degrees());
 
-template <typename T>
-void ComputationBox<T>::set_space_group(SpaceGroup* sg)
-{
-    check_space_group(sg);
+    // The reduced basis stores one value per orbit: a mask without the symmetry of
+    // the group would silently become another one
+    if (!mask_full_.empty() && !sg->is_invariant(mask_full_.data(), MASK_TOLERANCE))
+        throw_with_line_number("The mask is not invariant under the space group; "
+            "a mask used with a space group must have the symmetry of the group.")
 
-    // Build the new state first and commit it with moves only, so a failure
-    // leaves the box as it was. The mask always starts from the full grid
-    // (a box may be given another group, or none, later).
-    std::vector<int> new_orbit_counts;
-    int new_n_basis = total_grid;
-    std::vector<double> new_mask;           // the reduced mask; empty without a group
-    if (sg != nullptr)
-    {
-        new_orbit_counts = sg->get_orbit_counts();
-        new_n_basis = sg->get_n_reduced_basis();
-        if (!mask_full_.empty())
-        {
-            new_mask.resize(new_n_basis);
-            sg->to_reduced_basis(mask_full_.data(), new_mask.data(), 1);
-        }
-    }
-
-    std::vector<double> new_basis_weights = (sg != nullptr) ? make_basis_weights(sg) : std::vector<double>();
-
+    // The basis size, the orbit counts, the reduced mask and the integration weights
+    // (orbit counts times the mask), so that the reduced-basis integrals equal the
+    // full-grid ones, whose dv carries the mask
     space_group_ = sg;
-    orbit_counts_ = std::move(new_orbit_counts);
-    n_basis_ = new_n_basis;
-    mask = std::move(new_mask);
-    basis_weights_ = std::move(new_basis_weights);
-
-    // The sizes and maps above are snapshots: freeze the physical basis
-    if (sg != nullptr)
-        sg->mark_in_use();
-}
-
-template <typename T>
-ComputationBox<T>::SpaceGroupGuard::SpaceGroupGuard(ComputationBox* box, SpaceGroup* group)
-    : box(box), group(group)
-{
-    if (box == nullptr)
-        throw_with_line_number("Computation box must not be null.");
-    previous_group = box->space_group_;
-    previous_n_basis = box->n_basis_;
-    previously_in_use = group != nullptr && group->in_use_;
-    previous_orbit_counts = std::move(box->orbit_counts_);
-    previous_mask = std::move(box->mask);
-    previous_basis_weights = std::move(box->basis_weights_);
-    try
-    {
-        // Constructors need the host basis size. Defer platform storage (CUDA
-        // integration weights) until commit so rollback never allocates.
-        box->ComputationBox<T>::set_space_group(group);
-    }
-    catch (...)
-    {
-        restore();
-        throw;
-    }
-}
-
-template <typename T>
-void ComputationBox<T>::SpaceGroupGuard::commit()
-{
-    box->set_space_group(group);
-    committed = true;
-}
-
-template <typename T>
-void ComputationBox<T>::SpaceGroupGuard::restore() noexcept
-{
-    box->space_group_ = previous_group;
-    box->n_basis_ = previous_n_basis;
-    box->orbit_counts_ = std::move(previous_orbit_counts);
-    box->mask = std::move(previous_mask);
-    box->basis_weights_ = std::move(previous_basis_weights);
-    if (group != nullptr)
-        group->in_use_ = previously_in_use;
-}
-
-template <typename T>
-ComputationBox<T>::SpaceGroupGuard::~SpaceGroupGuard()
-{
-    if (!committed)
-        restore();
-}
-
-template <typename T>
-std::vector<double> ComputationBox<T>::make_basis_weights(SpaceGroup* sg) const
-{
-    const std::vector<int>& orbit_counts = sg->get_orbit_counts();
-    std::vector<double> weights(orbit_counts.begin(), orbit_counts.end());
+    orbit_counts_ = sg->get_orbit_counts();
+    n_basis_ = sg->get_n_reduced_basis();
+    basis_weights_.assign(orbit_counts_.begin(), orbit_counts_.end());
     if (!mask_full_.empty())
     {
-        std::vector<double> reduced_mask(weights.size());
-        sg->to_reduced_basis(mask_full_.data(), reduced_mask.data(), 1);
-        for (size_t i = 0; i < weights.size(); i++)
-            weights[i] *= reduced_mask[i];
+        mask.resize(n_basis_);
+        sg->to_reduced_basis(mask_full_.data(), mask.data(), 1);
+        for (size_t i = 0; i < basis_weights_.size(); i++)
+            basis_weights_[i] *= mask[i];
     }
-    return weights;
+
+    // The sizes and maps above are snapshots: freeze the physical basis
+    sg->mark_in_use();
 }
 
 template <typename T>

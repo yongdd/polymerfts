@@ -17,7 +17,7 @@ ComputationContinuous<T>::ComputationContinuous(
     PropagatorComputationOptimizer* propagator_computation_optimizer,
     const NumericalMethodInfo& method,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, method, create_backend)
+    : PropagatorComputation<T>(cb, molecules, propagator_computation_optimizer, method, create_backend)
 {
     // q(r, s) at every contour step of every propagator
     for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
@@ -114,7 +114,6 @@ void ComputationContinuous<T>::compute_propagators(
 template <typename T>
 void ComputationContinuous<T>::compute_concentrations()
 {
-    this->check_box_space_group();
     this->require_propagators();
     try
     {
@@ -156,7 +155,6 @@ void ComputationContinuous<T>::compute_concentrations()
 template <typename T>
 void ComputationContinuous<T>::compute_stress()
 {
-    this->check_box_space_group();
     this->require_propagators();
     try
     {
@@ -210,10 +208,9 @@ void ComputationContinuous<T>::get_chain_propagator(T* q_out, int polymer, int v
 template <typename T>
 std::vector<double> ComputationContinuous<T>::compute_partition_errors()
 {
-    this->check_box_space_group();
     this->require_propagators();
     // Q must be the same at every segment of every block
-    typename ComputationCommon<T>::ContourPartitions partitions(this->molecules->get_n_polymer_types());
+    typename PropagatorComputation<T>::ContourPartitions partitions(this->molecules->get_n_polymer_types());
     for (const auto& [key, phi] : this->phi_block)
     {
         const auto& [p, key_left, key_right] = key;

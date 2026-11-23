@@ -46,27 +46,24 @@ struct ComparePropagatorKey
 class PropagatorComputationOptimizer
 {
 private:
-    std::string model_name; // "continuous": continuous standard Gaussian model
-                            // "discrete": discrete bead-spring model
+    bool continuous; // the continuous standard Gaussian model, else the discrete bead-spring model
     bool aggregate_propagator_computation; // compute multiple propagators using property of linearity of the diffusion equation.
 
     // The contour length mapping, whose length and ds indices the keys contain
     const ContourLengthMapping* contour_length_mapping;
 
-    // The Molecules this schedule was built from; its polymer indices size the computation's arrays
-    const Molecules* molecules;
+    // The Molecules this schedule was built from, which takes no further species; its polymer
+    // indices size the computation's arrays
+    Molecules* molecules;
 
     // The key of each directed edge (v, u) of each polymer: the propagator that leaves v along the block (v, u)
     std::vector<std::map<std::pair<int, int>, std::string>> propagator_keys;
 
-    // set{key: (polymer id, key_left, key_right) (assert(key_left <= key_right))}
+    // set{key: (polymer id, key_left, key_right) with key_left >= key_right}
     std::map<std::tuple<int, std::string, std::string>, ComputationBlock> computation_blocks;
 
     // dictionary{key:non-duplicated unique propagator_codes, value: ComputationEdge}
     std::map<std::string, ComputationEdge, ComparePropagatorKey> computation_propagators;
-
-    // Total segment number
-    std::vector<int> total_segment_numbers;
 
     // Substitute right keys of lower left key with aggregated keys; the new keys are recorded in edges
     void substitute_right_keys(
@@ -83,7 +80,7 @@ private:
     void add_propagator_use(const std::string& key, const ComputationEdge& built,
                             int new_n_segment, bool is_junction_end);
 
-    bool is_junction(Polymer& pc, int node);
+    static bool is_junction(Polymer& pc, int node);
 
     // MDE (or integral equation) steps of the polymers without and with the optimization
     std::pair<int, int> count_steps() const;

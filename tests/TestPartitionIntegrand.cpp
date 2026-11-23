@@ -37,9 +37,8 @@ void check_integrand(const std::string& platform, bool reduced_basis)
         for (double& value : mask)
             value = value > 0.0 ? 1.0 : 0.0;
     }
-    auto cb = factory->create_computation_box(nx, {2.0, 2.0, 2.0}, {}, mask.data());
-    if (reduced_basis)
-        cb->set_space_group(&group);
+    auto cb = factory->create_computation_box(nx, {2.0, 2.0, 2.0}, {}, {}, mask.data(),
+                                              reduced_basis ? &group : nullptr);
     auto molecules = factory->create_molecules_information("continuous", 0.1, {{"A", 1.0}});
     molecules->add_polymer(0.0, {{"A", 1.0, 0, 1}});
     const auto& method = resolve_numerical_method("continuous", "rqm4");

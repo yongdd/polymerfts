@@ -99,8 +99,8 @@ CudaComputationBox<T>::CudaComputationBox(
 template <typename T>
 CudaComputationBox<T>::CudaComputationBox(
     std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
-    std::vector<double> angles, const double* mask)
-    : ComputationBox<T>(nx, lx, bc, angles, mask)
+    std::vector<double> angles, const double* mask, SpaceGroup* space_group)
+    : ComputationBox<T>(nx, lx, bc, angles, mask, space_group)
 {
     initialize();   // the owning buffers release what was acquired if this throws
 }
@@ -109,6 +109,12 @@ void CudaComputationBox<T>::initialize()
 {
     d_dv.allocate(this->total_grid);
     CUDA_CHECK(cudaMemcpy(d_dv, this->dv.data(), sizeof(double)*this->total_grid, cudaMemcpyHostToDevice));
+    if (this->space_group_ != nullptr)
+    {
+        const std::vector<double>& weights = this->basis_weights_;
+        d_basis_weights_.allocate(weights.size());
+        CUDA_CHECK(cudaMemcpy(d_basis_weights_, weights.data(), sizeof(double)*weights.size(), cudaMemcpyHostToDevice));
+    }
 
     // Allocate memory for cub reduction sum
     d_sum.allocate(this->total_grid);
@@ -143,29 +149,6 @@ void CudaComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, s
 {
     ComputationBox<T>::set_lattice_parameters(new_lx, new_angles);
     CUDA_CHECK(cudaMemcpy(d_dv, this->dv.data(), sizeof(double)*this->total_grid, cudaMemcpyHostToDevice));
-}
-//-----------------------------------------------------------
-template <typename T>
-void CudaComputationBox<T>::set_space_group(SpaceGroup* sg)
-{
-    // Check the group against the box first (the weights read the mask through the
-    // group's maps), then build the device integration weights (empty without a space
-    // group): if the allocation or the copy fails, or the base class rejects the
-    // group, the box keeps its previous group and state (the base class commits only
-    // at its end)
-    this->check_space_group(sg);
-    CudaDeviceBuffer<double> basis_weights_new;
-    if (sg != nullptr)
-    {
-        const std::vector<double> weights = this->make_basis_weights(sg);
-        basis_weights_new.allocate(weights.size());
-        CUDA_CHECK(cudaMemcpy(basis_weights_new, weights.data(), sizeof(double)*weights.size(), cudaMemcpyHostToDevice));
-    }
-
-    // Base class: checks the cell and the mask, builds the basis size, orbit counts,
-    // mask and weights, then commits them
-    ComputationBox<T>::set_space_group(sg);
-    d_basis_weights_ = std::move(basis_weights_new);
 }
 //-----------------------------------------------------------
 template <typename T>

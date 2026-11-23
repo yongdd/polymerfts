@@ -18,7 +18,7 @@ ComputationReduceMemoryBase<T>::ComputationReduceMemoryBase(
     const NumericalMethodInfo& numerical_method,
     int first_segment,
     const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend)
-    : ComputationCommon<T>(cb, molecules, propagator_computation_optimizer, numerical_method, create_backend),
+    : PropagatorComputation<T>(cb, molecules, propagator_computation_optimizer, numerical_method, create_backend),
       first_segment(first_segment), checkpoint_interval(1)
 {
     int total_n_segment = 0;
@@ -61,25 +61,24 @@ void ComputationReduceMemoryBase<T>::compute_concentrations_and_stress()
 }
 
 template <typename T>
-void ComputationReduceMemoryBase<T>::add_checkpoint(const std::string& key, int n)
+void ComputationReduceMemoryBase<T>::add_checkpoint(CheckpointMap& stored, const std::string& key, int n)
 {
-    if (!checkpoint.contains(std::make_tuple(key, n)))
-        checkpoint[std::make_tuple(key, n)] = this->memory.allocate_checkpoint();
+    if (!stored.contains(std::make_tuple(key, n)))
+        stored[std::make_tuple(key, n)] = this->memory.allocate_checkpoint();
 }
 
 template <typename T>
-CheckpointArray<T>* ComputationReduceMemoryBase<T>::checkpoint_at(const std::string& key, int n)
+CheckpointArray<T>* ComputationReduceMemoryBase<T>::checkpoint_at(const CheckpointMap& stored, const std::string& key, int n)
 {
-    auto it = checkpoint.find(std::make_tuple(key, n));
-    if (it == checkpoint.end())
+    auto it = stored.find(std::make_tuple(key, n));
+    if (it == stored.end())
         throw_with_line_number("No checkpoint at segment " + std::to_string(n) + " of propagator '" + key + "'.");
     return it->second;
 }
 
 template <typename T>
 std::vector<CheckpointArray<T>*> ComputationReduceMemoryBase<T>::stored_segments(
-    const std::map<std::tuple<std::string, int>, CheckpointArray<T>*>& stored,
-    const std::string& key, int n_first, int n_last)
+    const CheckpointMap& stored, const std::string& key, int n_first, int n_last)
 {
     std::vector<CheckpointArray<T>*> segments(n_last - n_first + 1, nullptr);
     for (auto it = stored.lower_bound(std::make_tuple(key, n_first));
@@ -93,7 +92,7 @@ void ComputationReduceMemoryBase<T>::add_regular_checkpoints()
 {
     for (const auto& [key, edge] : this->propagator_computation_optimizer->get_computation_propagators())
         for (int n = checkpoint_interval; n < edge.max_n_segment; n += checkpoint_interval)
-            add_checkpoint(key, n);
+            add_checkpoint(checkpoint, key, n);
 }
 
 template <typename T>
@@ -139,7 +138,7 @@ void ComputationReduceMemoryBase<T>::for_each_segment_pair(
     // The visits of q; q† ends at n_last
     const int n_last_q = past_last ? n_last + 1 : n_last;
 
-    this->backend->load_checkpoint(0, q_right[0], checkpoint_at(key_right, n_first));
+    this->backend->load_checkpoint(0, q_right[0], checkpoint_at(checkpoint, key_right, n_first));
     int r = 0;
     for (int n_start = n_first; n_start <= n_last_q; )
     {

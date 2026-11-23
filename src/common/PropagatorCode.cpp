@@ -11,7 +11,8 @@
  * Propagator keys encode the path from chain ends to a given edge:
  * - Simple chain end: "A+0" (monomer type A, ds index 0)
  * - Junction: "(A3B1)C+0" (two branches meeting, then a C block)
- * - Aggregated: "[A0:2,B0]C+0" (identical branches aggregated, PropagatorAggregator)
+ * - Aggregated: "[(D4)B0,(E4)B0:2]B+0" (the sum of sliced propagators of one block and
+ *   their copies, PropagatorAggregator)
  * - Custom q_init: "{init_key}A+0" (custom initial condition)
  *
  * **Key Components:**

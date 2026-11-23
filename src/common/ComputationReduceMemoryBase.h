@@ -35,19 +35,22 @@
 #include <tuple>
 #include <vector>
 
-#include "ComputationCommon.h"
+#include "PropagatorComputation.h"
 
 template <typename T>
-class ComputationReduceMemoryBase : public ComputationCommon<T>
+class ComputationReduceMemoryBase : public PropagatorComputation<T>
 {
 protected:
     /// First stored segment of a propagator: 0 for continuous chains, 1 for discrete chains
     const int first_segment;
     int checkpoint_interval;  ///< Segments between regular checkpoints
 
-    // In the backend memory of ComputationCommon
+    /// Stored states of propagators, by (key, n)
+    using CheckpointMap = std::map<std::tuple<std::string, int>, CheckpointArray<T>*>;
+
+    // In the backend memory of PropagatorComputation
     /// q(r, n) of propagator key at the checkpointed segments n
-    std::map<std::tuple<std::string, int>, CheckpointArray<T>*> checkpoint;
+    CheckpointMap checkpoint;
 
     std::vector<BackendArray<T>*> q_recal;           ///< Recomputed consecutive segments of one propagator
     BackendArray<T>* q_work[2]  = {nullptr, nullptr}; ///< Propagator being advanced (ping-pong)
@@ -55,7 +58,7 @@ protected:
 
     /**
      * @param first_segment 0 for continuous chains, 1 for discrete chains
-     * @param create_backend See ComputationCommon
+     * @param create_backend See PropagatorComputation
      */
     ComputationReduceMemoryBase(ComputationBox<T>* cb, Molecules* molecules,
                                 PropagatorComputationOptimizer* propagator_computation_optimizer,
@@ -65,14 +68,15 @@ protected:
     /// The concentrations, the stress or both, in one walk along each block.
     virtual void compute_blocks(bool with_concentrations, bool with_stress) = 0;
 
-    /// Allocate the checkpoint (key, n) if it does not exist yet.
-    void add_checkpoint(const std::string& key, int n);
-    CheckpointArray<T>* checkpoint_at(const std::string& key, int n);
+    /// Allocate stored[(key, n)] (checkpoint, or the half-bond states of discrete chains)
+    /// if it does not exist yet.
+    void add_checkpoint(CheckpointMap& stored, const std::string& key, int n);
+    /// stored[(key, n)]; throws if there is none
+    static CheckpointArray<T>* checkpoint_at(const CheckpointMap& stored, const std::string& key, int n);
 
     /// stored[(key, n)] for n = n_first..n_last, nullptr where there is none.
     static std::vector<CheckpointArray<T>*> stored_segments(
-        const std::map<std::tuple<std::string, int>, CheckpointArray<T>*>& stored,
-        const std::string& key, int n_first, int n_last);
+        const CheckpointMap& stored, const std::string& key, int n_first, int n_last);
 
     /// Add the regular checkpoints; call after the model-specific ones.
     void add_regular_checkpoints();

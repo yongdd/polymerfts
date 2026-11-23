@@ -76,10 +76,8 @@ struct ComputationEdge
 };
 
 /**
- * @class PropagatorCode
- * @brief Static utility class for writing propagator keys.
- *
- * All methods are static; the class should not be instantiated.
+ * @namespace PropagatorCode
+ * @brief The functions that write propagator keys.
  *
  * **Key Format:** `{INIT}` or `(DEPS)`, then `TYPE`, then `+M`
  * - {INIT}: Initial condition label of a grafted end
@@ -98,57 +96,56 @@ struct ComputationEdge
  * - Junction propagators have height = max(child heights) + 1
  * Height is used for scheduling independent propagators in parallel.
  */
-class PropagatorCode
+namespace PropagatorCode
 {
-public:
-    /**
-     * @brief Write the keys of a polymer from the finalized contour length mapping.
-     *
-     * Traverses the polymer graph from the chain ends, memoized per directed edge,
-     * and records the ComputationEdge of every key it writes.
-     *
-     * @param pc        Polymer to write the keys of
-     * @param mapping   Finalized contour length mapping
-     * @param edge_keys Gets the key of each directed edge (v, u): the propagator that
-     *                  leaves v along the block (v, u)
-     * @param edges     Gets the ComputationEdge of each key
-     *
-     * @example
-     * @code
-     * std::map<std::pair<int, int>, std::string> edge_keys;
-     * std::map<std::string, ComputationEdge> edges;
-     * PropagatorCode::generate_keys(polymer, molecules.get_contour_length_mapping(), edge_keys, edges);
-     * @endcode
-     */
-    static void generate_keys(Polymer& pc, const ContourLengthMapping& mapping,
-                              std::map<std::pair<int, int>, std::string>& edge_keys,
-                              std::map<std::string, ComputationEdge>& edges);
+/**
+ * @brief Write the keys of a polymer from the finalized contour length mapping.
+ *
+ * Traverses the polymer graph from the chain ends, memoized per directed edge,
+ * and records the ComputationEdge of every key it writes.
+ *
+ * @param pc        Polymer to write the keys of
+ * @param mapping   Finalized contour length mapping
+ * @param edge_keys Gets the key of each directed edge (v, u): the propagator that
+ *                  leaves v along the block (v, u)
+ * @param edges     Gets the ComputationEdge of each key
+ *
+ * @example
+ * @code
+ * std::map<std::pair<int, int>, std::string> edge_keys;
+ * std::map<std::string, ComputationEdge> edges;
+ * PropagatorCode::generate_keys(polymer, molecules.get_contour_length_mapping(), edge_keys, edges);
+ * @endcode
+ */
+void generate_keys(Polymer& pc, const ContourLengthMapping& mapping,
+                   std::map<std::pair<int, int>, std::string>& edge_keys,
+                   std::map<std::string, ComputationEdge>& edges);
 
-    /**
-     * @brief The code of a propagator as written inside another key.
-     * @param key    Propagator key "DK+M"
-     * @param number Length index (continuous chains) or number of segments written after it
-     * @return "DK" followed by number
-     */
-    static std::string dependency_code(const std::string& key, int number);
+/**
+ * @brief The code of a propagator as written inside another key.
+ * @param key    Propagator key "DK+M"
+ * @param number Length index (continuous chains) or number of segments written after it
+ * @return "DK" followed by number
+ */
+std::string dependency_code(const std::string& key, int number);
 
-    /**
-     * @brief Text of a branch count in a key, "n" of "A10:n".
-     *
-     * Integers keep their integer form ("3"); other counts, from block
-     * multiplicities, take the shortest decimal that reads back to the same
-     * double ("4.6"). Equal counts give equal keys.
-     *
-     * @param count Number of copies (> 0)
-     * @return Count text without exponent or sign
-     */
-    static std::string format_count(double count);
+/**
+ * @brief Text of a branch count in a key, "n" of "A10:n".
+ *
+ * Integers keep their integer form ("3"); other counts, from block
+ * multiplicities, take the shortest decimal that reads back to the same
+ * double ("4.6"). Equal counts give equal keys.
+ *
+ * @param count Number of copies (> 0)
+ * @return Count text without exponent or sign
+ */
+std::string format_count(double count);
 
-    /**
-     * @brief Get height (tree depth) from key.
-     * @param key Propagator key
-     * @return Height: 0 for leaf nodes, max(child heights)+1 otherwise
-     */
-    static int get_height_from_key(const std::string& key);
-};
+/**
+ * @brief Get height (tree depth) from key.
+ * @param key Propagator key
+ * @return Height: 0 for leaf nodes, max(child heights)+1 otherwise
+ */
+int get_height_from_key(const std::string& key);
+}  // namespace PropagatorCode
 #endif

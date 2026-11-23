@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .. import _core
+from ..utils.validation import angle_fixed_at
 
 
 class PropagatorSolver:
@@ -43,7 +44,8 @@ class PropagatorSolver:
     mask : ndarray, optional
         Accessible-volume mask on the full grid (1 inside, 0 impenetrable).
     space_group : SpaceGroup, optional
-        Space group for the reduced-basis computation.
+        Space group of the reduced basis: the fields of the box and of the
+        computation are in it from the start (its physical basis is frozen then).
     angles : list of float, optional
         Lattice angles [alpha, beta, gamma] in degrees.
     aggregate_propagator_computation : bool
@@ -89,7 +91,7 @@ class PropagatorSolver:
         ``angles`` (lattice angles in degrees), ``aggregate_propagator_computation``
         (let the optimizer merge equivalent propagators) and ``field_type``
         (``"real"`` or ``"complex"`` fields) are optional. The computation box is
-        created here; after construction, add the polymers with
+        created here, with the space group; after construction, add the polymers with
         :meth:`add_polymer`; the propagator computation is created on first use.
         """
 
@@ -142,11 +144,7 @@ class PropagatorSolver:
         if self.field_type == "complex" and not info["supports_complex"]:
             raise ValueError(f"{self.numerical_method} does not support complex fields")
 
-        # Store and validate mask.
-        # Compare against the full grid size: the n_grid property cannot be
-        # used here because it touches _propagator_computation, which is not
-        # created until after polymers are added (masks are always supplied
-        # on the full grid regardless of any space group).
+        # Store and validate mask (always given on the full grid, also with a space group)
         if mask is not None:
             if np.size(mask) != self._total_grid:
                 raise ValueError(
@@ -166,16 +164,16 @@ class PropagatorSolver:
             self.chain_model, self.ds, self.bond_lengths
         )
 
-        # The box does not depend on the polymers; the computation is created after they are added
-        box_kwargs = dict(nx=self.nx, lx=self.lx, bc=self.bc)
-        if self.angles is not None:
-            box_kwargs["angles"] = self.angles
-        if self.mask is not None:
-            box_kwargs["mask"] = self.mask
-        self._computation_box = self._factory.create_computation_box(**box_kwargs)
-        # Early form of the factory check, with the orthogonality tolerance of the box
-        if info["requires_orthogonal_cell"] and not self._computation_box.is_orthogonal():
+        # Early form of the computation's check, with the angle test of the native box, made before
+        # the box: a box made with a space group freezes the group's physical basis
+        orthogonal = self.angles is None or all(angle_fixed_at(angle) for angle in self.angles)
+        if info["requires_orthogonal_cell"] and not orthogonal:
             raise ValueError(f"{self.numerical_method} requires an orthogonal computation box")
+
+        # The box, in the basis of the space group, does not depend on the polymers; the
+        # computation is created after they are added
+        self._computation_box = self._factory.create_computation_box(
+            nx=self.nx, lx=self.lx, angles=self.angles, bc=self.bc, mask=self.mask, space_group=space_group)
         self._propagator_computation = None
         self._propagator_optimizer = None
         self._fourier = None
@@ -244,8 +242,7 @@ class PropagatorSolver:
 
     @property
     def computation_box(self) -> Any:
-        """The C++ ComputationBox (grid, box, integrals), with the computation's basis."""
-        self._initialize_solver()
+        """The C++ ComputationBox (grid, box, integrals), in the basis of the space group."""
         return self._computation_box
 
     @property
@@ -389,10 +386,10 @@ class PropagatorSolver:
             self._molecules, self.aggregate_propagator_computation
         )
 
-        # Create solver (with the space group when one is set)
+        # Create solver (in the basis of the box)
         self._propagator_computation = self._factory.create_propagator_computation(
             self._computation_box, self._molecules, self._propagator_optimizer,
-            self.numerical_method, self._space_group
+            self.numerical_method
         )
 
     def compute_propagators(
@@ -599,20 +596,14 @@ class PropagatorSolver:
     def n_grid(self):
         """Number of grid points for field operations.
 
-        Returns n_reduced when a space group is given, also before the first
-        computation creates the native solver, otherwise returns total_grid.
+        Returns n_reduced when a space group is given, otherwise returns total_grid.
 
         Returns
         -------
         int
             Number of grid points (n_reduced or total_grid).
         """
-        if self._propagator_computation is not None:
-            return self._propagator_computation.get_cb().get_n_basis()
-        # The computation will use the group's current basis (frozen once it is created)
-        if self._space_group is not None:
-            return self._space_group.get_n_reduced_basis()
-        return self._total_grid
+        return self._computation_box.get_n_basis()
 
     @property
     def total_grid(self):
@@ -664,7 +655,6 @@ class PropagatorSolver:
         float
             Volume of the simulation box.
         """
-        self._initialize_solver()
         return self._computation_box.get_volume()
 
     def integral(self, field: NDArray[np.floating], *, basis: str = "active") -> float:
@@ -683,7 +673,6 @@ class PropagatorSolver:
         float
             Integral of the field over the box volume.
         """
-        self._initialize_solver()
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.integral(field_use)
 
@@ -703,7 +692,6 @@ class PropagatorSolver:
         float
             Spatial average of the field (integral / volume).
         """
-        self._initialize_solver()
         field_use = self._to_active_basis(field, basis)
         return self._computation_box.mean(field_use)
 
@@ -730,7 +718,6 @@ class PropagatorSolver:
         float
             Inner product of the two fields.
         """
-        self._initialize_solver()
         field1_use = self._to_active_basis(field1, basis)
         field2_use = self._to_active_basis(field2, basis)
         return self._computation_box.inner_product(field1_use, field2_use)
@@ -761,7 +748,6 @@ class PropagatorSolver:
         float
             Sum of inner products.
         """
-        self._initialize_solver()
         fields1_use = self._to_active_basis_multi(n_fields, fields1, basis)
         fields2_use = self._to_active_basis_multi(n_fields, fields2, basis)
         return self._computation_box.multi_inner_product(n_fields, fields1_use, fields2_use)
@@ -779,7 +765,6 @@ class PropagatorSolver:
         basis : {"active", "irreducible"}
             Input representation, as for integral().
         """
-        self._initialize_solver()
         field_reduced = self._to_active_basis(field, basis)
         if field_reduced is field:
             self._computation_box.zero_mean(field)
@@ -856,17 +841,14 @@ class PropagatorSolver:
 
     def get_lx(self) -> List[float]:
         """Get current box dimensions."""
-        self._initialize_solver()
         return self._computation_box.get_lx()
 
     def get_dx(self) -> List[float]:
         """Get grid spacing in each dimension."""
-        self._initialize_solver()
         return self._computation_box.get_dx()
 
     def get_angles_degrees(self) -> List[float]:
         """Get lattice angles in degrees."""
-        self._initialize_solver()
         return self._computation_box.get_angles_degrees()
 
     # -------------------- Stress computation --------------------

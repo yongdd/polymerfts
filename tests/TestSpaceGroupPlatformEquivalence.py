@@ -51,7 +51,7 @@ Both space-group basis modes are covered:
 ACTUAL mask + space-group contract encoded by this test
 -------------------------------------------------------
 Masks are stored on the full grid in ComputationBox; when a space group is
-set, ComputationBox::set_space_group converts the stored mask to the reduced
+given, the ComputationBox converts the stored mask to the reduced
 basis, and the solvers either apply it in the reduced basis (CrysFFT paths)
 or expand it back to the full grid (non-CrysFFT SG paths).
 

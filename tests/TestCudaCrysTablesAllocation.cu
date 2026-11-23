@@ -117,14 +117,12 @@ static Computation create(const Case& c, const std::vector<double>& lx, bool p1 
     if (!p1 && c.basis == "pmmm")     s.sg->enable_pmmm_physical_basis();
     if (!p1 && c.basis == "z-mirror") s.sg->enable_z_mirror_physical_basis();
     const std::vector<std::string> periodic;
-    s.cb = c.angles.empty()
-        ? s.factory->create_computation_box(c.nx, lx, periodic)
-        : s.factory->create_computation_box(c.nx, lx, periodic, c.angles);
+    s.cb = s.factory->create_computation_box(c.nx, lx, periodic, c.angles, nullptr, s.sg.get());
     s.molecules = s.factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", b_B}});
     s.molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
     s.optimizer = s.factory->create_propagator_computation_optimizer(s.molecules.get(), true);
     s.computation = s.factory->create_propagator_computation(
-        s.cb.get(), s.molecules.get(), s.optimizer.get(), c.method, s.sg.get());
+        s.cb.get(), s.molecules.get(), s.optimizer.get(), c.method);
 
     std::mt19937 rng(43);
     std::normal_distribution<double> normal(0.0, 5.0);
