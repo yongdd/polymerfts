@@ -4,8 +4,10 @@ read_chains() reads the input and chain_solver() creates the PropagatorSolver of
 chain_fields() and solve_chains() give the concentrations of the monomer types in given fields, with
 what SCFT, LFTS and CLFTS have in common; each of them adds to this what is its own, such as the
 electrostatic potential or the grand-canonical chains. partition_functions() gives the Q_p of the chains
-and chain_hamiltonian() the Hamiltonian of the auxiliary fields. prepare_run() starts a run of LFTS or
-CLFTS: it draws the chains and gives the auxiliary fields of the first step.
+and chain_hamiltonian() the Hamiltonian of the auxiliary fields. check_partition_once(),
+report_partition_consistency() and check_partition_functions() check the partition functions of the
+propagators. prepare_run() starts a run of LFTS or CLFTS: it draws the chains and gives the auxiliary
+fields of the first step.
 """
 
 import copy
@@ -17,7 +19,6 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
 
-from ..utils.common import report_partition_consistency
 from ..utils.validation import ValidationError, NumericalError, parse_chi_n
 from .propagator_solver import PropagatorSolver
 
@@ -231,6 +232,42 @@ def check_partition_once(sim, fields):
         sim._partition_checked = True
         if not report_partition_consistency(sim.prop_solver):
             raise NumericalError("Partition consistency check failed (forward/backward mismatch).", fields())
+
+
+def report_partition_consistency(prop_solver):
+    """Print the forward/backward partition error of each polymer; True if all are within tolerance."""
+    from .. import _core
+    errors = prop_solver.partition_errors()
+    print("Relative contour partition error of each polymer: " +
+          ", ".join(f"{p}: {error:.3e}" for p, error in enumerate(errors)))
+    return all(np.isfinite(error) and error <= _core.PARTITION_TOLERANCE for error in errors)
+
+
+def check_partition_functions(prop_solver, state, fields=None):
+    """Reject an accepted state with a non-positive or non-finite occupied partition (NumericalError).
+
+    With real fields Q is a sum of positive Boltzmann weights. Intermediate iterates can
+    still give Q <= 0 (the Richardson extrapolation of rqm4 or Crank-Nicolson steps on a
+    coarse grid in strong fields), so only accepted states are checked: the final SCFT
+    fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
+    finite. An absent canonical polymer contributes no log Q term, including when
+    a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
+    `fields` is a function that returns the monomer fields of the state for NumericalError.fields
+    (as in check_partition_once), called only when the check fails; without it the error has none.
+    """
+    if prop_solver.field_type != "real":
+        return
+    for p in range(prop_solver.get_n_polymer_types()):
+        if prop_solver.get_polymer(p).get_volume_fraction() == 0.0:
+            continue
+        Q = prop_solver.get_partition_function(p)
+        if not (np.isfinite(Q) and Q > 0):
+            raise NumericalError(
+                f"The partition function of polymer {p} is {Q:.6e} at {state}, but with real fields it must "
+                "be positive and finite. Either the discretization is too coarse for the fields (refine the "
+                "grid or the contour step), or the propagators fell below the round-off level of the spectral "
+                "transforms, which is relative to their largest value on the grid (for example strong fields "
+                "next to absorbing walls or a grafted source).", None if fields is None else fields())
 
 
 def prepare_run(sim, initial_fields, restart_data, dtype=np.float64):

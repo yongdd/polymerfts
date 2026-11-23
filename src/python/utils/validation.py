@@ -87,15 +87,26 @@ def initial_field_values(fields, monomer_types, size, dtype=np.float64):
 
 
 def previous_noise_values(noise, label, n_fields, n_grid, fields):
-    """The previous noise of a run continued by hand (the noise of the Leimkuhler-Matthews step before the
-    first step) as a flat float64 array of n_fields x n_grid real, finite values (finite_values; the
-    caller's array stays as it is), or None without one. `fields` names the fields in the error."""
+    """The previous noise of a run (the noise of the Leimkuhler-Matthews step before the first step) as a
+    float64 array of shape (n_fields, n_grid): the real, finite values of a run continued by hand
+    (finite_values; the caller's array stays as it is), or zeros without one. `fields` names the fields
+    in the error."""
     if noise is None:
-        return None
+        return np.zeros((n_fields, n_grid))
     noise = finite_values(noise, label)
     if noise.size != n_fields * n_grid:
         raise ValidationError(f"{label} needs {n_fields} x {n_grid} values ({fields} x grid points), got {noise.size}")
-    return noise
+    return noise.reshape(n_fields, n_grid)
+
+
+def first_langevin_step(start_langevin_step):
+    """The first step of a Langevin run: start_langevin_step, a positive integer, or 1 without one."""
+    if start_langevin_step is None:
+        return 1
+    if (isinstance(start_langevin_step, (bool, np.bool_)) or not isinstance(start_langevin_step, (int, np.integer))
+            or start_langevin_step < 1):
+        raise ValidationError("start_langevin_step must be a positive integer")
+    return int(start_langevin_step)
 
 
 def _rename_parameter(mapping, old, new, path=""):

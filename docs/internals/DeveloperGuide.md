@@ -645,8 +645,9 @@ When adding new computational features, you must implement them for both platfor
 | Which objects a platform creates | the factories |
 | Flow of each method and its parameters | `src/python/scft/scft.py`, `src/python/fts/lfts.py`, `src/python/fts/clfts.py` |
 | Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
-| Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
+| Structure functions of L-FTS and CL-FTS, and the mean concentrations of CL-FTS (`recording.concentrations`) | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
 | Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
+| Summaries of a CL-FTS run: the distribution of the largest drift of each step and the partition ratios | `src/python/fts/diagnostics.py` (`RunDiagnostics`) |
 | WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
 | Electrostatics of the FTS methods: ψ, the ions and their checkpoint state | `src/python/theory/electrostatics.py` (`sim.electrostatics`) |
 | Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
@@ -654,7 +655,7 @@ When adding new computational features, you must implement them for both platfor
 | Cell relaxation of SCFT: the stress and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
-| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the checks of their partition functions; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `check_partition_once`, `check_partition_functions`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
 | Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section, polymer, block, point ion and Gibbs box | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`, `POLYMER_KEYS`, `BLOCK_KEYS`, `ION_KEYS`, `GIBBS_BOX_KEYS`) |
 

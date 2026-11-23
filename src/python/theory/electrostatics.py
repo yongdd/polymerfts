@@ -73,6 +73,15 @@ def point_ions(params, ion_concentrations):
     return ions
 
 
+def display_point_ions(ions):
+    """Prints the point ions (as point_ions gives them), one line each."""
+    for ion in ions:
+        amount = ("chemical potential %g (grand canonical)" % ion["chemical_potential"] if ion["concentration"] is None
+                  else "concentration %g (with counterions)" % ion["concentration"])
+        print("Point ion %s: valence %g, %s, smearing length %g"
+              % (ion["name"], ion["valence"], amount, ion["smearing_length"]))
+
+
 def _point_ion(ion, potential, n_segments, partition_ratio=True):
     """Density c(r), ln Q and the partition ratio |Q|/<|e^(-u)|> of one point ion in the dimensionless
     potential u (the ratio None for a grand-canonical ion, and without partition_ratio: SCFT, real u).
@@ -545,7 +554,7 @@ class MeanFieldElectrostatics:
     linear response, R(k) = [c(k) - (k² + κ²)ψ(k)/E] / [(k² + κ²)/E + D(k)], with the response
     D(k) = -∂c(k)/∂ψ(k) of the charges in the homogeneous state: R is the Newton step of the
     linearized equation, which keeps the iteration stable where E/k² is large. start() measures
-    D(k) at the start of each run (set_response) and gives the initial ψ.
+    D(k) at the start of each run (`response`) and gives the initial ψ.
     Without screening the uniform mode of ψ is zero in a neutral canonical system; charged
     grand-canonical ions make it the Donnan potential. Real fields; the transforms are those of
     PropagatorSolver.fourier (Fourier modes along periodic axes, cosine modes along wall axes).
@@ -583,6 +592,7 @@ class MeanFieldElectrostatics:
         self._smearing = sim.smearing
         self.response = None
         self.set_box()
+        self.psi = np.zeros(sim.prop_solver.n_grid)
 
     @property
     def psi(self):
@@ -608,20 +618,18 @@ class MeanFieldElectrostatics:
         """The point ions of a new ψ or box are computed when they are needed (ion_densities)."""
         self._ion_densities = self._ion_densities_k = self._ion_log_partitions = None
 
-    def set_response(self, response):
-        """The response D(k) = -∂c(k)/∂ψ(k) of the homogeneous state (coefficient shape) for the residual."""
-        self.response = np.maximum(np.real(response), 0.0)
-
     def start(self, initial_psi, q_init):
         """ψ at the start of a run of SCFT: the Newton residual of the Poisson equation needs the charge
         response of the homogeneous state, which also gives the initial ψ; initial_psi (in the axis order
         of the input) replaces it. Returns the electrostatic free energy of the homogeneous state."""
         sim = self.sim
-        # The kernels of the current box, which may have changed since the last run
-        self._smearing.set_box(sim.prop_solver.get_lx(), sim.prop_solver.get_angles_degrees())
+        # The kernels of the current box (SCFT has set the smearing to it), which may have changed since the
+        # last run
         self.set_box()
+        # The response D(k) = -∂c(k)/∂ψ(k) of the homogeneous state (coefficient shape) for the residual; an
+        # estimate below zero is set to zero
         psi0, energy_electrostatic_homogeneous = self.homogeneous(self._polymer_charge())
-        self.set_response(self._charge_response(psi0, q_init))
+        self.response = np.maximum(np.real(self._charge_response(psi0, q_init)), 0.0)
         if initial_psi is None:
             self.psi = np.full(sim.prop_solver.n_grid, psi0)
         else:
@@ -648,7 +656,7 @@ class MeanFieldElectrostatics:
         suffice: a uniform field does not change the concentrations of canonical chains.
         Grafted chains (q_init) are not homogeneous; D(k) then only approximates the response,
         which is enough for the preconditioner of the residual (its zero is the Poisson equation),
-        and a negative estimate is set to zero.
+        and start() sets a negative estimate to zero.
         """
         sim, n_grid = self.sim, self.sim.prop_solver.n_grid
         w = np.zeros((len(sim.monomer_types), n_grid))
@@ -662,8 +670,7 @@ class MeanFieldElectrostatics:
             charges.append(self.charge_density(self._smearing.apply_to_dict(phi)))
         kick = np.zeros(n_grid)
         kick[0] = 2.0 * epsilon
-        response = -np.real(self._fourier.forward(charges[0] - charges[1]) / self._fourier.forward(kick))
-        return response if q_init is None else np.maximum(response, 0.0)
+        return -np.real(self._fourier.forward(charges[0] - charges[1]) / self._fourier.forward(kick))
 
     def add_potential(self, w_input):
         """Add z_i ψ to the monomer fields {type: w_i} of the charged types."""

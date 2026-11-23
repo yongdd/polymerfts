@@ -215,7 +215,7 @@ def jacobian(root):
                 continue
             kick = np.zeros((M + 1, n_grid), dtype=complex)
             kick[j, 0] = eps
-            difference = (sim._evaluate_force_with_psi(kick) - sim._evaluate_force_with_psi(-kick)) / (2 * eps)
+            difference = (sim.evaluate_force(kick) - sim.evaluate_force(-kick)) / (2 * eps)
             for i in range(M + 1):
                 worst = max(worst, np.max(np.abs(np.fft.fftn(np.reshape(difference[i], NX)) - J[i, j])) / scale)
         assert worst < 1e-6, f"Jacobian against central differences (screening_length {screening_length}): {worst:.2e}"

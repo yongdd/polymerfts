@@ -3,8 +3,6 @@
 See docs/theory/SelfConsistentFieldTheory.md.
 """
 
-import weakref
-
 import numpy as np
 
 # The table of the crystal systems (which lattice parameters vary, the cell each needs, the
@@ -23,20 +21,21 @@ class CellRelaxation:
     of the crystal system that the structure does not satisfy.
     """
 
-    def __init__(self, sim, params, angles):
-        self.sim = weakref.proxy(sim)   # no cycle: a dropped simulation frees its solver at once
+    def __init__(self, sim, params):
         self.monomer_types, self.sg = sim.monomer_types, sim.sg
         self.prop_solver, self.smearing = sim.prop_solver, sim.smearing
         self.electrostatics = sim.electrostatics
+        self.relax_cell = params["relax_cell"]
         self.stress_scale = params.get("stress_scale", 1)
         # The stress of the fields of the last iteration, in the layout of get_stress()
         self.stress_array = None
-        self._choose_lattice_parameters(params, angles)
+        self._choose_lattice_parameters(params)
 
-    def _choose_lattice_parameters(self, params, angles):
+    def _choose_lattice_parameters(self, params):
         """Which lattice parameters the iteration varies."""
         # Which lattice parameters may vary during box relaxation (table CRYSTAL_SYSTEMS, utils/validation.py)
         dim = len(params["nx"])
+        angles = params.get("angles")   # [alpha, beta, gamma] in degrees, or [gamma] in 2D
         if self.sg is not None:
             # The space group fixes the crystal system (and which angles vary, below)
             crystal_system = self.sg.get_crystal_system()
@@ -57,8 +56,8 @@ class CellRelaxation:
             # Relaxation never changes the fixed angles, and its first step overwrites the tied
             # lengths with the first one (a jump of the cell), so with relax_cell a crystal system
             # that is given (or Hexagonal2D, classified from gamma) must describe the cell
-            if params["relax_cell"] and (params.get("crystal_system", None) is not None
-                                         or crystal_system == "Hexagonal2D"):
+            if self.relax_cell and (params.get("crystal_system", None) is not None
+                                    or crystal_system == "Hexagonal2D"):
                 lx_given = [float(v) for v in params["lx"]]
                 if angles is None or len(angles) == 0:
                     cell_angles = [90.0, 90.0, 90.0]
@@ -96,11 +95,11 @@ class CellRelaxation:
         self.angles_full_indices = list(self.angles_reduced_indices)
 
         # Lattice parameters the optimizer adjusts with the fields: the free box lengths and angles
-        self.n_parameters = len(self.lx_reduced_indices) + len(self.angles_reduced_indices) if params["relax_cell"] else 0
+        self.n_parameters = len(self.lx_reduced_indices) + len(self.angles_reduced_indices) if self.relax_cell else 0
 
         # A method that keeps the cell orthogonal (rs) computes no shear stress, so its angles cannot relax
         keeps_orthogonal = self.prop_solver.numerical_methods()[self.prop_solver.numerical_method]["requires_orthogonal_cell"]
-        if params["relax_cell"] and self.angles_reduced_indices and keeps_orthogonal:
+        if self.relax_cell and self.angles_reduced_indices and keeps_orthogonal:
             raise ValidationError(f"crystal_system '{crystal_system}' relaxes the cell angles, which "
                                   f"'{self.prop_solver.numerical_method}' keeps at 90 degrees; choose an orthogonal "
                                   "crystal system or relax_cell False")
@@ -127,8 +126,8 @@ class CellRelaxation:
     def stress_error(self, w, phi):
         """The part of the error of an iteration from the stress (0 for a fixed cell): error() of the
         stress of the fields w, whose concentrations phi and propagator stress the iteration computed
-        together (SCFT.compute_concentrations with stress=True). update() moves the cell with it."""
-        if not self.sim.relax_cell:
+        together (SCFT.compute_concentrations with stress=True); residual() passes it to the optimizer."""
+        if not self.relax_cell:
             return 0.0
         self.stress_array = self._lattice_derivatives(w, phi)
         return self.error(self.stress_array)
@@ -136,7 +135,7 @@ class CellRelaxation:
     def parameters(self):
         """The lattice parameters that relax, as the optimizer iterates them: the free box lengths, then
         the free angles in radians, the unit of their residual -dH/dθ (empty for a fixed cell)."""
-        if not self.sim.relax_cell:
+        if not self.relax_cell:
             return np.array([])
         current_lx = np.array(self.prop_solver.get_lx())[self.lx_reduced_indices]
         current_angles = np.array(self.prop_solver.get_angles_degrees())[self.angles_reduced_indices] if len(self.angles_reduced_indices) > 0 else np.array([])
@@ -146,7 +145,7 @@ class CellRelaxation:
         """The residual of parameters(), from the stress of the last stress_error(): -dH/dL of the free box
         lengths, the averaged derivative for lengths tied by the crystal system (a = b, or a = b = c), and
         -dH/dθ of the free angles, scaled by stress_scale (empty for a fixed cell)."""
-        if not self.sim.relax_cell:
+        if not self.relax_cell:
             return np.array([])
         stress_array = self.stress_array
         dlx_full = -stress_array[0:3]
@@ -162,7 +161,7 @@ class CellRelaxation:
         """Sets the lattice parameters `values` of the optimizer (in the layout of parameters()) to the
         solver, the smearing and the electrostatics. Length changes are limited to 10 % and angle changes
         to 5 degrees per step."""
-        if not self.sim.relax_cell:
+        if not self.relax_cell:
             return
         n_lx = len(self.lx_reduced_indices)
         n_angles = len(self.angles_reduced_indices)
@@ -224,15 +223,17 @@ class CellRelaxation:
         lengths = [np.sum(stress[group]) / np.sqrt(len(group)) for group in self.tied_groups]
         return np.linalg.norm(lengths + list(stress[self.angle_stress_indices]))
 
-    def check_tied_lengths(self, error_level):
+    def check_tied_lengths(self, error_level, tolerance):
+        """Warns at the end of a run that converged (error_level below tolerance) when the stresses of
+        lengths tied by the crystal system do not vanish separately."""
         # The tied lengths relax only along the sum of their stresses. Without a space group the
         # structure need not have the symmetry of the tie, and then the stresses of the tied lengths
         # do not vanish separately at the converged tied cell: there is no stress-free cell with
         # this crystal system.
         stress_array = self.stress_array
-        if self.sim.relax_cell and self.sg is None and stress_array is not None and error_level < self.sim.tolerance:
+        if self.relax_cell and self.sg is None and stress_array is not None and error_level < tolerance:
             unequal = [stress_array[group] - np.mean(stress_array[group]) for group in self.tied_groups if len(group) > 1]
-            if unequal and np.linalg.norm(np.concatenate(unequal)) >= self.sim.tolerance:
+            if unequal and np.linalg.norm(np.concatenate(unequal)) >= tolerance:
                 tie = "a = b = c" if self.crystal_system == "Cubic" else "a = b"
                 free_system = {"Hexagonal": "Triclinic", "Hexagonal2D": "Oblique2D"}.get(self.crystal_system, "Orthorhombic")
                 print(f"Warning: the box-length stresses {stress_array[:self.prop_solver.dim]} do not vanish separately. The "

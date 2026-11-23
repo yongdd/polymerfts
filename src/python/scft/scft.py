@@ -4,23 +4,20 @@ from pathlib import Path
 from typing import Dict, Optional, Callable, Union
 
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
-from ..theory.chains import chain_solver, partition_functions
+from ..theory.chains import (chain_solver, partition_functions, report_partition_consistency, check_partition_functions,
+                             read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains,
+                             check_partition_once)
 from ..utils.validation import (with_overrides, validate_scft_params, ValidationError, NumericalError,
                          point_ion_concentrations, open_charges, reference_segments, finite_values,
                          initial_field_values)
-from ..utils.common import (
-    report_partition_consistency,
-    display_system,
-    check_partition_functions,
-)
+from ..utils.common import display_system
 from .cell_relaxation import CellRelaxation
 from .grid import FieldGrid
 from .scft_results import (SCFTResult, IterationInfo, scft_result, iteration_info, print_free_energies, save_results,
                            ion_chemical_potentials, chemical_potentials)
-from ..theory.chains import read_chains, mean_concentrations, draw_polymer_architectures, chain_fields, solve_chains, check_partition_once
 from ..utils.file_formats import load_config
 from ..theory.smearing import smearing_of
-from ..theory.electrostatics import MeanFieldElectrostatics
+from ..theory.electrostatics import MeanFieldElectrostatics, display_point_ions
 
 
 class SCFT:
@@ -103,19 +100,24 @@ class SCFT:
         # The grid of the fields (grid.py): nx, lx, bc and angles of the input in the standard axis order
         # [a, b, c] (axis_ordering), and the space group with its basis, before the solver that works in it
         self.grid = FieldGrid(self, params)
-        self.axis_ordering, self.sg = self.grid.axis_ordering, self.grid.sg
-
-        # Lattice angles [alpha, beta, gamma] in degrees
-        angles = params.get("angles", None)
+        self.sg = self.grid.sg
 
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
         self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers, space_group=self.sg)
 
-        # Computation box as a public attribute (the propagator computation is created on first use)
+        # Computation box as a public attribute (display_statistics() below creates the propagator computation)
         self.cb = self.prop_solver.computation_box
 
         # Display factory info
         self.prop_solver.display_platform_info()
+
+        # Settings of the run: whether the cell relaxes, and when the iteration stops
+        self.params = params
+        self.chain_model = params["chain_model"]
+        self.ds = params["ds"]
+        self.relax_cell = params["relax_cell"]
+        self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
+        self.tolerance = params.get("tolerance", 1e-8)     # stop when the self-consistency error is below this
 
         # Smearing of the interactions, on full-grid fields (validate_scft_params refuses it with a space group)
         self.smearing = smearing_of(params, self.prop_solver)
@@ -127,7 +129,7 @@ class SCFT:
             self._setup_electrostatics(params)
 
         # The lattice parameters that vary with relax_cell
-        self.cell = CellRelaxation(self, params, angles)
+        self.cell = CellRelaxation(self, params)
 
         # Anderson mixing (C++ class) for the saddle-point iteration of one vector: the fields (in the
         # working basis of the grid), ψ with electrostatics and the lattice parameters that relax
@@ -141,18 +143,9 @@ class SCFT:
             optimizer["mix_min"],      # minimum mixing rate of simple mixing
             optimizer["mix_init"])     # initial mixing rate of simple mixing
 
-        display_system(self, params["chain_model"])
+        display_system(self)
         print("Pressure scale of the field residual, κ: %f" % self.pressure_kappa)
         self.prop_solver.display_statistics()
-
-        #  Save internal variables
-        self.params = params
-        self.chain_model = params["chain_model"]
-        self.ds = params["ds"]
-        self.relax_cell = params["relax_cell"]
-
-        self.max_iter = params.get("max_iter", 2000)       # maximum number of iterations
-        self.tolerance = params.get("tolerance", 1e-8)     # stop when the self-consistency error is below this
 
     def _setup_electrostatics(self, params):
         """The Poisson equation for ψ and what it needs of the input."""
@@ -163,14 +156,9 @@ class SCFT:
                                                       ion_concentrations=point_ion_concentrations(params),
                                                       open_charges=open_charges(params))
         es = self.electrostatics
-        es.psi = np.zeros(self.prop_solver.n_grid)
         print("Electrostatics: charges", es.charges, "coupling E = %g" % es.coupling
               + ("" if es.screening_length is None else ", screening length %g" % es.screening_length))
-        for ion in es.ions:
-            amount = ("chemical potential %g (grand canonical)" % ion["chemical_potential"] if ion["concentration"] is None
-                      else "concentration %g (with counterions)" % ion["concentration"])
-            print("Point ion %s: valence %g, %s, smearing length %g"
-                  % (ion["name"], ion["valence"], amount, ion["smearing_length"]))
+        display_point_ions(es.ions)
 
     # =========================================================================
     # Class Methods
@@ -268,12 +256,18 @@ class SCFT:
         Incompressible fields are shifted to zero mean (the uniform modes do not change the
         concentrations, and the free energy does not depend on them).
         """
-        target = np.zeros(len(self.monomer_types))
-        if self.zeta_n is not None:
-            phi_mean = self.mean_concentrations()
-            target = self.matrix_chi @ phi_mean + self.zeta_n * (np.sum(phi_mean) - 1.0)
+        target = self._saddle_point_means() if self.zeta_n is not None else np.zeros(len(self.monomer_types))
         for i in range(len(self.monomer_types)):
             w[i] += target[i] - self.grid.mean(w[i])
+
+    def _saddle_point_means(self):
+        """The field means of the saddle point, sum_j chi_ij mean(phi_j) + xi with xi = zeta (sum_j mean(phi_j) - 1)
+        (compressible) or 0 (incompressible), from the mean concentrations of the chain compositions."""
+        phi_mean = self.mean_concentrations()
+        means = self.matrix_chi @ phi_mean
+        if self.zeta_n is not None:
+            means += self.zeta_n * (np.sum(phi_mean) - 1.0)
+        return means
 
     def compute_chemical_potentials(self, w=None, partition_functions=None):
         """Restore the saddle-point field means and return beta mu per chain.
@@ -290,14 +284,10 @@ class SCFT:
             w = [w[m] for m in self.monomer_types]
         if partition_functions is None:
             partition_functions = self.partition_functions
-        phi_mean = self.mean_concentrations()
-        target = self.matrix_chi @ phi_mean
-        if self.zeta_n is not None:
-            target += self.zeta_n * (np.sum(phi_mean) - 1.0)
         # A field on the full grid (SCFTResult.w with a space group): the mean of its grid points
         means = [float(np.mean(field)) if self.sg is not None and np.size(field) == self.prop_solver.total_grid
                  else self.grid.mean(field) for field in w]
-        shift = target - np.array(means)
+        shift = self._saddle_point_means() - np.array(means)
         mu = []
         for p in range(self.prop_solver.get_n_polymer_types()):
             chain = self.prop_solver.get_polymer(p)
@@ -414,6 +404,8 @@ class SCFT:
         print(", box size" if self.relax_cell else "")
 
         # ---- 1. Initial fields and ψ (the Poisson equation, electrostatics.py) ----
+        # The smearing kernel of the current box, which may have changed since the last run
+        self.smearing.set_box(self.prop_solver.get_lx(), self.prop_solver.get_angles_degrees())
         es = self.electrostatics
         energy_electrostatic_homogeneous = 0.0 if es is None else es.start(initial_psi, q_init)
 
@@ -475,7 +467,7 @@ class SCFT:
             # New fields, ψ and cell
             w = self._next_fields(w, w_diff, psi_diff, old_error_level, error_level)
 
-        self.cell.check_tied_lengths(error_level)
+        self.cell.check_tied_lengths(error_level, self.tolerance)
 
         # The propagators of the last evaluated fields: Q must be positive for log Q in the free energy
         # (some discretizations have non-positive partitions at intermediate iterates, which may recover)

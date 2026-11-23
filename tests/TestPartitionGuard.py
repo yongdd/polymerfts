@@ -31,7 +31,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import SCFT, LFTS, PropagatorSolver, PlatformSelector, NumericalError
-from polymerfts.utils.common import check_partition_functions
+from polymerfts.theory.chains import check_partition_functions
 from cuda_part import cuda_part_missing
 from fts_checks import diblock_fields, diblock_parameters, silenced
 

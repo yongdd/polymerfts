@@ -38,7 +38,7 @@ def checkpoint_settings(sim):
         "dt": sim.langevin["dt"], "nbar": sim.langevin["nbar"], "dt_scaling": sim.dt_scaling,
         "smearing": {"type": sim.smearing.type, "params": sim.smearing.params},
         # None without electrostatics, which earlier checkpoints also give
-        "electrostatics": None if getattr(sim, "electrostatics", None) is None else sim.electrostatics.settings(),
+        "electrostatics": None if sim.electrostatics is None else sim.electrostatics.settings(),
         "sample_interval": sim.recording["sample_interval"],
         "statistics_save_interval": sim.recording["statistics_save_interval"],
         "extensions": extension_settings(sim),
@@ -128,19 +128,16 @@ def load_checkpoint(sim, file_name, allow_legacy=False):
 
 
 @contextlib.contextmanager
-def recording_run_status(sim, start_langevin_step, initial_fields, restart_data, *, saddle_search, **counters):
+def recording_run_status(sim, first_step, initial_fields, restart_data, *, saddle_search, **counters):
     """The status of a Langevin run, sim.run_status, which run_status.json holds with the metadata.
 
-    The run starts "running" from start_langevin_step, with the hash of its initial fields and the states
-    of its random-number streams in the metadata; `counters` start at their given values, or continue
-    those of a checkpoint (restart_data). The file is written when the run starts and again when it ends:
-    "completed", or stopped by an exception, which is raised again: "interrupted", "aborted_saddle_failure"
-    for a SaddlePointError of a run that solves saddle points (saddle_search, L-FTS), and "failed" with
-    the exception otherwise.
+    The run starts "running" from first_step (validation.first_langevin_step), with the hash of its initial
+    fields and the states of its random-number streams in the metadata; `counters` start at their given
+    values, or continue those of a checkpoint (restart_data). The file is written when the run starts and
+    again when it ends: "completed", or stopped by an exception, which is raised again: "interrupted",
+    "aborted_saddle_failure" for a SaddlePointError of a run that solves saddle points (saddle_search,
+    L-FTS), and "failed" with the exception otherwise.
     """
-    first_step = 1 if start_langevin_step is None else start_langevin_step
-    if isinstance(first_step, (bool, np.bool_)) or not isinstance(first_step, (int, np.integer)) or first_step < 1:
-        raise ValidationError("start_langevin_step must be a positive integer")
     sim.run_status = {"status": "running", "last_completed_step": first_step - 1,
                       "requested_last_step": sim.langevin["max_step"], **counters}
     sim.metadata["initial_fields_hash" if restart_data is None else "restart_fields_hash"] = fields_hash(initial_fields)
@@ -149,7 +146,7 @@ def recording_run_status(sim, start_langevin_step, initial_fields, restart_data,
         for key in counters:
             sim.run_status[key] = previous_status.get(key, 0)
     sim.metadata["initial_rng_state"] = sim.random_bg.state
-    if getattr(sim, "electrostatics", None) is not None:
+    if sim.electrostatics is not None:
         sim.metadata["initial_psi_rng_state"] = sim.electrostatics.random_bg.state
     _write_run_status(sim)
 
@@ -201,12 +198,12 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         if sim.integrator.name != "lm" or sim.callbacks or getattr(sim.integrator, "settings", {}):
             raise ValidationError("Legacy checkpoints cannot restore custom integrators or callbacks")
         # The electrostatic potential came after the versioned checkpoints
-        if getattr(sim, "electrostatics", None) is not None:
+        if sim.electrostatics is not None:
             raise ValidationError("Legacy checkpoints hold no electrostatic potential: they cannot continue a "
                                   "run with 'electrostatics'")
         # WTMD checkpoints before 2026-02-03 hold the bias of the former implementation (no wtmd_I0);
         # a run without WTMD ignores the bias
-        if getattr(sim, "wtmd", None) is not None and "wtmd_u" in data and "wtmd_I0" not in data:
+        if sim.wtmd is not None and "wtmd_u" in data and "wtmd_I0" not in data:
             raise ValidationError("This legacy checkpoint holds the WTMD bias of the implementation before "
                                   "2026-02-03 (no wtmd_I0), which the current WTMD cannot continue")
         warnings.warn("Legacy checkpoint: settings are unverified and pending measurements cannot be recovered", RuntimeWarning)
@@ -219,10 +216,10 @@ def validate_checkpoint(sim, data, *, allow_legacy=False):
         count = _check_measurements(sim, data, step)
         _check_fields(sim, data)
         # ψ, its noise stream, the pending drifts of ψ and the charge structure sums (Electrostatics.checkpoint_data)
-        if getattr(sim, "electrostatics", None) is not None:
+        if sim.electrostatics is not None:
             sim.electrostatics.validate_checkpoint(data, count)
         # The bias, statistics and pending samples of WTMD (WTMD.checkpoint_data)
-        if getattr(sim, "wtmd", None) is not None:
+        if sim.wtmd is not None:
             sim.wtmd.validate_checkpoint(data, sim.chi_n)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValidationError(f"Invalid checkpoint: {exc}") from exc
@@ -353,9 +350,9 @@ def _check_measurements(sim, data, step):
             values = np.atleast_1d(np.asarray(data[key]))
             if np.size(values) != count * per_sample or np.any(np.isposinf(np.real(values))):
                 raise ValidationError(f"Invalid checkpoint measurement '{key}'")
-    # Pending sums of recording.concentrations and their number of steps, absent in checkpoints
+    # Pending sums of recording.concentrations (CL-FTS) and their number of steps, absent in checkpoints
     # of runs without them
-    for name in getattr(sim, "concentration_names", []):
+    for name in sim.structure_functions.concentration_names:
         key = _measurement_key("sf", "concentration_" + name)
         if key in data and (np.size(data[key]) != sim.prop_solver.n_grid or not np.all(np.isfinite(data[key]))):
             raise ValidationError(f"Invalid checkpoint concentration sum '{name}'")

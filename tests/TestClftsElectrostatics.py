@@ -422,10 +422,10 @@ def numerical_failures(root):
     shape = (len(sim.monomer_types) + 1, sim.prop_solver.n_grid)
     fields = np.zeros(shape, np.complex128)
     fields[-1, 2] = np.nan
-    expect_numerical(lambda: sim._evaluate_force_with_psi(fields), "Intermediate CLFTS fields have non-finite values")
+    expect_numerical(lambda: sim.evaluate_force(fields), "Intermediate CLFTS fields have non-finite values")
     derivative = sim.mpt.compute_func_deriv
     sim.mpt.compute_func_deriv = lambda w_aux, phi, indices: derivative(w_aux, phi, indices) * np.nan
-    expect_numerical(lambda: sim._evaluate_force_with_psi(np.zeros(shape, np.complex128)),
+    expect_numerical(lambda: sim.evaluate_force(np.zeros(shape, np.complex128)),
                      "Non-finite intermediate CLFTS force")
 
 

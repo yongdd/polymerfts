@@ -12,8 +12,7 @@ import numpy as np
 
 from ..utils.checkpoint import extension_object_state
 from .integrators import checked_fields
-from ..theory.chains import chain_hamiltonian
-from ..utils.common import check_partition_functions
+from ..theory.chains import chain_hamiltonian, check_partition_functions
 from ..utils.validation import ValidationError, SaddlePointError, NumericalError
 
 
@@ -163,7 +162,7 @@ class SaddlePointSearch:
         self.failure_policy = self.settings.get("failure_policy", "retry")
         self.max_retries = self.settings.get("max_retries", 5)
         self.mpt, self.smearing = sim.mpt, sim.smearing
-        self.prop_solver, self.cb = sim.prop_solver, sim.cb
+        self.prop_solver = sim.prop_solver
         self.monomer_types, self.zeta_n = sim.monomer_types, sim.zeta_n
         self.iterations = 0
         self.compressor = self._create_compressor(params)
@@ -385,7 +384,7 @@ class SaddlePointSearch:
         for saddle_iter in range(1,self.settings["max_iter"]+1):
 
             for k, target in mean_targets.items():
-                w_aux[k] += target - self.cb.mean(w_aux[k])
+                w_aux[k] += target - self.prop_solver.mean(w_aux[k])
 
             # Compute total concentrations
             phi, _ = self.sim.compute_concentrations(w_aux)
@@ -406,7 +405,7 @@ class SaddlePointSearch:
 
             # Print iteration # and error levels
             if self.sim.verbose_level == 2 or (self.sim.verbose_level == 1 and is_last):
-                mass_error = self.cb.mean(h_deriv[I-1])
+                mass_error = self.prop_solver.mean(h_deriv[I-1])
                 print("%8d %12.3E " % (saddle_iter, mass_error), end=" [ ")
                 for Q in total_partitions:
                     print("%13.7E " % (Q), end=" ")
@@ -428,6 +427,6 @@ class SaddlePointSearch:
 
         # Incompressible: gauge fix of the pressure field to mean 0 (H and φ do not change)
         if self.zeta_n is None:
-            w_aux[M-1] -= self.cb.mean(w_aux[M-1])
+            w_aux[M-1] -= self.prop_solver.mean(w_aux[M-1])
 
         return phi, phi_smeared, hamiltonian, saddle_iter, error_level
