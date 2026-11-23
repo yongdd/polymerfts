@@ -165,101 +165,87 @@ template <typename T>
 void ComputationDiscrete<T>::compute_concentrations()
 {
     this->require_propagators();
-    try
+    // Concentration of each block (several blocks when propagators are aggregated)
+    this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
     {
-        // Concentration of each block (several blocks when propagators are aggregated)
-        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
-        {
-            const auto it = this->phi_block_iterators[b];
-            const auto& [p, key_left, key_right] = it->first;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
+        const auto it = this->phi_block_iterators[b];
+        const auto& [p, key_left, key_right] = it->first;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
 
-            // A block without segments has no concentration
-            this->backend->set_zero(STREAM, it->second);
-            if (N_RIGHT == 0)
-                return;
+        // A block without segments has no concentration
+        this->backend->set_zero(STREAM, it->second);
+        if (N_RIGHT == 0)
+            return;
 
-            // φ = Σ_n q(N_LEFT+1-n) q†(n) / exp(-w ds), n = 1..N_RIGHT
-            BackendArray<T>** q_left  = propagator.at(key_left).data();
-            BackendArray<T>** q_right = propagator.at(key_right).data();
-            std::vector<SegmentPair<T>> pairs;
-            for (int n = 1; n <= N_RIGHT; n++)
-                pairs.push_back({q_left[N_LEFT-n+1], q_right[n], 1.0});
-            this->backend->add_segment_products(STREAM, it->second, pairs);
+        // φ = Σ_n q(N_LEFT+1-n) q†(n) / exp(-w ds), n = 1..N_RIGHT
+        BackendArray<T>** q_left  = propagator.at(key_left).data();
+        BackendArray<T>** q_right = propagator.at(key_right).data();
+        std::vector<SegmentPair<T>> pairs;
+        for (int n = 1; n <= N_RIGHT; n++)
+            pairs.push_back({q_left[N_LEFT-n+1], q_right[n], 1.0});
+        this->backend->add_segment_products(STREAM, it->second, pairs);
 
-            // Remove the shared bead factor; getters apply ensemble normalization.
-            this->backend->divide_by_boltzmann_factor(STREAM, it->second,
-                                                      this->backend->boltzmann_factor(block.monomer_type));
-        });
+        // Remove the shared bead factor; getters apply ensemble normalization.
+        this->backend->divide_by_boltzmann_factor(STREAM, it->second,
+                                                  this->backend->boltzmann_factor(block.monomer_type));
+    });
 
-        this->compute_solvent_concentrations();
-        this->concentrations_computed_ = true;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    this->compute_solvent_concentrations();
+    this->concentrations_computed_ = true;
 }
 
 template <typename T>
 void ComputationDiscrete<T>::compute_stress()
 {
     this->require_propagators();
-    try
-    {
-        this->check_stress_supported();
-        this->backend->prepare_stress();
+    this->check_stress_supported();
+    this->backend->prepare_stress();
 
-        // Stress of each block: sum over its bonds
-        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
-        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
+    // Stress of each block: sum over its bonds
+    std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
+    this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
+    {
+        const auto it = this->phi_block_iterators[b];
+        const auto& [p, key_left, key_right] = it->first;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
+        const bool left_is_junction  = this->propagator_computation_optimizer->get_computation_propagator(key_left).start == PropagatorStart::JUNCTION;
+        const bool right_is_junction = this->propagator_computation_optimizer->get_computation_propagator(key_right).start == PropagatorStart::JUNCTION;
+        BackendArray<T>** q_left  = propagator.at(key_left).data();
+        BackendArray<T>** q_right = propagator.at(key_right).data();
+
+        // Bond n joins q(N_LEFT-n) and q†(n). The bonds at the two ends are
+        // half bonds to a junction; free ends and aggregation points have none.
+        std::vector<SegmentPair<T>> pairs;
+        for (int n = 0; n <= N_RIGHT; n++)
         {
-            const auto it = this->phi_block_iterators[b];
-            const auto& [p, key_left, key_right] = it->first;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
-            const bool left_is_junction  = this->propagator_computation_optimizer->get_computation_propagator(key_left).start == PropagatorStart::JUNCTION;
-            const bool right_is_junction = this->propagator_computation_optimizer->get_computation_propagator(key_right).start == PropagatorStart::JUNCTION;
-            BackendArray<T>** q_left  = propagator.at(key_left).data();
-            BackendArray<T>** q_right = propagator.at(key_right).data();
-
-            // Bond n joins q(N_LEFT-n) and q†(n). The bonds at the two ends are
-            // half bonds to a junction; free ends and aggregation points have none.
-            std::vector<SegmentPair<T>> pairs;
-            for (int n = 0; n <= N_RIGHT; n++)
+            if (n == N_LEFT)                          // half bond at the left end (v)
             {
-                if (n == N_LEFT)                          // half bond at the left end (v)
-                {
-                    if (left_is_junction)
-                        pairs.push_back({propagator_half_steps.at(key_left)[0], q_right[N_RIGHT],
-                                         block.n_repeated, true});
-                }
-                else if (n == 0)                          // half bond at the right end (u)
-                {
-                    if (right_is_junction)
-                        pairs.push_back({q_left[N_LEFT], propagator_half_steps.at(key_right)[0],
-                                         block.n_repeated, true});
-                }
-                else                                      // full bond within the block
-                {
-                    pairs.push_back({q_left[N_LEFT-n], q_right[n], block.n_repeated, false});
-                }
+                if (left_is_junction)
+                    pairs.push_back({propagator_half_steps.at(key_left)[0], q_right[N_RIGHT],
+                                     block.n_repeated, true});
             }
-            stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
-            this->scale_by_contour_step(stress_of_block[b], key_right);
-        });
+            else if (n == 0)                          // half bond at the right end (u)
+            {
+                if (right_is_junction)
+                    pairs.push_back({q_left[N_LEFT], propagator_half_steps.at(key_right)[0],
+                                     block.n_repeated, true});
+            }
+            else                                      // full bond within the block
+            {
+                pairs.push_back({q_left[N_LEFT-n], q_right[n], block.n_repeated, false});
+            }
+        }
+        stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
+        this->scale_by_contour_step(stress_of_block[b], key_right);
+    });
 
-        // Sum the blocks of each polymer
-        this->set_stress_from_blocks(stress_of_block);
-        this->stress_computed_ = true;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // Sum the blocks of each polymer
+    this->set_stress_from_blocks(stress_of_block);
+    this->stress_computed_ = true;
 }
 
 template <typename T>

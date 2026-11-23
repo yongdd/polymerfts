@@ -216,92 +216,85 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
     validation::require_all_positive(new_nx, "nx");
     validation::require_all_positive(new_lx, "lx");
 
-    try
+    this->dim = new_nx.size();
+    nx = new_nx;
+    lx = new_lx;
+
+    const int DIM = this->dim;
+
+    // The angles, expanded to three and checked
+    const std::vector<double> full_angles = checked_angles(angles, DIM);
+    require_cell_volume(full_angles);
+    set_angles(full_angles);
+
+    // Check before multiplication: three valid int dimensions can overflow even 64 bits.
+    total_grid = checked_grid_points(nx);
+
+    // Mask
+    // Penetrable region == 1.0
+    // Impenetrable region == 0.0
+    if (mask != nullptr)
     {
-        this->dim = new_nx.size();
-        nx = new_nx;
-        lx = new_lx;
+        mask_full_.assign(mask, mask + total_grid);
+        validation::validate_mask(mask_full_.data(), total_grid, MASK_TOLERANCE);
+    }
+    // else: mask remains empty (no mask)
 
-        const int DIM = this->dim;
+    // Grid interval, lattice vectors, reciprocal lattice, metric tensor and volume elements
+    update_cell();
 
-        // The angles, expanded to three and checked
-        const std::vector<double> full_angles = checked_angles(angles, DIM);
-        require_cell_volume(full_angles);
-        set_angles(full_angles);
+    // Set boundary conditions
+    if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
+    {
+        throw_with_line_number(
+            "We expect 0 or " + std::to_string(2*DIM) + " boundary conditions, but we get " + std::to_string(bc.size()) +
+            ". For each dimension, two boundary conditions (top and bottom) are required.");
+    }
 
-        // Check before multiplication: three valid int dimensions can overflow even 64 bits.
-        total_grid = checked_grid_points(nx);
-
-        // Mask
-        // Penetrable region == 1.0
-        // Impenetrable region == 0.0
-        if (mask != nullptr)
+    if(bc.size() == 0)
+    {
+        // Default is periodic boundary
+        for(int i=0; i<2*DIM; i++)
+            this->bc.push_back(BoundaryCondition::PERIODIC);
+    }
+    else
+    {
+        for(int i=0; i<2*DIM; i+=2)
         {
-            mask_full_.assign(mask, mask + total_grid);
-            validation::validate_mask(mask_full_.data(), total_grid, MASK_TOLERANCE);
+            std::string bc_name_l = validation::to_lower(bc[i]);
+            std::string bc_name_h = validation::to_lower(bc[i+1]);
+
+            if((bc_name_l == "periodic" && bc_name_h != "periodic") ||
+               (bc_name_l != "periodic" && bc_name_h == "periodic"))
+            {
+               throw_with_line_number(bc_name_l + " and "  + bc_name_h + " are an invalid boundary condition combination. " +
+                + "If one side imposes a periodic boundary condition, the other side must also be a periodic boundary condition.")
+            }
         }
-        // else: mask remains empty (no mask)
 
-        // Grid interval, lattice vectors, reciprocal lattice, metric tensor and volume elements
-        update_cell();
-
-        // Set boundary conditions
-        if((unsigned int) 2*DIM != bc.size() && 0 != bc.size())
+        for(int i=0; i<2*DIM; i++)
         {
-            throw_with_line_number(
-                "We expect 0 or " + std::to_string(2*DIM) + " boundary conditions, but we get " + std::to_string(bc.size()) +
-                ". For each dimension, two boundary conditions (top and bottom) are required.");
-        }
+            std::string bc_name = validation::to_lower(bc[i]);
 
-        if(bc.size() == 0)
-        {
-            // Default is periodic boundary
-            for(int i=0; i<2*DIM; i++)
+            if(bc_name == "periodic")
                 this->bc.push_back(BoundaryCondition::PERIODIC);
-        }
-        else
-        {
-            for(int i=0; i<2*DIM; i+=2)
+            else if(bc_name == "reflecting")
+                this->bc.push_back(BoundaryCondition::REFLECTING);
+            else if(bc_name == "absorbing")
+                this->bc.push_back(BoundaryCondition::ABSORBING);
+            else
             {
-                std::string bc_name_l = validation::to_lower(bc[i]);
-                std::string bc_name_h = validation::to_lower(bc[i+1]);
-
-                if((bc_name_l == "periodic" && bc_name_h != "periodic") ||
-                   (bc_name_l != "periodic" && bc_name_h == "periodic"))
-                {
-                   throw_with_line_number(bc_name_l + " and "  + bc_name_h + " are an invalid boundary condition combination. " +
-                    + "If one side imposes a periodic boundary condition, the other side must also be a periodic boundary condition.")
-                }
-            }
-
-            for(int i=0; i<2*DIM; i++)
-            {
-                std::string bc_name = validation::to_lower(bc[i]);
-
-                if(bc_name == "periodic")
-                    this->bc.push_back(BoundaryCondition::PERIODIC);
-                else if(bc_name == "reflecting")
-                    this->bc.push_back(BoundaryCondition::REFLECTING);
-                else if(bc_name == "absorbing")
-                    this->bc.push_back(BoundaryCondition::ABSORBING);
-                else
-                {
-                    throw_with_line_number(bc_name + " is an invalid boundary condition. Choose among ['periodic', 'reflecting', 'absorbing']")
-                }
+                throw_with_line_number(bc_name + " is an invalid boundary condition. Choose among ['periodic', 'reflecting', 'absorbing']")
             }
         }
-        require_orthogonal_with_walls(this->bc, is_orthogonal_);
+    }
+    require_orthogonal_with_walls(this->bc, is_orthogonal_);
 
-        // The full grid, or the reduced basis of the space group for the whole life of the box
-        space_group_ = nullptr;
-        n_basis_ = total_grid;
-        if (space_group != nullptr)
-            use_space_group(space_group);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // The full grid, or the reduced basis of the space group for the whole life of the box
+    space_group_ = nullptr;
+    n_basis_ = total_grid;
+    if (space_group != nullptr)
+        use_space_group(space_group);
 }
 
 //----------------- Destructor -----------------------------

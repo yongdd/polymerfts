@@ -42,17 +42,8 @@ template <typename T>
 CpuSolverPseudoDiscrete<T>::CpuSolverPseudoDiscrete(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend)
     : CpuSolverPseudoBase<T>(cb, molecules, space_group, /*with_half=*/false)
 {
-    try
-    {
-        // Initialize shared components (FFT, Pseudo, etc.)
-        this->init_shared(backend);
-    }
-    catch (std::exception& exc)
-    {
-        // Nothing to free here: the FFT and Pseudo objects created by
-        // init_shared() are owning members of CpuSolverPseudoBase
-        throw_without_line_number(exc.what());
-    }
+    // Initialize shared components (FFT, Pseudo, etc.)
+    this->init_shared(backend);
 }
 
 //------------------------------------------------------------------------------
@@ -87,51 +78,44 @@ template <typename T>
 void CpuSolverPseudoDiscrete<T>::advance_propagator(
     T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index)
 {
-    try
-    {
-        // Boltzmann factor exp(-w·ds) of this contour step
-        const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
+    // Boltzmann factor exp(-w·ds) of this contour step
+    const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
 
-        if (this->use_crysfft())
+    if (this->use_crysfft())
+    {
+        // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
+        if constexpr (!std::is_same_v<T, double>)
         {
-            // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                // Bond function ĝ(k), then exp(-w*ds), in the reduced basis
-                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_diffuse(q_in, q_out, coeff_full, nullptr, nullptr, _exp_dw);
-                this->multiply_mask(q_out, q_mask);
-                return;
-            }
+            throw_with_line_number("CrysFFT path is only supported for real fields.");
         }
-
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group) and
-        // the spectrum, work arrays of this thread (called from OpenMP parallel regions); the
-        // forward transform reads fft_in before the backward transform writes fft_out
-        typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
-        T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
-        T* fft_out = this->full_grid_output(q_out, work.q_full);
-        std::vector<double>& k_q = work.k_1;
-        k_q.resize(this->spectrum_size());
-
-        // Forward transform -> multiply by bond function ĝ(k) -> Backward transform
-        // -> exp(-w*ds) in real space
-        this->transform_forward(fft_in, k_q.data());
-        this->transform_backward(k_q.data(), _boltz_bond, fft_out, _exp_dw);
-
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(fft_out, q_out, q_mask);
+        else
+        {
+            // Bond function ĝ(k), then exp(-w*ds), in the reduced basis
+            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+            this->crysfft_diffuse(q_in, q_out, coeff_full, nullptr, nullptr, _exp_dw);
+            this->multiply_mask(q_out, q_mask);
+            return;
+        }
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group) and
+    // the spectrum, work arrays of this thread (called from OpenMP parallel regions); the
+    // forward transform reads fft_in before the backward transform writes fft_out
+    typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
+    T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
+    T* fft_out = this->full_grid_output(q_out, work.q_full);
+    std::vector<double>& k_q = work.k_1;
+    k_q.resize(this->spectrum_size());
+
+    // Forward transform -> multiply by bond function ĝ(k) -> Backward transform
+    // -> exp(-w*ds) in real space
+    this->transform_forward(fft_in, k_q.data());
+    this->transform_backward(k_q.data(), _boltz_bond, fft_out, _exp_dw);
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(fft_out, q_out, q_mask);
 }
 
 //------------------------------------------------------------------------------
@@ -141,46 +125,39 @@ template <typename T>
 void CpuSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
     T* q_in, T* q_out, std::string monomer_type)
 {
-    try
+    if (this->use_crysfft())
     {
-        if (this->use_crysfft())
+        // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
+        if constexpr (!std::is_same_v<T, double>)
         {
-            // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                // Half-bond function ĝ^(1/2)(k) in the reduced basis
-                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
-                this->crysfft_diffuse(q_in, q_out, coeff_half, nullptr, nullptr, nullptr);
-                return;
-            }
+            throw_with_line_number("CrysFFT path is only supported for real fields.");
         }
-
-        // Discrete chains always use ds_index=0 (the global ds)
-        const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group) and
-        // the spectrum, work arrays of this thread (called from OpenMP parallel regions)
-        typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
-        T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
-        T* fft_out = this->full_grid_output(q_out, work.q_full);
-        std::vector<double>& k_q = work.k_1;
-        k_q.resize(this->spectrum_size());
-
-        // Forward transform -> multiply by half-bond function ĝ^(1/2)(k) -> Backward transform
-        this->transform_forward(fft_in, k_q.data());
-        this->transform_backward(k_q.data(), _boltz_bond_half, fft_out, nullptr);
-
-        // Reduce to the basis (with a space group; no mask on the half bond)
-        this->store_full_grid(fft_out, q_out, nullptr);
+        else
+        {
+            // Half-bond function ĝ^(1/2)(k) in the reduced basis
+            const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
+            this->crysfft_diffuse(q_in, q_out, coeff_half, nullptr, nullptr, nullptr);
+            return;
+        }
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Discrete chains always use ds_index=0 (the global ds)
+    const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, 0);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group) and
+    // the spectrum, work arrays of this thread (called from OpenMP parallel regions)
+    typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
+    T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
+    T* fft_out = this->full_grid_output(q_out, work.q_full);
+    std::vector<double>& k_q = work.k_1;
+    k_q.resize(this->spectrum_size());
+
+    // Forward transform -> multiply by half-bond function ĝ^(1/2)(k) -> Backward transform
+    this->transform_forward(fft_in, k_q.data());
+    this->transform_backward(k_q.data(), _boltz_bond_half, fft_out, nullptr);
+
+    // Reduce to the basis (with a space group; no mask on the half bond)
+    this->store_full_grid(fft_out, q_out, nullptr);
 }
 
 // Explicit template instantiation

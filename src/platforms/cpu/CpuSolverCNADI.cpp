@@ -216,46 +216,40 @@ void last_sweep(const TridiagonalLines& m, const int* lower, const int* upper, c
 CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules, SpaceGroup* space_group)
     : CpuSolver<double>(cb, molecules, space_group, /*with_half=*/false)
 {
-    try{
-        if(molecules->get_model_name() != "continuous")
-            throw_with_line_number("Real-space method only support 'continuous' chain model.");
+    if(molecules->get_model_name() != "continuous")
+        throw_with_line_number("Real-space method only support 'continuous' chain model.");
 
-        if(!cb->is_orthogonal())
-            throw_with_line_number("Real-space method only supports orthogonal unit cells. "
-                                   "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
+    if(!cb->is_orthogonal())
+        throw_with_line_number("Real-space method only supports orthogonal unit cells. "
+                               "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
 
-        dim_ = cb->get_dim();
-        nx_ = cb->get_nx();
+    dim_ = cb->get_dim();
+    nx_ = cb->get_nx();
 
-        // The tridiagonal solvers need at least two points on every axis
-        for (int d = 0; d < dim_; d++)
-            if (nx_[d] < 2)
-                throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
-                                       + std::to_string(d) + "] = " + std::to_string(nx_[d]) + ".");
+    // The tridiagonal solvers need at least two points on every axis
+    for (int d = 0; d < dim_; d++)
+        if (nx_[d] < 2)
+            throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
+                                   + std::to_string(d) + "] = " + std::to_string(nx_[d]) + ".");
 
-        // Neighbours along each axis: a periodic side wraps around; at a wall the
-        // point itself, whose coefficient FiniteDifference sets to zero
-        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
-        lower_.resize(dim_);
-        upper_.resize(dim_);
-        for (int d = 0; d < dim_; ++d)
-        {
-            const int n = nx_[d];
-            lower_[d].resize(n);
-            upper_[d].resize(n);
-            for (int i = 0; i < n; ++i)
-            {
-                lower_[d][i] = (bc[2*d] == BoundaryCondition::PERIODIC) ? (n + i - 1) % n : std::max(0, i - 1);
-                upper_[d][i] = (bc[2*d+1] == BoundaryCondition::PERIODIC) ? (i + 1) % n : std::min(n - 1, i + 1);
-            }
-        }
-
-        update_laplacian_operator();
-    }
-    catch(std::exception& exc)
+    // Neighbours along each axis: a periodic side wraps around; at a wall the
+    // point itself, whose coefficient FiniteDifference sets to zero
+    const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+    lower_.resize(dim_);
+    upper_.resize(dim_);
+    for (int d = 0; d < dim_; ++d)
     {
-        throw_without_line_number(exc.what());
+        const int n = nx_[d];
+        lower_[d].resize(n);
+        upper_[d].resize(n);
+        for (int i = 0; i < n; ++i)
+        {
+            lower_[d][i] = (bc[2*d] == BoundaryCondition::PERIODIC) ? (n + i - 1) % n : std::max(0, i - 1);
+            upper_[d][i] = (bc[2*d+1] == BoundaryCondition::PERIODIC) ? (i + 1) % n : std::min(n - 1, i + 1);
+        }
     }
+
+    update_laplacian_operator();
 }
 
 void CpuSolverCNADI::update_laplacian_operator()
@@ -337,35 +331,28 @@ CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
 void CpuSolverCNADI::advance_propagator(
     double *q_in, double *q_out, std::string monomer_type, const double *q_mask, int ds_index)
 {
-    try
-    {
-        const int M = this->cb->get_total_grid();
-        WorkArrays& work = work_arrays();
-        const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
-        const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
+    const int M = this->cb->get_total_grid();
+    WorkArrays& work = work_arrays();
+    const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
+    const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
 
-        // On the full grid: with a space group from and back to its reduced basis, the step in
-        // place in one full grid (it reads q_full_in into work.q_exp before it writes)
-        const double* q_full_in = this->expand_to_full_grid(q_in, work.q_full);
-        double* q_full_out = this->full_grid_output(q_out, work.q_full);
+    // On the full grid: with a space group from and back to its reduced basis, the step in
+    // place in one full grid (it reads q_full_in into work.q_exp before it writes)
+    const double* q_full_in = this->expand_to_full_grid(q_in, work.q_full);
+    double* q_full_out = this->full_grid_output(q_out, work.q_full);
 
-        // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
-        for (int i = 0; i < M; i++)
-            work.q_exp[i] = _exp_dw[i] * q_full_in[i];
-        if (dim_ == 3)
-            step_3d(matrices, _exp_dw, q_full_out, work);
-        else if (dim_ == 2)
-            step_2d(matrices, _exp_dw, q_full_out, work);
-        else
-            step_1d(matrices, _exp_dw, q_full_out, work);
+    // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
+    for (int i = 0; i < M; i++)
+        work.q_exp[i] = _exp_dw[i] * q_full_in[i];
+    if (dim_ == 3)
+        step_3d(matrices, _exp_dw, q_full_out, work);
+    else if (dim_ == 2)
+        step_2d(matrices, _exp_dw, q_full_out, work);
+    else
+        step_1d(matrices, _exp_dw, q_full_out, work);
 
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(q_full_out, q_out, q_mask);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(q_full_out, q_out, q_mask);
 }
 
 // ============================================================================

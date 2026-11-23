@@ -112,68 +112,61 @@ template <typename T>
 void ComputationReduceMemoryContinuous<T>::compute_blocks(bool with_concentrations, bool with_stress)
 {
     this->require_propagators();
-    try
+    if (with_stress)
     {
-        if (with_stress)
-        {
-            this->check_stress_supported();
-            this->backend->prepare_stress();
-        }
-
-        // Concentration and stress of each block (several blocks when propagators are aggregated)
-        std::vector<std::array<T, 6>> stress_of_block;
-        for (const auto& [key, phi] : this->phi_block)
-        {
-            const auto& [p, key_left, key_right] = key;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
-
-            // A block without segments has no concentration and no stress
-            if (with_concentrations)
-                this->backend->set_zero(0, phi);
-            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-            if (N_RIGHT > 0)
-            {
-                // φ = Σ_n c_n q(N_LEFT-n) q†(n) and the stress Σ_n c_n σ(q(N_LEFT-n), q†(n)),
-                // Simpson's rule over the segments of the block; the getters normalize φ for
-                // the requested ensemble. Every segment contributes to the stress, the chain
-                // ends included (see ComputationContinuous).
-                const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-                this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
-                    [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>*)
-                    {
-                        if (with_concentrations)
-                            this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
-                        if (with_stress)
-                        {
-                            const std::array<T, 6> segment = this->backend->block_stress(
-                                0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
-                            for (int d = 0; d < 6; d++)
-                                stress[d] += segment[d];
-                        }
-                    });
-                this->scale_by_contour_step(stress, key_right);
-            }
-            stress_of_block.push_back(stress);
-        }
-        this->backend->synchronize();
-
-        if (with_concentrations)
-        {
-            this->compute_solvent_concentrations();
-            this->concentrations_computed_ = true;
-        }
-        if (with_stress)
-        {
-            // Sum the blocks of each polymer
-            this->set_stress_from_blocks(stress_of_block);
-            this->stress_computed_ = true;
-        }
+        this->check_stress_supported();
+        this->backend->prepare_stress();
     }
-    catch (std::exception& exc)
+
+    // Concentration and stress of each block (several blocks when propagators are aggregated)
+    std::vector<std::array<T, 6>> stress_of_block;
+    for (const auto& [key, phi] : this->phi_block)
     {
-        throw_without_line_number(exc.what());
+        const auto& [p, key_left, key_right] = key;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
+
+        // A block without segments has no concentration and no stress
+        if (with_concentrations)
+            this->backend->set_zero(0, phi);
+        std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        if (N_RIGHT > 0)
+        {
+            // φ = Σ_n c_n q(N_LEFT-n) q†(n) and the stress Σ_n c_n σ(q(N_LEFT-n), q†(n)),
+            // Simpson's rule over the segments of the block; the getters normalize φ for
+            // the requested ensemble. Every segment contributes to the stress, the chain
+            // ends included (see ComputationContinuous).
+            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
+            this->for_each_segment_pair(key_left, key_right, N_LEFT, 0, N_RIGHT,
+                [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>*)
+                {
+                    if (with_concentrations)
+                        this->backend->add_segment_products(0, phi, {{q, q_dagger, simpson[n]}});
+                    if (with_stress)
+                    {
+                        const std::array<T, 6> segment = this->backend->block_stress(
+                            0, {{q, q_dagger, simpson[n]*block.n_repeated}}, block.monomer_type);
+                        for (int d = 0; d < 6; d++)
+                            stress[d] += segment[d];
+                    }
+                });
+            this->scale_by_contour_step(stress, key_right);
+        }
+        stress_of_block.push_back(stress);
+    }
+    this->backend->synchronize();
+
+    if (with_concentrations)
+    {
+        this->compute_solvent_concentrations();
+        this->concentrations_computed_ = true;
+    }
+    if (with_stress)
+    {
+        // Sum the blocks of each polymer
+        this->set_stress_from_blocks(stress_of_block);
+        this->stress_computed_ = true;
     }
 }
 

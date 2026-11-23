@@ -86,24 +86,18 @@ namespace
 
 CudaCommon::CudaCommon()
 {
-    try{
-        // 1024 blocks of 256 threads: 3-6% faster than 256 blocks at 64^3 on an A10
-        // (grid-stride kernels and CUB reductions, so the results do not depend on it)
-        this->n_blocks  = launch_variable("LFTS_GPU_NUM_BLOCKS", 1024);
-        this->n_threads = launch_variable("LFTS_GPU_NUM_THREADS", 256);
-        // The grid-stride kernels rely on at most MAX_GRID_THREADS threads (see
-        // GridLimits.h); 1024 threads per block and 2^20 blocks are within the
-        // limits of every supported device
-        if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
-            static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
-            throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
-                std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
-                std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // 1024 blocks of 256 threads: 3-6% faster than 256 blocks at 64^3 on an A10
+    // (grid-stride kernels and CUB reductions, so the results do not depend on it)
+    this->n_blocks  = launch_variable("LFTS_GPU_NUM_BLOCKS", 1024);
+    this->n_threads = launch_variable("LFTS_GPU_NUM_THREADS", 256);
+    // The grid-stride kernels rely on at most MAX_GRID_THREADS threads (see
+    // GridLimits.h); 1024 threads per block and 2^20 blocks are within the
+    // limits of every supported device
+    if (n_blocks < 1 || n_threads < 1 || n_threads > 1024 ||
+        static_cast<long long>(n_blocks) * n_threads > MAX_GRID_THREADS)
+        throw_with_line_number("The CUDA launch of " + std::to_string(n_blocks) + " blocks x " +
+            std::to_string(n_threads) + " threads is not supported: at most 1024 threads per block and " +
+            std::to_string(MAX_GRID_THREADS) + " threads in total (LFTS_GPU_NUM_BLOCKS, LFTS_GPU_NUM_THREADS).");
 }
 int CudaCommon::get_n_blocks()
 {

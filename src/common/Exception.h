@@ -9,20 +9,8 @@
  *
  * @note Use the provided macros throw_with_line_number() and throw_without_line_number()
  *       instead of throwing Exception directly to automatically capture location info.
- *
- * **Rethrowing.** A catch block that rethrows what it caught with the caught message,
- *
- * @code
- * catch (std::exception& exc)
- * {
- *     release();
- *     throw_without_line_number(exc.what());
- * }
- * @endcode
- *
- * passes an Exception through unchanged, so a message names the place where the error
- * was found once; any other exception (std::out_of_range, std::bad_alloc, ...) becomes an
- * Exception at the catch block, which reaches Python as RuntimeError.
+ *       An exception passes through its callers unchanged: catch one only to do work
+ *       (release, roll back, carry it out of an OpenMP region) and rethrow it with throw;.
  *
  * @example
  * @code
@@ -39,7 +27,6 @@
 #ifndef FTS_Exception_H_
 #define FTS_Exception_H_
 
-#include <exception>
 #include <string>
 #include <stdexcept>
 
@@ -91,41 +78,6 @@ public:
     ~Exception() noexcept {}
 };
 
-namespace exception_detail
-{
-/// True in a catch block that handles an Exception with this message: rethrowing it
-/// with its own message adds nothing, since it names where it was thrown already.
-inline bool handles_exception_with_message(const std::string& message)
-{
-    const std::exception_ptr handled = std::current_exception();
-    if (!handled)
-        return false;
-    try
-    {
-        std::rethrow_exception(handled);
-    }
-    catch (const Exception& exc)
-    {
-        return message == exc.what();
-    }
-    catch (...)
-    {
-    }
-    return false;
-}
-
-/// Throw an Exception at this location (line < 0: without the line), or rethrow the
-/// Exception being handled unchanged if the message is its own (see the file comment).
-[[noreturn]] inline void throw_at(const std::string& message, const char* file, int line, const char* func)
-{
-    if (handles_exception_with_message(message))
-        throw;
-    if (line < 0)
-        throw Exception(message, file, func);
-    throw Exception(message, file, line, func);
-}
-}  // namespace exception_detail
-
 /**
  * @def throw_with_line_number(arg)
  * @brief Convenience macro to throw Exception with automatic location capture.
@@ -141,17 +93,24 @@ inline bool handles_exception_with_message(const std::string& message)
  * }
  * @endcode
  */
-#define throw_with_line_number(arg) exception_detail::throw_at(arg, __FILE__, __LINE__, __func__);
+#define throw_with_line_number(arg) throw Exception(arg, __FILE__, __LINE__, __func__);
 
 /**
  * @def throw_without_line_number(arg)
  * @brief Convenience macro to throw Exception without line number.
  *
- * Automatically captures __FILE__ and __func__ at the throw site. In a catch block
- * with the caught message, it rethrows an Exception unchanged (see the file comment).
+ * Automatically captures __FILE__ and __func__ at the throw site.
+ * Use when line number is not needed or when throwing from header-only code.
  *
  * @param arg Error message string describing the exception
+ *
+ * @example
+ * @code
+ * if (!file_exists) {
+ *     throw_without_line_number("Configuration file not found");
+ * }
+ * @endcode
  */
-#define throw_without_line_number(arg) exception_detail::throw_at(arg, __FILE__, -1, __func__);
+#define throw_without_line_number(arg) throw Exception(arg, __FILE__, __func__);
 
 #endif

@@ -150,218 +150,192 @@ CudaSolverCNADI::CudaSolverCNADI(
     SpaceGroup* space_group)
     : CudaSolver<double>(cb, molecules, n_streams, streams, space_group)
 {
-    try{
-        if(molecules->get_model_name() != "continuous")
-            throw_with_line_number("Real-space method only support 'continuous' chain model.");
+    if(molecules->get_model_name() != "continuous")
+        throw_with_line_number("Real-space method only support 'continuous' chain model.");
 
-        if(!cb->is_orthogonal())
-            throw_with_line_number("Real-space method only supports orthogonal unit cells. "
-                                   "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
+    if(!cb->is_orthogonal())
+        throw_with_line_number("Real-space method only supports orthogonal unit cells. "
+                               "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
 
-        // The tridiagonal solvers need at least two points on every axis
-        for (int d = 0; d < cb->get_dim(); d++)
-            if (cb->get_nx(d) < 2)
-                throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
-                                       + std::to_string(d) + "] = " + std::to_string(cb->get_nx(d)) + ".");
+    // The tridiagonal solvers need at least two points on every axis
+    for (int d = 0; d < cb->get_dim(); d++)
+        if (cb->get_nx(d) < 2)
+            throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
+                                   + std::to_string(d) + "] = " + std::to_string(cb->get_nx(d)) + ".");
 
-        const int M = cb->get_total_grid();
-        dim = cb->get_dim();
+    const int M = cb->get_total_grid();
+    dim = cb->get_dim();
 
-        // The axes of the row-major grid (the last one is contiguous)
-        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
-        int stride = 1;
-        for (int a = dim - 1; a >= 0; --a)
+    // The axes of the row-major grid (the last one is contiguous)
+    const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+    int stride = 1;
+    for (int a = dim - 1; a >= 0; --a)
+    {
+        n_axis_[a] = cb->get_nx(a);
+        stride_[a] = stride;
+        periodic_[a] = bc[2*a] == BoundaryCondition::PERIODIC;
+        stride *= n_axis_[a];
+    }
+
+    // Ensure ContourLengthMapping is finalized
+    molecules->finalize_contour_length_mapping();
+    const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
+
+    // exp(-w ds/2) and the matrices of the axes for each ds_index and monomer type
+    // (map slots are owning buffers: a failed allocation leaves the slot empty)
+    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
+    {
+        for(const auto& item: molecules->get_bond_lengths())
         {
-            n_axis_[a] = cb->get_nx(a);
-            stride_[a] = stride;
-            periodic_[a] = bc[2*a] == BoundaryCondition::PERIODIC;
-            stride *= n_axis_[a];
-        }
-
-        // Ensure ContourLengthMapping is finalized
-        molecules->finalize_contour_length_mapping();
-        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
-
-        // exp(-w ds/2) and the matrices of the axes for each ds_index and monomer type
-        // (map slots are owning buffers: a failed allocation leaves the slot empty)
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-        {
-            for(const auto& item: molecules->get_bond_lengths())
+            d_exp_dw[ds_idx][item.first].allocate(M);
+            std::array<AxisMatrix, 3>& matrices = matrices_[ds_idx][item.first];
+            for (int a = 0; a < dim; ++a)
             {
-                d_exp_dw[ds_idx][item.first].allocate(M);
-                std::array<AxisMatrix, 3>& matrices = matrices_[ds_idx][item.first];
-                for (int a = 0; a < dim; ++a)
-                {
-                    matrices[a].l.allocate(n_axis_[a]);
-                    matrices[a].d.allocate(n_axis_[a]);
-                    matrices[a].h.allocate(n_axis_[a]);
-                    matrices[a].factors.allocate(4*static_cast<size_t>(n_axis_[a]));
-                }
+                matrices[a].l.allocate(n_axis_[a]);
+                matrices[a].d.allocate(n_axis_[a]);
+                matrices[a].h.allocate(n_axis_[a]);
+                matrices[a].factors.allocate(4*static_cast<size_t>(n_axis_[a]));
             }
         }
-
-        for(int i=0; i<n_streams; i++)
-        {
-            d_temp[i].allocate(M);
-            if (dim > 1)
-                d_q_star[i].allocate(M);
-        }
-
-        // The full grid around the steps of a reduced-basis run, in which they work in place
-        provide_full_grid(/*separate_output=*/false);
-
-        // Allow tridiagonal_lines_shared() up to 96000 bytes of dynamic shared memory, or the
-        // device's opt-in limit when that is smaller (see solve_lines())
-        int device = 0, optin_shmem = 0;
-        CUDA_CHECK(cudaGetDevice(&device));
-        CUDA_CHECK(cudaDeviceGetAttribute(&optin_shmem, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
-        max_lines_shmem_ = std::min(96000, optin_shmem);
-        CUDA_CHECK(cudaFuncSetAttribute(tridiagonal_lines_shared<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, max_lines_shmem_));
-        CUDA_CHECK(cudaFuncSetAttribute(tridiagonal_lines_shared<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, max_lines_shmem_));
-
-        update_laplacian_operator();
     }
-    catch(std::exception& exc)
+
+    for(int i=0; i<n_streams; i++)
     {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
+        d_temp[i].allocate(M);
+        if (dim > 1)
+            d_q_star[i].allocate(M);
     }
+
+    // The full grid around the steps of a reduced-basis run, in which they work in place
+    provide_full_grid(/*separate_output=*/false);
+
+    // Allow tridiagonal_lines_shared() up to 96000 bytes of dynamic shared memory, or the
+    // device's opt-in limit when that is smaller (see solve_lines())
+    int device = 0, optin_shmem = 0;
+    CUDA_CHECK(cudaGetDevice(&device));
+    CUDA_CHECK(cudaDeviceGetAttribute(&optin_shmem, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+    max_lines_shmem_ = std::min(96000, optin_shmem);
+    CUDA_CHECK(cudaFuncSetAttribute(tridiagonal_lines_shared<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, max_lines_shmem_));
+    CUDA_CHECK(cudaFuncSetAttribute(tridiagonal_lines_shared<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, max_lines_shmem_));
+
+    update_laplacian_operator();
 }
 
 void CudaSolverCNADI::update_laplacian_operator()
 {
-    try
+    if (!cb->is_orthogonal())
+        throw_with_line_number("CN-ADI requires an orthogonal computation box.");
+
+    // The diagonals of the x, y and z axes (an axis the box does not have keeps one point)
+    std::array<std::vector<double>, 3> l, d, h;
+    for (int a = 0; a < 3; ++a)
     {
-        if (!cb->is_orthogonal())
-            throw_with_line_number("CN-ADI requires an orthogonal computation box.");
+        const size_t n = a < dim ? n_axis_[a] : 1;
+        l[a].resize(n);
+        d[a].resize(n);
+        h[a].resize(n);
+    }
+    auto upload = [](CudaDeviceBuffer<double>& dst, const std::vector<double>& src)
+    {
+        CUDA_CHECK(cudaMemcpy(dst, src.data(), sizeof(double)*src.size(), cudaMemcpyHostToDevice));
+    };
 
-        // The diagonals of the x, y and z axes (an axis the box does not have keeps one point)
-        std::array<std::vector<double>, 3> l, d, h;
-        for (int a = 0; a < 3; ++a)
-        {
-            const size_t n = a < dim ? n_axis_[a] : 1;
-            l[a].resize(n);
-            d[a].resize(n);
-            h[a].resize(n);
-        }
-        auto upload = [](CudaDeviceBuffer<double>& dst, const std::vector<double>& src)
-        {
-            CUDA_CHECK(cudaMemcpy(dst, src.data(), sizeof(double)*src.size(), cudaMemcpyHostToDevice));
-        };
+    // Coefficients for each unique ds value from ContourLengthMapping
+    const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+    {
+        double local_ds = mapping.get_ds_from_index(ds_idx);
 
-        // Coefficients for each unique ds value from ContourLengthMapping
-        const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        for(const auto& item: this->molecules->get_bond_lengths())
         {
-            double local_ds = mapping.get_ds_from_index(ds_idx);
+            double bond_length_sq = item.second*item.second;
 
-            for(const auto& item: this->molecules->get_bond_lengths())
+            // Full-step coefficients (local_ds)
+            FiniteDifference::get_laplacian_matrix(
+                this->cb->get_boundary_conditions(),
+                this->cb->get_nx(), this->cb->get_dx(),
+                l[0].data(), d[0].data(), h[0].data(),
+                l[1].data(), d[1].data(), h[1].data(),
+                l[2].data(), d[2].data(), h[2].data(),
+                bond_length_sq, local_ds);
+
+            // The matrices do not change from step to step: factorize them once
+            std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_idx).at(item.first);
+            for (int a = 0; a < dim; ++a)
             {
-                double bond_length_sq = item.second*item.second;
-
-                // Full-step coefficients (local_ds)
-                FiniteDifference::get_laplacian_matrix(
-                    this->cb->get_boundary_conditions(),
-                    this->cb->get_nx(), this->cb->get_dx(),
-                    l[0].data(), d[0].data(), h[0].data(),
-                    l[1].data(), d[1].data(), h[1].data(),
-                    l[2].data(), d[2].data(), h[2].data(),
-                    bond_length_sq, local_ds);
-
-                // The matrices do not change from step to step: factorize them once
-                std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_idx).at(item.first);
-                for (int a = 0; a < dim; ++a)
-                {
-                    const TridiagonalFactors f = factorize_tridiagonal(l[a].data(), d[a].data(), h[a].data(),
-                                                                       n_axis_[a], periodic_[a]);
-                    upload(matrices[a].l, l[a]);
-                    upload(matrices[a].d, d[a]);
-                    upload(matrices[a].h, h[a]);
-                    upload(matrices[a].factors, f.table);
-                    matrices[a].v = f.v;
-                    matrices[a].denom = f.denom;
-                }
+                const TridiagonalFactors f = factorize_tridiagonal(l[a].data(), d[a].data(), h[a].data(),
+                                                                   n_axis_[a], periodic_[a]);
+                upload(matrices[a].l, l[a]);
+                upload(matrices[a].d, d[a]);
+                upload(matrices[a].h, h[a]);
+                upload(matrices[a].factors, f.table);
+                matrices[a].v = f.v;
+                matrices[a].denom = f.denom;
             }
         }
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
     }
 }
 void CudaSolverCNADI::update_dw(const std::map<std::string, const double*>& d_w)
 {
-    try{
-        if (!cb->is_orthogonal())
-            throw_with_line_number("CN-ADI requires an orthogonal computation box.");
-        // exp(-w ds/2) on the full grid, on both sides of the implicit step
-        compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 0.5, 0.0);
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    if (!cb->is_orthogonal())
+        throw_with_line_number("CN-ADI requires an orthogonal computation box.");
+    // exp(-w ds/2) on the full grid, on both sides of the implicit step
+    compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 0.5, 0.0);
 }
 void CudaSolverCNADI::advance_propagator(
     const int STREAM,
     double *d_q_in, double *d_q_out,
     std::string monomer_type, double *d_q_mask, int ds_index)
 {
-    try
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    const int M = this->cb->get_total_grid();
+    const cudaStream_t stream = streams[STREAM];
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group;
+    // the steps then work in place in the expanded input)
+    double *d_q_in_full = expand_to_full_grid(STREAM, d_q_in);
+    double *q = full_grid_output(STREAM, d_q_out);
+
+    // CN-ADI2: single full step only (2nd order accuracy)
+    const double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
+    const std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_index).at(monomer_type);
+    std::array<AdiAxis, 3> axes{};
+    for (int a = 0; a < dim; ++a)
+        axes[a] = {matrices[a].l, matrices[a].d, matrices[a].h, n_axis_[a], stride_[a], periodic_[a]};
+
+    // Apply exp(-w*local_ds/2) at start
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, d_q_in_full, _d_exp_dw, 1.0, M);
+    CUDA_CHECK_LAUNCH();
+
+    // Diffusion with full-step coefficients, in place in q: the explicit half of the step
+    // is the right-hand side of the first sweep ...
+    if (dim == 3)
+        adi_rhs_3d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], axes[2], d_temp[STREAM], q, M);
+    else if (dim == 2)
+        adi_rhs_2d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], d_temp[STREAM], q, M);
+    else
+        adi_rhs_1d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], d_temp[STREAM], q, M);
+    CUDA_CHECK_LAUNCH();
+
+    // ... then one implicit sweep per axis: each after the first corrects its right-hand
+    // side with the result of the sweep before it, and the last writes q
+    for (int a = 0; a < dim; ++a)
     {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        const int M = this->cb->get_total_grid();
-        const cudaStream_t stream = streams[STREAM];
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group;
-        // the steps then work in place in the expanded input)
-        double *d_q_in_full = expand_to_full_grid(STREAM, d_q_in);
-        double *q = full_grid_output(STREAM, d_q_out);
-
-        // CN-ADI2: single full step only (2nd order accuracy)
-        const double *_d_exp_dw = d_exp_dw.at(ds_index).at(monomer_type);
-        const std::array<AxisMatrix, 3>& matrices = matrices_.at(ds_index).at(monomer_type);
-        std::array<AdiAxis, 3> axes{};
-        for (int a = 0; a < dim; ++a)
-            axes[a] = {matrices[a].l, matrices[a].d, matrices[a].h, n_axis_[a], stride_[a], periodic_[a]};
-
-        // Apply exp(-w*local_ds/2) at start
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, d_q_in_full, _d_exp_dw, 1.0, M);
-        CUDA_CHECK_LAUNCH();
-
-        // Diffusion with full-step coefficients, in place in q: the explicit half of the step
-        // is the right-hand side of the first sweep ...
-        if (dim == 3)
-            adi_rhs_3d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], axes[2], d_temp[STREAM], q, M);
-        else if (dim == 2)
-            adi_rhs_2d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], axes[1], d_temp[STREAM], q, M);
-        else
-            adi_rhs_1d<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[0], d_temp[STREAM], q, M);
-        CUDA_CHECK_LAUNCH();
-
-        // ... then one implicit sweep per axis: each after the first corrects its right-hand
-        // side with the result of the sweep before it, and the last writes q
-        for (int a = 0; a < dim; ++a)
+        if (a > 0)
         {
-            if (a > 0)
-            {
-                adi_correction<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[a], d_temp[STREAM], d_q_star[STREAM], q, M);
-                CUDA_CHECK_LAUNCH();
-            }
-            solve_lines(STREAM, matrices[a], a, d_temp[STREAM], a == dim - 1 ? q : d_q_star[STREAM].get());
+            adi_correction<<<N_BLOCKS, N_THREADS, 0, stream>>>(axes[a], d_temp[STREAM], d_q_star[STREAM], q, M);
+            CUDA_CHECK_LAUNCH();
         }
-
-        // Apply exp(-w*local_ds/2) at end
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, q, _d_exp_dw, 1.0, M);
-        CUDA_CHECK_LAUNCH();
-
-        // Reduce to the basis (with a space group) and multiply the mask
-        store_full_grid(STREAM, q, d_q_out, d_q_mask);
+        solve_lines(STREAM, matrices[a], a, d_temp[STREAM], a == dim - 1 ? q : d_q_star[STREAM].get());
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Apply exp(-w*local_ds/2) at end
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(q, q, _d_exp_dw, 1.0, M);
+    CUDA_CHECK_LAUNCH();
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    store_full_grid(STREAM, q, d_q_out, d_q_mask);
 }
 void CudaSolverCNADI::solve_lines(const int STREAM, const AxisMatrix& matrix, int axis, const double *d_rhs, double *d_x)
 {
@@ -399,14 +373,7 @@ void CudaSolverCNADI::compute_single_segment_stress(
     [[maybe_unused]] double *d_q_1, [[maybe_unused]] double *d_q_2, [[maybe_unused]] double *d_segment_stress,
     [[maybe_unused]] std::string monomer_type, [[maybe_unused]] bool is_half_bond_length)
 {
-    try
-    {
-        throw_with_line_number("Currently, the CN-ADI method does not support stress computation.");
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    throw_with_line_number("Currently, the CN-ADI method does not support stress computation.");
 }
 
 // Thomas factors of a line: forward and backward sweeps over the factors, then for a periodic

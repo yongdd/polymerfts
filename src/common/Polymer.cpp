@@ -65,25 +65,18 @@ Polymer::Polymer(
     this->chain_end_to_q_init = chain_end_to_q_init;
 
     // Save variables
-    try
-    {
-        this->volume_fraction = volume_fraction;
-        for(size_t i=0; i<block_inputs.size(); i++){
-            const int n_segment = ContourLengthMapping::segment_count(block_inputs[i].contour_length, ds);
+    this->volume_fraction = volume_fraction;
+    for(size_t i=0; i<block_inputs.size(); i++){
+        const int n_segment = ContourLengthMapping::segment_count(block_inputs[i].contour_length, ds);
 
-            blocks.push_back({
-                block_inputs[i].monomer_type,                           // monomer_type
-                n_segment,                                              // n_segment
-                block_inputs[i].contour_length,                         // contour_length
-                block_inputs[i].v,                                      // starting node
-                block_inputs[i].u,                                      // ending node
-                block_inputs[i].multiplicity,                           // multiplicity
-                1.0});                                                  // n_copies, set below
-        }
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
+        blocks.push_back({
+            block_inputs[i].monomer_type,                           // monomer_type
+            n_segment,                                              // n_segment
+            block_inputs[i].contour_length,                         // contour_length
+            block_inputs[i].v,                                      // starting node
+            block_inputs[i].u,                                      // ending node
+            block_inputs[i].multiplicity,                           // multiplicity
+            1.0});                                                  // n_copies, set below
     }
 
     // The graph of the blocks, which must be a tree, and the copies of each block

@@ -56,14 +56,8 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, space_group, /*max_fft_batch=*/1,
                               /*with_exp_dw_half=*/false)
 {
-    try{
-        // The CrysFFT objects and the work buffers of the path the space group chooses
-        this->init_path();
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
-    }
+    // The CrysFFT objects and the work buffers of the path the space group chooses
+    this->init_path();
 }
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
@@ -79,81 +73,67 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
     std::string monomer_type,
     double *d_q_mask, int ds_index)
 {
-    try
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+
+    const int M = cb->get_total_grid();
+
+    // Get Boltzmann factors for the correct ds_index
+    CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
+    if (use_crysfft_)
     {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+        const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
-        const int M = cb->get_total_grid();
-
-        // Get Boltzmann factors for the correct ds_index
-        CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        if (use_crysfft_)
-        {
-            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-
-            // Bond convolution, then the full-segment weight exp(-w*ds)
-            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, nullptr, nullptr, _d_exp_dw);
-            this->multiply_mask(STREAM, d_q_out, d_q_mask);
-            return;
-        }
-
-        // Bond factors of the full grid (the Pseudo tables exist on this path only)
-        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group)
-        CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
-        CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
-
-        // The forward transform, exp(-k^2 ds/6) in Fourier space and the backward transform
-        // (cuFFT for periodic BC, the cosine and sine series for walls); fft_in is kept
-        this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond, 1.0);
-
-        // Evaluate exp(-w*ds) in real space (1/M normalization of the unnormalized transforms)
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
-        CUDA_CHECK_LAUNCH();
-
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
+        // Bond convolution, then the full-segment weight exp(-w*ds)
+        this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, nullptr, nullptr, _d_exp_dw);
+        this->multiply_mask(STREAM, d_q_out, d_q_mask);
+        return;
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Bond factors of the full grid (the Pseudo tables exist on this path only)
+    const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group)
+    CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
+    CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
+
+    // The forward transform, exp(-k^2 ds/6) in Fourier space and the backward transform
+    // (cuFFT for periodic BC, the cosine and sine series for walls); fft_in is kept
+    this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond, 1.0);
+
+    // Evaluate exp(-w*ds) in real space (1/M normalization of the unnormalized transforms)
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
+    CUDA_CHECK_LAUNCH();
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
 }
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
     const int STREAM,
     CuDeviceData<T> *d_q_in, CuDeviceData<T> *d_q_out, std::string monomer_type)
 {
-    try
+    const int M = cb->get_total_grid();
+    if (use_crysfft_)
     {
-        const int M = cb->get_total_grid();
-        if (use_crysfft_)
-        {
-            const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
+        const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
 
-            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_half, nullptr, nullptr, nullptr);
-            return;
-        }
-
-        // Discrete chains always use ds_index=0 (global ds); the Pseudo tables exist on the full-grid path only
-        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, 0);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group)
-        CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
-        CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
-
-        // Multiply exp(-k^2 ds/12) in Fourier space with the 1/M normalization
-        this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond_half, 1.0/static_cast<double>(M));
-
-        // Reduce full grid → reduced basis (no mask on the half bond)
-        this->store_full_grid(STREAM, fft_out, d_q_out, nullptr);
+        this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_half, nullptr, nullptr, nullptr);
+        return;
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Discrete chains always use ds_index=0 (global ds); the Pseudo tables exist on the full-grid path only
+    const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, 0);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group)
+    CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
+    CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
+
+    // Multiply exp(-k^2 ds/12) in Fourier space with the 1/M normalization
+    this->bond_step(STREAM, fft_in, fft_out, _d_boltz_bond_half, 1.0/static_cast<double>(M));
+
+    // Reduce full grid → reduced basis (no mask on the half bond)
+    this->store_full_grid(STREAM, fft_out, d_q_out, nullptr);
 }
 
 template <typename T>

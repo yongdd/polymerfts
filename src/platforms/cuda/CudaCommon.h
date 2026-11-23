@@ -140,14 +140,8 @@ public:
      */
     static CudaCommon& get_instance()
     {
-        try{
-            static CudaCommon* instance = new CudaCommon();
-            return *instance;
-        }
-        catch(std::exception& exc)
-        {
-            throw_without_line_number(exc.what());
-        }
+        static CudaCommon* instance = new CudaCommon();
+        return *instance;
     };
 
     /// Get number of thread blocks.

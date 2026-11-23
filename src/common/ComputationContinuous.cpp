@@ -115,87 +115,73 @@ template <typename T>
 void ComputationContinuous<T>::compute_concentrations()
 {
     this->require_propagators();
-    try
+    // Concentration of each block (several blocks when propagators are aggregated)
+    this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
     {
-        // Concentration of each block (several blocks when propagators are aggregated)
-        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
-        {
-            const auto it = this->phi_block_iterators[b];
-            const auto& [p, key_left, key_right] = it->first;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
+        const auto it = this->phi_block_iterators[b];
+        const auto& [p, key_left, key_right] = it->first;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
 
-            // A block without segments has no concentration
-            this->backend->set_zero(STREAM, it->second);
-            if (N_RIGHT == 0)
-                return;
+        // A block without segments has no concentration
+        this->backend->set_zero(STREAM, it->second);
+        if (N_RIGHT == 0)
+            return;
 
-            // φ = Σ_n c_n q(N_LEFT-n) q†(n), Simpson's rule over the segments of the block
-            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-            BackendArray<T>** q_left  = propagator.at(key_left).data();
-            BackendArray<T>** q_right = propagator.at(key_right).data();
-            std::vector<SegmentPair<T>> pairs;
-            for (int n = 0; n <= N_RIGHT; n++)
-                pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]});
-            this->backend->add_segment_products(STREAM, it->second, pairs);
+        // φ = Σ_n c_n q(N_LEFT-n) q†(n), Simpson's rule over the segments of the block
+        const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
+        BackendArray<T>** q_left  = propagator.at(key_left).data();
+        BackendArray<T>** q_right = propagator.at(key_right).data();
+        std::vector<SegmentPair<T>> pairs;
+        for (int n = 0; n <= N_RIGHT; n++)
+            pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]});
+        this->backend->add_segment_products(STREAM, it->second, pairs);
 
-            // Getters normalize the integral for the requested ensemble.
-        });
+        // Getters normalize the integral for the requested ensemble.
+    });
 
-        this->compute_solvent_concentrations();
-        this->concentrations_computed_ = true;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    this->compute_solvent_concentrations();
+    this->concentrations_computed_ = true;
 }
 
 template <typename T>
 void ComputationContinuous<T>::compute_stress()
 {
     this->require_propagators();
-    try
+    this->check_stress_supported();
+    this->backend->prepare_stress();
+
+    // Stress of each block: Simpson's rule over the segment stresses
+    std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
+    this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
     {
-        this->check_stress_supported();
-        this->backend->prepare_stress();
+        const auto it = this->phi_block_iterators[b];
+        const auto& [p, key_left, key_right] = it->first;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
 
-        // Stress of each block: Simpson's rule over the segment stresses
-        std::vector<std::array<T, 6>> stress_of_block(this->phi_block.size());
-        this->run_concurrently(this->phi_block_iterators.size(), [&](const int STREAM, const size_t b)
-        {
-            const auto it = this->phi_block_iterators[b];
-            const auto& [p, key_left, key_right] = it->first;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(it->first);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
+        stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        if (N_RIGHT == 0)
+            return;
 
-            stress_of_block[b] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-            if (N_RIGHT == 0)
-                return;
+        // Every segment contributes, the chain ends included: q(r,0) = 1 has no
+        // stress only for periodic or reflecting walls, not for absorbing
+        // walls, masks or grafting points.
+        const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
+        BackendArray<T>** q_left  = propagator.at(key_left).data();
+        BackendArray<T>** q_right = propagator.at(key_right).data();
+        std::vector<SegmentPair<T>> pairs;
+        for (int n = 0; n <= N_RIGHT; n++)
+            pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]*block.n_repeated});
+        stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
+        this->scale_by_contour_step(stress_of_block[b], key_right);
+    });
 
-            // Every segment contributes, the chain ends included: q(r,0) = 1 has no
-            // stress only for periodic or reflecting walls, not for absorbing
-            // walls, masks or grafting points.
-            const std::vector<double> simpson = SimpsonRule::get_coeff(N_RIGHT);
-            BackendArray<T>** q_left  = propagator.at(key_left).data();
-            BackendArray<T>** q_right = propagator.at(key_right).data();
-            std::vector<SegmentPair<T>> pairs;
-            for (int n = 0; n <= N_RIGHT; n++)
-                pairs.push_back({q_left[N_LEFT-n], q_right[n], simpson[n]*block.n_repeated});
-            stress_of_block[b] = this->backend->block_stress(STREAM, pairs, block.monomer_type);
-            this->scale_by_contour_step(stress_of_block[b], key_right);
-        });
-
-        // Sum the blocks of each polymer
-        this->set_stress_from_blocks(stress_of_block);
-        this->stress_computed_ = true;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // Sum the blocks of each polymer
+    this->set_stress_from_blocks(stress_of_block);
+    this->stress_computed_ = true;
 }
 
 template <typename T>

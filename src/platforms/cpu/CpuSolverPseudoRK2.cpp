@@ -42,17 +42,8 @@ template <typename T>
 CpuSolverPseudoRK2<T>::CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend)
     : CpuSolverPseudoBase<T>(cb, molecules, space_group, /*with_half=*/false)   // no Richardson extrapolation
 {
-    try
-    {
-        // Initialize shared components (FFT, Pseudo, etc.)
-        this->init_shared(backend);
-    }
-    catch (std::exception& exc)
-    {
-        // Nothing to free here: the FFT and Pseudo objects created by
-        // init_shared() are owning members of CpuSolverPseudoBase
-        throw_without_line_number(exc.what());
-    }
+    // Initialize shared components (FFT, Pseudo, etc.)
+    this->init_shared(backend);
 }
 
 //------------------------------------------------------------------------------
@@ -72,56 +63,49 @@ template <typename T>
 void CpuSolverPseudoRK2<T>::advance_propagator(
     T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index)
 {
-    try
-    {
-        // Boltzmann factor exp(-w·ds/2) of this contour step
-        const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
+    // Boltzmann factor exp(-w·ds/2) of this contour step
+    const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
 
-        if (this->use_crysfft())
+    if (this->use_crysfft())
+    {
+        // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
+        if constexpr (!std::is_same_v<T, double>)
         {
-            // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                // exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2) in the reduced basis
-                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->crysfft_diffuse(q_in, q_out, coeff_full, _exp_dw, nullptr, _exp_dw);
-                this->multiply_mask(q_out, q_mask);
-                return;
-            }
+            throw_with_line_number("CrysFFT path is only supported for real fields.");
         }
-
-        const int M = this->cb->get_total_grid();
-        const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group) and
-        // the spectrum, work arrays of this thread (called from OpenMP parallel regions). The
-        // step runs in fft_out: the transform reads it before the inverse transform writes the
-        // result there
-        typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
-        T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
-        T* fft_out = this->full_grid_output(q_out, work.q_full);
-        std::vector<double>& k_q = work.k_1;
-        k_q.resize(this->spectrum_size());
-
-        // Step 1: exp(-w·ds/2) * q_in
-        for (int i = 0; i < M; ++i)
-            fft_out[i] = _exp_dw[i] * fft_in[i];
-
-        // Step 2-5: Forward FFT -> multiply by Boltzmann factor -> Backward FFT -> exp(-w·ds/2) * result
-        this->transform_forward(fft_out, k_q.data());
-        this->transform_backward(k_q.data(), _boltz_bond, fft_out, _exp_dw);
-
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(fft_out, q_out, q_mask);
+        else
+        {
+            // exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2) in the reduced basis
+            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+            this->crysfft_diffuse(q_in, q_out, coeff_full, _exp_dw, nullptr, _exp_dw);
+            this->multiply_mask(q_out, q_mask);
+            return;
+        }
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    const int M = this->cb->get_total_grid();
+    const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group) and
+    // the spectrum, work arrays of this thread (called from OpenMP parallel regions). The
+    // step runs in fft_out: the transform reads it before the inverse transform writes the
+    // result there
+    typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
+    T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
+    T* fft_out = this->full_grid_output(q_out, work.q_full);
+    std::vector<double>& k_q = work.k_1;
+    k_q.resize(this->spectrum_size());
+
+    // Step 1: exp(-w·ds/2) * q_in
+    for (int i = 0; i < M; ++i)
+        fft_out[i] = _exp_dw[i] * fft_in[i];
+
+    // Step 2-5: Forward FFT -> multiply by Boltzmann factor -> Backward FFT -> exp(-w·ds/2) * result
+    this->transform_forward(fft_out, k_q.data());
+    this->transform_backward(k_q.data(), _boltz_bond, fft_out, _exp_dw);
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(fft_out, q_out, q_mask);
 }
 
 // Explicit template instantiation

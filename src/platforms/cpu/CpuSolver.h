@@ -336,27 +336,19 @@ template <typename T>
 CpuSolver<T>::CpuSolver(ComputationBox<T>* cb, Molecules* molecules, SpaceGroup* space_group, bool with_half)
     : cb(cb), molecules(molecules), space_group_(space_group)
 {
-    // This runs before the derived constructors' try blocks; its errors leave the same way
-    try
-    {
-        n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : cb->get_total_grid();
+    n_basis_ =(space_group != nullptr) ? space_group->get_n_reduced_basis() : cb->get_total_grid();
 
-        // The tables only: compute_exp_dw() sizes them, n_basis_ values on the CrysFFT path
-        molecules->finalize_contour_length_mapping();
-        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-        {
-            for (const auto& item : molecules->get_bond_lengths())
-            {
-                exp_dw[ds_idx][item.first];
-                if (with_half)
-                    exp_dw_half[ds_idx][item.first];
-            }
-        }
-    }
-    catch (std::exception& exc)
+    // The tables only: compute_exp_dw() sizes them, n_basis_ values on the CrysFFT path
+    molecules->finalize_contour_length_mapping();
+    const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
+    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
     {
-        throw_without_line_number(exc.what());
+        for (const auto& item : molecules->get_bond_lengths())
+        {
+            exp_dw[ds_idx][item.first];
+            if (with_half)
+                exp_dw_half[ds_idx][item.first];
+        }
     }
 }
 

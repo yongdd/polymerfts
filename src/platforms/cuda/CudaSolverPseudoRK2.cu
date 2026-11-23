@@ -45,14 +45,8 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, space_group, /*max_fft_batch=*/1,
                               /*with_exp_dw_half=*/false)
 {
-    try{
-        // The CrysFFT objects and the work buffers of the path the space group chooses
-        this->init_path();
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
-    }
+    // The CrysFFT objects and the work buffers of the path the space group chooses
+    this->init_path();
 }
 
 template <typename T>
@@ -70,53 +64,46 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         CuDeviceData<T> *d_q_in, CuDeviceData<T> *d_q_out,
         std::string monomer_type, double *d_q_mask, int ds_index)
 {
-    try
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+
+    const int M = cb->get_total_grid();
+
+    CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
+    if (use_crysfft_)
     {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+        const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
-        const int M = cb->get_total_grid();
-
-        CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        if (use_crysfft_)
-        {
-            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-
-            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
-            this->multiply_mask(STREAM, d_q_out, d_q_mask);
-            return;
-        }
-
-        // Bond factors of the full grid (the Pseudo tables exist on this path only)
-        const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
-
-        // Full-grid input/output (expanded from / reduced to the basis with a space group).
-        // The step runs in fft_out: the transform reads it before the inverse transform
-        // writes the result there
-        CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
-        CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
-
-        // Step 1: Evaluate exp(-w*ds/2) in real space
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            fft_out, fft_in, _d_exp_dw, 1.0, M);
-        CUDA_CHECK_LAUNCH();
-
-        // Steps 2-4: the forward transform, exp(-k^2 ds/6) in Fourier space and the
-        // backward transform (cuFFT for periodic BC, the cosine and sine series for walls)
-        this->bond_step(STREAM, fft_out, fft_out, _d_boltz_bond, 1.0);
-
-        // Step 5: Evaluate exp(-w*ds/2) in real space and normalize
-        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
-        CUDA_CHECK_LAUNCH();
-
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
+        this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
+        this->multiply_mask(STREAM, d_q_out, d_q_mask);
+        return;
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Bond factors of the full grid (the Pseudo tables exist on this path only)
+    const double* _d_boltz_bond = pseudo->get_boltz_bond(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group).
+    // The step runs in fft_out: the transform reads it before the inverse transform
+    // writes the result there
+    CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
+    CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
+
+    // Step 1: Evaluate exp(-w*ds/2) in real space
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+        fft_out, fft_in, _d_exp_dw, 1.0, M);
+    CUDA_CHECK_LAUNCH();
+
+    // Steps 2-4: the forward transform, exp(-k^2 ds/6) in Fourier space and the
+    // backward transform (cuFFT for periodic BC, the cosine and sine series for walls)
+    this->bond_step(STREAM, fft_out, fft_out, _d_boltz_bond, 1.0);
+
+    // Step 5: Evaluate exp(-w*ds/2) in real space and normalize
+    ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+        fft_out, fft_out, _d_exp_dw, 1.0/static_cast<double>(M), M);
+    CUDA_CHECK_LAUNCH();
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
 }
 
 // Explicit template instantiation

@@ -127,31 +127,17 @@ CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb,
                                                           SpaceGroup* space_group)
     : CpuSolver<T>(cb, molecules, space_group, /*with_half=*/false)
 {
-    try
-    {
-        if (molecules->get_model_name() != "discrete")
-            throw_with_line_number("The rs method is for discrete chains.");
+    if (molecules->get_model_name() != "discrete")
+        throw_with_line_number("The rs method is for discrete chains.");
 
-        update_laplacian_operator();
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    update_laplacian_operator();
 }
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
-    try
-    {
-        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles
-        bonds = RealSpaceBond::bonds(*molecules, *cb);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // The box is orthogonal: the computation refuses a skewed box for rs and holds its angles
+    bonds = RealSpaceBond::bonds(*molecules, *cb);
 }
 
 template <typename T>
@@ -213,82 +199,61 @@ template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
     T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index)
 {
-    try
-    {
-        // On the full grid; with a space group from and back to its reduced basis, where the mask
-        // is, through a second full grid (the bond does not run in place)
-        const int M = cb->get_total_grid();
-        const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        WorkArrays& work = work_arrays();
-        T* out = this->full_grid_output(q_out, work.full_2);
-        convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
-        for (int i = 0; i < M; ++i)
-            out[i] *= exp_dw[i];
-        this->store_full_grid(out, q_out, q_mask);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // On the full grid; with a space group from and back to its reduced basis, where the mask
+    // is, through a second full grid (the bond does not run in place)
+    const int M = cb->get_total_grid();
+    const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
+    WorkArrays& work = work_arrays();
+    T* out = this->full_grid_output(q_out, work.full_2);
+    convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
+    for (int i = 0; i < M; ++i)
+        out[i] *= exp_dw[i];
+    this->store_full_grid(out, q_out, q_mask);
 }
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T* q_out, std::string monomer_type)
 {
-    try
-    {
-        WorkArrays& work = work_arrays();
-        T* out = this->full_grid_output(q_out, work.full_2);
-        convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.half.at(monomer_type), work);
-        this->store_full_grid(out, q_out, nullptr);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    WorkArrays& work = work_arrays();
+    T* out = this->full_grid_output(q_out, work.full_2);
+    convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.half.at(monomer_type), work);
+    this->store_full_grid(out, q_out, nullptr);
 }
 
 template <typename T>
 std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
     T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length)
 {
-    try
-    {
-        // The cell stays orthogonal (the factory holds it so), so there are no shear components
-        if (this->force_off_diagonal_stress_)
-            throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
+    // The cell stays orthogonal (the computation holds it so), so there are no shear components
+    if (this->force_off_diagonal_stress_)
+        throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
 
-        // The sums V_aa = sum_k b^2 g(k) q_1 q_2 k_a^2 / L_a^2 of the pseudo-spectral solvers: in real
-        // space k_a^2 g(k) is (L_a / sigma^2) dG/dL_a, with sigma^2 the variance of the (half) bond
-        // and b^2 the squared bond length (halved for a half bond), so
-        // V_aa = M (b^2 / sigma^2) / L_a sum_r q_1 (dG/dL_a q_2) = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2)
-        const int M = cb->get_total_grid();
-        const int dim = cb->get_dim();
-        const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-        // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
-        const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
-                                                                    : bonds.full.at(0).at(monomer_type);
-        const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
-        WorkArrays& work = work_arrays();
-        std::vector<T>& dq = work.dq;
-        dq.resize(M);
-        const T* full_q_1 = this->expand_to_full_grid(q_1, work.full_1);
-        const T* full_q_2 = this->expand_to_full_grid(q_2, work.full_2);
-        std::vector<T> stress(6, T(0.0));
-        for (int a = 0; a < dim; ++a)
-        {
-            convolve(full_q_2, dq.data(), kernels, work, a, &derivatives[a]);
-            T sum = 0.0;
-            for (int i = 0; i < M; ++i)
-                sum += full_q_1[i] * dq[i];
-            stress[a] = sum * (M * 3.0 / (ds * cb->get_lx(a)));
-        }
-        return stress;
-    }
-    catch (std::exception& exc)
+    // The sums V_aa = sum_k b^2 g(k) q_1 q_2 k_a^2 / L_a^2 of the pseudo-spectral solvers: in real
+    // space k_a^2 g(k) is (L_a / sigma^2) dG/dL_a, with sigma^2 the variance of the (half) bond
+    // and b^2 the squared bond length (halved for a half bond), so
+    // V_aa = M (b^2 / sigma^2) / L_a sum_r q_1 (dG/dL_a q_2) = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2)
+    const int M = cb->get_total_grid();
+    const int dim = cb->get_dim();
+    const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
+    // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
+    const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
+                                                                : bonds.full.at(0).at(monomer_type);
+    const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
+    WorkArrays& work = work_arrays();
+    std::vector<T>& dq = work.dq;
+    dq.resize(M);
+    const T* full_q_1 = this->expand_to_full_grid(q_1, work.full_1);
+    const T* full_q_2 = this->expand_to_full_grid(q_2, work.full_2);
+    std::vector<T> stress(6, T(0.0));
+    for (int a = 0; a < dim; ++a)
     {
-        throw_without_line_number(exc.what());
+        convolve(full_q_2, dq.data(), kernels, work, a, &derivatives[a]);
+        T sum = 0.0;
+        for (int i = 0; i < M; ++i)
+            sum += full_q_1[i] * dq[i];
+        stress[a] = sum * (M * 3.0 / (ds * cb->get_lx(a)));
     }
+    return stress;
 }
 
 #include "TemplateInstantiations.h"

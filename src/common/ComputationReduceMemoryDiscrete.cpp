@@ -152,95 +152,88 @@ template <typename T>
 void ComputationReduceMemoryDiscrete<T>::compute_blocks(bool with_concentrations, bool with_stress)
 {
     this->require_propagators();
-    try
+    if (with_stress)
     {
-        if (with_stress)
-        {
-            this->check_stress_supported();
-            this->backend->prepare_stress();
-        }
+        this->check_stress_supported();
+        this->backend->prepare_stress();
+    }
 
-        // Concentration and stress of each block (several blocks when propagators are aggregated)
-        std::vector<std::array<T, 6>> stress_of_block;
-        for (const auto& [key, phi] : this->phi_block)
-        {
-            const auto& [p, key_left, key_right] = key;
-            const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
-            const int N_LEFT  = block.n_segment_left;
-            const int N_RIGHT = block.n_segment_right;
-            const double weight = block.n_repeated;
-            const bool left_is_junction  = this->propagator_computation_optimizer->get_computation_propagator(key_left).start == PropagatorStart::JUNCTION;
-            const bool right_is_junction = this->propagator_computation_optimizer->get_computation_propagator(key_right).start == PropagatorStart::JUNCTION;
+    // Concentration and stress of each block (several blocks when propagators are aggregated)
+    std::vector<std::array<T, 6>> stress_of_block;
+    for (const auto& [key, phi] : this->phi_block)
+    {
+        const auto& [p, key_left, key_right] = key;
+        const auto& block = this->propagator_computation_optimizer->get_computation_block(key);
+        const int N_LEFT  = block.n_segment_left;
+        const int N_RIGHT = block.n_segment_right;
+        const double weight = block.n_repeated;
+        const bool left_is_junction  = this->propagator_computation_optimizer->get_computation_propagator(key_left).start == PropagatorStart::JUNCTION;
+        const bool right_is_junction = this->propagator_computation_optimizer->get_computation_propagator(key_right).start == PropagatorStart::JUNCTION;
 
-            if (with_concentrations)
-                this->backend->set_zero(0, phi);
-            std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-            auto add_bond = [&](BackendArray<T>* q, BackendArray<T>* q_dagger, bool is_half_bond_length)
+        if (with_concentrations)
+            this->backend->set_zero(0, phi);
+        std::array<T, 6> stress = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        auto add_bond = [&](BackendArray<T>* q, BackendArray<T>* q_dagger, bool is_half_bond_length)
+        {
+            const std::array<T, 6> bond = this->backend->block_stress(
+                0, {{q, q_dagger, weight, is_half_bond_length}}, block.monomer_type);
+            for (int d = 0; d < 6; d++)
+                stress[d] += bond[d];
+        };
+
+        // φ = Σ_n q(N_LEFT+1-n) q†(n) / exp(-w ds), n = 1..N_RIGHT. Bond n joins
+        // q(N_LEFT-n) and q†(n), n = 0..N_RIGHT (see ComputationDiscrete): the walk
+        // meets bond n at segment n+1, which holds the same q, with q†(n) as the
+        // previous q†; it goes one segment past N_RIGHT for the last bond. The
+        // bonds at the two ends are half bonds to a junction; free ends and
+        // aggregation points have none.
+        this->for_each_segment_pair(key_left, key_right, N_LEFT+1, 1, N_RIGHT,
+            [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>* q_dagger_previous)
             {
-                const std::array<T, 6> bond = this->backend->block_stress(
-                    0, {{q, q_dagger, weight, is_half_bond_length}}, block.monomer_type);
-                for (int d = 0; d < 6; d++)
-                    stress[d] += bond[d];
-            };
-
-            // φ = Σ_n q(N_LEFT+1-n) q†(n) / exp(-w ds), n = 1..N_RIGHT. Bond n joins
-            // q(N_LEFT-n) and q†(n), n = 0..N_RIGHT (see ComputationDiscrete): the walk
-            // meets bond n at segment n+1, which holds the same q, with q†(n) as the
-            // previous q†; it goes one segment past N_RIGHT for the last bond. The
-            // bonds at the two ends are half bonds to a junction; free ends and
-            // aggregation points have none.
-            this->for_each_segment_pair(key_left, key_right, N_LEFT+1, 1, N_RIGHT,
-                [&](int n, BackendArray<T>* q, BackendArray<T>* q_dagger, BackendArray<T>* q_dagger_previous)
+                if (with_concentrations && n <= N_RIGHT)
+                    this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}});
+                if (!with_stress)
+                    return;
+                if (n == 1)                   // bond 0: half bond at the right end, a junction
                 {
-                    if (with_concentrations && n <= N_RIGHT)
-                        this->backend->add_segment_products(0, phi, {{q, q_dagger, 1.0}});
-                    if (!with_stress)
-                        return;
-                    if (n == 1)                   // bond 0: half bond at the right end, a junction
+                    if (right_is_junction)
                     {
-                        if (right_is_junction)
-                        {
-                            this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(half_checkpoint, key_right, 0));
-                            add_bond(q, this->q_work[0], true);
-                        }
+                        this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(half_checkpoint, key_right, 0));
+                        add_bond(q, this->q_work[0], true);
                     }
-                    else if (n - 1 == N_LEFT)     // bond N_LEFT: half bond at the left end
+                }
+                else if (n - 1 == N_LEFT)     // bond N_LEFT: half bond at the left end
+                {
+                    if (left_is_junction)
                     {
-                        if (left_is_junction)
-                        {
-                            this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(half_checkpoint, key_left, 0));
-                            add_bond(this->q_work[0], q_dagger_previous, true);
-                        }
+                        this->backend->load_checkpoint(0, this->q_work[0], this->checkpoint_at(half_checkpoint, key_left, 0));
+                        add_bond(this->q_work[0], q_dagger_previous, true);
                     }
-                    else                          // bond n-1 within the block
-                        add_bond(q, q_dagger_previous, false);
-                }, with_stress);
-
-            if (with_concentrations)
-            {
-                // Remove the shared bead factor; getters apply ensemble normalization.
-                this->backend->divide_by_boltzmann_factor(0, phi, this->backend->boltzmann_factor(block.monomer_type));
-            }
-            this->scale_by_contour_step(stress, key_right);
-            stress_of_block.push_back(stress);
-        }
-        this->backend->synchronize();
+                }
+                else                          // bond n-1 within the block
+                    add_bond(q, q_dagger_previous, false);
+            }, with_stress);
 
         if (with_concentrations)
         {
-            this->compute_solvent_concentrations();
-            this->concentrations_computed_ = true;
+            // Remove the shared bead factor; getters apply ensemble normalization.
+            this->backend->divide_by_boltzmann_factor(0, phi, this->backend->boltzmann_factor(block.monomer_type));
         }
-        if (with_stress)
-        {
-            // Sum the blocks of each polymer
-            this->set_stress_from_blocks(stress_of_block);
-            this->stress_computed_ = true;
-        }
+        this->scale_by_contour_step(stress, key_right);
+        stress_of_block.push_back(stress);
     }
-    catch (std::exception& exc)
+    this->backend->synchronize();
+
+    if (with_concentrations)
     {
-        throw_without_line_number(exc.what());
+        this->compute_solvent_concentrations();
+        this->concentrations_computed_ = true;
+    }
+    if (with_stress)
+    {
+        // Sum the blocks of each polymer
+        this->set_stress_from_blocks(stress_of_block);
+        this->stress_computed_ = true;
     }
 }
 

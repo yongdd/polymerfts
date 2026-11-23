@@ -434,14 +434,7 @@ template <typename T>
 void PropagatorComputation<T>::update_laplacian_operator()
 {
     this->clear_computed();
-    try
-    {
-        backend->update_laplacian_operator();
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    backend->update_laplacian_operator();
 }
 
 template <typename T>

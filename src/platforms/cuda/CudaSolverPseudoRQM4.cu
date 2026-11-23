@@ -163,14 +163,8 @@ CudaSolverPseudoRQM4<T>::CudaSolverPseudoRQM4(
     : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, space_group, /*max_fft_batch=*/2,
                               /*with_exp_dw_half=*/true)
 {
-    try{
-        // The CrysFFT objects and the work buffers of the path the space group chooses
-        this->init_path();
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
-    }
+    // The CrysFFT objects and the work buffers of the path the space group chooses
+    this->init_path();
 }
 template <typename T>
 void CudaSolverPseudoRQM4<T>::allocate_work(int n_field)
@@ -203,166 +197,159 @@ void CudaSolverPseudoRQM4<T>::advance_propagator(
         CuDeviceData<T> *d_q_in, CuDeviceData<T> *d_q_out,
         std::string monomer_type, double *d_q_mask, int ds_index)
 {
-    try
+    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+
+    const int M = cb->get_total_grid();
+    const int M_COMPLEX = this->total_complex_grid();
+
+    CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
+    CuDeviceData<T> *_d_exp_dw_half = this->d_exp_dw_half.at(ds_index).at(monomer_type);
+    if (use_crysfft_)
     {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+        const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+        const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
 
-        const int M = cb->get_total_grid();
-        const int M_COMPLEX = this->total_complex_grid();
+        CuDeviceData<T>* d_full_step = d_q_step_1_one[STREAM];
+        CuDeviceData<T>* d_half_step = d_q_step_2_one[STREAM];
 
-        CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
-        CuDeviceData<T> *_d_exp_dw_half = this->d_exp_dw_half.at(ds_index).at(monomer_type);
-        if (use_crysfft_)
+        if (crysfft_identity_map_)
         {
-            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-            const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
+            // Full step and two half steps; their last factors exp(-w*ds/2)
+            // and exp(-w*ds/4) and the mask go into the Richardson combination
+            this->crysfft_diffuse(STREAM, d_q_in, d_full_step, coeff_full, _d_exp_dw, nullptr, nullptr);
+            this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, nullptr);
 
-            CuDeviceData<T>* d_full_step = d_q_step_1_one[STREAM];
-            CuDeviceData<T>* d_half_step = d_q_step_2_one[STREAM];
-
-            if (crysfft_identity_map_)
-            {
-                // Full step and two half steps; their last factors exp(-w*ds/2)
-                // and exp(-w*ds/4) and the mask go into the Richardson combination
-                this->crysfft_diffuse(STREAM, d_q_in, d_full_step, coeff_full, _d_exp_dw, nullptr, nullptr);
-                this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, nullptr);
-
-                ker_lin_comb_exp<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                    d_q_out,
-                    d_half_step, _d_exp_dw_half, 4.0/3.0,
-                    d_full_step, _d_exp_dw, -1.0/3.0,
-                    d_q_mask, crysfft_physical_size_);
-                CUDA_CHECK_LAUNCH();
-                return;
-            }
-
-            // ===== Full step and two half steps on the reduced basis =====
-            this->crysfft_diffuse(STREAM, d_q_in, d_full_step, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
-            this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, _d_exp_dw_half);
-
-            // ===== Richardson extrapolation on reduced basis =====
-            ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_out, 4.0/3.0, d_half_step, -1.0/3.0, d_full_step, n_basis_);
+            ker_lin_comb_exp<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+                d_q_out,
+                d_half_step, _d_exp_dw_half, 4.0/3.0,
+                d_full_step, _d_exp_dw, -1.0/3.0,
+                d_q_mask, crysfft_physical_size_);
             CUDA_CHECK_LAUNCH();
-
-            this->multiply_mask(STREAM, d_q_out, d_q_mask);
             return;
         }
 
-        // Bond factors of the full grid (the Pseudo tables exist on this path only)
-        const double* _d_boltz_bond      = pseudo->get_boltz_bond     (monomer_type, ds_index);
-        const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, ds_index);
+        // ===== Full step and two half steps on the reduced basis =====
+        this->crysfft_diffuse(STREAM, d_q_in, d_full_step, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
+        this->crysfft_diffuse(STREAM, d_q_in, d_half_step, coeff_half, _d_exp_dw_half, _d_exp_dw, _d_exp_dw_half);
 
-        // Full-grid input/output (expanded from / reduced to the basis with a space group)
-        CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
-        CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
-
-        // The full step: the first half of the batch (periodic BC), or d_q_step_1_one
-        CuDeviceData<T> *d_full_step = is_periodic_ ? d_q_step_1_two[STREAM].get() : d_q_step_1_one[STREAM].get();
-
-        // The last factor exp(-w*ds/4) of the two half steps (with the FFT
-        // normalization) is applied inside the Richardson combination below
-        double half_step_scale = 1.0;
-        if (is_periodic_)
-        {
-            // ============================================================
-            // Periodic BC: Use batched cuFFT with complex coefficients
-            // ============================================================
-            // The spectra of the batch, one after the other in the base's scratch
-            cuDoubleComplex* d_qk = reinterpret_cast<cuDoubleComplex*>(spectrum(STREAM, 0));
-
-            // step 1/2: Evaluate exp(-w*ds/2) in real space
-            // step 1/4: Evaluate exp(-w*ds/4) in real space
-            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                (d_q_step_1_two[STREAM].get() + 0), fft_in, _d_exp_dw,
-                (d_q_step_1_two[STREAM].get() + M), fft_in, _d_exp_dw_half, 1.0, M);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/2: Execute a forward FFT
-            // step 1/4: Execute a forward FFT
-            fft_forward(STREAM, d_q_step_1_two[STREAM], d_qk, 2);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/2: Multiply exp(-k^2 ds/6)  in fourier space
-            // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
-            ker_complex_real_multi_bond_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                (d_qk + 0),         _d_boltz_bond,
-                (d_qk + M_COMPLEX), _d_boltz_bond_half, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/2: Execute a backward FFT
-            // step 1/4: Execute a backward FFT
-            fft_backward(STREAM, d_qk, d_q_step_1_two[STREAM], 2);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/2: Evaluate exp(-w*ds/2) in real space (in place)
-            // step 1/4: Evaluate exp(-w*ds/2) in real space
-            ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_full_step, d_full_step, _d_exp_dw,
-                d_q_step_2_one[STREAM], (d_q_step_1_two[STREAM].get() + M), _d_exp_dw, 1.0/static_cast<double>(M), M);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/4: Execute a forward FFT
-            fft_forward(STREAM, d_q_step_2_one[STREAM], d_qk, 1);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
-            ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk, _d_boltz_bond_half, 1.0, M_COMPLEX);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/4: Execute a backward FFT
-            fft_backward(STREAM, d_qk, d_q_step_2_one[STREAM], 1);
-            CUDA_CHECK_LAUNCH();
-
-            // step 1/4: exp(-w*ds/4) and 1/M follow in the Richardson combination
-            half_step_scale = 1.0/static_cast<double>(M);
-        }
-        else
-        {
-            // ============================================================
-            // Walls: one field at a time through the cosine and sine series
-            // ============================================================
-
-            // ===== Step 1: Full step =====
-            // exp(-w*ds/2), exp(-k^2 ds/6) in Fourier space, exp(-w*ds/2) with 1/M
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], fft_in, _d_exp_dw, 1.0, M);
-            CUDA_CHECK_LAUNCH();
-            this->bond_step(STREAM, d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_boltz_bond, 1.0);
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
-            CUDA_CHECK_LAUNCH();
-
-            // ===== Step 2: Two half steps =====
-            // First half step: exp(-w*ds/4), exp(-k^2 ds/12), exp(-w*ds/2) with 1/M
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], fft_in, _d_exp_dw_half, 1.0, M);
-            CUDA_CHECK_LAUNCH();
-            this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-                d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
-            CUDA_CHECK_LAUNCH();
-
-            // Second half step: exp(-k^2 ds/12); exp(-w*ds/4) and 1/M follow in the
-            // Richardson combination
-            this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
-            half_step_scale = 1.0/static_cast<double>(M);
-        }
-
-        // ===== RQM4: Richardson extrapolation =====
-        // q = 4/3 q(ds/2 twice) - 1/3 q(ds), the half-step result taking its last
-        // factor exp(-w*ds/4) (and the FFT normalization) here
-        ker_multi_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
-            fft_out, 4.0/3.0, d_q_step_2_one[STREAM], _d_exp_dw_half, half_step_scale,
-            -1.0/3.0, d_full_step, M);
+        // ===== Richardson extrapolation on reduced basis =====
+        ker_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            d_q_out, 4.0/3.0, d_half_step, -1.0/3.0, d_full_step, n_basis_);
         CUDA_CHECK_LAUNCH();
 
-        // Reduce to the basis (with a space group) and multiply the mask
-        this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
+        this->multiply_mask(STREAM, d_q_out, d_q_mask);
+        return;
     }
-    catch(std::exception& exc)
+
+    // Bond factors of the full grid (the Pseudo tables exist on this path only)
+    const double* _d_boltz_bond      = pseudo->get_boltz_bond     (monomer_type, ds_index);
+    const double* _d_boltz_bond_half = pseudo->get_boltz_bond_half(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group)
+    CuDeviceData<T> *fft_in = this->expand_to_full_grid(STREAM, d_q_in);
+    CuDeviceData<T> *fft_out = this->full_grid_output(STREAM, d_q_out);
+
+    // The full step: the first half of the batch (periodic BC), or d_q_step_1_one
+    CuDeviceData<T> *d_full_step = is_periodic_ ? d_q_step_1_two[STREAM].get() : d_q_step_1_one[STREAM].get();
+
+    // The last factor exp(-w*ds/4) of the two half steps (with the FFT
+    // normalization) is applied inside the Richardson combination below
+    double half_step_scale = 1.0;
+    if (is_periodic_)
     {
-        throw_without_line_number(exc.what());
+        // ============================================================
+        // Periodic BC: Use batched cuFFT with complex coefficients
+        // ============================================================
+        // The spectra of the batch, one after the other in the base's scratch
+        cuDoubleComplex* d_qk = reinterpret_cast<cuDoubleComplex*>(spectrum(STREAM, 0));
+
+        // step 1/2: Evaluate exp(-w*ds/2) in real space
+        // step 1/4: Evaluate exp(-w*ds/4) in real space
+        ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            (d_q_step_1_two[STREAM].get() + 0), fft_in, _d_exp_dw,
+            (d_q_step_1_two[STREAM].get() + M), fft_in, _d_exp_dw_half, 1.0, M);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/2: Execute a forward FFT
+        // step 1/4: Execute a forward FFT
+        fft_forward(STREAM, d_q_step_1_two[STREAM], d_qk, 2);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/2: Multiply exp(-k^2 ds/6)  in fourier space
+        // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
+        ker_complex_real_multi_bond_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            (d_qk + 0),         _d_boltz_bond,
+            (d_qk + M_COMPLEX), _d_boltz_bond_half, M_COMPLEX);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/2: Execute a backward FFT
+        // step 1/4: Execute a backward FFT
+        fft_backward(STREAM, d_qk, d_q_step_1_two[STREAM], 2);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/2: Evaluate exp(-w*ds/2) in real space (in place)
+        // step 1/4: Evaluate exp(-w*ds/2) in real space
+        ker_multi_exp_dw_two<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            d_full_step, d_full_step, _d_exp_dw,
+            d_q_step_2_one[STREAM], (d_q_step_1_two[STREAM].get() + M), _d_exp_dw, 1.0/static_cast<double>(M), M);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/4: Execute a forward FFT
+        fft_forward(STREAM, d_q_step_2_one[STREAM], d_qk, 1);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/4: Multiply exp(-k^2 ds/12) in fourier space
+        ker_multi_complex_real<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_qk, _d_boltz_bond_half, 1.0, M_COMPLEX);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/4: Execute a backward FFT
+        fft_backward(STREAM, d_qk, d_q_step_2_one[STREAM], 1);
+        CUDA_CHECK_LAUNCH();
+
+        // step 1/4: exp(-w*ds/4) and 1/M follow in the Richardson combination
+        half_step_scale = 1.0/static_cast<double>(M);
     }
+    else
+    {
+        // ============================================================
+        // Walls: one field at a time through the cosine and sine series
+        // ============================================================
+
+        // ===== Step 1: Full step =====
+        // exp(-w*ds/2), exp(-k^2 ds/6) in Fourier space, exp(-w*ds/2) with 1/M
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_1_one[STREAM], fft_in, _d_exp_dw, 1.0, M);
+        CUDA_CHECK_LAUNCH();
+        this->bond_step(STREAM, d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_boltz_bond, 1.0);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            d_q_step_1_one[STREAM], d_q_step_1_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
+        CUDA_CHECK_LAUNCH();
+
+        // ===== Step 2: Two half steps =====
+        // First half step: exp(-w*ds/4), exp(-k^2 ds/12), exp(-w*ds/2) with 1/M
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(d_q_step_2_one[STREAM], fft_in, _d_exp_dw_half, 1.0, M);
+        CUDA_CHECK_LAUNCH();
+        this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
+        ker_multi<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+            d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_exp_dw, 1.0/static_cast<double>(M), M);
+        CUDA_CHECK_LAUNCH();
+
+        // Second half step: exp(-k^2 ds/12); exp(-w*ds/4) and 1/M follow in the
+        // Richardson combination
+        this->bond_step(STREAM, d_q_step_2_one[STREAM], d_q_step_2_one[STREAM], _d_boltz_bond_half, 1.0);
+        half_step_scale = 1.0/static_cast<double>(M);
+    }
+
+    // ===== RQM4: Richardson extrapolation =====
+    // q = 4/3 q(ds/2 twice) - 1/3 q(ds), the half-step result taking its last
+    // factor exp(-w*ds/4) (and the FFT normalization) here
+    ker_multi_lin_comb<<<N_BLOCKS, N_THREADS, 0, streams[STREAM]>>>(
+        fft_out, 4.0/3.0, d_q_step_2_one[STREAM], _d_exp_dw_half, half_step_scale,
+        -1.0/3.0, d_full_step, M);
+    CUDA_CHECK_LAUNCH();
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(STREAM, fft_out, d_q_out, d_q_mask);
 }
 
 // Explicit template instantiation

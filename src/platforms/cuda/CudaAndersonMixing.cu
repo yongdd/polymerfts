@@ -107,70 +107,56 @@ CudaAndersonMixing<T>::CudaAndersonMixing(
     double mix_min,   double mix_init, bool pinned_history)
     :AndersonMixing<T>(n_var, max_hist, start_error, mix_min, mix_init)
 {
-    try
+    // Number of anderson mixing steps, increases from 0 to this->max_hist
+    this->n_anderson = -1;
+    // Record history of w and w_deriv in GPU device memory or pinned host memory
+    w_hist = std::make_unique<CudaCircularBuffer<T>>(this->max_hist+1, this->n_var, pinned_history);
+    w_deriv_hist = std::make_unique<CudaCircularBuffer<T>>(this->max_hist+1, this->n_var, pinned_history);
+    // Record history of inner_product product of w_deriv in CPU host memory
+    cb_w_deriv_dots = std::make_unique<CircularBuffer<T>>(this->max_hist+1, this->max_hist+1);
+
+    // define arrays for anderson mixing
+    u_nm_storage.assign(static_cast<size_t>(this->max_hist) * this->max_hist, T());
+    u_nm.resize(this->max_hist);
+    for(int i=0; i<this->max_hist; i++)
+        u_nm[i] = u_nm_storage.data() + static_cast<size_t>(i) * this->max_hist;
+    v_n.assign(this->max_hist, T());
+    a_n.assign(this->max_hist, T());
+    w_deriv_dots.assign(this->max_hist+1, T());
+
+    // Fields arrays
+    d_w_current.allocate(this->n_var);
+    d_w_new.allocate(this->n_var);
+    d_w_deriv.allocate(this->n_var);
+    d_sum.allocate(this->n_var);
+    d_sum_out.allocate(1);
+    if (pinned_history)
     {
-        // Number of anderson mixing steps, increases from 0 to this->max_hist
-        this->n_anderson = -1;
-        // Record history of w and w_deriv in GPU device memory or pinned host memory
-        w_hist = std::make_unique<CudaCircularBuffer<T>>(this->max_hist+1, this->n_var, pinned_history);
-        w_deriv_hist = std::make_unique<CudaCircularBuffer<T>>(this->max_hist+1, this->n_var, pinned_history);
-        // Record history of inner_product product of w_deriv in CPU host memory
-        cb_w_deriv_dots = std::make_unique<CircularBuffer<T>>(this->max_hist+1, this->max_hist+1);
-
-        // define arrays for anderson mixing
-        u_nm_storage.assign(static_cast<size_t>(this->max_hist) * this->max_hist, T());
-        u_nm.resize(this->max_hist);
-        for(int i=0; i<this->max_hist; i++)
-            u_nm[i] = u_nm_storage.data() + static_cast<size_t>(i) * this->max_hist;
-        v_n.assign(this->max_hist, T());
-        a_n.assign(this->max_hist, T());
-        w_deriv_dots.assign(this->max_hist+1, T());
-
-        // Fields arrays
-        d_w_current.allocate(this->n_var);
-        d_w_new.allocate(this->n_var);
-        d_w_deriv.allocate(this->n_var);
-        d_sum.allocate(this->n_var);
-        d_sum_out.allocate(1);
-        if (pinned_history)
-        {
-            d_stage_w.allocate(this->n_var);
-            d_stage_deriv.allocate(this->n_var);
-        }
-
-        // Allocate memory for cub reduction sum (the first call only queries the size)
-        temp_storage_bytes = 0;
-        CUDA_CHECK(cuda_reduce_sum(nullptr, temp_storage_bytes, d_sum.get(), d_sum_out.get(), this->n_var, 0));
-        d_temp_storage.allocate(temp_storage_bytes);
-
-        // Reset_count
-        reset_count();
+        d_stage_w.allocate(this->n_var);
+        d_stage_deriv.allocate(this->n_var);
     }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Allocate memory for cub reduction sum (the first call only queries the size)
+    temp_storage_bytes = 0;
+    CUDA_CHECK(cuda_reduce_sum(nullptr, temp_storage_bytes, d_sum.get(), d_sum_out.get(), this->n_var, 0));
+    d_temp_storage.allocate(temp_storage_bytes);
+
+    // Reset_count
+    reset_count();
 }
 template <typename T>
 CudaAndersonMixing<T>::~CudaAndersonMixing() = default;
 template <typename T>
 void CudaAndersonMixing<T>::reset_count()
 {
-    try
-    {
-        /* initialize mixing parameter */
-        this->mix = this->mix_init;
-        /* number of anderson mixing steps, increases from 0 to this->max_hist */
-        this->n_anderson = -1;
+    /* initialize mixing parameter */
+    this->mix = this->mix_init;
+    /* number of anderson mixing steps, increases from 0 to this->max_hist */
+    this->n_anderson = -1;
 
-        w_hist->reset();
-        w_deriv_hist->reset();
-        cb_w_deriv_dots->reset();
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    w_hist->reset();
+    w_deriv_hist->reset();
+    cb_w_deriv_dots->reset();
 }
 template <typename T>
 const CuDeviceData<T>* CudaAndersonMixing<T>::entry_on_device(
@@ -189,98 +175,91 @@ void CudaAndersonMixing<T>::calculate_new_fields(
     double old_error_level,
     double error_level)
 {
-    try
+    const int N_BLOCKS = CudaCommon::get_instance().get_n_blocks();
+    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+
+    CUDA_CHECK(cudaMemcpy(d_w_deriv,   w_deriv,   sizeof(T)*this->n_var, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_w_current, w_current, sizeof(T)*this->n_var, cudaMemcpyHostToDevice));
+
+    // Condition to start anderson mixing
+    if(error_level < this->start_error || this->n_anderson >= 0)
+        this->n_anderson = this->n_anderson + 1;
+    if( this->n_anderson >= 0 )
     {
-        const int N_BLOCKS = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+        // Number of histories to use for anderson mixing
+        this->n_anderson = std::min(this->max_hist, this->n_anderson);
 
-        CUDA_CHECK(cudaMemcpy(d_w_deriv,   w_deriv,   sizeof(T)*this->n_var, cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_w_current, w_current, sizeof(T)*this->n_var, cudaMemcpyHostToDevice));
-
-        // Condition to start anderson mixing
-        if(error_level < this->start_error || this->n_anderson >= 0)
-            this->n_anderson = this->n_anderson + 1;
-        if( this->n_anderson >= 0 )
+        // store the input and output field (the memory is used in a periodic way): a
+        // pinned history takes them from the host, a device history from the device
+        if (w_hist->on_host())
         {
-            // Number of histories to use for anderson mixing
-            this->n_anderson = std::min(this->max_hist, this->n_anderson);
-
-            // store the input and output field (the memory is used in a periodic way): a
-            // pinned history takes them from the host, a device history from the device
-            if (w_hist->on_host())
-            {
-                w_hist->insert(reinterpret_cast<const CuDeviceData<T>*>(w_current));
-                w_deriv_hist->insert(reinterpret_cast<const CuDeviceData<T>*>(w_deriv));
-            }
-            else
-            {
-                w_hist->insert(d_w_current);
-                w_deriv_hist->insert(d_w_deriv);
-            }
-
-            // Evaluate w_deriv inner_product products for calculating Unm and Vn in Thompson's paper
-            // (the newest residual, i = 0, is d_w_deriv)
-            for(int i=0; i<=this->n_anderson; i++)
-            {
-                const CuDeviceData<T>* d_w_deriv_i = (i == 0) ? d_w_deriv.get() : entry_on_device(*w_deriv_hist, i, d_stage_deriv);
-                if constexpr (std::is_same_v<T, double>)
-                    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, 1.0, this->n_var);
-                else
-                    ker_multi_complex_conjugate<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, this->n_var);
-                CUDA_CHECK_LAUNCH();
-                CUDA_CHECK(cuda_reduce_sum(d_temp_storage.get(), temp_storage_bytes, d_sum.get(), d_sum_out.get(), this->n_var, 0));
-                CUDA_CHECK(cudaMemcpy(&w_deriv_dots[i], d_sum_out, sizeof(T),cudaMemcpyDeviceToHost));
-            }
-
-            cb_w_deriv_dots->insert(w_deriv_dots.data());
-        }
-
-        // Conditions to apply the simple mixing method
-        if( this->n_anderson <= 0 )
-        {
-            // dynamically change mixing parameter
-            if (old_error_level < error_level)
-                this->mix = std::max(this->mix*0.7, this->mix_min);
-            else
-                this->mix = this->mix*1.01;
-
-            // Make a simple mixing of input and output fields for the next iteration
-            ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_w_new, 1.0, d_w_current, this->mix, d_w_deriv, this->n_var);
-            CUDA_CHECK_LAUNCH();
+            w_hist->insert(reinterpret_cast<const CuDeviceData<T>*>(w_current));
+            w_deriv_hist->insert(reinterpret_cast<const CuDeviceData<T>*>(w_deriv));
         }
         else
         {
-            this->build_normal_equations(*cb_w_deriv_dots, u_nm.data(), v_n.data(), this->n_anderson);
-            this->find_an(u_nm.data(), v_n.data(), a_n.data(), this->n_anderson);
-
-            // Calculate the new field: w_new = w_1 + d_1 + Σ_k a_k (w_k - w_1 + d_k - d_1) over the
-            // older entries k, where the newest field and residual w_1 and d_1 are d_w_current and
-            // d_w_deriv. A pinned history copies one older entry at a time to the device.
-            ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_w_new, 1.0, d_w_current, 1.0, d_w_deriv, this->n_var);
-            CUDA_CHECK_LAUNCH();
-            const int terms_per_launch = w_hist->on_host() ? 1 : ANDERSON_TERMS_PER_LAUNCH;
-            for (int first = 0; first < this->n_anderson; first += terms_per_launch)
-            {
-                AndersonTerms<CuDeviceData<T>> terms{};
-                terms.n = std::min(terms_per_launch, this->n_anderson - first);
-                for (int k = 0; k < terms.n; ++k)
-                {
-                    const int i = first + k;
-                    terms.w[k] = entry_on_device(*w_hist, i+1, d_stage_w);
-                    terms.d[k] = entry_on_device(*w_deriv_hist, i+1, d_stage_deriv);
-                    terms.a[k] = to_device_scalar(a_n[i]);
-                    terms.b[k] = to_device_scalar(-a_n[i]);
-                }
-                ker_add_history_terms<<<N_BLOCKS, N_THREADS>>>(d_w_new.get(), terms, d_w_current.get(), d_w_deriv.get(), this->n_var);
-                CUDA_CHECK_LAUNCH();
-            }
+            w_hist->insert(d_w_current);
+            w_deriv_hist->insert(d_w_deriv);
         }
-        CUDA_CHECK(cudaMemcpy(w_new, d_w_new, sizeof(T)*this->n_var, cudaMemcpyDeviceToHost));
+
+        // Evaluate w_deriv inner_product products for calculating Unm and Vn in Thompson's paper
+        // (the newest residual, i = 0, is d_w_deriv)
+        for(int i=0; i<=this->n_anderson; i++)
+        {
+            const CuDeviceData<T>* d_w_deriv_i = (i == 0) ? d_w_deriv.get() : entry_on_device(*w_deriv_hist, i, d_stage_deriv);
+            if constexpr (std::is_same_v<T, double>)
+                ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, 1.0, this->n_var);
+            else
+                ker_multi_complex_conjugate<<<N_BLOCKS, N_THREADS>>>(d_sum, d_w_deriv, d_w_deriv_i, this->n_var);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cuda_reduce_sum(d_temp_storage.get(), temp_storage_bytes, d_sum.get(), d_sum_out.get(), this->n_var, 0));
+            CUDA_CHECK(cudaMemcpy(&w_deriv_dots[i], d_sum_out, sizeof(T),cudaMemcpyDeviceToHost));
+        }
+
+        cb_w_deriv_dots->insert(w_deriv_dots.data());
     }
-    catch(std::exception& exc)
+
+    // Conditions to apply the simple mixing method
+    if( this->n_anderson <= 0 )
     {
-        throw_without_line_number(exc.what());
+        // dynamically change mixing parameter
+        if (old_error_level < error_level)
+            this->mix = std::max(this->mix*0.7, this->mix_min);
+        else
+            this->mix = this->mix*1.01;
+
+        // Make a simple mixing of input and output fields for the next iteration
+        ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_w_new, 1.0, d_w_current, this->mix, d_w_deriv, this->n_var);
+        CUDA_CHECK_LAUNCH();
     }
+    else
+    {
+        this->build_normal_equations(*cb_w_deriv_dots, u_nm.data(), v_n.data(), this->n_anderson);
+        this->find_an(u_nm.data(), v_n.data(), a_n.data(), this->n_anderson);
+
+        // Calculate the new field: w_new = w_1 + d_1 + Σ_k a_k (w_k - w_1 + d_k - d_1) over the
+        // older entries k, where the newest field and residual w_1 and d_1 are d_w_current and
+        // d_w_deriv. A pinned history copies one older entry at a time to the device.
+        ker_lin_comb<<<N_BLOCKS, N_THREADS>>>(d_w_new, 1.0, d_w_current, 1.0, d_w_deriv, this->n_var);
+        CUDA_CHECK_LAUNCH();
+        const int terms_per_launch = w_hist->on_host() ? 1 : ANDERSON_TERMS_PER_LAUNCH;
+        for (int first = 0; first < this->n_anderson; first += terms_per_launch)
+        {
+            AndersonTerms<CuDeviceData<T>> terms{};
+            terms.n = std::min(terms_per_launch, this->n_anderson - first);
+            for (int k = 0; k < terms.n; ++k)
+            {
+                const int i = first + k;
+                terms.w[k] = entry_on_device(*w_hist, i+1, d_stage_w);
+                terms.d[k] = entry_on_device(*w_deriv_hist, i+1, d_stage_deriv);
+                terms.a[k] = to_device_scalar(a_n[i]);
+                terms.b[k] = to_device_scalar(-a_n[i]);
+            }
+            ker_add_history_terms<<<N_BLOCKS, N_THREADS>>>(d_w_new.get(), terms, d_w_current.get(), d_w_deriv.get(), this->n_var);
+            CUDA_CHECK_LAUNCH();
+        }
+    }
+    CUDA_CHECK(cudaMemcpy(w_new, d_w_new, sizeof(T)*this->n_var, cudaMemcpyDeviceToHost));
 }
 
 // Explicit template instantiation

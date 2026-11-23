@@ -769,11 +769,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 - Use C++20 features where appropriate
 - Follow existing naming conventions
 - Document public APIs
-- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`). A catch block
-  that frees resources rethrows with `throw_without_line_number(exc.what())`: an `Exception`
-  passes through unchanged, so its message names one location, and another exception
-  (`std::out_of_range`, ...) becomes an `Exception` there, which Python sees as `RuntimeError`.
-  The bindings convert the exceptions of the calls they wrap in the same way.
+- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`) and let them
+  pass to Python unchanged: catch an exception only to do work (free, roll back, carry it out of
+  an OpenMP region with `ParallelErrors`) and rethrow it with `throw;`. An `Exception` or a CUDA
+  error reaches Python as `RuntimeError`, a standard exception with the pybind11 mapping
+  (`std::bad_alloc` as `MemoryError`, `std::out_of_range` as `IndexError`, ...).
 - CUDA error checks follow the CUDA C++ Best Practices Guide (2.3): wrap every call that returns
   an error code (`CUDA_CHECK(...)` for runtime and CUB calls, `CUFFT_CHECK(...)` for
   cuFFT) and follow every kernel launch with `CUDA_CHECK_LAUNCH();`. The check

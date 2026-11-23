@@ -136,11 +136,11 @@ MklFFT<T>::MklFFT(const std::vector<int>& nx)
         create_descriptors(nx, std::is_same<T, double>::value,
                            1.0 / static_cast<double>(total_grid_), hand_forward_, hand_backward_);
     }
-    catch (std::exception& exc)
+    catch (...)
     {
         // The destructor does not run for a partly constructed object
         release();
-        throw_without_line_number(exc.what());
+        throw;
     }
 }
 

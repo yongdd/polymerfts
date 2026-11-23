@@ -83,8 +83,8 @@ void CpuSolverPseudoBase<T>::init_shared(FFTBackend backend)
 
     // With a space group the propagators live in its reduced basis, and the solver expands
     // and reduces around its full-grid steps. [real-only feature] The CrysFFT fast paths
-    // fold real fields on the physical sub-grid (the factory refuses complex fields with
-    // a space group).
+    // fold real fields on the physical sub-grid (a box for complex fields refuses a space
+    // group).
     if (space_group_ != nullptr)
     {
         if constexpr (std::is_same_v<T, double>)
@@ -223,26 +223,19 @@ void CpuSolverPseudoBase<T>::update_crysfft_tables()
 template <typename T>
 void CpuSolverPseudoBase<T>::update_laplacian_operator()
 {
-    try
+    // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when a
+    // full-grid path (propagator steps or stress) uses them, that is unless the stress
+    // takes the CrysFFT fast path, which implies the CrysFFT steps; otherwise
+    // prepare_stress() computes them for the cell in use if the off-diagonal flag
+    // turns the stress to the full grid
+    pseudo_current_ = false;
+    if constexpr (std::is_same_v<T, double>)
     {
-        // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when a
-        // full-grid path (propagator steps or stress) uses them, that is unless the stress
-        // takes the CrysFFT fast path, which implies the CrysFFT steps; otherwise
-        // prepare_stress() computes them for the cell in use if the off-diagonal flag
-        // turns the stress to the full grid
-        pseudo_current_ = false;
-        if constexpr (std::is_same_v<T, double>)
-        {
-            if (use_crysfft())
-                update_crysfft_tables();
-        }
-        if (!crysfft_stress_fast_path())
-            update_pseudo();
+        if (use_crysfft())
+            update_crysfft_tables();
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    if (!crysfft_stress_fast_path())
+        update_pseudo();
 }
 
 template <typename T>
@@ -490,59 +483,52 @@ template <typename T>
 std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
     T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length)
 {
-    try
-    {
-        const int N_STRESS = 6;  // v⊗v dyad sums: V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃
-        const double bond_length_sq = stress_bond_length_sq(*molecules, monomer_type, is_half_bond_length);
+    const int N_STRESS = 6;  // v⊗v dyad sums: V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃
+    const double bond_length_sq = stress_bond_length_sq(*molecules, monomer_type, is_half_bond_length);
 
-        std::vector<T> stress(N_STRESS, 0.0);
+    std::vector<T> stress(N_STRESS, 0.0);
 
-        // CrysFFT fast path (reduced grid, no full-grid FFT and no Pseudo tables)
-        if (compute_stress_crysfft(q_1, q_2, bond_length_sq, stress))
-            return stress;
-
-        // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains)
-        const double* _boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
-
-        WorkArrays& work = work_arrays();
-        std::vector<double>& qk_1 = work.k_1;
-        std::vector<double>& qk_2 = work.k_2;
-        qk_1.resize(spectrum_size());
-        qk_2.resize(spectrum_size());
-
-        // ============================================================================
-        // PERFORMANCE-CRITICAL: Orthogonal box optimization
-        // ============================================================================
-        // For orthogonal boxes (all angles = 90°), the cross-term sums (V₁₂, V₁₃, V₂₃)
-        // are not computed: angle optimization is inactive for orthogonal crystal
-        // systems, so those slots are simply left at zero. (For generic asymmetric
-        // fields the true values need not vanish, but they are never consumed.)
-        //
-        // DO NOT REMOVE THIS OPTIMIZATION without benchmarking! We have experienced
-        // performance regressions before when this check was accidentally removed.
-        // See git history for commit 6d1dc54 which caused a regression by always
-        // computing all 6 components.
-        //
-        // Explicit opt-in: force_off_diagonal_stress_ (set when angle optimization
-        // is active) disables the skip so that angle derivatives are available
-        // even when the box is at exactly 90° angles. The skip remains the default.
-        // ============================================================================
-        const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
-
-        // Transform to Fourier space, with a space group from the full grid of this thread
-        // (this function runs in the OpenMP block loops of compute_stress), expanded from
-        // the reduced basis for one propagator after the other, and accumulate
-        // Σ_k kernel(k) v_i v_j
-        transform_forward(this->expand_to_full_grid(q_1, work.q_full), qk_1.data());
-        transform_forward(this->expand_to_full_grid(q_2, work.q_full), qk_2.data());
-        accumulate_stress(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
-
+    // CrysFFT fast path (reduced grid, no full-grid FFT and no Pseudo tables)
+    if (compute_stress_crysfft(q_1, q_2, bond_length_sq, stress))
         return stress;
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+
+    // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains)
+    const double* _boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
+
+    WorkArrays& work = work_arrays();
+    std::vector<double>& qk_1 = work.k_1;
+    std::vector<double>& qk_2 = work.k_2;
+    qk_1.resize(spectrum_size());
+    qk_2.resize(spectrum_size());
+
+    // ============================================================================
+    // PERFORMANCE-CRITICAL: Orthogonal box optimization
+    // ============================================================================
+    // For orthogonal boxes (all angles = 90°), the cross-term sums (V₁₂, V₁₃, V₂₃)
+    // are not computed: angle optimization is inactive for orthogonal crystal
+    // systems, so those slots are simply left at zero. (For generic asymmetric
+    // fields the true values need not vanish, but they are never consumed.)
+    //
+    // DO NOT REMOVE THIS OPTIMIZATION without benchmarking! We have experienced
+    // performance regressions before when this check was accidentally removed.
+    // See git history for commit 6d1dc54 which caused a regression by always
+    // computing all 6 components.
+    //
+    // Explicit opt-in: force_off_diagonal_stress_ (set when angle optimization
+    // is active) disables the skip so that angle derivatives are available
+    // even when the box is at exactly 90° angles. The skip remains the default.
+    // ============================================================================
+    const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
+
+    // Transform to Fourier space, with a space group from the full grid of this thread
+    // (this function runs in the OpenMP block loops of compute_stress), expanded from
+    // the reduced basis for one propagator after the other, and accumulate
+    // Σ_k kernel(k) v_i v_j
+    transform_forward(this->expand_to_full_grid(q_1, work.q_full), qk_1.data());
+    transform_forward(this->expand_to_full_grid(q_2, work.q_full), qk_2.data());
+    accumulate_stress(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
+
+    return stress;
 }
 
 // Explicit template instantiation
