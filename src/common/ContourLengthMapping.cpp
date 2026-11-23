@@ -285,33 +285,6 @@ int ContourLengthMapping::get_n_segment(double contour_length) const
 }
 
 /**
- * @brief Get contour length from its index.
- *
- * @param index 1-based index for actual blocks, 0 for aggregation slicing
- */
-double ContourLengthMapping::get_length_from_index(int index) const
-{
-    if (!is_finalized)
-    {
-        throw_with_line_number("Must call finalize() before get_length_from_index().");
-    }
-
-    // Special case: index=0 corresponds to contour_length=0 (aggregation slicing)
-    if (index == 0)
-    {
-        return 0.0;
-    }
-
-    if (index < 1 || index > static_cast<int>(unique_lengths.size()))
-    {
-        throw_with_line_number("Length index " + std::to_string(index) +
-                               " out of range [1, " + std::to_string(unique_lengths.size()) + "].");
-    }
-
-    return unique_lengths[index - 1];
-}
-
-/**
  * @brief Get local Δs from its index.
  *
  * @param index 0-based index

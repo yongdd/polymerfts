@@ -1,7 +1,7 @@
-# The native test that reads input files (TestHexagonalRectangularEquivalence reads
-# its initial fields) runs with the source directory as working directory; the
-# Python tests locate tests/data from their own path. Nothing is copied into the
-# build tree.
+# The native tests read their input files from tests/data through TEST_DATA_DIR
+# (TestHexagonalRectangularEquivalence its initial fields); the Python tests locate
+# tests/data from their own path. Nothing is copied into the build tree.
+ADD_COMPILE_DEFINITIONS(TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 # Every test carries a label; configuration stops for a test without one:
 #   basic      a quick check of every part (interfaces, transforms, solvers, SCFT,
@@ -93,9 +93,7 @@ SET(BASIC_TESTS
     TestFourierTransform
 
     # CUDA FFT & utilities
-    TestCudaFFTMixedBC
     TestCudaMakhoulTransform
-    TestCudaDCTDST
     TestCudaSimulationBoxComplex
     TestCudaRealSpaceRecovery
     TestCudaTridiagonal
@@ -145,7 +143,7 @@ SET(NUMERICAL_TESTS
     TestParameterNames TestFtsReliability TestCheckpointValidation TestExtensions TestPropagatorAnalytic TestConvergenceOrderLite TestSamplingStatistics
     TestStructureFunctionRPA TestChargedStructureFunctionRPA TestChargedStructureFunctionRPAPolyampholyte TestStructureFunctionRecords TestClftsElectrostatics TestClftsPointIons TestClftsGrandCanonical TestScftElectrostatics TestGibbsEnsemble TestConfinedElectrostatics TestClftsEtd TestClftsThermodynamics
     TestLftsRun TestLftsDetails TestLftsIdealLimit TestSpaceGroupPlatformEquivalence TestObliqueZStress TestScftObliqueSpaceGroups
-    TestStressNonPeriodic TestStressNonPeriodicRK2 TestStressComplexWalls TestStressAliasTies
+    TestStressNonPeriodic TestStressComplexWalls TestStressAliasTies
     TestJunctionRange TestBlockMultiplicity
     TestScftAbsentPolymer TestRealSpaceAbsorbingRange TestRealSpaceDiscrete
     TestCnAdiLongLines TestCrysFFTCellChange TestCpuCrysFFTFullGrid TestBoxVolumeElement
@@ -159,7 +157,7 @@ SET(NUMERICAL_TESTS
     TestNanoParticle2D TestNonMonotonicConvergence TestHexagonalRectangularEquivalence
     # Boundary conditions and platforms
     TestAbsorbingVsMask TestComplexNonPeriodicMirror TestCompareRealSpacePseudoSpectral
-    TestCpuCudaNonPeriodicEquivalence TestCudaOddReflecting
+    TestWallPlatformEquivalence
 )
 
 SET(EXAMPLES_TESTS
@@ -205,9 +203,15 @@ FUNCTION(SET_TEST_LABELS TEST_NAME)
     SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES LABELS "${_labels}")
 ENDFUNCTION()
 
-# Windows looks for the DLLs of an executable on PATH. The spglib DLL lies in
-# the spglib Python package, above the directory of its import library.
-FUNCTION(SET_TEST_DLL_PATH TEST_NAME)
+# A CTest entry: the command (an executable target stands for its path), its labels, exit
+# code 77 for a skip (e.g. the test needs a CPU platform this build lacks; a CUDA build run
+# without a visible GPU fails instead) and on Windows the DLL path: Windows looks for the
+# DLLs of an executable on PATH, and the spglib DLL lies in the spglib Python package,
+# above the directory of its import library.
+FUNCTION(POLYMERFTS_ADD_TEST TEST_NAME)
+    ADD_TEST(NAME ${TEST_NAME} COMMAND ${ARGN})
+    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES SKIP_RETURN_CODE 77)
+    SET_TEST_LABELS(${TEST_NAME})
     IF(WIN32)
         GET_FILENAME_COMPONENT(_spglib_lib_dir "${SPGLIB_LIBRARIES}" DIRECTORY)
         GET_FILENAME_COMPONENT(_spglib_root "${_spglib_lib_dir}" DIRECTORY)
@@ -220,25 +224,18 @@ ENDFUNCTION()
 # (see polymerfts_stage in the top-level CMakeLists.txt), so installation
 # is not required and an old site-packages install is never tested by mistake.
 # Only the staged package is on PYTHONPATH; the configuring shell's value is
-# not baked in.
+# not baked in. Python writes no tests/__pycache__ into the source tree.
 FILE(GLOB FILE_LIST "Test*.py")
 FOREACH(FILE_NAME ${FILE_LIST})
     GET_FILENAME_COMPONENT(TEST_NAME ${FILE_NAME} NAME_WE)
-    ADD_TEST(NAME ${TEST_NAME} COMMAND ${Python3_EXECUTABLE} ${FILE_NAME})
-    # Exit code 77: skipped (e.g. the test needs a CPU platform this build lacks)
-    # Python writes no tests/__pycache__ into the source tree
-    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1"
-        SKIP_RETURN_CODE 77)
-    SET_TEST_LABELS(${TEST_NAME})
+    LIST(APPEND PYTHON_TESTS ${TEST_NAME})
+    POLYMERFTS_ADD_TEST(${TEST_NAME} ${Python3_EXECUTABLE} ${FILE_NAME})
 ENDFOREACH()
 # The polyampholyte of TestChargedStructureFunctionRPA, which runs the diblock
-ADD_TEST(NAME TestChargedStructureFunctionRPAPolyampholyte
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestChargedStructureFunctionRPA.py --polyampholyte)
-SET_TESTS_PROPERTIES(TestChargedStructureFunctionRPAPolyampholyte PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1"
-    SKIP_RETURN_CODE 77)
-SET_TEST_LABELS(TestChargedStructureFunctionRPAPolyampholyte)
+POLYMERFTS_ADD_TEST(TestChargedStructureFunctionRPAPolyampholyte
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestChargedStructureFunctionRPA.py --polyampholyte)
+SET_TESTS_PROPERTIES(${PYTHON_TESTS} TestChargedStructureFunctionRPAPolyampholyte PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1")
 
 # Generate files named "Test*.cpp"
 FILE(GLOB FILE_LIST "Test*.cpp")
@@ -258,78 +255,63 @@ FOREACH(FILE_NAME ${FILE_LIST})
 
     ADD_EXECUTABLE(${TEST_NAME} ${FILE_NAME})
     TARGET_LINK_LIBRARIES(${TEST_NAME} PRIVATE polymerfts_backends)
-
-    IF(TEST_NAME STREQUAL "TestHexagonalRectangularEquivalence")
-        ADD_TEST(NAME ${TEST_NAME}
-            COMMAND ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            )
-    ELSE()
-        ADD_TEST(${TEST_NAME} ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME})
-    ENDIF()
-    # Exit code 77: skipped (a CPU platform the test needs is missing, e.g. cpu-fftw
-    # in an MKL-only build). A CUDA build run without a visible GPU fails instead.
-    SET_TESTS_PROPERTIES(${TEST_NAME} PROPERTIES SKIP_RETURN_CODE 77)
-    SET_TEST_LABELS(${TEST_NAME})
-    SET_TEST_DLL_PATH(${TEST_NAME})
+    POLYMERFTS_ADD_TEST(${TEST_NAME} ${TEST_NAME})
 ENDFOREACH()
 # The 3D box of TestScft (numerical; TestScft runs the 1D and 2D boxes)
-ADD_TEST(TestScft3D ${CMAKE_CURRENT_BINARY_DIR}/TestScft --3d)
-SET_TESTS_PROPERTIES(TestScft3D PROPERTIES SKIP_RETURN_CODE 77)
-SET_TEST_LABELS(TestScft3D)
-SET_TEST_DLL_PATH(TestScft3D)
+POLYMERFTS_ADD_TEST(TestScft3D TestScft --3d)
 
-# Benchmark executables (not added to ctest)
+# Benchmark executables (not added to ctest); Benchmark*.cu needs the CUDA build
 FILE(GLOB BENCHMARK_LIST "Benchmark*.cpp")
+IF(POLYMERFTS_BUILD_CUDA)
+    FILE(GLOB CUDA_BENCHMARK_LIST "Benchmark*.cu")
+    LIST(APPEND BENCHMARK_LIST ${CUDA_BENCHMARK_LIST})
+ENDIF()
 FOREACH(FILE_NAME ${BENCHMARK_LIST})
     GET_FILENAME_COMPONENT(BENCH_NAME ${FILE_NAME} NAME_WE)
-    # Skip platform-specific benchmarks if platform is not available
+    # Skip platform-specific benchmarks if platform is not available; the CrysFFT
+    # benchmark compares with FFTW
     IF((${BENCH_NAME} MATCHES "Cuda") AND NOT POLYMERFTS_BUILD_CUDA)
         CONTINUE()
     ELSEIF((${BENCH_NAME} MATCHES "Mkl") AND NOT BUILD_CPU_MKL_LIB)
         CONTINUE()
-    ELSEIF((${BENCH_NAME} MATCHES "Fftw") AND NOT BUILD_CPU_FFTW_LIB)
+    ELSEIF((${BENCH_NAME} MATCHES "Fftw|CrysFFT") AND NOT BUILD_CPU_FFTW_LIB)
         CONTINUE()
     ENDIF()
 
     ADD_EXECUTABLE(${BENCH_NAME} ${FILE_NAME})
     TARGET_LINK_LIBRARIES(${BENCH_NAME} PRIVATE polymerfts_backends)
+    IF(FILE_NAME MATCHES "\\.cu$")
+        SET_PROPERTY(TARGET ${BENCH_NAME} PROPERTY CUDA_ARCHITECTURES ${POLYMERFTS_CUDA_ARCHITECTURES})
+    ENDIF()
 ENDFOREACH()
 
 IF(POLYMERFTS_BUILD_CUDA)
-    # Generate files named "Test*.cu"
+    # Generate files named "Test*.cu": the tests with device code of their own (a test
+    # that only calls the library is a .cpp and needs "Cuda" in its name)
     FILE(GLOB FILE_LIST "Test*.cu")
     FOREACH(FILE_NAME ${FILE_LIST})
         GET_FILENAME_COMPONENT(TEST_NAME ${FILE_NAME} NAME_WE)
 
-        # Several CUDA tests use FFTW as the CPU reference (#include <fftw3.h>
+        # The CrysFFT tests use FFTW as the CPU reference (#include <fftw3.h>
         # without a USE_CPU_FFTW guard); they cannot build without it.
-        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT|CudaDCTDST") AND NOT BUILD_CPU_FFTW_LIB)
+        IF((${TEST_NAME} MATCHES "Fftw|CrysFFT") AND NOT BUILD_CPU_FFTW_LIB)
             CONTINUE()
         ENDIF()
 
         ADD_EXECUTABLE(${TEST_NAME} ${FILE_NAME})
         TARGET_LINK_LIBRARIES(${TEST_NAME} PRIVATE polymerfts_backends)
-
         # Same architecture list as the cuda library
         SET_PROPERTY(TARGET ${TEST_NAME} PROPERTY CUDA_ARCHITECTURES ${POLYMERFTS_CUDA_ARCHITECTURES})
-        # Benchmarks (Test*Bench*.cu) build as executables but are not tests.
-        IF(NOT ${TEST_NAME} MATCHES "Bench")
-            ADD_TEST(${TEST_NAME} ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME})
-            SET_TEST_LABELS(${TEST_NAME})
-            SET_TEST_DLL_PATH(${TEST_NAME})
-        ENDIF()
+        POLYMERFTS_ADD_TEST(${TEST_NAME} ${TEST_NAME})
     ENDFOREACH()
     # Its out-of-memory check (--out-of-memory) holds most of the free device memory
     # for a moment (a ballast buffer): a separate entry, kept away from the other
-    # tests under ctest -j, so that its skip does not hide the other checks
+    # tests under ctest -j, so that its skip does not hide the other checks. Exit code
+    # 77: the device memory could not be held, or the driver backs it with system
+    # memory (the WDDM sysmem fallback), so no construction can run out
     IF(TARGET TestCudaDeviceBuffer)
-        ADD_TEST(TestCudaDeviceBufferOutOfMemory ${CMAKE_CURRENT_BINARY_DIR}/TestCudaDeviceBuffer --out-of-memory)
-        SET_TEST_DLL_PATH(TestCudaDeviceBufferOutOfMemory)
-        SET_TEST_LABELS(TestCudaDeviceBufferOutOfMemory)
-        # Exit code 77: the device memory could not be held, or the driver backs it with
-        # system memory (the WDDM sysmem fallback), so no construction can run out
-        SET_TESTS_PROPERTIES(TestCudaDeviceBufferOutOfMemory PROPERTIES RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+        POLYMERFTS_ADD_TEST(TestCudaDeviceBufferOutOfMemory TestCudaDeviceBuffer --out-of-memory)
+        SET_TESTS_PROPERTIES(TestCudaDeviceBufferOutOfMemory PROPERTIES RUN_SERIAL TRUE)
         # NVML gives this process's device memory for the end-to-end check
         # (other processes on the GPU then do not disturb it)
         IF(TARGET CUDA::nvml)

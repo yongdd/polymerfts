@@ -10,8 +10,9 @@
  ******************************************************************************/
 
 /**
- * @file TestCudaMakhoulTransform.cu
- * @brief CudaMakhoulTransform against the O(N^2) definitions and the CPU MakhoulTransform.
+ * @file TestCudaMakhoulTransform.cpp
+ * @brief CudaMakhoulTransform against the O(N^2) definitions, the CPU MakhoulTransform
+ *        and FFTW's REDFT/RODFT transforms; the round trips of the CUDA transforms.
  *
  * The CUDA wall boxes (the propagator solvers and CudaFourierTransform), the Pmmm
  * CrysFFT and the boxes that mix periodic axes and walls (CudaFourierTransform) run
@@ -45,27 +46,50 @@
  * more than one stride. There the definition is summed for the corners and 16
  * random points of every result, and with a CPU backend MakhoulTransform checks
  * the whole results.
+ *
+ * Taken with scale 1 between walls, the forward transform is FFTW's unnormalized
+ * REDFT10 / RODFT10 per axis (the type-2 DCT along reflecting, the type-2 DST along
+ * absorbing walls) and the backward transform REDFT01 / RODFT01 (type 3), which a
+ * backward scale of 1/(2 n) per axis makes the inverse. Each of the following runs
+ * is counted, and the test asserts their number:
+ *
+ * - odd wall lengths (1D 11, 3D 6x4x3, 2D 6x5) against direct sums of these series, the
+ *   round trip, and with a CPU backend MakhoulTransform;
+ * - round trips of the ramp 1..12 and of uniform random fields along both walls in 1D,
+ *   8x6 and 6x4x3, and the round trip of the periodic CudaFourierTransform (cuFFT);
+ * - with FFTW: the transforms of one family (DCT or DST) and of mixed families per axis
+ *   against fftw_plan_r2r on grids of one to three axes up to 32^3, lengths of every
+ *   parity and 1D lengths beyond 6144 points included, and the type-2/type-3 round trips
+ *   of both libraries. A CUDA build without FFTW runs the other parts.
  */
 
 #include <array>
 #include <cmath>
 #include <complex>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <numbers>
 #include <random>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "ComputationBox.h"
 #include "CudaCommon.h"
+#include "CudaFourierTransform.h"
 #include "CudaMakhoulTransform.h"
 #include "Exception.h"
+#include "TestChecks.h"
 #include "TestMakhoulDefinitions.h"
 #if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
 #include "FFTFactory.h"
 #include "MakhoulTransform.h"
+#endif
+#ifdef USE_CPU_FFTW
+#include <fftw3.h>
 #endif
 
 /// The factor of input point j in output point k along one axis, as in mixed_definition(), with
@@ -418,6 +442,407 @@ GridErrors check_grid(const std::vector<int>& nx, const std::vector<BoundaryCond
     return errors;
 }
 
+//==============================================================================
+// The unnormalized wall transforms: REDFT10/RODFT10 forward, REDFT01/RODFT01 backward
+//==============================================================================
+using BC = BoundaryCondition;
+
+/// The CUDA transform of a real field between walls: forward (REDFT10 or RODFT10 per axis,
+/// the type 2) or backward (REDFT01 or RODFT01, the type 3), times `scale`
+std::vector<double> wall_transform(const std::vector<int>& nx, const std::vector<BC>& bc, bool forward,
+                                   const std::vector<double>& in, double scale = 1.0)
+{
+    CudaMakhoulTransform<double> transform(nx, bc);
+    CudaDeviceBuffer<double> d_in(in.size()), d_out(in.size());
+    CUDA_CHECK(cudaMemcpy(d_in, in.data(), sizeof(double) * in.size(), cudaMemcpyHostToDevice));
+    if (forward)
+        transform.forward(d_in, d_out, scale, 0);
+    else
+        transform.backward(d_in, nullptr, d_out, scale, 0);
+    std::vector<double> out(in.size());
+    CUDA_CHECK(cudaMemcpy(out.data(), d_out, sizeof(double) * out.size(), cudaMemcpyDeviceToHost));
+    return out;
+}
+
+/// The backward transform of forward coefficients with the scale 1/(2 n) per axis: the inverse
+std::vector<double> wall_inverse(const std::vector<int>& nx, const std::vector<BC>& bc,
+                                 const std::vector<double>& coefficients)
+{
+    double backward_scale = 1.0;
+    for (int n : nx)
+        backward_scale /= 2.0 * n;
+    return wall_transform(nx, bc, false, coefficients, backward_scale);
+}
+
+/// max |a - b|, NaN if a value is NaN
+double max_abs_difference(const std::vector<double>& a, const std::vector<double>& b)
+{
+    double error = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        error = max_or_nan(error, std::abs(a[i] - b[i]));
+    return error;
+}
+
+/// REDFT10 (reflecting) or RODFT10 (absorbing) of x along one axis by its sum, axes padded to
+/// three in front (a padded axis has the factor 1)
+std::vector<double> wall_direct_sum(const std::vector<int>& nx, const std::vector<BC>& bc, const std::vector<double>& x)
+{
+    const auto basis = [](BC kind, int k, int n, int len) {
+        const double pi = std::numbers::pi;
+        return (kind == BC::REFLECTING) ? 2.0 * std::cos(pi * k * (2 * n + 1) / (2.0 * len))
+                                        : 2.0 * std::sin(pi * (k + 1) * (2 * n + 1) / (2.0 * len));
+    };
+    const int pad = 3 - static_cast<int>(nx.size());
+    std::array<int, 3> n{1, 1, 1};
+    std::array<BC, 3> kind{BC::REFLECTING, BC::REFLECTING, BC::REFLECTING};
+    for (size_t d = 0; d < nx.size(); ++d)
+    {
+        n[d + pad] = nx[d];
+        kind[d + pad] = bc[d];
+    }
+    const auto factor = [&](int d, int k, int i) { return d < pad ? 1.0 : basis(kind[d], k, i, n[d]); };
+    std::vector<double> ref(x.size(), 0.0);
+    for (int k0 = 0; k0 < n[0]; ++k0)
+        for (int k1 = 0; k1 < n[1]; ++k1)
+            for (int k2 = 0; k2 < n[2]; ++k2)
+            {
+                double sum = 0.0;
+                for (int i0 = 0; i0 < n[0]; ++i0)
+                    for (int i1 = 0; i1 < n[1]; ++i1)
+                        for (int i2 = 0; i2 < n[2]; ++i2)
+                            sum += x[(i0 * n[1] + i1) * n[2] + i2]
+                                 * factor(0, k0, i0) * factor(1, k1, i1) * factor(2, k2, i2);
+                ref[(k0 * n[1] + k1) * n[2] + k2] = sum;
+            }
+    return ref;
+}
+
+/// Odd lengths along the walls: the forward transform against the direct sums of the series and,
+/// with a CPU backend, against MakhoulTransform; the round trip. One normal(0, 5) stream of
+/// mt19937(7) gives the fields of the grids in this order.
+void check_odd_walls(Checks& checks, int& expected_runs)
+{
+    const std::vector<std::tuple<std::string, std::vector<int>, std::vector<BC>>> grids = {
+        {"1D 11 R", {11}, {BC::REFLECTING}},
+        {"3D 6x4x3 R/A/R", {6, 4, 3}, {BC::REFLECTING, BC::ABSORBING, BC::REFLECTING}},
+        {"2D 6x5 R/A", {6, 5}, {BC::REFLECTING, BC::ABSORBING}},
+    };
+    expected_runs += static_cast<int>(grids.size());
+    std::mt19937 gen0(7);
+    std::normal_distribution<double> normal(0.0, 5.0);
+    for (const auto& [name, nx, bc] : grids)
+    {
+        checks.begin_run("Odd walls, " + name);
+        int total = 1;
+        for (int n : nx)
+            total *= n;
+        std::vector<double> x(total);
+        for (double& v : x)
+            v = normal(gen0);
+        const std::vector<double> ref = wall_direct_sum(nx, bc, x);
+        const std::vector<double> coefficients = wall_transform(nx, bc, true, x);
+        double scale = 0.0;
+        for (double v : ref)
+            scale = std::max(scale, std::abs(v));
+        checks.close("Forward against the direct sum (relative)", max_abs_difference(coefficients, ref) / scale, 1e-12);
+        checks.close("Round trip", max_abs_difference(wall_inverse(nx, bc, coefficients), x), 1e-12);
+#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
+        std::vector<double> cpu(total);
+        cpu_reference(nx, bc)->forward(x.data(), cpu.data(), 1.0);
+        checks.close("Forward against MakhoulTransform (relative)", max_abs_difference(coefficients, cpu) / scale, 1e-13);
+#endif
+        checks.end_run();
+    }
+}
+
+/// backward(forward(x)) = x along reflecting and absorbing walls, and the periodic round trip of
+/// CudaFourierTransform
+void check_round_trips(Checks& checks, int& expected_runs)
+{
+    // The ramp 1..12, then one uniform(0, 1) stream of mt19937(42) drawn in this order: 12 values
+    // for both walls, 48 for the 8x6 grid, 72 for the 6x4x3 grid
+    std::vector<double> ramp(12);
+    for (int i = 0; i < 12; ++i)
+        ramp[i] = i + 1;
+    std::mt19937 gen(42);
+    std::uniform_real_distribution<> dist(0.0, 1.0);
+    std::vector<double> random_line(12), random_2d(8 * 6), random_3d(6 * 4 * 3);
+    for (std::vector<double>* values : {&random_line, &random_2d, &random_3d})
+        for (double& v : *values)
+            v = dist(gen);
+
+    const std::vector<std::tuple<std::string, std::vector<int>, std::vector<BC>, const std::vector<double>*>> fields = {
+        {"DCT-2/3, 1..12", {12}, {BC::REFLECTING}, &ramp},
+        {"DST-2/3, 1..12", {12}, {BC::ABSORBING}, &ramp},
+        {"DCT-2/3, random 12", {12}, {BC::REFLECTING}, &random_line},
+        {"DST-2/3, random 12", {12}, {BC::ABSORBING}, &random_line},
+        {"2D 8x6 R/A, random", {8, 6}, {BC::REFLECTING, BC::ABSORBING}, &random_2d},
+        {"3D 6x4x3 R/A/R, random", {6, 4, 3}, {BC::REFLECTING, BC::ABSORBING, BC::REFLECTING}, &random_3d},
+    };
+    expected_runs += static_cast<int>(fields.size()) + 1;
+    for (const auto& [name, nx, bc, x] : fields)
+    {
+        checks.begin_run("Round trip, " + name);
+        const std::vector<double> back = wall_inverse(nx, bc, wall_transform(nx, bc, true, *x));
+        checks.close("Round trip", max_abs_difference(back, *x), 1e-7);
+        checks.end_run();
+    }
+
+    // The periodic transform of CudaFourierTransform (cuFFT D2Z/Z2D)
+    checks.begin_run("Round trip, periodic CudaFourierTransform 8x6x10");
+    const std::vector<int> nx_p = {8, 6, 10};
+    const int MP = nx_p[0] * nx_p[1] * nx_p[2];
+    ComputationBox<double> cb(nx_p, {1.0, 1.0, 1.0}, std::vector<std::string>(6, "periodic"));
+    CudaFourierTransform<double> fft_p(&cb, std::vector<BC>(3, BC::PERIODIC));
+    std::vector<double> data_p(MP), data_p_back(MP);
+    for (int i = 0; i < MP; ++i)
+        data_p[i] = std::sin(0.37 * i) + 0.1 * i / MP;
+    std::vector<double> coefficients(2 * nx_p[0] * nx_p[1] * (nx_p[2] / 2 + 1));
+    fft_p.forward(data_p.data(), 1, coefficients.data());
+    fft_p.backward(coefficients.data(), 1, data_p_back.data());
+    checks.close("Round trip", max_abs_difference(data_p_back, data_p), 1e-12);
+    checks.end_run();
+}
+
+#ifdef USE_CPU_FFTW
+//==============================================================================
+// Against FFTW's r2r transforms
+//==============================================================================
+/// A family of transforms: the cosine (DCT) or the sine (DST) transforms of types 2 and 3
+struct Family
+{
+    const char* name;
+    bool cosine;
+    fftw_r2r_kind kind2, kind3;
+
+    fftw_r2r_kind kind(int order) const { return order == 2 ? kind2 : kind3; }
+    BC wall() const { return cosine ? BC::REFLECTING : BC::ABSORBING; }
+    /// The function of the family: cos for the DCT, sin for the DST
+    double g(double x) const { return cosine ? cos(x) : sin(x); }
+};
+
+static const Family DCT{"DCT", true, FFTW_REDFT10, FFTW_REDFT01};
+static const Family DST{"DST", false, FFTW_RODFT10, FFTW_RODFT01};
+
+/// One check: a grid (1 to 3 axes), the family of each axis and the order (2 or 3) of the transform
+struct Case
+{
+    std::vector<int> n;
+    std::vector<const Family*> family;
+    int order;
+};
+
+/// The cases of grids of one family and one type
+static std::vector<Case> of_type(const Family& f, int order, const std::vector<std::vector<int>>& grids)
+{
+    std::vector<Case> cases;
+    for (const std::vector<int>& n : grids)
+        cases.push_back({n, std::vector<const Family*>(n.size(), &f), order});
+    return cases;
+}
+
+static bool one_family(const Case& c)
+{
+    for (const Family* f : c.family)
+        if (f != c.family[0])
+            return false;
+    return true;
+}
+
+/// 1D input: sin(pi u) + g(2 pi u)/2 at the points u of the type, (i + 1/2)/N for type 2,
+/// i/N (DCT) or (i + 1)/(N + 1) (DST) for type 3
+static double input_1d(const Family& f, int order, int i, int N)
+{
+    if (order == 2)
+        return sin(std::numbers::pi * (i + 0.5) / N) + 0.5 * f.g(2 * std::numbers::pi * (i + 0.5) / N);
+    if (f.cosine)
+        return sin(std::numbers::pi * i / N) + 0.5 * f.g(2 * std::numbers::pi * i / N);
+    return sin(std::numbers::pi * (i + 1) / (N + 1)) + 0.5 * f.g(2 * std::numbers::pi * (i + 1) / (N + 1));
+}
+
+/// 2D and 3D input of one family: a Gaussian exp(-r^2/50) for the DCT (r from the points
+/// i + 1/2 for type 2, i for type 3), a product of sines for the DST (at (i + 1/2)/N for
+/// type 2, (i + 1)/(N + 1) for type 3)
+static double input_one_type(const Family& f, int order, const int* i, const std::vector<int>& n)
+{
+    const int dim = static_cast<int>(n.size());
+    if (f.cosine)
+    {
+        double r2 = 0.0;
+        for (int d = 0; d < dim; ++d)
+        {
+            const double x = (order == 2) ? i[d] + 0.5 : i[d];
+            r2 += x * x;
+        }
+        return exp(-r2 / 50.0);
+    }
+    double value = 1.0;
+    for (int d = 0; d < dim; ++d)
+    {
+        const double x = (order == 2) ? (i[d] + 0.5) / n[d] : (i[d] + 1.0) / (n[d] + 1);
+        value *= sin(std::numbers::pi * x);
+    }
+    return value;
+}
+
+/// Input of mixed families, with x = (i + 1/2)/N on every axis: the product over the axes of
+/// sin(pi x) + g(2 pi x)/2, g the function of the axis
+static double input_mixed(const Case& c, const int* i)
+{
+    double value = 1.0;
+    for (size_t d = 0; d < c.n.size(); ++d)
+    {
+        const double x = (i[d] + 0.5) / c.n[d];
+        value *= sin(std::numbers::pi * x) + 0.5 * c.family[d]->g(2 * std::numbers::pi * x);
+    }
+    return value;
+}
+
+static std::vector<double> input_of(const Case& c)
+{
+    const int dim = static_cast<int>(c.n.size());
+    int M = 1;
+    for (int nd : c.n)
+        M *= nd;
+    std::vector<double> input(M);
+    for (int m = 0; m < M; ++m)
+    {
+        // Row-major index: the last axis is contiguous
+        int i[3] = {0, 0, 0};
+        int rest = m;
+        for (int d = dim - 1; d >= 0; --d)
+        {
+            i[d] = rest % c.n[d];
+            rest /= c.n[d];
+        }
+        if (dim == 1)
+            input[m] = input_1d(*c.family[0], c.order, i[0], c.n[0]);
+        else if (one_family(c))
+            input[m] = input_one_type(*c.family[0], c.order, i, c.n);
+        else
+            input[m] = input_mixed(c, i);
+    }
+    return input;
+}
+
+static std::vector<double> fftw_transform(const Case& c, std::vector<double> data)
+{
+    fftw_r2r_kind kinds[3];
+    for (size_t d = 0; d < c.n.size(); ++d)
+        kinds[d] = c.family[d]->kind(c.order);
+    fftw_plan plan = fftw_plan_r2r(static_cast<int>(c.n.size()), c.n.data(), data.data(), data.data(),
+                                   kinds, FFTW_ESTIMATE);
+    fftw_execute(plan);
+    fftw_destroy_plan(plan);
+    return data;
+}
+
+/// The CUDA transform of a case with scale 1: forward for type 2, backward for type 3
+static std::vector<double> cuda_transform(const Case& c, const std::vector<double>& data)
+{
+    std::vector<BC> bc;
+    for (const Family* f : c.family)
+        bc.push_back(f->wall());
+    return wall_transform(c.n, bc, c.order == 2, data);
+}
+
+/// max |a - b| / max |b|, NaN if a value is NaN
+static double relative_error(const std::vector<double>& a, const std::vector<double>& b)
+{
+    return max_abs_difference(a, b) / max_abs_or_nan(b);
+}
+
+static std::string describe(const Case& c)
+{
+    std::string text = std::to_string(c.n.size()) + "D ";
+    for (size_t d = 0; d < c.n.size(); ++d)
+        text += (d > 0 ? " x " : "") + std::string(c.family[d]->name) + "-" + std::to_string(c.order);
+    text += ":";
+    for (size_t d = 0; d < c.n.size(); ++d)
+        text += (d > 0 ? " x " : " ") + std::to_string(c.n[d]);
+    return text;
+}
+
+/// The cases of mixed families per axis, of both types
+static std::vector<Case> mixed_cases()
+{
+    std::vector<Case> cases;
+    for (int order : {2, 3})
+    {
+        cases.push_back({{16, 16}, {&DCT, &DST}, order});
+        cases.push_back({{16, 16}, {&DST, &DCT}, order});
+        cases.push_back({{8, 8, 8}, {&DCT, &DST, &DCT}, order});
+        cases.push_back({{8, 8, 8}, {&DST, &DCT, &DST}, order});
+        cases.push_back({{8, 8, 8}, {&DST, &DST, &DCT}, order});
+        // Odd lengths along both families
+        cases.push_back({{7, 9}, {&DCT, &DST}, order});
+        cases.push_back({{5, 7, 9}, {&DST, &DCT, &DST}, order});
+    }
+    return cases;
+}
+
+static std::vector<Case> join(std::vector<std::vector<Case>> lists)
+{
+    std::vector<Case> all;
+    for (const auto& list : lists)
+        all.insert(all.end(), list.begin(), list.end());
+    return all;
+}
+
+/// The CUDA transforms of every case against FFTW, and the type-2/type-3 round trips of both
+void check_against_fftw(Checks& checks, int& expected_runs)
+{
+    const std::vector<Case> cases = join({
+        // DCT (FFTW REDFT10/01). 1D: odd lengths, and beyond the 6144 points of the earlier
+        // shared-memory transforms
+        of_type(DCT, 2, {{16}, {32}, {64}, {15}, {31}, {5001}, {6144}, {6145}}),
+        of_type(DCT, 3, {{16}, {32}, {64}, {15}, {5001}, {6142}, {6143}}),
+        of_type(DCT, 2, {{8, 8}, {16, 16}, {32, 32}, {6, 5}, {5, 6}, {7, 9}}),
+        of_type(DCT, 3, {{8, 8}, {16, 16}, {32, 32}, {7, 9}, {6, 5, 7}}),
+        // (6, 6, 5): odd physical z of the logical 12x12x10 CrysFFT grid
+        of_type(DCT, 2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 6, 5}, {6, 5, 6}, {5, 6, 6}, {5, 7, 9}}),
+        of_type(DCT, 3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {5, 7, 9}}),
+        // DST (FFTW RODFT10/01): the odd lengths of every type and dimension, which the earlier
+        // transforms refused
+        of_type(DST, 2, {{16}, {32}, {64}, {15}}),
+        of_type(DST, 3, {{16}, {32}, {64}, {15}}),
+        of_type(DST, 2, {{8, 8}, {16, 16}, {32, 32}, {6, 5}}),
+        of_type(DST, 3, {{8, 8}, {16, 16}, {32, 32}, {5, 6}}),
+        of_type(DST, 2, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 6, 5}}),
+        of_type(DST, 3, {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {6, 5, 6}}),
+        // DCT and DST per axis
+        mixed_cases()});
+    const std::vector<std::pair<const Family*, int>> round_trips = {{&DCT, 32}, {&DCT, 15}, {&DST, 32}, {&DST, 15}};
+    expected_runs += static_cast<int>(cases.size() + round_trips.size());
+
+    for (const Case& c : cases)
+    {
+        checks.begin_run("Against FFTW, " + describe(c));
+        const std::vector<double> input = input_of(c);
+        checks.close("Relative", relative_error(cuda_transform(c, input), fftw_transform(c, input)), 1e-10);
+        checks.end_run();
+    }
+
+    // Type 2 then type 3 recovers the input times 2N, with FFTW and with CUDA
+    for (const auto& [f, N] : round_trips)
+    {
+        checks.begin_run(std::string(f->name) + "-2 + " + f->name + "-3 round trip, N = " + std::to_string(N));
+        const Case forward{{N}, {f}, 2}, backward{{N}, {f}, 3};
+        const std::vector<double> input = input_of(forward);
+        for (const bool cuda : {false, true})
+        {
+            std::vector<double> result = cuda ? cuda_transform(backward, cuda_transform(forward, input))
+                                              : fftw_transform(backward, fftw_transform(forward, input));
+            const double norm = 1.0 / (2.0 * N);
+            for (double& v : result)
+                v *= norm;
+            checks.close(cuda ? "CUDA, relative" : "FFTW, relative", relative_error(result, input), 1e-12);
+        }
+        checks.end_run();
+    }
+}
+#endif
+
 int main()
 {
     try
@@ -527,7 +952,18 @@ int main()
                         && large_real.definition < tolerance && large_complex.definition < tolerance
                         && large_real.cpu < tolerance && large_complex.cpu < tolerance
                         && beyond_one_stride && inputs_kept && k_factor_exact;
-        return ok ? 0 : -1;
+        std::cout << "Against the definitions and MakhoulTransform: " << (ok ? "PASSED" : "FAILED") << std::endl;
+
+        // The unnormalized transforms between walls and the round trips, each one counted run
+        Checks checks;
+        int expected_runs = 0;
+        check_odd_walls(checks, expected_runs);
+        check_round_trips(checks, expected_runs);
+#ifdef USE_CPU_FFTW
+        check_against_fftw(checks, expected_runs);
+#endif
+        const bool runs_ok = checks.passed(expected_runs);
+        return ok && runs_ok ? 0 : -1;
     }
     catch (std::exception& exc)
     {

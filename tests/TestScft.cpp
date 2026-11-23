@@ -42,6 +42,7 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestAbScft.h"
 #include "TestChecks.h"
 #include "TestCudaPart.h"
 
@@ -87,9 +88,6 @@ void run_case(const ScftCase& c, const std::string& platform, Checks& checks)
     std::chrono::system_clock::time_point chrono_start, chrono_end;
     std::chrono::duration<double> time_duration;
 
-    double energy_total;
-    // error_level = variable to check convergence of the iteration
-    double error_level, old_error_level;
     std::streamsize default_precision = std::cout.precision();
     int idx;
     double sum;
@@ -152,8 +150,7 @@ void run_case(const ScftCase& c, const std::string& platform, Checks& checks)
     propagator_computation_optimizer->display_propagators();
 
     //-------------- Allocate array ------------
-    std::vector<double> w(M*2), w_out(M*2), w_diff(M*2);
-    std::vector<double> xi(M), phi_a(M), phi_b(M), w_plus(M), w_minus(M);
+    std::vector<double> w(M*2), phi_a(M), phi_b(M);
 
     //-------------- Setup fields ------------
     // cos(2 pi i/4.68) cos(2 pi j/3.48) cos(2 pi k/2.74)/10 on the grid (i, j, k), the axes in
@@ -181,62 +178,22 @@ void run_case(const ScftCase& c, const std::string& platform, Checks& checks)
     cb->zero_mean(&w[0]);
     cb->zero_mean(&w[M]);
 
-    // Assign large initial value for the energy and error
-    energy_total = 1.0e20;
-    error_level = 1.0e20;
-
     //------------------ run ----------------------
     std::cout<< "---------- Run ----------" << std::endl;
     std::cout<< "iteration, mass error, total partitions, total energy, error level" << std::endl;
     chrono_start = std::chrono::system_clock::now();
-    // Iteration begins here
+    AbScft scft(cb.get(), solver.get(), molecules.get(), chi_n);
     for(int iter=0; iter<max_scft_iter; iter++)
     {
-        // For the given fields find the polymer statistics
-        solver->compute_propagators({{"A",&w[0]},{"B",&w[M]}},{});
-        solver->compute_concentrations();
-        solver->get_total_concentration("A", phi_a.data());
-        solver->get_total_concentration("B", phi_b.data());
-
-        // Calculate the total energy
-        for(int i=0; i<M; i++)
-        {
-            w_minus[i] = (w[i]-w[i + M])/2;
-            w_plus[i]  = (w[i]+w[i + M])/2;
-        }
-
-        energy_total = cb->inner_product(w_minus.data(),w_minus.data())/chi_n/cb->get_volume();
-        energy_total -= cb->integral(w_plus.data())/cb->get_volume();
-        for(int p=0; p<molecules->get_n_polymer_types(); p++){
-            Polymer& pc = molecules->get_polymer(p);
-            energy_total -= pc.get_volume_fraction()/pc.get_alpha()*log(solver->get_total_partition(p));
-        }
-
-        for(int i=0; i<M; i++)
-        {
-            // Calculate pressure field for the new field calculation
-            xi[i] = 0.5*(w[i]+w[i+M]-chi_n);
-            // Calculate output fields
-            w_out[i]   = chi_n*phi_b[i] + xi[i];
-            w_out[i+M] = chi_n*phi_a[i] + xi[i];
-        }
-        cb->zero_mean(&w_out[0]);
-        cb->zero_mean(&w_out[M]);
-
-        // error_level measures the "relative distance" between the input and output fields
-        old_error_level = error_level;
-        for(int i=0; i<2*M; i++)
-            w_diff[i] = w_out[i]- w[i];
-        error_level = sqrt(cb->multi_inner_product(2,w_diff.data(),w_diff.data())/
-                        (cb->multi_inner_product(2,w.data(),w.data())+1.0));
+        scft.step(w.data());
 
         // Print iteration # and error levels and check the mass conservation
-        sum = (cb->integral(phi_a.data()) + cb->integral(phi_b.data()))/cb->get_volume() - 1.0;
+        sum = scft.mass_error();
         if (c.check_each_iteration)
         {
             const bool ok = std::abs(sum) <= 1e-10 && solver->check_total_partition()
-                         && std::abs(cb->mean(phi_a.data()) - f) <= 1e-10
-                         && std::abs(cb->mean(phi_b.data()) - (1.0-f)) <= 1e-10;
+                         && std::abs(cb->mean(scft.phi_a.data()) - f) <= 1e-10
+                         && std::abs(cb->mean(scft.phi_b.data()) - (1.0-f)) <= 1e-10;
             if (!checks.that("Iteration " + std::to_string(iter) + ": mass, check_total_partition and composition", ok))
                 break;
         }
@@ -246,14 +203,12 @@ void run_case(const ScftCase& c, const std::string& platform, Checks& checks)
         for(int p=1; p<molecules->get_n_polymer_types(); p++)
             std::cout<< std::setw(17) << std::setprecision(7) << std::scientific << solver->get_total_partition(p);
         std::cout<< "]";
-        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << energy_total;
-        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << error_level << std::endl;
+        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << scft.energy;
+        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << scft.error_level << std::endl;
 
         // Conditions to end the iteration
-        if(error_level < tolerance) break;
-        // Calculate new fields using simple and Anderson mixing
-                        //w_new, w_current, w_diff
-        am->calculate_new_fields(w.data(), w.data(), w_diff.data(), old_error_level, error_level);
+        if(scft.error_level < tolerance) break;
+        scft.mix(am.get(), w.data());
     }
 
     // Estimate execution time
@@ -267,12 +222,12 @@ void run_case(const ScftCase& c, const std::string& platform, Checks& checks)
     // energy in this zero-mean-field convention is zero. Check the analytic energy as well
     // as the residual of this short run.
     if (c.energy_tolerance)
-        checks.close("Free energy", std::abs(energy_total), *c.energy_tolerance);
+        checks.close("Free energy", std::abs(scft.energy), *c.energy_tolerance);
 
     if (c.error_level_ref)
-        checks.close("Residual", std::abs(error_level-*c.error_level_ref), 1e-4);
+        checks.close("Residual", std::abs(scft.error_level-*c.error_level_ref), 1e-4);
     else    // SCFT converged reasonably: the residual is small after 20 iterations
-        checks.close("Residual", error_level, 0.1);
+        checks.close("Residual", scft.error_level, 0.1);
     checks.end_run();
 }
 

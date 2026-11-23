@@ -9,6 +9,7 @@
 
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestCudaPart.h"
 
 template <typename Call>
 void rejects(Call call)
@@ -107,24 +108,14 @@ int main()
 {
     try
     {
-        std::vector<std::string> platforms;
-#ifdef USE_CPU_FFTW
-        platforms.push_back("cpu-fftw");
-#endif
-#ifdef USE_CPU_MKL
-        platforms.push_back("cpu-mkl");
-#endif
-#ifdef USE_CUDA
-        platforms.push_back("cuda");
-#endif
-        for (const auto& platform : platforms)
+        for (const auto& platform : PlatformSelector::avail_platforms())
             for (bool reduced : {false, true})
             {
                 check_space_group(platform, reduced, false);
                 check_space_group(platform, reduced, true);
                 check_cnadi(platform, reduced);
             }
-        return 0;
+        return cuda_part_missing() ? 1 : 0;
     }
     catch (const std::exception& error)
     {

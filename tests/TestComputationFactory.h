@@ -32,8 +32,6 @@ template <typename T>
 struct PlatformRun
 {
     std::string name;       ///< "cpu-mkl", "cpu-mkl, reduce_memory, aggregated", ...
-    std::string platform;   ///< "cpu-fftw", "cpu-mkl" or "cuda"
-    bool reduce_memory = false;
     std::unique_ptr<ComputationBox<T>> cb;
     /// Declared after its box, so destroyed before it: a computation uses its box until then
     std::unique_ptr<PropagatorComputation<T>> solver;
@@ -66,8 +64,6 @@ PlatformRun<T> make_platform_run(
     std::unique_ptr<AbstractFactory<T>> factory = PlatformSelector::create_factory<T>(platform, reduce_memory);
     PlatformRun<T> run;
     run.name = platform + (reduce_memory ? ", reduce_memory" : "") + (optimizer->use_aggregation() ? ", aggregated" : "");
-    run.platform = platform;
-    run.reduce_memory = reduce_memory;
     run.cb = factory->create_computation_box(nx, lx, bc, mask);
     run.solver = factory->create_propagator_computation(run.cb.get(), molecules, optimizer, numerical_method);
     return run;

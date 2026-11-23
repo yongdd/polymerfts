@@ -67,6 +67,69 @@ const double Lx = 4.0;
 const double Ly = 4.0;
 const double Lz = 4.0;
 
+/// The partition function of the first polymer and the mean concentration of each monomer type
+/// of a run, or ok = false
+struct RunResult
+{
+    bool ok = false;
+    double Q = 0.0;
+    std::vector<double> mean_phi;
+};
+
+/// One run: the propagators and concentrations in the fields w, the partition function of each
+/// polymer printed, and the checks of every run: no concentration is negative, and the mean
+/// total concentration is 1 (the contour quadrature conserves the mean density even with random
+/// fields)
+RunResult run_and_check(PlatformRun<double>& run, Molecules& molecules, const std::map<std::string, const double*>& w)
+{
+    PropagatorComputation<double>* solver = run.solver.get();
+    std::cout << std::endl << "Running: " << run.name << std::endl;
+
+    solver->compute_propagators(w, {});
+    solver->compute_concentrations();
+
+    RunResult result;
+    result.Q = solver->get_total_partition(0);
+    if (molecules.get_n_polymer_types() == 1)
+        std::cout << "Partition function Q = " << result.Q << std::endl;
+    else
+        for (int p = 0; p < molecules.get_n_polymer_types(); p++)
+            std::cout << "Polymer " << p << " partition function Q = " << solver->get_total_partition(p) << std::endl;
+
+    // The mean concentration of each monomer type, and their sum
+    double sum_phi = 0.0;
+    bool all_positive = true;
+    for (const auto& [monomer_type, field] : w)
+    {
+        std::vector<double> phi(M);
+        solver->get_total_concentration(monomer_type, phi.data());
+        double sum = 0.0;
+        for (int i = 0; i < M; i++)
+        {
+            sum += phi[i];
+            if (phi[i] < 0)
+                all_positive = false;
+        }
+        result.mean_phi.push_back(sum / M);
+        sum_phi += sum / M;
+    }
+    std::cout << "Average total concentration: " << sum_phi << std::endl;
+
+    if (!all_positive)
+    {
+        std::cout << "FAILED: Negative concentration detected" << std::endl;
+        return result;
+    }
+    if (!(std::abs(sum_phi - 1.0) <= 1e-10))
+    {
+        std::cout << "FAILED: Average concentration should be ~1.0, got " << sum_phi << std::endl;
+        return result;
+    }
+    std::cout << "OK: Propagator computation successful for " << run.name << std::endl;
+    result.ok = true;
+    return result;
+}
+
 /// Test 1: linear triblock with two local_ds values
 bool test_linear_triblock(const double* w_a, const double* w_b)
 {
@@ -141,52 +204,8 @@ bool test_linear_triblock(const double* w_a, const double* w_b)
     std::cout << "Testing propagator computation..." << std::endl;
 
     for (PlatformRun<double>& run : make_platform_runs<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}, &molecules, {&propagator_computation_optimizer}, "rqm4", {false}))
-    {
-        PropagatorComputation<double>* solver = run.solver.get();
-
-        std::cout << std::endl << "Running: " << run.name << std::endl;
-
-        // Compute propagators
-        solver->compute_propagators({{"A", w_a}, {"B", w_b}}, {});
-        solver->compute_concentrations();
-
-        // Get partition function
-        const int p = 0;
-        double Q = solver->get_total_partition(p);
-        std::cout << "Partition function Q = " << Q << std::endl;
-
-        // Get concentrations
-        double phi_a[M] = {0.0};
-        double phi_b[M] = {0.0};
-        solver->get_total_concentration("A", phi_a);
-        solver->get_total_concentration("B", phi_b);
-
-        // Check that concentrations are reasonable (positive and sum ~ 1)
-        double sum_phi = 0.0;
-        bool all_positive = true;
-        for(int i=0; i<M; i++)
-        {
-            sum_phi += (phi_a[i] + phi_b[i]);
-            if (phi_a[i] < 0 || phi_b[i] < 0)
-                all_positive = false;
-        }
-        sum_phi /= M;
-
-        std::cout << "Average total concentration: " << sum_phi << std::endl;
-
-        if (!all_positive)
-        {
-            std::cout << "FAILED: Negative concentration detected" << std::endl;
+        if (!run_and_check(run, molecules, {{"A", w_a}, {"B", w_b}}).ok)
             return false;
-        }
-        // Contour quadrature conserves the mean density even with random fields.
-        if (!(std::abs(sum_phi - 1.0) <= 1e-10))
-        {
-            std::cout << "FAILED: Average concentration should be ~1.0, got " << sum_phi << std::endl;
-            return false;
-        }
-        std::cout << "OK: Propagator computation successful for " << run.name << std::endl;
-    }
     return true;
 }
 
@@ -285,50 +304,8 @@ bool test_star(const double* w_a, const double* w_b)
     std::cout << "Testing propagator computation for 6-arm star..." << std::endl;
 
     for (PlatformRun<double>& run : make_platform_runs<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}, &molecules_star, {&optimizer_star}, "rqm4", {false}))
-    {
-        PropagatorComputation<double>* solver = run.solver.get();
-
-        std::cout << std::endl << "Running: " << run.name << std::endl;
-
-        // Compute propagators
-        solver->compute_propagators({{"A", w_a}, {"B", w_b}}, {});
-        solver->compute_concentrations();
-
-        // Get partition function
-        double Q_star = solver->get_total_partition(0);
-        std::cout << "Partition function Q = " << Q_star << std::endl;
-
-        // Get concentrations
-        double phi_a_star[M] = {0.0};
-        double phi_b_star[M] = {0.0};
-        solver->get_total_concentration("A", phi_a_star);
-        solver->get_total_concentration("B", phi_b_star);
-
-        // Check that concentrations are reasonable
-        double sum_phi_star = 0.0;
-        bool all_positive_star = true;
-        for(int i=0; i<M; i++)
-        {
-            sum_phi_star += (phi_a_star[i] + phi_b_star[i]);
-            if (phi_a_star[i] < 0 || phi_b_star[i] < 0)
-                all_positive_star = false;
-        }
-        sum_phi_star /= M;
-
-        std::cout << "Average total concentration: " << sum_phi_star << std::endl;
-
-        if (!all_positive_star)
-        {
-            std::cout << "FAILED: Negative concentration detected" << std::endl;
+        if (!run_and_check(run, molecules_star, {{"A", w_a}, {"B", w_b}}).ok)
             return false;
-        }
-        if (!(std::abs(sum_phi_star - 1.0) <= 1e-10))
-        {
-            std::cout << "FAILED: Average concentration should be ~1.0, got " << sum_phi_star << std::endl;
-            return false;
-        }
-        std::cout << "OK: Propagator computation successful for " << run.name << std::endl;
-    }
     return true;
 }
 
@@ -440,49 +417,8 @@ bool test_homopolymers(const double* w_a)
     std::cout << "Testing propagator computation for 4 homopolymers..." << std::endl;
 
     for (PlatformRun<double>& run : make_platform_runs<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}, &molecules_homo, {&optimizer_homo}, "rqm4", {false}))
-    {
-        PropagatorComputation<double>* solver = run.solver.get();
-
-        std::cout << std::endl << "Running: " << run.name << std::endl;
-
-        solver->compute_propagators({{"A", w_a}}, {});
-        solver->compute_concentrations();
-
-        // Get partition functions for all 4 polymers
-        for(int p=0; p<4; p++)
-        {
-            double Q = solver->get_total_partition(p);
-            std::cout << "Polymer " << p << " partition function Q = " << Q << std::endl;
-        }
-
-        // Get total concentration
-        double phi_a_homo[M] = {0.0};
-        solver->get_total_concentration("A", phi_a_homo);
-
-        double sum_phi_homo = 0.0;
-        bool all_positive_homo = true;
-        for(int i=0; i<M; i++)
-        {
-            sum_phi_homo += phi_a_homo[i];
-            if (phi_a_homo[i] < 0)
-                all_positive_homo = false;
-        }
-        sum_phi_homo /= M;
-
-        std::cout << "Average total concentration: " << sum_phi_homo << std::endl;
-
-        if (!all_positive_homo)
-        {
-            std::cout << "FAILED: Negative concentration detected" << std::endl;
+        if (!run_and_check(run, molecules_homo, {{"A", w_a}}).ok)
             return false;
-        }
-        if (!(std::abs(sum_phi_homo - 1.0) <= 1e-10))
-        {
-            std::cout << "FAILED: Average concentration should be ~1.0, got " << sum_phi_homo << std::endl;
-            return false;
-        }
-        std::cout << "OK: Propagator computation successful for " << run.name << std::endl;
-    }
     return true;
 }
 
@@ -616,54 +552,14 @@ bool test_bottle_brush(const double* w_a, const double* w_b)
 
     for (PlatformRun<double>& run : make_platform_runs<double>({II,JJ,KK}, {Lx,Ly,Lz}, {}, &molecules_brush, {&optimizer_brush, &optimizer_brush_agg}, "rqm4", {false, true}))
     {
-        PropagatorComputation<double>* solver = run.solver.get();
+        const RunResult result = run_and_check(run, molecules_brush, {{"A", w_a}, {"B", w_b}});
+        if (!result.ok)
+            return false;
         run_names.push_back(run.name);
-
-        std::cout << std::endl << "Running: " << run.name << std::endl;
-
-        solver->compute_propagators({{"A", w_a}, {"B", w_b}}, {});
-        solver->compute_concentrations();
-
-        double Q_brush = solver->get_total_partition(0);
-        std::cout << "Partition function Q = " << Q_brush << std::endl;
-        Q_values.push_back(Q_brush);
-
-        // Get total concentration
-        double phi_a_brush[M] = {0.0};
-        double phi_b_brush[M] = {0.0};
-        solver->get_total_concentration("A", phi_a_brush);
-        solver->get_total_concentration("B", phi_b_brush);
-
-        double sum_phi_a_brush = 0.0;
-        double sum_phi_b_brush = 0.0;
-        bool all_positive_brush = true;
-        for(int i=0; i<M; i++)
-        {
-            sum_phi_a_brush += phi_a_brush[i];
-            sum_phi_b_brush += phi_b_brush[i];
-            if (phi_a_brush[i] < 0 || phi_b_brush[i] < 0)
-                all_positive_brush = false;
-        }
-        sum_phi_a_brush /= M;
-        sum_phi_b_brush /= M;
-        phi_a_sum_values.push_back(sum_phi_a_brush);
-        phi_b_sum_values.push_back(sum_phi_b_brush);
-
-        double sum_phi_brush = sum_phi_a_brush + sum_phi_b_brush;
-        sum_phi_values.push_back(sum_phi_brush);
-        std::cout << "Average total concentration: " << sum_phi_brush << std::endl;
-
-        if (!all_positive_brush)
-        {
-            std::cout << "FAILED: Negative concentration detected" << std::endl;
-            return false;
-        }
-        if (!(std::abs(sum_phi_brush - 1.0) <= 1e-10))
-        {
-            std::cout << "FAILED: Average concentration should be ~1.0, got " << sum_phi_brush << std::endl;
-            return false;
-        }
-        std::cout << "OK: Propagator computation successful for " << run.name << std::endl;
+        Q_values.push_back(result.Q);
+        phi_a_sum_values.push_back(result.mean_phi[0]);
+        phi_b_sum_values.push_back(result.mean_phi[1]);
+        sum_phi_values.push_back(result.mean_phi[0] + result.mean_phi[1]);
     }
 
     // Compare results across all solver variants

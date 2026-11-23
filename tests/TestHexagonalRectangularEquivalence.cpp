@@ -35,6 +35,7 @@
 #include <string>
 #include <array>
 #include <chrono>
+#include <vector>
 
 #include "Exception.h"
 #include "ComputationBox.h"
@@ -45,6 +46,7 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestAbScft.h"
 #include "TestCudaPart.h"
 #include "TestNanSafe.h"
 
@@ -99,14 +101,7 @@ ScftResult run_scft_fixed_box(
     std::unique_ptr<AndersonMixing<double>> am = factory->create_anderson_mixing(am_n_var, 20, 1e-1, 0.1, 0.1);
 
     // Allocate arrays
-    double* w = new double[2 * M];
-    double* w_out = new double[2 * M];
-    double* w_diff = new double[2 * M];
-    double* xi = new double[M];
-    double* w_plus = new double[M];
-    double* w_minus = new double[M];
-    double* phi_a = new double[M];
-    double* phi_b = new double[M];
+    std::vector<double> w(2 * M);
 
     // Try to load pre-converged fields from file
     std::ifstream input_field_file(input_filename);
@@ -127,8 +122,7 @@ ScftResult run_scft_fixed_box(
         // Initialize fields with cylinder(s) at appropriate positions
         bool is_hex = (std::abs(angles[2] - 120.0) < 1.0);
 
-        for (int i = 0; i < M; i++)
-            phi_a[i] = 0.0;
+        std::vector<double> phi_a(M, 0.0);
 
         // Create cylinder initial condition
         double cylinder_radius = 0.2;
@@ -197,61 +191,25 @@ ScftResult run_scft_fixed_box(
     cb->zero_mean(&w[M]);
 
     // SCFT iteration
-    double energy_total = 1e20;
-    double error_level = 1e20;
-    double old_error_level = 1e20;
-
+    AbScft scft(cb.get(), solver.get(), molecules.get(), chi_n);
     for (int iter = 0; iter < max_iter; iter++)
     {
-        solver->compute_propagators({{"A", &w[0]}, {"B", &w[M]}}, {});
-        solver->compute_concentrations();
-        solver->get_total_concentration("A", phi_a);
-        solver->get_total_concentration("B", phi_b);
-
-        for (int i = 0; i < M; i++)
-        {
-            w_minus[i] = (w[i] - w[i + M]) / 2;
-            w_plus[i]  = (w[i] + w[i + M]) / 2;
-        }
-
-        energy_total = cb->inner_product(w_minus, w_minus) / chi_n / cb->get_volume();
-        energy_total -= cb->integral(w_plus) / cb->get_volume();
-        for (int p = 0; p < molecules->get_n_polymer_types(); p++)
-        {
-            Polymer& pc = molecules->get_polymer(p);
-            energy_total -= pc.get_volume_fraction() / pc.get_alpha() * log(solver->get_total_partition(p));
-        }
-
-        for (int i = 0; i < M; i++)
-        {
-            xi[i] = 0.5 * (w[i] + w[i + M] - chi_n);
-            w_out[i]     = chi_n * phi_b[i] + xi[i];
-            w_out[i + M] = chi_n * phi_a[i] + xi[i];
-        }
-        cb->zero_mean(&w_out[0]);
-        cb->zero_mean(&w_out[M]);
-
-        old_error_level = error_level;
-        for (int i = 0; i < 2 * M; i++)
-            w_diff[i] = w_out[i] - w[i];
-        error_level = sqrt(cb->multi_inner_product(2, w_diff, w_diff) /
-                          (cb->multi_inner_product(2, w, w) + 1.0));
+        scft.step(w.data());
 
         if (verbose && iter % 50 == 0)
         {
             std::cout << std::setw(8) << iter;
-            std::cout << std::setw(15) << std::setprecision(9) << std::fixed << energy_total;
-            std::cout << std::setw(15) << std::scientific << std::setprecision(2) << error_level << std::fixed << std::endl;
+            std::cout << std::setw(15) << std::setprecision(9) << std::fixed << scft.energy;
+            std::cout << std::setw(15) << std::scientific << std::setprecision(2) << scft.error_level << std::fixed << std::endl;
         }
 
-        if (error_level < tolerance)
+        if (scft.error_level < tolerance)
         {
             if (verbose)
                 std::cout << "  Converged at iteration " << iter << std::endl;
             break;
         }
-
-        am->calculate_new_fields(w, w, w_diff, old_error_level, error_level);
+        scft.mix(am.get(), w.data());
     }
 
     // Compute stress if requested
@@ -262,17 +220,7 @@ ScftResult run_scft_fixed_box(
         stress = solver->get_stress();
     }
 
-    // Cleanup
-    delete[] w;
-    delete[] w_out;
-    delete[] w_diff;
-    delete[] xi;
-    delete[] w_plus;
-    delete[] w_minus;
-    delete[] phi_a;
-    delete[] phi_b;
-
-    return {energy_total, stress, lx, angles};
+    return {scft.energy, stress, lx, angles};
 }
 
 int main()
@@ -358,7 +306,7 @@ int main()
             std::cout << "\nRunning hexagonal cell..." << std::endl;
             auto result_hex = run_scft_fixed_box(
                 factory.get(), nx_hex, lx_hex, angles_hex, f, chi_n, ds,
-                max_iter, tolerance, "Hexagonal2D_Input.txt", true, true);
+                max_iter, tolerance, TEST_DATA_DIR "/Hexagonal2D_Input.txt", true, true);
             std::cout << "  Final free energy (hex): " << std::setprecision(9) << std::fixed << result_hex.energy << std::endl;
             std::cout << "  Stress [σ_xx, σ_yy, σ_xy]: [" << std::scientific << std::setprecision(3)
                       << result_hex.stress[0] << ", " << result_hex.stress[1] << ", " << result_hex.stress[2] << "]" << std::fixed << std::endl;
@@ -366,7 +314,7 @@ int main()
             std::cout << "\nRunning rectangular cell..." << std::endl;
             auto result_rect = run_scft_fixed_box(
                 factory.get(), nx_rect, lx_rect, angles_rect, f, chi_n, ds,
-                max_iter, tolerance, "Rectangular2D_Input.txt", true, true);
+                max_iter, tolerance, TEST_DATA_DIR "/Rectangular2D_Input.txt", true, true);
             std::cout << "  Final free energy (rect): " << std::setprecision(9) << std::fixed << result_rect.energy << std::endl;
             std::cout << "  Stress [σ_xx, σ_yy, σ_xy]: [" << std::scientific << std::setprecision(3)
                       << result_rect.stress[0] << ", " << result_rect.stress[1] << ", " << result_rect.stress[2] << "]" << std::fixed << std::endl;

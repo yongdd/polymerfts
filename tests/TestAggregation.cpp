@@ -37,6 +37,7 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestAbScft.h"
 #include "TestChecks.h"
 #include "TestCudaPart.h"
 
@@ -320,9 +321,6 @@ double run_scft(const Architecture& architecture, const std::string& chain_model
     // Math constants
     const double PI = std::numbers::pi;
 
-    double energy_total;
-    // error_level = variable to check convergence of the iteration
-    double error_level, old_error_level;
     std::streamsize default_precision = std::cout.precision();
     int idx;
     double sum;
@@ -333,7 +331,6 @@ double run_scft(const Architecture& architecture, const std::string& chain_model
     double chi_n = 15.0;
     std::vector<int> nx = {16,16,16};
     std::vector<double> lx = {2.9,2.9,2.9};
-    std::vector<double> lx_backup = lx;
     double ds = 1.0/10;
 
     const int M = nx[0]*nx[1]*nx[2];
@@ -346,18 +343,11 @@ double run_scft(const Architecture& architecture, const std::string& chain_model
 
     //-------------- allocate array ------------
     std::vector<double> w(2*M+nx.size());
-    std::vector<double> w_out(2*M+nx.size());
-    std::vector<double> w_diff(2*M+nx.size());
-    std::vector<double> xi(M);
-    std::vector<double> phi_a(M);
-    std::vector<double> phi_b(M);
-    std::vector<double> w_plus(M);
-    std::vector<double> w_minus(M);
 
     std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
 
     // Create instances and assign to the variables of base classes for the dynamic binding
-    std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(nx, lx_backup, {});
+    std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(nx, lx, {});
     std::unique_ptr<Molecules> molecules = factory->create_molecules_information(chain_model, ds, architecture.bond_lengths);
     for (const PolymerInput& polymer : architecture.polymers)
         molecules->add_polymer(polymer.volume_fraction, polymer.blocks, {});
@@ -406,92 +396,34 @@ double run_scft(const Architecture& architecture, const std::string& chain_model
     cb->zero_mean(&w[0]);
     cb->zero_mean(&w[M]);
 
-    // Assign large initial value for the energy and error
-    energy_total = 1.0e20;
-    error_level = 1.0e20;
-
     //------------------ Run ----------------------
-    // Iteration begins here
+    // The SCFT iteration with the box lengths relaxed against the stress
+    AbScft scft(cb.get(), solver.get(), molecules.get(), chi_n, true);
     for(int iter=0; iter<max_scft_iter; iter++)
     {
-        // For the given fields find the polymer statistics
-        solver->compute_propagators({{"A",&w[0]},{"B",&w[M]}},{});
-        solver->compute_concentrations();
-        solver->get_total_concentration("A", phi_a.data());
-        solver->get_total_concentration("B", phi_b.data());
+        scft.step(w.data());
 
         // Check the total partition function
         if (iter == 0 && !checks.that("check_total_partition", solver->check_total_partition()))
             break;
 
-        // Compute stress
-        solver->compute_stress();
-        std::vector<double> stress = solver->get_stress();
-
-        // Calculate the total energy
-        for(int i=0; i<M; i++)
-        {
-            w_minus[i] = (w[i]-w[i+M])/2;
-            w_plus[i]  = (w[i]+w[i+M])/2;
-        }
-
-        energy_total = cb->inner_product(w_minus.data(),w_minus.data())/chi_n/cb->get_volume();
-        energy_total -= cb->integral(w_plus.data())/cb->get_volume();
-        for(int p=0; p<molecules->get_n_polymer_types(); p++){
-            Polymer& pc = molecules->get_polymer(p);
-            energy_total -= pc.get_volume_fraction()/pc.get_alpha()*log(solver->get_total_partition(p));
-        }
-
-        for(int i=0; i<M; i++)
-        {
-            // Calculate pressure field for the new field calculation
-            xi[i] = 0.5*(w[i]+w[i+M]-chi_n);
-            // Calculate output fields
-            w_out[i]   = chi_n*phi_b[i] + xi[i];
-            w_out[i+M] = chi_n*phi_a[i] + xi[i];
-        }
-        cb->zero_mean(&w_out[0]);
-        cb->zero_mean(&w_out[M]);
-
-        // Error_level measures the "relative distance" between the input and output fields
-        old_error_level = error_level;
-        for(int i=0; i<2*M; i++)
-            w_diff[i] = w_out[i]- w[i];
-        error_level = sqrt(cb->multi_inner_product(2,w_diff.data(),w_diff.data())/
-                        (cb->multi_inner_product(2,w.data(),w.data())+1.0));
-        error_level += sqrt(stress[0]*stress[0] + stress[1]*stress[1] + stress[2]*stress[2]);
-
         // Print iteration # and error levels and check the mass conservation
-        sum = (cb->integral(phi_a.data()) + cb->integral(phi_b.data()))/cb->get_volume() - 1.0;
+        sum = scft.mass_error();
         std::cout<< std::setw(8) << iter;
         std::cout<< std::setw(13) << std::setprecision(3) << std::scientific << sum ;
         std::cout<< "\t[" << std::setprecision(7) << std::scientific << solver->get_total_partition(0);
         for(int p=1; p<molecules->get_n_polymer_types(); p++)
             std::cout<< std::setw(17) << std::setprecision(7) << std::scientific << solver->get_total_partition(p);
         std::cout<< "]";
-        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << energy_total;
-        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << error_level << std::endl;
+        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << scft.energy;
+        std::cout<< std::setw(15) << std::setprecision(9) << std::fixed << scft.error_level << std::endl;
 
         // Conditions to end the iteration
-        if(error_level < tolerance) break;
-
-        // Calculate new fields using simple and Anderson mixing  //w_new, w_current, w_diff
-        for(int d=0; d<cb->get_dim(); d++)
-        {
-            w[2*M+d] = cb->get_lx(d);
-            w_diff[2*M+d] = -stress[d];
-        }
-        am->calculate_new_fields(w.data(), w.data(), w_diff.data(), old_error_level, error_level);
-
-        // Update lx
-        for(int d=0; d<cb->get_dim(); d++)
-            lx[d] = w[2*M+d];
-
-        cb->set_lx(lx);
-        solver->update_laplacian_operator();
+        if(scft.error_level < tolerance) break;
+        scft.mix(am.get(), w.data());
     }
     std::cout << std::setprecision(default_precision) << std::defaultfloat;
-    return energy_total;
+    return scft.energy;
 }
 
 }  // namespace

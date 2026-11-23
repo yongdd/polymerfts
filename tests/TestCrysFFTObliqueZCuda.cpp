@@ -1,5 +1,5 @@
 /**
- * @file TestCrysFFTObliqueZCuda.cu
+ * @file TestCrysFFTObliqueZCuda.cpp
  * @brief CUDA ObliqueZ CrysFFT against the CPU (FFTW) ObliqueZ engine.
  *
  * Both engines form the z DCT and the xy FFT as one permuted real 3D FFT with
@@ -11,13 +11,15 @@
  * the alias search must be exact for the Boltzmann factors to be even in
  * (kx, ky) as the CUDA kernel requires. Each case also checks an in-place call, that an
  * out-of-place call keeps its input, a clone with the same table, and the table
- * rebuilt in place for a new cell.
+ * rebuilt in place for a new cell. A build without cpu-fftw skips the test (exit code 77).
  */
 
+#include <cstdio>
+
+#ifdef USE_CPU_FFTW
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <memory>
 #include <random>
 #include <vector>
@@ -137,3 +139,10 @@ int main()
     std::printf(ok ? "\nAll passed!\n" : "\nFAILED!\n");
     return ok ? 0 : 1;
 }
+#else
+int main()
+{
+    std::printf("The CPU ObliqueZ engine of this comparison needs cpu-fftw, which this build lacks: skipped.\n");
+    return 77;
+}
+#endif

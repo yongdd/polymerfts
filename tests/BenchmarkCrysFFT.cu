@@ -1,11 +1,11 @@
 /**
- * @file TestCrysFFTBench.cu
+ * @file BenchmarkCrysFFT.cu
  * @brief CUDA FFT-only benchmark for CrysFFT (Pmmm/3m) vs full FFT.
  *
  * The full-FFT baseline does what the solvers do: it multiplies by a table built
  * once and plans FFTW with FFTW_MEASURE, as the standard FFT of the solvers does.
  *
- * Usage: ./TestCrysFFTBench [Nx Ny Nz] [iters] [warmup] [--cpu] [--obliquez]
+ * Usage: ./BenchmarkCrysFFT [Nx Ny Nz] [iters] [warmup] [--cpu] [--obliquez]
  * Defaults: Nx=Ny=Nz=64, iters=100, warmup=10
  */
 

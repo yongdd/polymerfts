@@ -10,7 +10,7 @@
  ******************************************************************************/
 
 /**
- * @file TestCudaCrysTablesAllocation.cu
+ * @file TestCudaCrysTablesAllocation.cpp
  * @brief The CUDA CrysFFT paths allocate no tables while computing propagators.
  *
  * The solver owns the CrysFFT tables, one per coefficient for all streams. It
