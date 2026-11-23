@@ -452,9 +452,68 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Interface changes
 
+- C++ interface changes of 2026-11-23 (second structural review):
+  - The space group belongs to the computation box: `create_computation_box(nx, lx, bc, angles, mask,
+    space_group)` (Python: `space_group=sg`) checks it and builds the reduced basis once, and the box
+    keeps that basis for its whole life (it freezes the group's physical basis when it is made).
+    `ComputationBox::set_space_group()` and its binding, `ComputationBox::SpaceGroupGuard`,
+    `PropagatorComputation::get_space_group()` and the `space_group` argument of
+    `create_propagator_computation()` are removed; a box for complex fields refuses a group.
+    `PropagatorSolver` makes its box with the group, so its box accessors (`n_grid`, `integral`,
+    `mean`, the inner products, `get_lx`, ...) no longer create the propagator computation; SCFT, L-FTS
+    and CL-FTS still create it in their constructors.
+  - `ComputationCommon` is merged into `PropagatorComputation`; `ParallelErrors` and `BackendMemory` are
+    in `ComputationSupport.h`. A cn-adi2 or rs computation holds its box orthogonal from the end of its
+    constructor (`PropagatorComputation::hold_orthogonal_cell()` is removed). `PropagatorCode` is a
+    namespace. `ContourLengthMapping::get_length_from_index` (unused) is removed.
+  - The CrysFFT engines have one operation, `diffusion(in, out, table)`, for a Boltzmann table and a
+    stress multiplier alike (`apply_multiplier()` is removed; CUDA's takes a const input). The CPU
+    recursive 3m engine is one class over the real FFT of either library,
+    `CrysFFTRecursive3m(nx, translations, backend)` (`FftwCrysFFTRecursive3m`,
+    `MklCrysFFTRecursive3m`, `CrysFFTRecursive3mBase` and `FftwFree` are removed). The CUDA Pmmm engine
+    is `CudaCrysFFTPmmm`, its interface `CudaCrysFFTBase` has its own header. `pmmm_table()` builds the
+    Pmmm tables and `obliquez_twiddle()` gives the ObliqueZ twiddles of both platforms.
+  - The solvers give the Boltzmann factor of a segment in the basis of the propagators,
+    `boltzmann_factor(monomer_type)`, and the backends forward to it instead of reading the solvers'
+    tables. `CpuSolver<T>` has the reduced-basis step helpers of `CudaSolver<T>` (`expand_to_full_grid`,
+    `full_grid_output`, `store_full_grid`, `multiply_mask`) and `CpuSolverPseudoBase` one
+    `crysfft_diffuse()`. The CUDA solvers build and own the device index maps of the space group (two
+    constructor arguments fewer), and the CUDA backend sums all six stress components of a block.
+  - `SpaceGroup::has_pmmm_octant()` replaces `has_mirror_planes_xyz(tol)`; `get_m3_translations()` and
+    `get_z_mirror_translation()` take no tolerance; `using_m3_physical_basis()`,
+    `using_pmmm_physical_basis()` and `using_z_mirror_physical_basis()` are removed (Python too;
+    `physical_basis_name()` names the basis). `separable_k_squared(nx, bc, lx)` (Pseudo.h) is the one
+    rule of the wall wavenumbers.
+  - `MklRealTransform` (tests and `BenchmarkMklFftw` only) is one class `MklRealTransform(nx, types)` for
+    one to three axes in place of `MklRealTransform1D/2D/3D`; its types 2 and 3 run `MakhoulTransform`
+    over `MklRealFFT` (round-off change: 6e-16 for types 2 and 3, 7e-15 in boxes that mix them with
+    types 1 and 4, relative to the largest coefficient; 9-16 % slower in `BenchmarkMklFftw`).
+- The native layer has one exception rule (2026-11-23): an error passes through its callers unchanged,
+  and a catch block only frees, rolls back or carries an error out of an OpenMP region before it
+  rethrows. The 57 catch-and-rethrow wrappers of the computation classes and the CPU and CUDA solvers
+  and the rethrow-by-message rule of `Exception.h` are removed. Errors of the code itself (validation,
+  `CUDA_CHECK`, `CUFFT_CHECK`) reach Python as `RuntimeError` with the same message (a CUDA error
+  without the location line of the innermost wrapper); a standard C++ exception keeps its pybind11 type
+  (`std::length_error` as `ValueError`, `std::bad_alloc` as `MemoryError`, `std::out_of_range` as
+  `IndexError`) instead of `RuntimeError`, as in the bindings since 2026-11-22.
+- Python interface changes of 2026-11-23: `CLFTS.evaluate_force` takes the auxiliary fields, and with
+  electrostatics ψ as one more row (`_evaluate_force_with_psi` is removed). The CL-FTS mean
+  concentrations live in `ClftsStructureFunctions` (`concentration_names`, `add_concentrations`);
+  `CLFTS.record_concentrations` and `CLFTS.concentration_names` are gone. `fts/diagnostics.py`
+  (`RunDiagnostics`) holds `DriftTailSummary` and `PartitionRatioSummary`; `report_partition_consistency`
+  and `check_partition_functions` are in `theory/chains.py`. `SCFT.axis_ordering` is removed
+  (`SCFT.grid.axis_ordering`). `display_system(sim)` takes the simulation only; `CellRelaxation(sim,
+  params)` reads the angles from `params`; `MeanFieldElectrostatics` sets ψ = 0 itself and has no
+  `set_response`. `LFTS.electrostatics` and `CLFTS.wtmd` are `None`. `previous_noise_values` returns an
+  `(n_fields, n_grid)` array (zeros without one), and `run()` checks `start_langevin_step`
+  (`recording_run_status(sim, first_step, ...)` takes an integer step, no longer `None`).
+  `CellRelaxation.check_tied_lengths(error_level, tolerance)` takes the tolerance;
+  `SaddlePointSearch.cb` and `CLFTS._forces` are removed.
+- Packaging (2026-11-23): NumPy is no longer a build requirement (the bindings use no NumPy headers), and
+  the `docs` extra is removed until a Sphinx configuration exists.
 - Python interface changes of 2026-11-22:
   SCFT keeps the axis order of the input, the space group and the bases of the fields in one object,
-  `SCFT.grid` (scft/grid.py); `SCFT.sg` and `SCFT.axis_ordering` stay. An `axis_ordering` that does
+  `SCFT.grid` (scft/grid.py); `SCFT.sg` stays. An `axis_ordering` that does
   not name each axis of `nx` once raises `ValidationError` (was `ValueError`; a string such as "ba"
   is refused). `MeanFieldElectrostatics` takes the simulation and its `start()` sets the initial ψ.
   SCFT builds the one Anderson vector of the fields, ψ and the relaxing lattice parameters:
@@ -918,6 +977,10 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Fixed
 
+- SCFT refreshes the smearing kernel at the start of every run (2026-11-23). Only a run with
+  electrostatics or cell relaxation did, so an SCFT with smearing and a fixed cell whose box was
+  changed by hand (`set_lx`, `set_lattice_parameters`) between two runs kept the kernel of the old
+  box in the second run (free energy off by 21 % in the probe case).
 - `PropagatorSolver.angles` follows `set_lattice_parameters` (2026-11-21); after an SCFT angle
   relaxation it gave the starting angles.
 - The console line of WTMD prints a non-integer `ell` as given (`l=2.5`, was `l=2`; 2026-11-21).
@@ -1230,6 +1293,27 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Performance
 
+- Performance work of 2026-11-23 (second structural review):
+  - The CPU recursive 3m CrysFFT is one real FFT of the physical grid with the packed half spectrum
+    over the library's real FFT: 0.54-0.97x the time per diffusion of the former library-specific
+    engines (MKL and FFTW, 1 and 4 threads, 32³-128³, AMD EPYC 7543; 1.01x at 128³ FFTW with 4
+    threads); the Gyroid example on the m3 basis takes 0.71-0.90x per SCFT iteration. Results are
+    bitwise unchanged with MKL and change at round-off with FFTW (4e-15).
+  - CPU CrysFFT steps on a physical basis work in the propagator arrays (no copies through a physical
+    grid), steps with a space group off the CrysFFT path use one full grid per thread (RQM4 three), and
+    the CrysFFT path allocates no Boltzmann table on the full grid (Im-3m 128³: 67 MB less resident
+    memory with rqm4, 40 MB with ps); the CPU CrysFFT propagator computations are 1-7 % faster.
+  - The CUDA backend's all-ones array and reduction scratch take the reduced basis with a space group.
+  - Measured and kept: RQM4's batch of two cuFFT transforms on periodic full grids (without it RQM4 is
+    22-46 % slower at 32³ and 1-5 % at 96³-128³ on an A10), and the physical bases (the irreducible
+    basis is 3-5 % slower at 32³-64³ and 4-10 % on Pmmm at every size, while it needs 2.5x less device
+    memory on cubic and hexagonal groups at 128³).
+  - Results that change at round-off: wall Boltzmann factors come from the periodic formula of
+    f = |k|²/4π² (wall propagators, concentrations and stress, ≤ 5e-15); the orthogonal stress basis
+    averages over the tied aliases of the Nyquist planes as oblique cells do (diagonal stress of even
+    grids, ≤ 3e-16); the Pmmm Boltzmann factors take the wavenumber rule of the stress multipliers,
+    and CUDA's Pmmm stress multipliers hold the round-trip normalization as its Boltzmann factors do
+    (≤ 5.4e-15).
 - Performance work of 2026-11-22 (structural review):
   - CUDA wall boxes and the Pmmm CrysFFT run through one cuFFT of the reordered grid
     (`CudaMakhoulTransform`, as on the CPU) instead of per-axis cosine and sine kernels. A10, 4
@@ -1506,6 +1590,24 @@ Commit hashes refer to the `main`/`devel` history on GitHub.
 
 ### Tests
 
+- Tests changed 2026-11-23 (second structural review), every stored value, grid, seed and tolerance
+  kept: `TestCudaMakhoulTransform` takes the cases of `TestCudaFFTMixedBC` and `TestCudaDCTDST` (a CUDA
+  build without FFTW runs all but the FFTW comparisons); `TestWallPlatformEquivalence` replaces
+  `TestCpuCudaNonPeriodicEquivalence` and `TestCudaOddReflecting` and compares every pair of real
+  platforms, so CPU-only builds compare cpu-mkl with cpu-fftw on boxes with walls;
+  `TestStressNonPeriodic` takes `TestStressNonPeriodicRK2` as a row of its method table; the C++ SCFT
+  tests share one AB SCFT iteration (`tests/TestAbScft.h`); the CUDA tests without device code are
+  `.cpp` files built under `POLYMERFTS_WERROR`; `TestCrysFFTBench` is the benchmark `BenchmarkCrysFFT`;
+  the 2D input fields live in `tests/data`; one CMake function registers every test;
+  `TestContourLengthMapping` and `TestMultipleLocalDs` check per topic and per run;
+  `TestValidateEtdOrder.py` keeps `tests/validation/validate_etd_order.py` running; `TestException`
+  checks the exact location line of the two throw macros; `tests/checks.py` holds the counted checks of
+  the Python tests (`check()` and `summary()`, the twin of `TestChecks.h`, which replace 20 local
+  copies, so their summary lines read "N passed, M failed"), `expect_validation_error` and the smooth
+  random fields, and `hamiltonian` moved to `tests/fts_checks.py`; `TestParams` runs 30 topic functions
+  and names the topics that failed; `TestSmearingLattice`
+  checks a second SCFT run after a box change by hand; `TestComputationSafety`, `TestComputationState`
+  and `TestSpaceGroupReducedBasis` check boxes made with a space group.
 - Tests changed 2026-11-22 (structural review): the 21 near-copy C++ regression tests are merged into
   table-driven files that keep every stored value, grid, box, seed and tolerance: `TestPseudoLinear3D`,
   `TestPseudoSolvent3D`, `TestPseudoBranched3D` and `TestPseudoBranchedMixture3D` (from the 12

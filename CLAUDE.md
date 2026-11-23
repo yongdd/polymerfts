@@ -173,7 +173,7 @@ Measure performance separately from correctness tests.
 - The computation order is implemented once in `src/common/Computation*.cpp`.
   Grid operations go through `ComputationBackend`, implemented by
   `CpuComputationBackend` and `CudaComputationBackend`.
-- `ComputationCommon`, `ComputationContinuous` and `ComputationDiscrete` handle
+- `PropagatorComputation`, `ComputationContinuous` and `ComputationDiscrete` handle
   shared and chain-specific work. The `ComputationReduceMemory*` classes add
   checkpoint-based storage. Full and reduced-memory modes must agree bit for bit
   on the same backend.
@@ -307,7 +307,8 @@ field potentials use the per-reference-chain convention. See
   propagator loops. Reuse buffers and enqueue transfers on the operation's stream.
 - Avoid adding OpenMP regions inside the per-iteration CUDA host path; work there
   stays serial or moves to GPU kernels.
-- CUDA element kernels use grid-stride loops and `grid_blocks` for launch sizing.
+- CUDA element kernels use grid-stride loops, sized by `CudaCommon`'s launch
+  configuration or `grid_blocks`.
   Line solvers distribute lines across blocks and loop when needed.
 - Wrap runtime/library errors with `CUDA_CHECK`/`CUFFT_CHECK` and check every kernel
   launch with `CUDA_CHECK_LAUNCH()`. Asynchronous device errors can appear at a later

@@ -156,7 +156,7 @@ Open items, grouped by area. Numbers are stable identifiers for discussion; new 
   plans and `fftw_malloc` buffers stay in the CPU FFT classes' `release()`); see
   docs/internals/DeveloperGuide.md (Memory Management).
 - Throw exceptions properly from inside OpenMP blocks: `ParallelErrors` in
-  `src/common/ComputationCommon.h` carries the first exception out of every parallel
+  `src/common/ComputationSupport.h` carries the first exception out of every parallel
   region of `ComputationContinuous.cpp` / `ComputationDiscrete.cpp` (2026-10-20, 3007130a).
 - Packaging with conda, pip and Docker (conda-recipe/, pyproject.toml, docker/).
 - Stress computation tests with complex type (complex rows of `TestStressFiniteDifference`).
