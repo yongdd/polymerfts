@@ -31,18 +31,14 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
-FAILURES = []
+checks.indent = "    "   # the check lines print indented
 DIBLOCK = [["A", 0.4, 0, 1], ["B", 0.6, 1, 2]]
 BOND = {"A": 1.0, "B": 1.2}
 CHAIN_MODEL = {"rqm4": "continuous", "rk2": "continuous", "ps": "discrete", "rs": "discrete"}
-
-
-def check(condition, message):
-    print(f"    [{'PASS' if condition else 'FAIL'}] {message}")
-    if not condition:
-        FAILURES.append(message)
 
 
 def fields(rng, nx, field_type):
@@ -173,11 +169,7 @@ def main():
     if not platforms:
         print("No platform available: skipped")
         return 77
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} check(s)")
-        return 1
-    print("PASSED")
-    return 0
+    return summary()
 
 
 if __name__ == "__main__":

@@ -43,9 +43,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import scipy.linalg
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
+from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
 from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
+from checks import expect_validation_error
 from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, silenced
 
@@ -368,15 +369,6 @@ def runs(root):
     for label in (f"auxiliary field {dropped[0]} (dropped): no drift", f"auxiliary field {other} ({kind}): ",
                   "psi: "):
         assert label in output.getvalue(), (label, output.getvalue())
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as exc:
-        assert message in str(exc), (message, str(exc))
-        return
-    raise AssertionError(f"Expected ValidationError: {message}")
 
 
 def input_checks(root):

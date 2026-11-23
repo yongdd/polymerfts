@@ -38,6 +38,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 DS = 0.01
@@ -66,19 +67,6 @@ METHODS = [
      [("1D reflect", REFLECT_1D), ("1D absorb", ABSORB_1D), ("2D r/a", R_A_2D), ("2D a/r", A_R_2D),
       ("3D r/a/r", R_A_R_3D), ("3D a/r/r", A_R_R_3D)]),
 ]
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def smooth_fields(nx, seed):
@@ -170,8 +158,7 @@ def main():
                 run_cross_platform_case(name, nx, lx, bc, model, method, cpu)
             expected += 2 * len(cross_cases)
 
-    print(f"\n{n_pass} passed, {n_fail} failed, {n_pass + n_fail} checks (expected {expected})")
-    sys.exit(1 if cuda_part_missing() or n_fail or n_pass + n_fail != expected else 0)
+    sys.exit(summary(expected) | cuda_part_missing())
 
 
 if __name__ == "__main__":

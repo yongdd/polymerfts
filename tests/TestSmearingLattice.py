@@ -75,21 +75,9 @@ from polymerfts import _core, scft, LFTS, CLFTS
 from polymerfts.theory.smearing import Smearing
 from polymerfts.utils.common import calculate_sigma
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from checks import check, summary
 from cuda_part import cpu_platform
 from fts_checks import quiet
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def lattice_vectors(lx, angles):
@@ -508,8 +496,7 @@ def main():
     test_scft_box_change_between_runs()
     test_noise_volume()
     test_cell_checks()
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

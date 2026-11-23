@@ -48,20 +48,8 @@ import warnings
 import numpy as np
 from polymerfts.theory.symmetric_formulation import SymmetricPolymerTheory
 
+from checks import check, summary
 from cuda_part import cpu_platform
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def concentrations(M, n, incompressible, rng):
@@ -300,8 +288,7 @@ def main():
     test_singular_hamiltonian()
     test_saddle_point_model({"A,B": 1.0, "A,C": 0.6, "B,C": 1.4})
     test_saddle_point_model({"A,B": 1.0, "A,C": 1.0, "B,C": 1.00001})
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

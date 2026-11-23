@@ -52,16 +52,10 @@ import io
 import numpy as np
 import scipy.fft
 from polymerfts import PlatformSelector, PropagatorSolver
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 RNG = np.random.default_rng(11)
-failures = 0
-
-
-def check(name, ok, detail=""):
-    global failures
-    failures += not ok
-    print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
 
 
 def rel_err(a, b):
@@ -99,29 +93,31 @@ def periodic_real(platform):
 
     coef = ft.forward(fields)
     ref = np.fft.rfftn(grids, axes=(1, 2, 3))
-    check(f"{platform} periodic real: forward is rfftn", ft.coefficient_shape == half and ft.complex_coefficients
-          and coef.shape == (3,) + half and rel_err(coef, ref) < 1e-13, f"err {rel_err(coef, ref):.1e}")
+    check(ft.coefficient_shape == half and ft.complex_coefficients and coef.shape == (3,) + half
+          and rel_err(coef, ref) < 1e-13,
+          f"{platform} periodic real: forward is rfftn err {rel_err(coef, ref):.1e}")
     back = ft.backward(coef)
-    check(f"{platform} periodic real: backward(forward(f)) = f", back.shape == (3, n) and rel_err(back, fields) < 1e-13,
-          f"err {rel_err(back, fields):.1e}")
+    check(back.shape == (3, n) and rel_err(back, fields) < 1e-13,
+          f"{platform} periodic real: backward(forward(f)) = f err {rel_err(back, fields):.1e}")
     single = ft.forward(fields[0])
-    check(f"{platform} periodic real: one flat field", single.shape == half and rel_err(single, ref[0]) < 1e-13)
+    check(single.shape == half and rel_err(single, ref[0]) < 1e-13, f"{platform} periodic real: one flat field")
 
     k = wavevectors(nx, lx)
     k_sq_full = np.sum(k ** 2, axis=0)
     k_sq = ft.k_squared()
-    check(f"{platform} periodic real: k_squared", k_sq.shape == half and rel_err(k_sq, k_sq_full[..., :half[-1]]) < 1e-14,
-          f"err {rel_err(k_sq, k_sq_full[..., :half[-1]]):.1e}")
+    check(k_sq.shape == half and rel_err(k_sq, k_sq_full[..., :half[-1]]) < 1e-14,
+          f"{platform} periodic real: k_squared err {rel_err(k_sq, k_sq_full[..., :half[-1]]):.1e}")
 
     # Diagonal Gaussian kernel on three fields
     gamma_full = np.exp(-0.3 ** 2 * k_sq_full / 2)
     h = ft.set_multiplier(gamma_full[..., :half[-1]])
     out = ft.apply([(h, fields)])
     ref = np.real(np.fft.ifftn(gamma_full * np.fft.fftn(grids, axes=(1, 2, 3)), axes=(1, 2, 3))).reshape(3, n)
-    check(f"{platform} periodic real: diagonal multiplier", h.diagonal and out.shape == (3, n) and rel_err(out, ref) < 1e-13,
-          f"err {rel_err(out, ref):.1e}")
+    check(h.diagonal and out.shape == (3, n) and rel_err(out, ref) < 1e-13,
+          f"{platform} periodic real: diagonal multiplier err {rel_err(out, ref):.1e}")
     out1 = ft.apply([(h, fields[1])])
-    check(f"{platform} periodic real: flat field gives a flat result", out1.shape == (n,) and rel_err(out1, ref[1]) < 1e-13)
+    check(out1.shape == (n,) and rel_err(out1, ref[1]) < 1e-13,
+          f"{platform} periodic real: flat field gives a flat result")
 
     # Two terms with complex matrix multipliers of a real operator: c_ij exp(-b_ij k²) + i d_ij k_x,
     # k_x set to zero on its Nyquist plane so that M(-k) = conj M(k)
@@ -138,8 +134,9 @@ def periodic_real(platform):
     f2 = np.fft.fftn(inputs2.reshape((2,) + tuple(nx)), axes=(1, 2, 3))
     ref_c = np.fft.ifftn(np.einsum("ij...,j...->i...", m1, f1) + np.einsum("ij...,j...->i...", m2, f2), axes=(1, 2, 3))
     ref = np.real(ref_c).reshape(2, n)
-    check(f"{platform} periodic real: two matrix terms", (h1.n_out, h1.n_in) == (2, 3) and out.shape == (2, n)
-          and rel_err(out, ref) < 1e-12 and np.max(np.abs(np.imag(ref_c))) < 1e-10, f"err {rel_err(out, ref):.1e}")
+    check((h1.n_out, h1.n_in) == (2, 3) and out.shape == (2, n) and rel_err(out, ref) < 1e-12
+          and np.max(np.abs(np.imag(ref_c))) < 1e-10,
+          f"{platform} periodic real: two matrix terms err {rel_err(out, ref):.1e}")
     return {"forward": coef, "apply": out}
 
 
@@ -152,9 +149,9 @@ def periodic_complex(platform):
     grids = fields.reshape((2,) + tuple(nx))
     coef = ft.forward(fields)
     ref = np.fft.fftn(grids, axes=(1, 2))
-    check(f"{platform} periodic complex: forward is fftn", ft.coefficient_shape == tuple(nx)
-          and rel_err(coef, ref) < 1e-13, f"err {rel_err(coef, ref):.1e}")
-    check(f"{platform} periodic complex: backward(forward(f)) = f", rel_err(ft.backward(coef), fields) < 1e-13)
+    check(ft.coefficient_shape == tuple(nx) and rel_err(coef, ref) < 1e-13,
+          f"{platform} periodic complex: forward is fftn err {rel_err(coef, ref):.1e}")
+    check(rel_err(ft.backward(coef), fields) < 1e-13, f"{platform} periodic complex: backward(forward(f)) = f")
 
     m = RNG.normal(size=(3, 2) + tuple(nx)) + 1j * RNG.normal(size=(3, 2) + tuple(nx))
     d = RNG.normal(size=tuple(nx)) + 1j * RNG.normal(size=tuple(nx))
@@ -163,8 +160,8 @@ def periodic_complex(platform):
     out = ft.apply([(hm, fields), (hd, real_noise)])
     ref = np.fft.ifftn(np.einsum("ij...,j...->i...", m, ref)
                        + d * np.fft.fftn(real_noise.reshape((3,) + tuple(nx)), axes=(1, 2)), axes=(1, 2)).reshape(3, n)
-    check(f"{platform} periodic complex: matrix and diagonal terms, real inputs", out.dtype == np.complex128
-          and rel_err(out, ref) < 1e-12, f"err {rel_err(out, ref):.1e}")
+    check(out.dtype == np.complex128 and rel_err(out, ref) < 1e-12,
+          f"{platform} periodic complex: matrix and diagonal terms, real inputs err {rel_err(out, ref):.1e}")
     return {"forward": coef, "apply": out}
 
 
@@ -192,14 +189,15 @@ def hermitian(platform):
         m = 1j * k[axis]   # an odd derivative with its Nyquist mode: not Hermitian there
         out = ft.apply([(ft.set_multiplier(m), fields)])
         ref = np.fft.irfftn(hermitian_planes(m, nx[-1]) * rfft, s=nx, axes=(1, 2, 3)).reshape(2, n)
-        check(f"{platform} periodic real: i k_{'xyz'[axis]} with its Nyquist mode acts as (M + conj M(-k))/2",
-              rel_err(out, ref) < 1e-12, f"err {rel_err(out, ref):.1e}")
+        check(rel_err(out, ref) < 1e-12,
+              f"{platform} periodic real: i k_{'xyz'[axis]} with its Nyquist mode acts as (M + conj M(-k))/2 err "
+              f"{rel_err(out, ref):.1e}")
         results[f"apply_{axis}"] = out
     coef = RNG.normal(size=(2,) + tuple(nx[:-1]) + (h,)) + 1j * RNG.normal(size=(2,) + tuple(nx[:-1]) + (h,))
     back = ft.backward(coef)
     ref = np.fft.irfftn(np.array([hermitian_planes(c, nx[-1]) for c in coef]), s=nx, axes=(1, 2, 3)).reshape(2, n)
-    check(f"{platform} periodic real: backward of non-Hermitian coefficients", rel_err(back, ref) < 1e-12,
-          f"err {rel_err(back, ref):.1e}")
+    check(rel_err(back, ref) < 1e-12,
+          f"{platform} periodic real: backward of non-Hermitian coefficients err {rel_err(back, ref):.1e}")
     results["backward"] = back
     return results
 
@@ -230,10 +228,11 @@ def odd_and_1d(platform):
             ref_coef = scipy.fft.dctn(grids, type=2, axes=axes) / 2 ** len(nx)
             ref_k2 = (np.pi * np.arange(nx[0]) / lx[0]) ** 2
             ref_out = scipy.fft.idctn(gamma * scipy.fft.dctn(grids, type=2, axes=axes), type=2, axes=axes).reshape(2, n)
-        check(f"{label}: forward", rel_err(coef, ref_coef) < 1e-13, f"err {rel_err(coef, ref_coef):.1e}")
-        check(f"{label}: backward(forward(f)) = f", rel_err(ft.backward(coef), fields) < 1e-13)
-        check(f"{label}: k_squared", rel_err(k2, ref_k2) < 1e-13)
-        check(f"{label}: diagonal multiplier on two fields", rel_err(out, ref_out) < 1e-12, f"err {rel_err(out, ref_out):.1e}")
+        check(rel_err(coef, ref_coef) < 1e-13, f"{label}: forward err {rel_err(coef, ref_coef):.1e}")
+        check(rel_err(ft.backward(coef), fields) < 1e-13, f"{label}: backward(forward(f)) = f")
+        check(rel_err(k2, ref_k2) < 1e-13, f"{label}: k_squared")
+        check(rel_err(out, ref_out) < 1e-12,
+              f"{label}: diagonal multiplier on two fields err {rel_err(out, ref_out):.1e}")
         results[(kind, tuple(nx))] = {"forward": coef, "apply": out}
     return results
 
@@ -262,11 +261,11 @@ def oblique(platform):
         if field_type == "real":
             ref = ref[..., :nx[-1] // 2 + 1]
         k_sq = ft.k_squared()
-        check(f"{platform} oblique {len(nx)}D: k_squared is the minimal alias", rel_err(k_sq, ref) < 1e-13,
-              f"err {rel_err(k_sq, ref):.1e}")
+        check(rel_err(k_sq, ref) < 1e-13,
+              f"{platform} oblique {len(nx)}D: k_squared is the minimal alias err {rel_err(k_sq, ref):.1e}")
         s.set_lx([1.3 * l for l in lx])
         k_sq2 = ft.k_squared()
-        check(f"{platform} oblique {len(nx)}D: k_squared after set_lx", rel_err(k_sq2, k_sq / 1.3 ** 2) < 1e-13)
+        check(rel_err(k_sq2, k_sq / 1.3 ** 2) < 1e-13, f"{platform} oblique {len(nx)}D: k_squared after set_lx")
         results[len(nx)] = k_sq
     return results
 
@@ -288,8 +287,9 @@ def solver_aliases(platform):
         s.compute_propagators({"A": np.zeros(q0.size, complex)}, q_init={"G": q0})
         factor = np.vdot(q0, s.get_propagator(0, 0, 1, 1)) / q0.size
         worst = max(worst, abs(factor / np.exp(-k_sq[index] * ds / 6) - 1))
-    check(f"{platform} oblique 4x32: the solver's Boltzmann factor of each mode takes the minimal alias",
-          worst < 1e-12, f"max rel err {worst:.1e}")
+    check(worst < 1e-12,
+          f"{platform} oblique 4x32: the solver's Boltzmann factor of each mode takes the minimal alias max rel err "
+          f"{worst:.1e}")
 
     # Discrete chains: the stress is the derivative of their own ln Q. The cell is large enough
     # that the modes the window misses carry weight (their bond factors are not negligible)
@@ -319,8 +319,9 @@ def solver_aliases(platform):
     h = 1e-5   # degrees
     differences.append((minus_ln_q(lx, gamma + h) - minus_ln_q(lx, gamma - h)) / (2 * np.radians(h)))
     err = rel_err(stress, differences)
-    check(f"{platform} oblique 6x40: discrete-chain stress equals the central differences of -ln Q", err < 1e-6,
-          f"max rel err {err:.1e}")
+    check(err < 1e-6,
+          f"{platform} oblique 6x40: discrete-chain stress equals the central differences of -ln Q max rel err "
+          f"{err:.1e}")
 
 
 def series(grids, kinds, inverse=False):
@@ -357,18 +358,19 @@ def walls(platform):
         coef = ft.forward(fields)
         ref = series(grids, kinds) / 2 ** len(nx)   # Σ_j f_j cos(πm(j+½)/N): half of SciPy's, per axis
         label = f"{platform} {'/'.join(kinds)} {field_type} {nx}"
-        check(f"{label}: forward is the type-2 series", ft.complex_coefficients == (field_type == "complex")
-              and coef.shape == (2,) + tuple(nx) and rel_err(coef, ref) < 1e-13, f"err {rel_err(coef, ref):.1e}")
-        check(f"{label}: backward(forward(f)) = f", rel_err(ft.backward(coef), fields) < 1e-13)
+        check(ft.complex_coefficients == (field_type == "complex") and coef.shape == (2,) + tuple(nx)
+              and rel_err(coef, ref) < 1e-13,
+              f"{label}: forward is the type-2 series err {rel_err(coef, ref):.1e}")
+        check(rel_err(ft.backward(coef), fields) < 1e-13, f"{label}: backward(forward(f)) = f")
         k_axes = [np.pi * (np.arange(nn) + (b == "absorbing")) / l for nn, l, b in zip(nx, lx, kinds)]
         k_sq_ref = sum(k ** 2 for k in np.meshgrid(*k_axes, indexing="ij"))
-        check(f"{label}: k_squared", rel_err(ft.k_squared(), k_sq_ref) < 1e-14)
+        check(rel_err(ft.k_squared(), k_sq_ref) < 1e-14, f"{label}: k_squared")
         gamma = np.exp(-0.25 * k_sq_ref)
         if field_type == "complex":
             gamma = gamma * (1.0 + 0.5j)
         out = ft.apply([(ft.set_multiplier(gamma), fields)])
         ref = series(gamma * series(grids, kinds), kinds, inverse=True).reshape(2, n)
-        check(f"{label}: diagonal multiplier", rel_err(out, ref) < 1e-12, f"err {rel_err(out, ref):.1e}")
+        check(rel_err(out, ref) < 1e-12, f"{label}: diagonal multiplier err {rel_err(out, ref):.1e}")
         results[(tuple(kinds), field_type, tuple(nx))] = {"forward": coef, "apply": out}
 
         if any(b == "absorbing" for b in kinds):
@@ -377,8 +379,8 @@ def walls(platform):
             k_axes = [np.pi * np.arange(nn) / l for nn, l in zip(nx, lx)]
             k_sq_ref = sum(k ** 2 for k in np.meshgrid(*k_axes, indexing="ij"))
             ref = series(grids, ["reflecting"] * len(nx)) / 2 ** len(nx)
-            check(f"{label}: PropagatorSolver.fourier takes the cosine series",
-                  rel_err(cosine.k_squared(), k_sq_ref) < 1e-14 and rel_err(cosine.forward(fields), ref) < 1e-13)
+            check(rel_err(cosine.k_squared(), k_sq_ref) < 1e-14 and rel_err(cosine.forward(fields), ref) < 1e-13,
+                  f"{label}: PropagatorSolver.fourier takes the cosine series")
     return results
 
 
@@ -417,16 +419,16 @@ def mixed(platform):
         label = f"{platform} mixed {'/'.join(kinds)} {field_type} {nx}"
         coef = ft.forward(fields)
         ref = mixed_series(grids, kinds)
-        check(f"{label}: forward is fft and the type-2 series", ft.mixed and not ft.periodic and ft.complex_coefficients
-              and ft.coefficient_shape == tuple(nx) and coef.shape == (2,) + tuple(nx) and rel_err(coef, ref) < 1e-13,
-              f"err {rel_err(coef, ref):.1e}")
+        check(ft.mixed and not ft.periodic and ft.complex_coefficients and ft.coefficient_shape == tuple(nx)
+              and coef.shape == (2,) + tuple(nx) and rel_err(coef, ref) < 1e-13,
+              f"{label}: forward is fft and the type-2 series err {rel_err(coef, ref):.1e}")
         back = ft.backward(coef)
-        check(f"{label}: backward(forward(f)) = f", back.dtype == fields.dtype and rel_err(back, fields) < 1e-13,
-              f"err {rel_err(back, fields):.1e}")
+        check(back.dtype == fields.dtype and rel_err(back, fields) < 1e-13,
+              f"{label}: backward(forward(f)) = f err {rel_err(back, fields):.1e}")
         k_axes = [2 * np.pi * np.fft.fftfreq(nn, d=l / nn) if b == "periodic" else np.pi * (np.arange(nn) + (b == "absorbing")) / l
                   for nn, l, b in zip(nx, lx, kinds)]
         k_sq_ref = sum(k ** 2 for k in np.meshgrid(*k_axes, indexing="ij"))
-        check(f"{label}: k_squared", rel_err(ft.k_squared(), k_sq_ref) < 1e-14)
+        check(rel_err(ft.k_squared(), k_sq_ref) < 1e-14, f"{label}: k_squared")
 
         # A complex multiplier without symmetry; real fields take the real part of the result,
         # the operator (M(k) + conj M(-k))/2 with -k reversing the periodic indices
@@ -438,10 +440,10 @@ def mixed(platform):
             flip = tuple(np.roll(np.arange(nn)[::-1], 1) if b == "periodic" else np.arange(nn) for nn, b in zip(nx, kinds))
             m_minus = m[np.ix_(*flip)]
             ref_hermitian = mixed_series(0.5 * (m + np.conj(m_minus)) * mixed_series(grids, kinds), kinds, inverse=True)
-            check(f"{label}: the real part is the Hermitian part of the multiplier",
-                  rel_err(ref, ref_hermitian.reshape(2, n)) < 1e-12 and np.max(np.abs(np.imag(ref_hermitian))) < 1e-10)
-        check(f"{label}: complex multiplier", out.dtype == fields.dtype and rel_err(out, ref) < 1e-12,
-              f"err {rel_err(out, ref):.1e}")
+            check(rel_err(ref, ref_hermitian.reshape(2, n)) < 1e-12 and np.max(np.abs(np.imag(ref_hermitian))) < 1e-10,
+                  f"{label}: the real part is the Hermitian part of the multiplier")
+        check(out.dtype == fields.dtype and rel_err(out, ref) < 1e-12,
+              f"{label}: complex multiplier err {rel_err(out, ref):.1e}")
         # Matrix multiplier with two terms
         m23 = RNG.normal(size=(2, 3) + tuple(nx)) + 1j * RNG.normal(size=(2, 3) + tuple(nx))
         third = RNG.normal(0.0, 5.0, (3, n)).astype(fields.dtype)
@@ -449,7 +451,7 @@ def mixed(platform):
         f3 = mixed_series(third.reshape((3,) + tuple(nx)), kinds)
         ref2 = mixed_series(np.einsum("ij...,j...->i...", m23, f3) + m * mixed_series(grids, kinds), kinds, inverse=True)
         ref2 = (np.real(ref2) if field_type == "real" else ref2).reshape(2, n)
-        check(f"{label}: matrix and diagonal terms", rel_err(out2, ref2) < 1e-12, f"err {rel_err(out2, ref2):.1e}")
+        check(rel_err(out2, ref2) < 1e-12, f"{label}: matrix and diagonal terms err {rel_err(out2, ref2):.1e}")
         results[(tuple(kinds), field_type, tuple(nx))] = {"forward": coef, "apply": out, "apply2": out2}
 
     # The CL-FTS box of a brush: lateral periodic axes over an odd number of wall points
@@ -458,8 +460,8 @@ def mixed(platform):
     ft = s.fourier
     fields = RNG.normal(0.0, 5.0, (1, int(np.prod(nx)))) + 1j * RNG.normal(0.0, 5.0, (1, int(np.prod(nx))))
     ref = mixed_series(fields.reshape((1,) + tuple(nx)), ["periodic", "periodic", "reflecting"])
-    check(f"{platform} mixed brush box {nx}: PropagatorSolver.fourier takes the cosine series along z",
-          rel_err(ft.forward(fields), ref) < 1e-13 and rel_err(ft.backward(ft.forward(fields)), fields) < 1e-13)
+    check(rel_err(ft.forward(fields), ref) < 1e-13 and rel_err(ft.backward(ft.forward(fields)), fields) < 1e-13,
+          f"{platform} mixed brush box {nx}: PropagatorSolver.fourier takes the cosine series along z")
     return results
 
 
@@ -503,7 +505,7 @@ def input_checks(platform):
          lambda: walls_real.backward(np.full(walls_real.coefficient_shape, 1j))),
     ]
     for name, call in cases:
-        check(f"{platform} rejects {name}", raises(call))
+        check(raises(call), f"{platform} rejects {name}")
 
     # A cosine transform keeps its (periodic) box orthogonal while it exists
     box = solver(platform, [6, 4], [1.0, 1.0])._computation_box
@@ -511,7 +513,7 @@ def input_checks(platform):
     held = raises(lambda: box.set_lattice_parameters([1.0, 1.0], [120.0]))
     del cosine
     released = not raises(lambda: box.set_lattice_parameters([1.0, 1.0], [120.0]))
-    check(f"{platform} a cosine transform keeps its box orthogonal while it exists", held and released)
+    check(held and released, f"{platform} a cosine transform keeps its box orthogonal while it exists")
 
 
 def finite_range(platform):
@@ -519,7 +521,7 @@ def finite_range(platform):
     def relative(name, actual, expected):
         actual = np.asarray(actual)
         ok = np.isfinite(actual).all() and np.allclose(actual / expected, 1.0, rtol=5e-13, atol=0.0)
-        check(f"{platform} {name}", ok)
+        check(ok, f"{platform} {name}")
 
     tiny = np.nextafter(0.0, 1.0)
     for n in (15, 16):
@@ -531,7 +533,7 @@ def finite_range(platform):
             actual = ft.backward(coefficients)
             relative(f"N={n}: uniform coefficient {dc:.1e}", actual[0], dc / n)
             relative(f"N={n}: uniform coefficient {-dc:.1e}", actual[1], -dc / n)
-            check(f"{platform} N={n}: backward keeps the coefficients", np.array_equal(coefficients, before))
+            check(np.array_equal(coefficients, before), f"{platform} N={n}: backward keeps the coefficients")
         if n % 2 == 0:
             coefficients = np.zeros(n // 2 + 1, complex)
             coefficients[-1] = 1e308 + 1e308j
@@ -543,7 +545,7 @@ def finite_range(platform):
             handle = ft.set_multiplier(coefficients)
             relative(f"N={n}: multiplier {multiplier:.1e} on {field:.1e}",
                      ft.apply([(handle, np.full(n, field))]), multiplier * field)
-            check(f"{platform} N={n}: set_multiplier keeps the multiplier", np.array_equal(coefficients, before))
+            check(np.array_equal(coefficients, before), f"{platform} N={n}: set_multiplier keeps the multiplier")
 
     # A non-self-conjugate pair averages both large components before acting
     # on small fields. Scale the reference operands before any FFT/products.
@@ -558,9 +560,8 @@ def finite_range(platform):
     normalized[3, 0] = 1.0 - 1.2j
     expected = np.fft.irfftn(normalized * np.fft.rfftn(unit_fields), s=(4, 4), axes=(0, 1)).ravel()
     actual = ft.apply([(ft.set_multiplier(multiplier), (unit_fields * 1e-308).ravel())])
-    check(f"{platform} large non-self-conjugate pair on fields of 1e-308",
-          np.isfinite(actual).all() and np.allclose(actual, expected, rtol=5e-13, atol=5e-14)
-          and np.array_equal(multiplier, original))
+    check(np.isfinite(actual).all() and np.allclose(actual, expected, rtol=5e-13, atol=5e-14)
+          and np.array_equal(multiplier, original), f"{platform} large non-self-conjugate pair on fields of 1e-308")
 
 
 def main():
@@ -587,11 +588,10 @@ def main():
                           **{f"grid {key}": value for key, value in odd_and_1d(p).items()}}
         a, b = results[cpu[0]], results["cuda"]
         err = max(rel_err(b[key][q], a[key][q]) for key in a for q in a[key])
-        check(f"CUDA agrees with {cpu[0]} (forward, apply, backward of {len(a)} cases)", err < 1e-12,
-              f"max rel diff {err:.1e}")
+        check(err < 1e-12,
+              f"CUDA agrees with {cpu[0]} (forward, apply, backward of {len(a)} cases) max rel diff {err:.1e}")
 
-    print(f"\n{failures} failed")
-    return 1 if cuda_part_missing() or failures else 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, smooth_field, summary
 from cuda_part import cuda_part_missing
 
 NX = [12, 10, 8]
@@ -30,32 +32,12 @@ LX = [2.0, 1.8, 1.5]
 DS = 0.05
 TOL = 1e-12
 
-FAILURES = []
-
-
-def check(condition, message):
-    status = "PASS" if condition else "FAIL"
-    print(f"    [{status}] {message}")
-    if not condition:
-        FAILURES.append(message)
-
-
-def smooth_field(rng):
-    x = [np.arange(n) * l / n for n, l in zip(NX, LX)]
-    X, Y, Z = np.meshgrid(*x, indexing="ij")
-    f = np.zeros(NX)
-    for _ in range(4):
-        kx, ky, kz = rng.integers(1, 3, size=3)
-        f += rng.normal() * (np.cos(2 * np.pi * kx * X / LX[0] + rng.uniform(0, 2 * np.pi))
-                             * np.cos(2 * np.pi * ky * Y / LX[1] + rng.uniform(0, 2 * np.pi))
-                             * np.cos(2 * np.pi * kz * Z / LX[2] + rng.uniform(0, 2 * np.pi)))
-    f = f - f.mean()
-    return (f / f.std() * 5.0).flatten()
+checks.indent = "    "   # the check lines print indented
 
 
 def main():
     rng = np.random.default_rng(7)
-    w = {"A": smooth_field(rng), "B": smooth_field(rng)}
+    w = {"A": smooth_field(rng, NX, LX), "B": smooth_field(rng, NX, LX)}
     # Star: two identical A arms and one B arm around node 0
     blocks = [["A", 0.3, 0, 1], ["A", 0.3, 0, 2], ["B", 0.4, 0, 3]]
 
@@ -82,13 +64,7 @@ def main():
             cons = abs(np.mean(phi_a + phi_b) - 1.0)
             check(cons < TOL, f"{tag}: |mean(phi_A + phi_B) - 1| = {cons:.3e} < {TOL}")
 
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} check(s)")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print("All block-concentration checks PASSED")
-    return 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

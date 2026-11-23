@@ -78,6 +78,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS
+from checks import check, summary
 from cuda_part import cpu_platform
 
 CHI_N, ZETA_N, N, N_A, NX, LX, NBAR, STEPS = 6.0, 100.0, 20, 10, 32, 4.0, 1e6, 30000
@@ -88,19 +89,6 @@ RADII = {"A": 0.1, "B": 0.1, "C": 0.15}
 N_MODES = 8
 PA_SEQUENCE, PA_ZETA_N, PA_COUPLING, PA_RADIUS = "EEEEEKKKKKEEEEEKKKKK", 10.0, 300.0, 0.1
 CHARGE_FORMS = {"charge": "combination", "charge_mixed": "mixed form", "charge_field_field": "field-field form"}
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def estimate(blocks):
@@ -289,13 +277,10 @@ def check_polyampholyte():
 
 def main():
     if "--polyampholyte" in sys.argv[1:]:
-        system = "polyampholyte"
         check_polyampholyte()
     else:
-        system = "diblock"
         check_diblock()
-    print(f"\n{system}: {n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

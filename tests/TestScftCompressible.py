@@ -30,23 +30,11 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import scft
+from checks import check, summary
 from cuda_part import cpu_platform
 
 NX = 64
 x = np.arange(NX)
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def run(chi_n, blocks, lx, zeta_n, initial, extra=None):
@@ -116,8 +104,7 @@ def main():
           f"ABC triblock, zetaN 20: compressible residual {r['residual']:.1e}, std(sum phi) {r['std_total']:.1e}, "
           f"{r['calc'].iter} iterations")
 
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

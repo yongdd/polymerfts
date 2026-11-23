@@ -23,7 +23,7 @@ import warnings
 import numpy as np
 
 from polymerfts import SCFT, LFTS, CLFTS, ValidationError, NumericalError, PlatformSelector
-from polymerfts.utils.validation import validate_scft_params
+from polymerfts.utils.validation import parse_chi_n, validate_scft_params
 from fts_checks import cpu_platform, scft_parameters, silenced
 
 
@@ -161,10 +161,9 @@ def check_ignored_keys():
     return ok
 
 
-def main():
-    ok = True
-
-    from polymerfts.utils.validation import parse_chi_n
+def check_chi_n_pairs():
+    """A malformed chi_n pair is refused, a pair of names with underscores is read in each of its three
+    spellings, and an ambiguous underscore pair is refused."""
     for bad in ("A,B,C", "A", "A,,B"):
         try:
             parse_chi_n({bad: 10.0}, {"A": 1.0, "B": 1.0, "C": 1.0})
@@ -179,6 +178,13 @@ def main():
         raise AssertionError("Ambiguous underscore pair was accepted")
     except ValidationError:
         pass
+    return True
+
+
+def check_angles():
+    """Angles of absent dimensions are refused, L-FTS and CL-FTS refuse bad angles with the message of
+    SCFT (validate_system_params), and no angles give an orthorhombic cell."""
+    ok = True
     for nx, angles in (([16], [90, 90, 60]), ([8, 8], [120, 90, 90])):
         p = scft_parameters(); p.update(nx=nx, lx=[4.0]*len(nx), angles=angles)
         ok &= expect_error(SCFT, p, "angles involving absent dimensions")
@@ -198,9 +204,12 @@ def main():
     for angles in (None, []):
         p = scft_parameters(); p.update(nx=[8, 8], lx=[4.0, 4.0], angles=angles)
         assert build(SCFT, p).cell.crystal_system == "Orthorhombic"
+    return ok
 
-    # NaN mass errors must raise, rather than pass the comparison to tolerance: a numerical
-    # failure, not an input error
+
+def check_nan_mass_error():
+    """A NaN mass error raises, rather than pass the comparison to the tolerance: a numerical failure,
+    not an input error."""
     for cls in (LFTS, CLFTS):
         sim = build(cls, lfts_params() if cls is LFTS else clfts_params())
         sim.prop_solver.mean = lambda value: np.nan
@@ -210,19 +219,30 @@ def main():
             raise AssertionError(f"{cls.__name__} accepted NaN mass error")
         except NumericalError:
             pass
+    return True
 
+
+def check_verbose_level_zero():
+    """An L-FTS run with verbose_level 0 prints no Langevin steps."""
     p = lfts_params(); p["verbose_level"] = 0; p["langevin"]["max_step"] = 1
     sim = build(LFTS, p)
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         sim.run(initial_fields={m: np.zeros(sim.prop_solver.n_grid) for m in ("A", "B")})
     assert not any(line.startswith("Langevin step:") for line in output.getvalue().splitlines())
+    return True
 
+
+def check_discrete_method():
+    """The default numerical method of discrete chains is ps."""
     p = scft_parameters(); p["chain_model"] = "discrete"
     assert build(SCFT, p).prop_solver.numerical_method == "ps"
+    return True
 
-    # A fully absent composition mode must have a finite zero step size and
-    # remain fixed through CL-FTS, including when initial fields contain that mode.
+
+def check_absent_composition_mode():
+    """A fully absent composition mode has a finite zero step size and remains fixed through CL-FTS,
+    also when the initial fields contain that mode."""
     p = lfts_params(); p["chi_n"] = {"A,B": 0.0}; p["verbose_level"] = 0
     p["langevin"].update(max_step=2, dt=0.01)
     lfts = build(LFTS, p)
@@ -244,8 +264,12 @@ def main():
     for w_aux in snapshots:
         for i in sim.mpt.aux_fields_dropped_idx:
             np.testing.assert_allclose(w_aux[i], sim.mpt._vector_large_s[i]/2, rtol=0, atol=1e-12)
+    return True
 
-    # ---- SCFT defaults
+
+def check_scft_options():
+    """The defaults of SCFT, and explicit options that reach the solver."""
+    ok = True
     calc = build(SCFT, scft_parameters())
     checks = {
         "max_iter": calc.max_iter == 2000,
@@ -265,7 +289,7 @@ def main():
             print(f"FAILED: SCFT default {name}")
             ok = False
 
-    # ---- explicit options reach the solver
+    # explicit options reach the solver
     params = scft_parameters()
     params.update({"max_iter": 10, "tolerance": 1e-5, "stress_scale": 2.0,
                    "zeta_n": 100.0, "numerical_method": "rk2",
@@ -277,8 +301,12 @@ def main():
             and calc.cell.lx_reduced_indices == [0] and calc.cell.lx_full_indices == [0, 0, 0]):
         print("FAILED: SCFT explicit options")
         ok = False
+    return ok
 
-    # ---- chi N completion and sorted monomer types (through LFTS)
+
+def check_chi_n_completion():
+    """chi N completion and sorted monomer types (through L-FTS)."""
+    ok = True
     params = lfts_params()
     params["segment_lengths"] = {"C": 1.0, "A": 1.0, "B": 1.0}
     params["chi_n"] = {"B,A": 15.0, "A,C": 5.0}
@@ -286,8 +314,12 @@ def main():
     if not (sim.monomer_types == ["A", "B", "C"] and sim.chi_n == {"A,B": 15.0, "A,C": 5.0, "B,C": 0.0}):
         print("FAILED: chi_n completion", sim.chi_n)
         ok = False
+    return ok
 
-    # ---- random copolymer: effective segment length and fractions
+
+def check_random_copolymer():
+    """A random copolymer: effective segment length and fractions."""
+    ok = True
     params = scft_parameters()
     params["segment_lengths"] = {"A": 1.0, "B": 2.0}
     params["polymers"] = [{
@@ -300,16 +332,24 @@ def main():
             and calc.monomer_types == ["A", "B"]):
         print("FAILED: random copolymer", calc.segment_lengths, calc.random_fraction)
         ok = False
+    return ok
 
-    # ---- the user's dictionary is left unchanged
+
+def check_input_unchanged():
+    """The constructors leave the user's dictionary unchanged."""
+    ok = True
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         snapshot = copy.deepcopy(params)
         build(cls, params)
         if params != snapshot:
             print(f"FAILED: {cls.__name__} modified its input dictionary")
             ok = False
+    return ok
 
-    # ---- LFTS and CLFTS read their own options
+
+def check_langevin_options():
+    """L-FTS and CL-FTS read their own options."""
+    ok = True
     sim = build(LFTS, lfts_params())
     if not (sim.langevin["nbar"] == 10000 and "sigma" in sim.langevin and sim.saddle.settings["max_iter"] == 100
             and sim.recording["dir"] == "data" and sim.verbose_level == 1 and sim.wtmd is None
@@ -326,8 +366,12 @@ def main():
     if build(CLFTS, params).alpha_ds != 0.02:
         print("FAILED: CLFTS alpha_ds alias")
         ok = False
+    return ok
 
-    # ---- invalid input raises ValidationError
+
+def check_invalid_input():
+    """Invalid input raises ValidationError."""
+    ok = True
     params = scft_parameters(); params["polymers"][0]["volume_fraction"] = 0.5
     ok &= expect_error(SCFT, params, "volume fractions not summing to 1")
     params = scft_parameters(); params["chi_n"] = {"A,Z": 1.0}
@@ -365,8 +409,12 @@ def main():
             if "free chains" not in str(exc):
                 print(f"FAILED: {cls.__name__} rejected a grafted chain with another error: {exc}")
                 ok = False
+    return ok
 
-    # ---- solver options: defaults and explicit values reach the propagator solver
+
+def check_solver_options():
+    """Solver options: defaults and explicit values reach the propagator solver."""
+    ok = True
     calc = build(SCFT, scft_parameters())
     if not (calc.prop_solver.bc == ["periodic"] * 6 and calc.prop_solver.angles is None
             and calc.prop_solver.reduce_memory is False
@@ -390,22 +438,34 @@ def main():
     if not (calc.sg is not None and calc.cell.crystal_system == "Cubic" and calc.cell.lx_reduced_indices == [0]):
         print("FAILED: SCFT space group")
         ok = False
+    return ok
 
-    # ---- hall_number None means no Hall number (the symbol alone)
+
+def check_space_group_input():
+    """hall_number None means no Hall number (the symbol alone); malformed space_group inputs raise
+    ValidationError."""
+    ok = True
     params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m", "hall_number": None}
     if build(SCFT, params).sg.get_hall_number() != 529:
         print("FAILED: space_group with hall_number None")
         ok = False
 
-    # ---- malformed space_group inputs raise ValidationError
+    # malformed space_group inputs raise ValidationError
     for group, what in (({"hall_number": 529}, "space_group without a symbol"), ("Im-3m", "space_group as a string"),
                         ({"symbol": "Im-3m", "hall_number": 529.0}, "a float hall_number"),
                         ({"symbol": "Im-3m", "hall_number": True}, "a boolean hall_number"),
                         ({"symbol": "Im-3m", "hall_number": 531}, "hall_number 531")):
         params = scft_parameters(); params["space_group"] = group
         ok &= expect_error(SCFT, params, what)
+    return ok
 
-    # ---- the smearing works on full-grid fields: the input validation refuses it with a space group,
+
+def check_unusable_scft_input():
+    """SCFT input that the run cannot use is refused before any solver is built: the smearing with a
+    space group, box relaxation with cn-adi2 (no stress), and the options that validate_scft_params
+    refuses; the same options that the run can use pass."""
+    ok = True
+    # the smearing works on full-grid fields: the input validation refuses it with a space group,
     # before any solver is built
     params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}
     params["smearing"] = {"type": "gaussian", "a_int": 0.1}
@@ -418,11 +478,11 @@ def main():
             print("FAILED: smearing with a space group:", error)
             ok = False
 
-    # ---- box relaxation needs the stress, which the real-space method does not compute
+    # box relaxation needs the stress, which the real-space method does not compute
     params = scft_parameters(); params.update(numerical_method="cn-adi2", relax_cell=True)
     ok &= expect_error(SCFT, params, "relax_cell with cn-adi2")
 
-    # ---- SCFT input that the run cannot use is refused by validate_scft_params, before any solver is built
+    # SCFT input that the run cannot use is refused by validate_scft_params, before any solver is built
     electrostatics = {"charges": {"A": 1.0, "B": -1.0}, "coupling": 1.0}
     for change, what, message in (
             (lambda p: p.update(max_iter=10.5), "max_iter 10.5", "'max_iter' must be an integer"),
@@ -452,8 +512,12 @@ def main():
                                       electrostatics=electrostatics)):
         params = scft_parameters(); change(params)
         validate_scft_params(params)
+    return ok
 
-    # ---- the cell must match the crystal system of the space group
+
+def check_space_group_cell():
+    """The cell must match the crystal system of the space group."""
+    ok = True
     params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}; params["lx"] = [4.0, 4.0, 3.0]
     ok &= expect_error(SCFT, params, "cubic space group with unequal box lengths")
     params = scft_parameters(); params["space_group"] = {"symbol": "Im-3m"}; params["angles"] = [90.0, 90.0, 120.0]
@@ -483,8 +547,12 @@ def main():
     params = scft_parameters(); params["space_group"] = {"symbol": "R-3m", "hall_number": 459}; params["angles"] = [80.0, 80.0, 80.0]
     params["relax_cell"] = True
     ok &= expect_error(SCFT, params, "box relaxation with a rhombohedral-axes setting")
+    return ok
 
-    # ---- changing the user's dictionary after construction does not affect the object
+
+def check_dictionary_not_shared():
+    """Changing the user's dictionary after construction does not affect the object."""
+    ok = True
     params = scft_parameters()
     calc = build(SCFT, params)
     params["max_iter"] = 1
@@ -494,15 +562,23 @@ def main():
             and calc.polymers[0]["volume_fraction"] == 1.0):
         print("FAILED: SCFT shares the user's dictionary")
         ok = False
+    return ok
 
-    # ---- platform "auto" is accepted
+
+def check_auto_platform():
+    """platform "auto" is accepted."""
+    ok = True
     params = scft_parameters(); params["platform"] = "auto"
     if build(SCFT, params).prop_solver.platform not in PlatformSelector.avail_platforms():
         print("FAILED: platform auto")
         ok = False
+    return ok
 
-    # ---- SCFT accepts a singular chi N matrix (a missing pair) and rejects a single
-    #      monomer type in the incompressible model
+
+def check_chi_n_matrix():
+    """SCFT accepts a singular chi N matrix (a missing pair) and rejects a single monomer type in the
+    incompressible model."""
+    ok = True
     params = scft_parameters()
     params["segment_lengths"] = {"A": 1.0, "B": 1.0, "C": 1.0}
     params["chi_n"] = {"A,B": 15.0, "A,C": 5.0}
@@ -516,8 +592,12 @@ def main():
     params["chi_n"] = {}
     params["polymers"] = [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 1.0}]}]
     ok &= expect_error(SCFT, params, "SCFT with a single monomer type")
+    return ok
 
-    # ---- mean concentrations from the chain compositions (random copolymer, alpha != 1)
+
+def check_mean_concentrations():
+    """Mean concentrations from the chain compositions (random copolymer, alpha != 1)."""
+    ok = True
     params = scft_parameters()
     params["polymers"] = [
         {"volume_fraction": 0.3, "blocks": [{"type": "A", "length": 0.7}]},
@@ -527,13 +607,22 @@ def main():
     if not np.allclose(calc.mean_concentrations(), [0.3 + 0.35, 0.35]):
         print("FAILED: mean concentrations", calc.mean_concentrations())
         ok = False
+    return ok
 
-    # ---- axis_ordering names each axis of nx once
+
+def check_axis_ordering():
+    """axis_ordering names each axis of nx once."""
+    ok = True
     for ordering in (["a", "a", "c"], ["a", "b"], ["a", "b", "c", "d"], "abc", ["a", "b", 3]):
         params = scft_parameters(); params["axis_ordering"] = ordering
         ok &= expect_error(SCFT, params, f"axis_ordering {ordering!r}", "'axis_ordering' must name each of the axes")
+    return ok
 
-    # ---- crystal systems are checked against the dimension
+
+def check_crystal_systems():
+    """Crystal systems are checked against the dimension and the cell."""
+    ok = True
+    # crystal systems are checked against the dimension
     params = scft_parameters(); params["nx"] = [8, 8]; params["lx"] = [4.0, 4.0]; params["crystal_system"] = "Cubic"
     ok &= expect_error(SCFT, params, "Cubic for a 2D box", "not valid for a 2D box")
     # ... and against the cell, which relaxation keeps but does not set (without a space group)
@@ -592,8 +681,13 @@ def main():
         if passed != accepted or system != ("Hexagonal2D" if accepted else "Oblique2D"):
             print(f"FAILED: an angle {offset} degrees off: Tetragonal accepted {passed}, 2D classified {system}")
             ok = False
+    return ok
 
-    # ---- LFTS / CLFTS options
+
+def check_required_keys():
+    """L-FTS without compressor, recording or verbose_level, SCFT without relax_cell and CL-FTS without
+    langevin are refused."""
+    ok = True
     for key in ("compressor", "recording", "verbose_level"):
         params = lfts_params(); del params[key]
         ok &= expect_error(LFTS, params, f"LFTS without {key}")
@@ -601,10 +695,15 @@ def main():
     ok &= expect_error(SCFT, params, "SCFT without relax_cell")
     params = clfts_params(); del params["langevin"]
     ok &= expect_error(CLFTS, params, "CLFTS without langevin")
-    # Each method ignores the options of the other methods with a warning that names them, so that one
-    # input serves SCFT and the Langevin methods: the saddle and compressor of L-FTS in CL-FTS, the CL-FTS
-    # option dynamic_stabilization (also by its alias) in L-FTS, the space group and the other options of
-    # SCFT in L-FTS and CL-FTS, and the Langevin options in SCFT; a key that no method reads is refused
+    return ok
+
+
+def check_options_of_other_methods():
+    """Each method ignores the options of the other methods with a warning that names them, so that one
+    input serves SCFT and the Langevin methods: the saddle and compressor of L-FTS in CL-FTS, the CL-FTS
+    option dynamic_stabilization (also by its alias) in L-FTS, the space group and the other options of
+    SCFT in L-FTS and CL-FTS, and the Langevin options in SCFT; a key that no method reads is refused."""
+    ok = True
     for key in ("saddle", "compressor"):
         params = clfts_params(); params[key] = lfts_params()[key]
         ok &= expect_ignored(CLFTS, params, f"CLFTS with the L-FTS option '{key}'", key)
@@ -625,9 +724,14 @@ def main():
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         ok &= expect_error(cls, {**params, "relax_cel": False}, f"{cls.__name__} with a misspelled key",
                            "does not take a 'relax_cel' parameter: did you mean 'relax_cell'?")
-    # So is a key that a section of the method does not take, which would leave its option at the default
-    # (the deep-langevin-fts names l and dT of WTMD among them); the sections of another method are ignored
-    # with what they hold
+    return ok
+
+
+def check_section_keys():
+    """So is a key that a section of the method does not take, which would leave its option at the default
+    (the deep-langevin-fts names l and dT of WTMD among them); the sections of another method are ignored
+    with what they hold."""
+    ok = True
     sections = {"langevin": lfts_params()["langevin"], "recording": lfts_params()["recording"],
                 "saddle": lfts_params()["saddle"], "compressor": lfts_params()["compressor"], "wtmd": {"ell": 4},
                 "smearing": {"type": "gaussian", "a_int": 0.1}, "optimizer": scft_parameters()["optimizer"],
@@ -652,8 +756,14 @@ def main():
                            f"{cls.__name__} with '{section}.{key}'", message)
     ok &= expect_ignored(CLFTS, {**clfts_params(), "saddle": {"unknown_key": 1}},
                          "CLFTS with an unknown key in the L-FTS section 'saddle'", "saddle (L-FTS")
-    # And a key that a polymer or a block does not take: a misspelled multiplicity would build one arm,
-    # a misspelled initial_conditions a free chain
+    return ok
+
+
+def check_polymer_and_ion_keys():
+    """And a key that a polymer or a block does not take: a misspelled multiplicity would build one arm,
+    a misspelled initial_conditions a free chain; and a key that a point ion of electrostatics does not
+    take."""
+    ok = True
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         given = copy.deepcopy(params); given["polymers"][0]["initial_condition"] = {0: "G"}
         ok &= expect_error(cls, given, f"{cls.__name__} with 'polymers[0].initial_condition'",
@@ -672,6 +782,13 @@ def main():
         ok &= expect_error(cls, given, f"{cls.__name__} with 'electrostatics.ions.Na.valance'",
                            "'electrostatics.ions.Na' has unknown keys: ['valance'] (did you mean 'valence'?); "
                            "it takes chemical_potential, concentration, smearing_length, valence")
+    return ok
+
+
+def check_langevin_option_values():
+    """The values of the L-FTS and CL-FTS options: the alpha_ds default, verbose_level, the compressor,
+    WTMD (a 2D grid, in CL-FTS, the bin width, chi N) and dynamic_stabilization with its alias."""
+    ok = True
     if build(CLFTS, clfts_params()).alpha_ds != 0.0:
         print("FAILED: CLFTS alpha_ds default")
         ok = False
@@ -705,8 +822,13 @@ def main():
         ok &= expect_error(LFTS, params, f"WTMD at chi_n {chi_n}")
     params = clfts_params(); params.update(dynamic_stabilization=0.0, alpha_ds=0.02)
     ok &= expect_error(CLFTS, params, "dynamic_stabilization together with its alias alpha_ds")
-    # The retired stress_interval and fts_consistent_energy: every method ignores them, whatever their
-    # value, with one warning
+    return ok
+
+
+def check_retired_options():
+    """The retired stress_interval and fts_consistent_energy: every method ignores them, whatever their
+    value, with one warning."""
+    ok = True
     for cls, params in ((SCFT, scft_parameters()), (LFTS, lfts_params()), (CLFTS, clfts_params())):
         for key in ("stress_interval", "fts_consistent_energy"):
             with warnings.catch_warnings(record=True) as caught:
@@ -715,14 +837,26 @@ def main():
             if [str(w.message).split(":")[0] for w in caught] != [f"'{key}' is ignored"]:
                 print(f"FAILED: {cls.__name__} with {key} warned {[str(w.message) for w in caught]}")
                 ok = False
-    ok &= check_none_keys()
-    ok &= check_ignored_keys()
+    return ok
 
-    if ok:
-        print("Test passed, parameter handling")
-        return 0
-    print("Test failed, parameter handling")
-    return 1
+
+def main():
+    """Runs every topic in turn; a topic that stops at an assert names itself in the traceback, the
+    others in the last line."""
+    topics = [check_chi_n_pairs, check_angles, check_nan_mass_error, check_verbose_level_zero,
+              check_discrete_method, check_absent_composition_mode, check_scft_options, check_chi_n_completion,
+              check_random_copolymer, check_input_unchanged, check_langevin_options, check_invalid_input,
+              check_solver_options, check_space_group_input, check_unusable_scft_input, check_space_group_cell,
+              check_dictionary_not_shared, check_auto_platform, check_chi_n_matrix, check_mean_concentrations,
+              check_axis_ordering, check_crystal_systems, check_required_keys, check_options_of_other_methods,
+              check_section_keys, check_polymer_and_ion_keys, check_langevin_option_values, check_retired_options,
+              check_none_keys, check_ignored_keys]
+    failed = [topic.__name__ for topic in topics if not topic()]
+    if failed:
+        print(f"Test failed, parameter handling: {', '.join(failed)}")
+        return 1
+    print("Test passed, parameter handling")
+    return 0
 
 
 if __name__ == "__main__":

@@ -35,17 +35,13 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
-FAILURES = []
+checks.indent = "    "   # the check lines print indented
 # The order of the platforms in a pair: the first is the reference of a relative difference
 ORDER = ("cpu-mkl", "cpu-fftw", "cuda")
-
-
-def check(condition, message):
-    print(f"    [{'PASS' if condition else 'FAIL'}] {message}")
-    if not condition:
-        FAILURES.append(message)
 
 
 def mt19937_normal(seed, n, stddev):
@@ -173,13 +169,7 @@ def main():
     expected = (2 * 2 * len(homopolymer_boxes) + 2 * len(cases)) * len(pairs) + len(auto_rows)
     print(f"\n{n_compared} comparisons (expected {expected}) of {len(pairs)} platform pairs")
     check(n_compared == expected, "every comparison ran")
-    if FAILURES:
-        print(f"\nFAILED: {len(FAILURES)} check(s)")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print("\nBoxes with walls agree on every platform: PASSED")
-    return 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

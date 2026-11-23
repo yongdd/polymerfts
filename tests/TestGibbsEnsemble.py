@@ -53,8 +53,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from scipy.optimize import brentq, fsolve
-from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector, ValidationError
+from polymerfts import CLFTS, GibbsEnsemble, PlatformSelector
 from polymerfts.utils.common import input_hash, json_ready
+from checks import expect_validation_error
 from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
 
@@ -89,15 +90,6 @@ def ideal_mobility(amounts, alphas):
         rows = np.ones(len(n))[:, None] * alphas
         hessian = hessian + np.diag(1 / n) - (rows + rows.T) / volume + np.outer(alphas, alphas) * n.sum() / volume ** 2
     return np.linalg.inv(hessian)
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as error:
-        assert message in str(error), f"expected '{message}', got '{error}'"
-        return
-    raise AssertionError(f"expected a ValidationError with '{message}'")
 
 
 def salt(concentration=0.01):

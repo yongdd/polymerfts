@@ -45,7 +45,8 @@ import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS, SCFT, PlatformSelector, ValidationError, NumericalError
 from polymerfts.utils.checkpoint import validate_checkpoint, _measurement_key
-from fts_checks import cpu_platform, exact_restart, quiet, silenced
+from checks import expect_validation_error
+from fts_checks import cpu_platform, exact_restart, hamiltonian, quiet, silenced
 
 Z_A = 0.2
 PHI_C = Z_A * 0.5 / (1 + Z_A * 0.5)   # counterions: z_A phi_A = phi_C
@@ -126,15 +127,6 @@ def neutral_reductions(root):
     for name, prefixes in (("fields_000006.mat", ("w_", "phi_", "psi_real", "psi_imag", "psi_k_")),
                            ("structure_function_000006.mat", ("structure_function_", "charge_structure_function"))):
         assert max_difference(mat(root / "common", name), mat(root / "per_type", name), prefixes) == 0.0
-
-
-def hamiltonian(sim, w_aux):
-    phi, _ = sim.compute_concentrations(w_aux)
-    phi_smeared = sim.smearing.apply_to_dict(phi)
-    partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
-    h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
-                                    include_const_term=True, phi=phi_smeared)
-    return h + sim.electrostatics.hamiltonian(), phi_smeared
 
 
 def forces(root):
@@ -427,16 +419,6 @@ def numerical_failures(root):
     sim.mpt.compute_func_deriv = lambda w_aux, phi, indices: derivative(w_aux, phi, indices) * np.nan
     expect_numerical(lambda: sim.evaluate_force(np.zeros(shape, np.complex128)),
                      "Non-finite intermediate CLFTS force")
-
-
-def expect_validation_error(make, message):
-    try:
-        with silenced():
-            make()
-    except ValidationError as exc:
-        assert message in str(exc), (message, str(exc))
-        return
-    raise AssertionError(f"Expected ValidationError: {message}")
 
 
 def input_checks(root):

@@ -95,6 +95,8 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 DS = 0.02  # 1/50 contour steps
@@ -105,15 +107,7 @@ TOL_STRESS_REL = 1e-8
 TOL_PHI_ABS = 1e-10
 TOL_CONSERVATION = 1e-12
 
-FAILURES = []
-
-
-def check(condition, message):
-    """Record a named assertion."""
-    status = "PASS" if condition else "FAIL"
-    print(f"    [{status}] {message}")
-    if not condition:
-        FAILURES.append(message)
+checks.indent = "    "   # the check lines print indented
 
 
 def create_space_group(case_name, nx):
@@ -506,19 +500,8 @@ def main():
                               f"{tag}: {run_name} phi vanishes on blocked "
                               f"points (max {max_blocked_phi:.3e} < 1e-12)")
 
-    elapsed = time.time() - t_start
-    print("\n" + "=" * 64)
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} assertion(s) failed "
-              f"(runtime {elapsed:.1f} s):")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print(f"All space-group platform equivalence tests PASSED "
-          f"(runtime {elapsed:.1f} s)")
-    return 0
+    print(f"\nruntime {time.time() - t_start:.1f} s")
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":
