@@ -122,9 +122,6 @@ private:
     void periodic_backward(std::complex<double>* modes, const double* k_factor, T* field, const T* r_factor,
                            bool keep_modes) const;
 
-    /// Initialize the FFTW plans.
-    void initPeriodicFFT();
-
 public:
     /**
      * @brief Construct the FFTW FFT of a periodic grid.

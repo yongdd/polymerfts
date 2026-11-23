@@ -98,8 +98,8 @@
  * CpuSolverPseudoDiscrete<double> solver(cb, molecules, space_group, FFTBackend::FFTW);
  * solver.update_dw(w_fields);
  *
- * // Full segment step
- * solver.advance_propagator(q_i, q_i1, "A", nullptr);
+ * // Full segment step (contour step of index 0)
+ * solver.advance_propagator(q_i, q_i1, "A", nullptr, 0);
  *
  * // Half-bond step for chain ends
  * solver.advance_propagator_half_bond_step(q, q_half, "A");

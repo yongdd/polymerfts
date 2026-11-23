@@ -106,12 +106,12 @@ void MklRealFFT::release()
 
 void MklRealFFT::forward(double* samples, std::complex<double>* modes) const
 {
-    mkl_dfti_check(DftiComputeForward(forward_, samples, modes), "DftiComputeForward (DCT/DST)");
+    mkl_dfti_check(DftiComputeForward(forward_, samples, modes), "DftiComputeForward (MklRealFFT)");
 }
 
 void MklRealFFT::backward(std::complex<double>* modes, double* samples) const
 {
-    mkl_dfti_check(DftiComputeBackward(backward_, modes, samples), "DftiComputeBackward (DCT/DST)");
+    mkl_dfti_check(DftiComputeBackward(backward_, modes, samples), "DftiComputeBackward (MklRealFFT)");
 }
 
 //------------------------------------------------------------------------------

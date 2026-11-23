@@ -332,10 +332,13 @@ differently grouped sums of the two modes differently (see
 
 ```
 CpuSolver<T>                                  [Abstract Base]
-├── exp_dw[monomer]         - Boltzmann factors
-├── exp_dw_half[monomer]    - Half-step Boltzmann factors
+├── exp_dw[ds_index][monomer]       - Boltzmann factors
+├── exp_dw_half[ds_index][monomer]  - Half-step Boltzmann factors (RQM4)
 ├── cb, molecules, space_group_, n_basis_   - shared context (protected constructor)
 ├── compute_exp_dw()        - the body of every update_dw()
+├── boltzmann_factor()      - exp(-w ds) of a discrete segment in the basis of the propagators
+├── expand_to_full_grid(), full_grid_output(), store_full_grid(), multiply_mask()
+│                           - the reduced basis and the mask around the full-grid steps
 ├── update_dw(w)            [pure virtual]
 ├── advance_propagator()    [pure virtual]
 └── compute_single_segment_stress() [pure virtual]
@@ -346,6 +349,7 @@ CpuSolver<T>                                  [Abstract Base]
         │   ├── transform_backward()
         │   ├── crysfft_           - std::unique_ptr<CpuCrysFFT>, with a space group; its k-space tables
         │   │                        are the solver's (crysfft_boltz_, crysfft_multipliers_)
+        │   ├── crysfft_diffuse()  - the CrysFFT diffusion of reduced-basis propagators
         │   ├── update_laplacian_operator()
         │   ├── prepare_stress()                 [the CrysFFT stress multipliers]
         │   ├── compute_single_segment_stress()  [shared implementation]
@@ -379,9 +383,17 @@ CpuSolver<T>                                  [Abstract Base]
 Every CPU solver takes the space group (`nullptr` for the full grid) in its constructor
 and builds the tables of the cell there; `update_laplacian_operator()` rebuilds them for a
 new cell. `CpuSolver<T>` holds what every CPU solver shares, as `CudaSolver<T>` does on the
-GPU: the computation box, the molecules, the space group and the size of a propagator, and
+GPU: the computation box, the molecules, the space group and the size of a propagator,
 the Boltzmann factors exp(-w ds) of every solver (`compute_exp_dw()`, which each
-`update_dw()` calls with its factor of ds).
+`update_dw()` calls with its factor of ds) with the factor of a discrete segment in the
+basis of the propagators that the backend reads (`boltzmann_factor()`), and the expansion,
+reduction and mask around the full-grid steps (`expand_to_full_grid()`, `full_grid_output()`,
+`store_full_grid()`, `multiply_mask()`, on a full grid of the calling thread). Each step
+function writes out its two paths, the CrysFFT steps in the reduced basis
+(`crysfft_diffuse()` of `CpuSolverPseudoBase`, the counterpart of CUDA's) and the full grid,
+as its CUDA twin does. With a space group the pseudo-spectral and CN-ADI steps and the
+pseudo-spectral stress work in one full grid per thread; the rs bonds, which cannot run in
+place, and the rs stress take a second.
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base. It holds what
 every CUDA solver shares: the computation box, the molecules, the backend's streams, the

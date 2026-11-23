@@ -103,46 +103,9 @@ FftwFFT<T>::FftwFFT(const std::vector<int>& nx)
     else
         total_complex_grid_ = total_grid_;
 
-    try
-    {
-        initPeriodicFFT();
-    }
-    catch (...)
-    {
-        // The destructor does not run for a partly constructed object
-        release();
-        throw;
-    }
-}
-
-//------------------------------------------------------------------------------
-// Destructor
-//------------------------------------------------------------------------------
-template <typename T>
-FftwFFT<T>::~FftwFFT()
-{
-    release();
-}
-
-template <typename T>
-void FftwFFT<T>::release()
-{
-    if (plan_forward_ != nullptr)
-        fftw_destroy_plan(plan_forward_);
-    if (plan_backward_ != nullptr)
-        fftw_destroy_plan(plan_backward_);
-    plan_forward_ = nullptr;
-    plan_backward_ = nullptr;
-}
-
-//------------------------------------------------------------------------------
-// Initialize periodic FFT (FFTW r2c/c2r, or c2c for complex fields)
-//------------------------------------------------------------------------------
-template <typename T>
-void FftwFFT<T>::initPeriodicFFT()
-{
-    // Planning arrays only: the plans run on other arrays of the same alignment
-    // (see the class description). A complex field (c2c) takes two doubles per point.
+    // The plans (FFTW r2c/c2r, or c2c for complex fields), made on planning arrays only:
+    // they run on other arrays of the same alignment (see the class description). A
+    // complex field (c2c) takes two doubles per point.
     constexpr std::size_t doubles_per_point = sizeof(T) / sizeof(double);
     double* field = fftw_alloc_real(doubles_per_point * total_grid_);
     fftw_complex* modes = fftw_alloc_complex(total_complex_grid_);
@@ -171,10 +134,32 @@ void FftwFFT<T>::initPeriodicFFT()
     if (modes != nullptr)
         fftw_free(modes);
 
-    if (!allocated)
-        throw_with_line_number("FFTW memory allocation failed");
-    if (plan_forward_ == nullptr || plan_backward_ == nullptr)
-        throw_with_line_number("FFTW plan creation failed");
+    if (!allocated || plan_forward_ == nullptr || plan_backward_ == nullptr)
+    {
+        // The destructor does not run for a partly constructed object
+        release();
+        throw_with_line_number(allocated ? "FFTW plan creation failed" : "FFTW memory allocation failed");
+    }
+}
+
+//------------------------------------------------------------------------------
+// Destructor
+//------------------------------------------------------------------------------
+template <typename T>
+FftwFFT<T>::~FftwFFT()
+{
+    release();
+}
+
+template <typename T>
+void FftwFFT<T>::release()
+{
+    if (plan_forward_ != nullptr)
+        fftw_destroy_plan(plan_forward_);
+    if (plan_backward_ != nullptr)
+        fftw_destroy_plan(plan_backward_);
+    plan_forward_ = nullptr;
+    plan_backward_ = nullptr;
 }
 
 //------------------------------------------------------------------------------

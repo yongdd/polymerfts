@@ -344,16 +344,10 @@ void CpuSolverCNADI::advance_propagator(
         const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
         const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
 
-        // On the full grid: with a space group from and back to its reduced basis
-        const double* q_full_in = q_in;
-        double* q_full_out = q_out;
-        if (this->space_group_ != nullptr)
-        {
-            work.q_full.resize(M);
-            this->space_group_->from_reduced_basis(q_in, work.q_full.data(), 1);
-            q_full_in = work.q_full.data();
-            q_full_out = work.q_full.data();
-        }
+        // On the full grid: with a space group from and back to its reduced basis, the step in
+        // place in one full grid (it reads q_full_in into work.q_exp before it writes)
+        const double* q_full_in = this->expand_to_full_grid(q_in, work.q_full);
+        double* q_full_out = this->full_grid_output(q_out, work.q_full);
 
         // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
         for (int i = 0; i < M; i++)
@@ -365,14 +359,8 @@ void CpuSolverCNADI::advance_propagator(
         else
             step_1d(matrices, _exp_dw, q_full_out, work);
 
-        if (this->space_group_ != nullptr)
-            this->space_group_->to_reduced_basis(q_full_out, q_out, 1);
-
-        // The box stores the mask in the basis of the propagators (reduced with a space
-        // group); it is symmetric, so masking after the reduction equals masking the full grid
-        if (q_mask != nullptr)
-            for (int i = 0; i < n_basis_; i++)
-                q_out[i] *= q_mask[i];
+        // Reduce to the basis (with a space group) and multiply the mask
+        this->store_full_grid(q_full_out, q_out, q_mask);
     }
     catch(std::exception& exc)
     {

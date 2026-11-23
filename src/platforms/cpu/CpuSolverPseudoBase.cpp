@@ -2,10 +2,11 @@
  * @file CpuSolverPseudoBase.cpp
  * @brief Implementation of common pseudo-spectral solver functionality.
  *
- * Implements shared code between CpuSolverPseudoRQM4 and
- * CpuSolverPseudoDiscrete, including:
+ * Implements shared code of the three pseudo-spectral solvers (CpuSolverPseudoRQM4,
+ * CpuSolverPseudoRK2 and CpuSolverPseudoDiscrete), including:
  *
  * - FFT object initialization and cleanup
+ * - The CrysFFT diffusion of reduced-basis propagators
  * - Laplacian operator updates
  * - Stress computation with chain-model-specific factors
  *
@@ -18,7 +19,6 @@
 #include <array>
 #include <cmath>
 #include <complex>
-#include <cstring>
 #include <type_traits>
 #include <algorithm>
 
@@ -157,90 +157,72 @@ void CpuSolverPseudoBase<T>::init_crysfft()
 }
 
 //------------------------------------------------------------------------------
-// CrysFFT grid helpers (reduced basis <-> physical grid)
+// CrysFFT diffusion of reduced-basis propagators
 //------------------------------------------------------------------------------
 template <typename T>
-void CpuSolverPseudoBase<T>::fill_crysfft_from_reduced(const double* reduced_in, double* phys_out) const
+void CpuSolverPseudoBase<T>::crysfft_diffuse(const double* q_in, double* q_out, double coeff,
+                                             const double* pre, const double* mid, const double* post) const
 {
-    if (!use_crysfft())
-        throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
-
-    const int M_phys = get_crysfft_physical_size();
-    if (crysfft_identity_map_)
-    {
-        std::memcpy(phys_out, reduced_in, sizeof(double) * M_phys);
-        return;
-    }
-    for (int i = 0; i < M_phys; ++i)
-    {
-        phys_out[i] = reduced_in[crysfft_reduced_indices_[i]];
-    }
-}
-
-template <typename T>
-void CpuSolverPseudoBase<T>::reduce_crysfft_to_reduced(const double* phys_in, double* reduced_out) const
-{
-    if (!use_crysfft())
-        throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
-
-    const int M_phys = get_crysfft_physical_size();
-    if (crysfft_identity_map_)
-    {
-        std::memcpy(reduced_out, phys_in, sizeof(double) * M_phys);
-        return;
-    }
-
-    // The CrysFFT path is taken only when the physical grid reaches every reduced-basis
-    // point (plan_crysfft()), so the scatter writes all of reduced_out
-    for (int i = 0; i < M_phys; ++i)
-    {
-        reduced_out[crysfft_reduced_indices_[i]] = phys_in[i];
-    }
-}
-
-//------------------------------------------------------------------------------
-// CrysFFT helpers
-//------------------------------------------------------------------------------
-template <typename T>
-int CpuSolverPseudoBase<T>::get_crysfft_physical_size() const
-{
-    if (!crysfft_)
-        throw_with_line_number("CrysFFT requested but CrysFFT is not initialized.");
-    return crysfft_->get_M_physical();
-}
-
-template <typename T>
-std::pair<double*, double*> CpuSolverPseudoBase<T>::crysfft_grids(WorkArrays& work) const
-{
-    const int M_phys = get_crysfft_physical_size();
-    if (static_cast<int>(work.phys_in.size()) != M_phys)
-    {
-        work.phys_in.resize(M_phys);
-        work.phys_out.resize(M_phys);
-    }
-    return {work.phys_in.data(), work.phys_out.data()};
-}
-
-template <typename T>
-void CpuSolverPseudoBase<T>::crysfft_step(double* q_in, double* q_out, double coeff,
-                                          const double* pre, const double* post) const
-{
-    const auto boltz = crysfft_boltz_.find(coeff);
-    if (boltz == crysfft_boltz_.end())
+    const auto boltz_it = crysfft_boltz_.find(coeff);
+    if (boltz_it == crysfft_boltz_.end())
         throw_with_line_number("No CrysFFT table was built for the step coefficient " + std::to_string(coeff) +
             " (see crysfft_block_coeffs()).");
+    const std::vector<double>& boltz = boltz_it->second;
+    const int M_phys = crysfft_->get_M_physical();
 
-    // The factors live in the reduced basis: physical-grid point i holds reduced-basis point
-    // crysfft_reduced_indices_[i], or i with the identity map
-    const int M_phys = get_crysfft_physical_size();
-    const int* reduced_index = crysfft_identity_map_ ? nullptr : crysfft_reduced_indices_.data();
+    if (crysfft_identity_map_)
+    {
+        // The physical grid is the reduced basis: work in q_out, in place
+        if (pre != nullptr)
+        {
+            for (int i = 0; i < M_phys; ++i)
+                q_out[i] = q_in[i] * pre[i];
+            crysfft_->diffusion(q_out, q_out, boltz);
+        }
+        else
+        {
+            crysfft_->diffusion(q_in, q_out, boltz);   // keeps q_in
+        }
+        if (mid != nullptr)
+        {
+            for (int i = 0; i < M_phys; ++i)
+                q_out[i] *= mid[i];
+            crysfft_->diffusion(q_out, q_out, boltz);
+        }
+        if (post != nullptr)
+            for (int i = 0; i < M_phys; ++i)
+                q_out[i] *= post[i];
+        return;
+    }
+
+    // Gather onto this thread's physical grid, diffuse there in place and scatter back:
+    // physical-grid point i holds reduced-basis point index[i]
+    const int* index = crysfft_reduced_indices_.data();
+    std::vector<double>& phys_vector = work_arrays().phys_in;
+    phys_vector.resize(M_phys);
+    double* phys = phys_vector.data();
     if (pre != nullptr)
         for (int i = 0; i < M_phys; ++i)
-            q_in[i] *= pre[reduced_index ? reduced_index[i] : i];
-    crysfft_->diffusion(q_in, q_out, boltz->second);
+            phys[i] = q_in[index[i]] * pre[index[i]];
+    else
+        for (int i = 0; i < M_phys; ++i)
+            phys[i] = q_in[index[i]];
+
+    crysfft_->diffusion(phys, phys, boltz);
+    if (mid != nullptr)
+    {
+        for (int i = 0; i < M_phys; ++i)
+            phys[i] *= mid[index[i]];
+        crysfft_->diffusion(phys, phys, boltz);
+    }
     if (post != nullptr)
         for (int i = 0; i < M_phys; ++i)
-            q_out[i] *= post[reduced_index ? reduced_index[i] : i];
+            phys[i] *= post[index[i]];
+
+    // The CrysFFT path is taken only when the physical grid reaches every reduced-basis
+    // point (plan_crysfft()), so the scatter writes all of q_out
+    for (int i = 0; i < M_phys; ++i)
+        q_out[index[i]] = phys[i];
 }
 
 template <typename T>
@@ -262,16 +244,18 @@ void CpuSolverPseudoBase<T>::update_laplacian_operator()
 {
     try
     {
-        // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when the
-        // full-grid path uses them; otherwise prepare_stress() computes them for the
-        // cell in use if the off-diagonal flag turns the stress to the full grid
+        // The CrysFFT tables are rebuilt now, and so are the Pseudo tables when a
+        // full-grid path (propagator steps or stress) uses them, that is unless the stress
+        // takes the CrysFFT fast path, which implies the CrysFFT steps; otherwise
+        // prepare_stress() computes them for the cell in use if the off-diagonal flag
+        // turns the stress to the full grid
         pseudo_current_ = false;
         if constexpr (std::is_same_v<T, double>)
         {
             if (use_crysfft())
                 update_crysfft_tables();
         }
-        if (full_grid_path())
+        if (!crysfft_stress_fast_path())
             update_pseudo();
     }
     catch (std::exception& exc)
@@ -286,13 +270,6 @@ void CpuSolverPseudoBase<T>::update_pseudo()
     // The stress basis once a stress is computed (prepare_stress()), as on CUDA
     pseudo->update(cb->get_dx(), cb->get_recip_metric(), stress_basis_);
     pseudo_current_ = true;
-}
-
-template <typename T>
-bool CpuSolverPseudoBase<T>::full_grid_path() const
-{
-    // The stress fast path implies the CrysFFT propagator steps
-    return !crysfft_stress_fast_path();
 }
 
 //------------------------------------------------------------------------------
@@ -315,14 +292,14 @@ template <typename T>
 void CpuSolverPseudoBase<T>::prepare_stress()
 {
     // The Pseudo tables of the cell when the off-diagonal flag has turned the stress
-    // to the full grid since the last cell change (see full_grid_path()), with the
-    // stress basis from the first stress on
+    // to the full grid since the last cell change (see update_laplacian_operator()),
+    // with the stress basis from the first stress on
     if (!stress_basis_)
     {
         stress_basis_ = true;
         pseudo_current_ = false;
     }
-    if (full_grid_path() && !pseudo_current_)
+    if (!crysfft_stress_fast_path() && !pseudo_current_)
         update_pseudo();
 
     // [real-only feature] CrysFFT folds real fields on the physical sub-grid.
@@ -363,24 +340,25 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
             return false;
 
         const int M_full = cb->get_total_grid();
-        const int M_reduced = space_group_->get_n_reduced_basis();
-        const int M_phys = get_crysfft_physical_size();
+        const int M_reduced = n_basis_;
+        const int M_phys = crysfft_->get_M_physical();
         const auto& orbit_counts = space_group_->get_orbit_counts();
 
         WorkArrays& work = work_arrays();
-        std::vector<double>& phys_q2 = work.phys_1;
-        std::vector<double>& phys_tmp = work.phys_2;
-        std::vector<double>& reduced_tmp = work.reduced;
-        if (static_cast<int>(phys_q2.size()) != M_phys)
-        {
-            phys_q2.resize(M_phys);
-            phys_tmp.resize(M_phys);
-        }
-        if (static_cast<int>(reduced_tmp.size()) != M_reduced)
-            reduced_tmp.resize(M_reduced);
+        std::vector<double>& phys_q2 = work.phys_in;
+        std::vector<double>& phys_tmp = work.phys_out;
+        phys_q2.resize(M_phys);
+        phys_tmp.resize(M_phys);
 
-        // Reduced -> physical grid (q_1 is summed in the reduced basis)
-        fill_crysfft_from_reduced(q_2, phys_q2.data());
+        // q_2 on the physical grid, once for all axis groups (apply_multiplier keeps its
+        // input); q_1 is summed in the reduced basis. Physical-grid point i holds
+        // reduced-basis point crysfft_reduced_indices_[i], or i with the identity map
+        const int* index = crysfft_reduced_indices_.data();
+        if (crysfft_identity_map_)
+            std::copy(q_2, q_2 + M_phys, phys_q2.begin());
+        else
+            for (int i = 0; i < M_phys; ++i)
+                phys_q2[i] = q_2[index[i]];
 
         // sums[d] = Σ_r n_orbit(r) q1(r) [F⁻¹ k_d² ĝ F q2](r) over the reduced basis, one
         // multiplier Σ_{d in group} k_d² per group of equivalent axes, shared equally by
@@ -395,7 +373,17 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
                 throw_with_line_number("The CrysFFT stress multipliers of b^2 = " + std::to_string(bond_length_sq) +
                     " were not built (see prepare_stress()).");
             crysfft_->apply_multiplier(phys_q2.data(), phys_tmp.data(), multiplier->second);
-            reduce_crysfft_to_reduced(phys_tmp.data(), reduced_tmp.data());
+
+            // Back to the reduced basis: the physical grid itself with the identity map, else
+            // a scatter, which writes every reduced-basis point (plan_crysfft())
+            const double* reduced_tmp = phys_tmp.data();
+            if (!crysfft_identity_map_)
+            {
+                work.reduced.resize(M_reduced);
+                for (int i = 0; i < M_phys; ++i)
+                    work.reduced[index[i]] = phys_tmp[i];
+                reduced_tmp = work.reduced.data();
+            }
             double sum = 0.0;
             for (int i = 0; i < M_reduced; ++i)
                 sum += static_cast<double>(orbit_counts[i]) * q_1[i] * reduced_tmp[i];
@@ -524,7 +512,6 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
     try
     {
         const int N_STRESS = 6;  // v⊗v dyad sums: V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃
-        const int M_COMPLEX = pseudo->get_total_complex_grid();
         const double bond_length_sq = stress_bond_length_sq(*molecules, monomer_type, is_half_bond_length);
 
         std::vector<T> stress(N_STRESS, 0.0);
@@ -536,12 +523,11 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // Chain-model-specific Boltzmann bond factor (nullptr for continuous chains)
         const double* _boltz_bond = get_stress_boltz_bond(monomer_type, is_half_bond_length);
 
-        const int coeff_size = complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
         WorkArrays& work = work_arrays();
         std::vector<double>& qk_1 = work.k_1;
         std::vector<double>& qk_2 = work.k_2;
-        qk_1.resize(coeff_size);
-        qk_2.resize(coeff_size);
+        qk_1.resize(spectrum_size());
+        qk_2.resize(spectrum_size());
 
         // ============================================================================
         // PERFORMANCE-CRITICAL: Orthogonal box optimization
@@ -562,34 +548,12 @@ std::vector<T> CpuSolverPseudoBase<T>::compute_single_segment_stress(
         // ============================================================================
         const bool is_orthogonal = this->cb->is_orthogonal() && !this->force_off_diagonal_stress_;
 
-        // Expand reduced basis → full grid (real fields: the factory refuses complex
-        // fields with a space group). Per-thread work arrays: this function is called
-        // from OpenMP parallel regions (block loops in compute_stress), so no shared
-        // scratch space may be used here.
-        T* q_1_full = q_1;
-        T* q_2_full = q_2;
-        if constexpr (std::is_same<T, double>::value)
-        {
-            if (space_group_ != nullptr)
-            {
-                std::vector<T>& q_full_1_local = work.pair_1;
-                std::vector<T>& q_full_2_local = work.pair_2;
-                const int M_full = cb->get_total_grid();
-                if (static_cast<int>(q_full_1_local.size()) != M_full)
-                {
-                    q_full_1_local.resize(M_full);
-                    q_full_2_local.resize(M_full);
-                }
-                space_group_->from_reduced_basis(q_1, q_full_1_local.data(), 1);
-                space_group_->from_reduced_basis(q_2, q_full_2_local.data(), 1);
-                q_1_full = q_full_1_local.data();
-                q_2_full = q_full_2_local.data();
-            }
-        }
-
-        // Transform to Fourier space and accumulate Σ_k kernel(k) v_i v_j
-        transform_forward(q_1_full, qk_1.data());
-        transform_forward(q_2_full, qk_2.data());
+        // Transform to Fourier space, with a space group from the full grid of this thread
+        // (this function runs in the OpenMP block loops of compute_stress), expanded from
+        // the reduced basis for one propagator after the other, and accumulate
+        // Σ_k kernel(k) v_i v_j
+        transform_forward(this->expand_to_full_grid(q_1, work.q_full), qk_1.data());
+        transform_forward(this->expand_to_full_grid(q_2, work.q_full), qk_2.data());
         accumulate_stress(qk_1.data(), qk_2.data(), bond_length_sq, _boltz_bond, is_orthogonal, stress);
 
         return stress;

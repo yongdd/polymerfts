@@ -3,13 +3,14 @@
  * @brief Common base class for CPU pseudo-spectral solvers.
  *
  * This header provides CpuSolverPseudoBase, a common base class that
- * consolidates shared functionality between CpuSolverPseudoRQM4
- * and CpuSolverPseudoDiscrete, including:
+ * consolidates shared functionality of the three pseudo-spectral solvers
+ * (CpuSolverPseudoRQM4, CpuSolverPseudoRK2 and CpuSolverPseudoDiscrete), including:
  *
  * - FFT object management (creation/destruction)
  * - Pseudo-spectral operator helper
  * - Boundary condition handling
  * - Transform dispatch methods
+ * - The CrysFFT diffusion of reduced-basis propagators (crysfft_diffuse())
  * - Laplacian operator updates
  * - Stress computation (with customizable coefficient function)
  *
@@ -20,10 +21,11 @@
  * or MklFFT<T> (periodic, by backend) or MakhoulFFT<T> (walls), the transform of the grid
  * of any dimension.
  *
- * **Stress Array Convention (Voigt Notation):**
+ * **Stress Array Convention:**
  *
- * - Index 0-2: Diagonal components (σ₁, σ₂, σ₃) for length optimization
- * - Index 3-5: Off-diagonal components (σ₁₂, σ₁₃, σ₂₃) for angle optimization
+ * The segment stress returns the v⊗v dyad sums V_ij = Σ_k kernel(k) v_i v_j:
+ * - Index 0-2: Diagonal sums (V₁₁, V₂₂, V₃₃) for length optimization
+ * - Index 3-5: Cross sums (V₁₂, V₁₃, V₂₃) for angle optimization
  *
  * @see CpuSolverPseudoRQM4 for continuous chain implementation
  * @see CpuSolverPseudoDiscrete for discrete chain implementation
@@ -82,11 +84,9 @@ protected:
     struct WorkArrays
     {
         std::vector<T> q_1, q_2;                     ///< Step results (RQM4 full step and half steps)
-        std::vector<T> q_full_in, q_full_out;        ///< Full-grid copies of reduced-basis propagators
+        std::vector<T> q_full;                       ///< Full grid of a reduced-basis propagator (space group)
         std::vector<double> k_1, k_2;                ///< Spectral coefficients
-        std::vector<double> phys_in, phys_out;       ///< CrysFFT physical grid
-        std::vector<T> pair_1, pair_2;               ///< Stress: full-grid propagator pair
-        std::vector<double> phys_1, phys_2;          ///< Stress: CrysFFT physical grid
+        std::vector<double> phys_in, phys_out;       ///< CrysFFT physical grid (steps: phys_in; stress: both)
         std::vector<double> reduced;                 ///< Stress: reduced-basis sum
     };
 
@@ -133,20 +133,16 @@ protected:
 
     bool use_crysfft() const { return crysfft_ != nullptr; }
 
-    int get_crysfft_physical_size() const;
-
-    /// The two physical-grid arrays of the calling thread's CrysFFT steps
-    /// (WorkArrays::phys_in, phys_out), sized for the physical grid.
-    std::pair<double*, double*> crysfft_grids(WorkArrays& work) const;
-
     /**
-     * @brief One CrysFFT step on the physical grid: q_out = post · exp(coeff ∇²) (pre · q_in).
+     * @brief CrysFFT diffusion of reduced-basis propagators on the physical sub-grid.
      *
-     * `pre` and `post` are factors in the reduced basis (exp_dw) or nullptr; `pre`
-     * multiplies q_in in place. The Boltzmann table of coeff, which
-     * crysfft_block_coeffs() must list, is looked up, never built.
+     * q_out = post · D · (mid · D ·) pre · q_in with D = exp(coeff ∇²): the factors are
+     * reduced-basis Boltzmann factors (exp_dw), nullptr to skip one, and a non-null mid
+     * adds the second diffusion step. q_in is kept; q_out may be q_in. The Boltzmann
+     * table of coeff, which crysfft_block_coeffs() must list, is looked up, never built.
      */
-    void crysfft_step(double* q_in, double* q_out, double coeff, const double* pre, const double* post) const;
+    void crysfft_diffuse(const double* q_in, double* q_out, double coeff,
+                         const double* pre, const double* mid, const double* post) const;
 
     /**
      * @brief Coefficients (get_effective_diffusion_coeff()) of the CrysFFT steps
@@ -154,7 +150,7 @@ protected:
      *
      * Their Boltzmann tables are built for every block when the CrysFFT path is
      * set up and rebuilt when the cell changes, so the propagator loop only looks
-     * them up; crysfft_step() rejects a coefficient whose table was not built.
+     * them up; crysfft_diffuse() rejects a coefficient whose table was not built.
      */
     virtual std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const = 0;
 
@@ -167,6 +163,13 @@ protected:
      * @param cdata Fourier/DCT coefficient output
      */
     void transform_forward(T* rdata, double* cdata) { fft_->forward(rdata, cdata); }
+
+    /// Doubles of the spectral coefficients of a full-grid field (complex pairs when complex_coeffs())
+    int spectrum_size() const
+    {
+        const int n_coeffs = pseudo->get_total_complex_grid();
+        return complex_coeffs() ? 2 * n_coeffs : n_coeffs;
+    }
 
     /**
      * @brief Backward transform with factors: rdata = r_factor · backward(k_factor · cdata)
@@ -303,14 +306,6 @@ public:
 
 protected:
     /**
-     * @brief Copy a reduced-basis field onto the CrysFFT physical grid, and back.
-     *
-     * Index-map copies (crysfft_reduced_indices_).
-     */
-    void fill_crysfft_from_reduced(const double* reduced_in, double* phys_out) const;
-    void reduce_crysfft_to_reduced(const double* phys_in, double* reduced_out) const;
-
-    /**
      * @brief Compute stress contribution from a single segment.
      *
      * Computes ∂ln(Q)/∂θ in Fourier space by multiplying forward and backward
@@ -326,9 +321,9 @@ protected:
      * @param monomer_type       Monomer type for segment length
      * @param is_half_bond_length Whether using half bond (discrete model)
      *
-     * @return Stress components in Voigt notation:
-     *         [σ₁, σ₂, σ₃, σ₁₂, σ₁₃, σ₂₃] (6 components)
-     *         For 2D: [σ₁, σ₂, σ₁₂, 0, 0, 0]
+     * @return v⊗v dyad sums V_ij (deformation-vector basis, see accumulate_stress()):
+     *         [V₁₁, V₂₂, V₃₃, V₁₂, V₁₃, V₂₃] (6 components)
+     *         For 2D: [V₁₁, V₂₂, V₁₂, 0, 0, 0]
      *         For 1D: only index 0 is meaningful
      */
     std::vector<T> compute_single_segment_stress(
@@ -340,9 +335,6 @@ private:
 
     /// Compute the Pseudo tables of the current cell.
     void update_pseudo();
-    /// Whether a full-grid path (propagator steps or stress) uses the Pseudo tables: not when the
-    /// CrysFFT steps propagate and the stress takes the CrysFFT fast path.
-    bool full_grid_path() const;
 
     PerThread<WorkArrays> work_arrays_;   ///< Work arrays of each thread
 };

@@ -23,7 +23,7 @@ CpuComputationBackend<T>::CpuComputationBackend(
     ComputationBox<T>* cb, Molecules* molecules,
     const NumericalMethodInfo& method_info,
     FFTBackend fft_backend, SpaceGroup* space_group, int max_n_streams)
-    : cb(cb), space_group(space_group), chain_model(molecules->get_model_name())
+    : cb(cb)
 {
     n_basis = cb->get_n_basis();
     n_streams = std::min(this->n_streams_from_env(/*default_n_streams=*/4), max_n_streams);
@@ -122,23 +122,6 @@ void CpuComputationBackend<T>::update_dw(const std::map<std::string, BackendArra
     for (const auto& [monomer_type, w_monomer] : w)
         w_input[monomer_type] = raw(w_monomer);
     solver->update_dw(w_input);
-
-    // The discrete solver keeps exp(-w ds) on the full grid unless its CrysFFT
-    // path stores it in the reduced basis already
-    if (chain_model == "discrete" && space_group != nullptr)
-    {
-        for (const auto& [monomer_type, exp_dw_solver] : solver->exp_dw.at(0))
-        {
-            std::vector<T>& reduced = exp_dw_reduced[monomer_type];
-            reduced.resize(n_basis);
-            if (static_cast<int>(exp_dw_solver.size()) == n_basis)
-                std::copy(exp_dw_solver.begin(), exp_dw_solver.end(), reduced.begin());
-            else if constexpr (std::is_same_v<T, double>)
-                space_group->to_reduced_basis(exp_dw_solver.data(), reduced.data(), 1);
-            else
-                throw_with_line_number("Discrete chains with a space group require real fields.");
-        }
-    }
 }
 
 template <typename T>
@@ -164,9 +147,8 @@ void CpuComputationBackend<T>::advance_propagator_half_bond_step(
 template <typename T>
 BackendArray<T>* CpuComputationBackend<T>::boltzmann_factor(const std::string& monomer_type)
 {
-    if (space_group != nullptr)
-        return reinterpret_cast<BackendArray<T>*>(exp_dw_reduced.at(monomer_type).data());
-    return reinterpret_cast<BackendArray<T>*>(solver->exp_dw.at(0).at(monomer_type).data());
+    // The solver's table in the basis of the propagators; the callers only read it
+    return reinterpret_cast<BackendArray<T>*>(const_cast<T*>(solver->boltzmann_factor(monomer_type)));
 }
 
 // ==================== Propagator initial conditions ====================

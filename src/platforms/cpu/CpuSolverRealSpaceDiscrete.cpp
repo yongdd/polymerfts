@@ -19,10 +19,8 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <type_traits>
 
 #include "CpuSolverRealSpaceDiscrete.h"
-#include "SpaceGroup.h"
 
 namespace
 {
@@ -143,28 +141,6 @@ CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb,
 }
 
 template <typename T>
-const T* CpuSolverRealSpaceDiscrete<T>::expanded(const T* q, std::vector<T>& buffer) const
-{
-    if (space_group_ == nullptr)
-        return q;
-    if constexpr (std::is_same_v<T, double>)
-    {
-        buffer.resize(cb->get_total_grid());
-        space_group_->from_reduced_basis(q, buffer.data(), 1);
-        return buffer.data();
-    }
-    throw_with_line_number("Space groups need real fields.");
-}
-
-template <typename T>
-void CpuSolverRealSpaceDiscrete<T>::reduced(const T* q_full, T* q) const
-{
-    if constexpr (std::is_same_v<T, double>)
-        if (space_group_ != nullptr)
-            space_group_->to_reduced_basis(q_full, q, 1);
-}
-
-template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
     try
@@ -239,23 +215,16 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
 {
     try
     {
-        // On the full grid; with a space group from and back to its reduced basis, where the mask is
+        // On the full grid; with a space group from and back to its reduced basis, where the mask
+        // is, through a second full grid (the bond does not run in place)
         const int M = cb->get_total_grid();
         const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
         WorkArrays& work = work_arrays();
-        T* out = q_out;
-        if (space_group_ != nullptr)
-        {
-            work.full_2.resize(M);
-            out = work.full_2.data();
-        }
-        convolve(expanded(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
+        T* out = this->full_grid_output(q_out, work.full_2);
+        convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
         for (int i = 0; i < M; ++i)
             out[i] *= exp_dw[i];
-        reduced(out, q_out);
-        if (q_mask != nullptr)
-            for (int i = 0; i < n_basis_; ++i)
-                q_out[i] *= q_mask[i];
+        this->store_full_grid(out, q_out, q_mask);
     }
     catch (std::exception& exc)
     {
@@ -269,14 +238,9 @@ void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T
     try
     {
         WorkArrays& work = work_arrays();
-        if (space_group_ == nullptr)
-            convolve(q_in, q_out, bonds.half.at(monomer_type), work);
-        else
-        {
-            work.full_2.resize(cb->get_total_grid());
-            convolve(expanded(q_in, work.full_1), work.full_2.data(), bonds.half.at(monomer_type), work);
-            reduced(work.full_2.data(), q_out);
-        }
+        T* out = this->full_grid_output(q_out, work.full_2);
+        convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.half.at(monomer_type), work);
+        this->store_full_grid(out, q_out, nullptr);
     }
     catch (std::exception& exc)
     {
@@ -308,8 +272,8 @@ std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
         WorkArrays& work = work_arrays();
         std::vector<T>& dq = work.dq;
         dq.resize(M);
-        const T* full_q_1 = expanded(q_1, work.full_1);
-        const T* full_q_2 = expanded(q_2, work.full_2);
+        const T* full_q_1 = this->expand_to_full_grid(q_1, work.full_1);
+        const T* full_q_2 = this->expand_to_full_grid(q_2, work.full_2);
         std::vector<T> stress(6, T(0.0));
         for (int a = 0; a < dim; ++a)
         {
