@@ -44,7 +44,7 @@
 #include "CudaPseudo.h"
 #include "CudaTypeDispatch.h"
 #include "CudaSolverPseudoDiscrete.h"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 template <typename T>
 CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(

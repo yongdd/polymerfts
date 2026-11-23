@@ -26,13 +26,8 @@
 #include "CrysFFTSelector.h"
 #include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
+#include "CrysFFTRecursive3m.h"
 #include "PseudoSolverHelpers.h"
-#ifdef USE_CPU_FFTW
-#include "FftwCrysFFTRecursive3m.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "MklCrysFFTRecursive3m.h"
-#endif
 
 namespace
 {
@@ -125,27 +120,13 @@ void CpuSolverPseudoBase<T>::init_crysfft()
     if (!crysfft_identity_map_)
         crysfft_reduced_indices_ = plan.map.phys_to_reduced;
 
+    // The engines run over the real FFT of the selected library
     if (plan.engine == CrysFFTEngine::Recursive3m)
-    {
-#ifdef USE_CPU_MKL
-        if (fft_backend_ == FFTBackend::MKL)
-            crysfft_ = std::make_unique<MklCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
-#endif
-#ifdef USE_CPU_FFTW
-        if (fft_backend_ == FFTBackend::FFTW)
-            crysfft_ = std::make_unique<FftwCrysFFTRecursive3m>(nx_logical, plan.m3_translations);
-#endif
-    }
+        crysfft_ = std::make_unique<CrysFFTRecursive3m>(nx_logical, plan.m3_translations, fft_backend_);
     else if (plan.engine == CrysFFTEngine::Pmmm)
-    {
         crysfft_ = std::make_unique<CrysFFTPmmm>(nx_logical, fft_backend_);
-    }
-    else if (plan.engine == CrysFFTEngine::ObliqueZ)
-    {
+    else
         crysfft_ = std::make_unique<CrysFFTObliqueZ>(nx_logical, fft_backend_);
-    }
-    if (!crysfft_)
-        throw_with_line_number("No CrysFFT engine was built for the selected FFT library.");
 
     // The Boltzmann tables of the steps of the blocks, which update_laplacian_operator()
     // builds for the cell
@@ -350,7 +331,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
         phys_q2.resize(M_phys);
         phys_tmp.resize(M_phys);
 
-        // q_2 on the physical grid, once for all axis groups (apply_multiplier keeps its
+        // q_2 on the physical grid, once for all axis groups (diffusion keeps its
         // input); q_1 is summed in the reduced basis. Physical-grid point i holds
         // reduced-basis point crysfft_reduced_indices_[i], or i with the identity map
         const int* index = crysfft_reduced_indices_.data();
@@ -372,7 +353,7 @@ bool CpuSolverPseudoBase<T>::compute_stress_crysfft(
             if (multiplier == crysfft_multipliers_.end())
                 throw_with_line_number("The CrysFFT stress multipliers of b^2 = " + std::to_string(bond_length_sq) +
                     " were not built (see prepare_stress()).");
-            crysfft_->apply_multiplier(phys_q2.data(), phys_tmp.data(), multiplier->second);
+            crysfft_->diffusion(phys_q2.data(), phys_tmp.data(), multiplier->second);
 
             // Back to the reduced basis: the physical grid itself with the identity map, else
             // a scatter, which writes every reduced-basis point (plan_crysfft())

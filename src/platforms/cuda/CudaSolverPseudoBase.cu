@@ -15,7 +15,7 @@
 #include "CudaPseudo.h"
 #include "CudaTypeDispatch.h"
 #include "CudaDeviceOps.cuh"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTPmmm.h"
 #include "CudaCrysFFTRecursive3m.h"
 #include "CudaCrysFFTObliqueZ.h"
 #include "CrysFFTSelector.h"
@@ -514,7 +514,7 @@ void CudaSolverPseudoBase<T>::init_crysfft()
         else if (plan.engine == CrysFFTEngine::ObliqueZ)
             work_[i].crysfft = std::make_unique<CudaCrysFFTObliqueZ>(nx_logical);
         else
-            work_[i].crysfft = std::make_unique<CudaCrysFFT>(nx_logical);
+            work_[i].crysfft = std::make_unique<CudaCrysFFTPmmm>(nx_logical);
 
         work_[i].d_crysfft_in.allocate(map.M_phys);
         work_[i].d_crysfft_out.allocate(map.M_phys);
@@ -688,9 +688,9 @@ void CudaSolverPseudoBase<T>::crysfft_segment_stress(
     CudaCrysFFTBase* crysfft = work.crysfft.get();
     double* d_reduced = work.d_stress_sum;
 
-    // q2 on the physical grid, once for all axis groups: an out-of-place apply_multiplier
-    // preserves its input (the Pmmm engine's DCT-II and the recursive 3m engine's
-    // out-of-place D2Z only read it)
+    // q2 on the physical grid, once for all axis groups: an out-of-place diffusion() with a
+    // multiplier table preserves its input (the Pmmm engine's DCT-II and the recursive 3m
+    // engine's out-of-place D2Z only read it)
     const double* d_q2_phys = d_q_2;
     if (!crysfft_identity_map_)
     {
@@ -712,7 +712,7 @@ void CudaSolverPseudoBase<T>::crysfft_segment_stress(
             throw_with_line_number("The CrysFFT stress multipliers of b^2 = " + std::to_string(bond_length_sq) +
                 " were not built (see prepare_stress()).");
         masks[g] = keys[g].first;
-        crysfft->apply_multiplier(const_cast<double*>(d_q2_phys), work.d_crysfft_out, multiplier->second, stream);
+        crysfft->diffusion(d_q2_phys, work.d_crysfft_out, multiplier->second, stream);
 
         // Back to the reduced basis
         const double* d_tmp_reduced = work.d_crysfft_out;

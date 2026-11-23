@@ -375,7 +375,6 @@ ENDIF()
 IF(BUILD_CPU_FFTW_LIB)
     ADD_LIBRARY(cpu-fftw
         src/platforms/cpu/FftwFFT.cpp
-        src/platforms/cpu/FftwCrysFFTRecursive3m.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     # PUBLIC so consumers (tests, _core) inherit FFTW transitively and no
@@ -386,7 +385,6 @@ IF(BUILD_CPU_MKL_LIB)
     ADD_LIBRARY(cpu-mkl
         src/platforms/cpu/MklFFT.cpp
         src/platforms/cpu/MklRealTransform.cpp
-        src/platforms/cpu/MklCrysFFTRecursive3m.cpp
         $<TARGET_OBJECTS:cpu-common>
     )
     TARGET_LINK_LIBRARIES(cpu-mkl ${MKL_LIBRARIES})
@@ -614,7 +612,7 @@ IF(POLYMERFTS_BUILD_CUDA)
         src/platforms/cuda/CudaCommon.cu
         src/platforms/cuda/CudaComputationBox.cu
         src/platforms/cuda/CudaPseudo.cu
-        src/platforms/cuda/CudaCrysFFT.cu
+        src/platforms/cuda/CudaCrysFFTPmmm.cu
         src/platforms/cuda/CudaCrysFFTRecursive3m.cu
         src/platforms/cuda/CudaCrysFFTObliqueZ.cu
         src/platforms/cuda/CudaSolver.cu

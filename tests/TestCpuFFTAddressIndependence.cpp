@@ -61,14 +61,13 @@
 #include "CpuCrysFFT.h"
 #ifdef USE_CPU_MKL
 #include "MklFFT.h"
-#include "MklCrysFFTRecursive3m.h"
 #endif
 #ifdef USE_CPU_FFTW
 #include "FftwFFT.h"
-#include "FftwCrysFFTRecursive3m.h"
 #endif
 #if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
 #include "CrysFFTObliqueZ.h"
+#include "CrysFFTRecursive3m.h"
 #endif
 
 #if defined(USE_CPU_MKL) || defined(USE_CPU_FFTW)
@@ -334,13 +333,12 @@ bool check_crysfft(const std::string& label, const CpuCrysFFT& engine, const std
     {
         engine.build_multiplier(multiplier, cell, 3, 0.011);
         ok &= report(label + " stress multiplier", run_placements(offsets, field, M,
-            [&](double* in, double* out) { engine.apply_multiplier(in, out, multiplier); }), true);
+            [&](double* in, double* out) { engine.diffusion(in, out, multiplier); }), true);
     }
     return ok;
 }
 
 // The engines of one library on the grids of TestCpuCrysFFTTables, with an odd physical grid for 3m
-template <typename Recursive3m>
 bool check_crysfft_engines(const std::string& library, FFTBackend backend)
 {
     const double right = std::numbers::pi / 2.0;
@@ -348,8 +346,11 @@ bool check_crysfft_engines(const std::string& library, FFTBackend backend)
     const std::array<double, 6> hexagonal = {4.0, 4.0, 3.0, right, right, 2.0 * std::numbers::pi / 3.0};
     const bool fftw = library == "fftw";
     bool ok = true;
-    ok &= check_crysfft(library + " 3m 16x12x8", Recursive3m({16, 12, 8}), orthorhombic, fftw);
-    ok &= check_crysfft(library + " 3m 10x10x10", Recursive3m({10, 10, 10}), orthorhombic, fftw);
+    const std::array<double, 9> no_translations{};   // m3 mirrors through the origin
+    ok &= check_crysfft(library + " 3m 16x12x8", CrysFFTRecursive3m({16, 12, 8}, no_translations, backend),
+                        orthorhombic, fftw);
+    ok &= check_crysfft(library + " 3m 10x10x10", CrysFFTRecursive3m({10, 10, 10}, no_translations, backend),
+                        orthorhombic, fftw);
     ok &= check_crysfft(library + " ObliqueZ 12x12x8", CrysFFTObliqueZ({12, 12, 8}, backend), hexagonal, fftw);
     ok &= check_crysfft(library + " ObliqueZ 9x9x6", CrysFFTObliqueZ({9, 9, 6}, backend), hexagonal, fftw);
     return ok;
@@ -391,7 +392,7 @@ int main()
         ok &= check_type<MklFFT, double>("mkl");
         ok &= check_type<MklFFT, std::complex<double>>("mkl");
         std::cout << "MKL CrysFFT engines from and into the same placements" << std::endl;
-        ok &= check_crysfft_engines<MklCrysFFTRecursive3m>("mkl", FFTBackend::MKL);
+        ok &= check_crysfft_engines("mkl", FFTBackend::MKL);
 #endif
 #ifdef USE_CPU_FFTW
         std::cout << "Periodic FFTW transforms from and into arrays 0, 8, ..., 56 bytes after a 64-byte boundary"
@@ -399,7 +400,7 @@ int main()
         ok &= check_type<FftwFFT, double>("fftw");
         ok &= check_type<FftwFFT, std::complex<double>>("fftw");
         std::cout << "FFTW CrysFFT engines from and into the same placements" << std::endl;
-        ok &= check_crysfft_engines<FftwCrysFFTRecursive3m>("fftw", FFTBackend::FFTW);
+        ok &= check_crysfft_engines("fftw", FFTBackend::FFTW);
 #endif
         std::cout << (ok ? "All placements give the same result" : "Some placements give different results")
                   << std::endl;

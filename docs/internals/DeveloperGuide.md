@@ -139,7 +139,7 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
 | Transforms | periodic: `FftwFFT<T>`, `MklFFT<T>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaMakhoulTransform<T>` (one cuFFT of the grid) |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` and `CrysFFTObliqueZ` (over the real FFT of either library), `{Fftw,Mkl}CrysFFTRecursive3m` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm`, `CrysFFTRecursive3m` and `CrysFFTObliqueZ` (over the real FFT of either library) | `CudaCrysFFTBase`: `CudaCrysFFTPmmm`, `CudaCrysFFTRecursive3m` and `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
 
 ### Platform Selection
@@ -464,7 +464,7 @@ box and `MakhoulFFT` for a box of reflecting and absorbing axes. `FFT<T>` is a C
 interface. On CUDA the solvers hold cuFFT plans for periodic boxes and
 `CudaMakhoulTransform<T>` for boxes with walls, whose coefficients have the layout of
 `FFT<T>` and the scale of `MakhoulFFT` there (half of FFTW's REDFT10/RODFT10 per axis);
-`CudaCrysFFT` (Pmmm) and `CudaFourierTransform` use `CudaMakhoulTransform` as well.
+`CudaCrysFFTPmmm` and `CudaFourierTransform` use `CudaMakhoulTransform` as well.
 
 **Transform Types:**
 

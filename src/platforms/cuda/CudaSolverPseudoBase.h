@@ -55,7 +55,7 @@
 #include "CudaMakhoulTransform.h"
 #include "CudaSolver.h"
 #include "CudaCommon.h"
-#include "CudaCrysFFT.h"   // CudaCrysFFTBase
+#include "CudaCrysFFTBase.h"
 #include "PseudoSolverHelpers.h"
 #include "SpaceGroup.h"   // CrysFFTEngine
 

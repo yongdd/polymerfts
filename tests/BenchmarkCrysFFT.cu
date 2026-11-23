@@ -22,12 +22,12 @@
 #include <cufft.h>
 
 #include "CudaCommon.h"
-#include "CudaCrysFFT.h"
 #include "CudaCrysFFTObliqueZ.h"
+#include "CudaCrysFFTPmmm.h"
 #include "CudaCrysFFTRecursive3m.h"
 #include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
-#include "FftwCrysFFTRecursive3m.h"
+#include "CrysFFTRecursive3m.h"
 #include "SpaceGroup.h"
 
 #ifndef M_PI
@@ -292,8 +292,8 @@ int main(int argc, char** argv)
     fill_physical_field(h_phys, Nx, Ny, Nz, Lx, Ly, Lz);
     fill_full_field(h_full, Nx, Ny, Nz, Lx, Ly, Lz);
 
-    // === Pmmm DCT (CudaCrysFFT) ===
-    CudaCrysFFT crys_pmmm({Nx, Ny, Nz});
+    // === Pmmm DCT (CudaCrysFFTPmmm) ===
+    CudaCrysFFTPmmm crys_pmmm({Nx, Ny, Nz});
     CudaDeviceBuffer<double> boltz_pmmm;
     crys_pmmm.build_boltzmann(boltz_pmmm, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff, 0);
 
@@ -426,7 +426,7 @@ int main(int argc, char** argv)
         // 3m recursive
         std::vector<double> cpu_m3_in = h_phys;
         std::vector<double> cpu_m3_out(M_phys, 0.0);
-        FftwCrysFFTRecursive3m crys_cpu_3m({Nx, Ny, Nz}, trans_part);
+        CrysFFTRecursive3m crys_cpu_3m({Nx, Ny, Nz}, trans_part, FFTBackend::FFTW);
         std::vector<double> cpu_boltz_3m;
         crys_cpu_3m.build_boltzmann(cpu_boltz_3m, {Lx, Ly, Lz, M_PI/2, M_PI/2, M_PI/2}, coeff);
 

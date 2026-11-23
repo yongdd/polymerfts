@@ -48,7 +48,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 class SpaceGroup;  // Forward declaration
 class CudaCrysFFTBase;  // Forward declaration

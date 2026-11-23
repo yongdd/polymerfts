@@ -1,7 +1,7 @@
 /**
  * @file Recursive3mHelpers.h
  * @brief Host-side pieces of the recursive 2x2y2z (3m) crystallographic FFT
- *        shared by the CPU (CrysFFTRecursive3mBase) and CUDA
+ *        shared by the CPU (CrysFFTRecursive3m) and CUDA
  *        (CudaCrysFFTRecursive3m) engines.
  *
  * The algorithm is described in "Accelerated pseudo-spectral method of

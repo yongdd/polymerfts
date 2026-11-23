@@ -42,7 +42,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 #include "SpaceGroup.h"
 
 class CudaCrysFFTBase;

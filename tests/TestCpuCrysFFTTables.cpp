@@ -52,12 +52,7 @@
 #include "CpuCrysFFT.h"
 #include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
-#ifdef USE_CPU_FFTW
-#include "FftwCrysFFTRecursive3m.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "MklCrysFFTRecursive3m.h"
-#endif
+#include "CrysFFTRecursive3m.h"
 #include "TestNanSafe.h"
 
 namespace {
@@ -92,13 +87,6 @@ std::vector<double> diffused(const CpuCrysFFT& engine, const std::vector<double>
 {
     std::vector<double> out(q.size());
     engine.diffusion(q.data(), out.data(), table);
-    return out;
-}
-
-std::vector<double> multiplied(const CpuCrysFFT& engine, const std::vector<double>& q, const std::vector<double>& table)
-{
-    std::vector<double> out(q.size());
-    engine.apply_multiplier(q.data(), out.data(), table);
     return out;
 }
 
@@ -155,7 +143,7 @@ bool check_engine(const std::string& name, const Make& make, std::array<double, 
         std::vector<double> fresh_multiplier;
         fresh->build_multiplier(fresh_multiplier, new_cell, 1, coeffs[1]);
         ok &= check(name, "multiplier rebuilt in place", multiplier.data() == multiplier_buffer);
-        err = relative_difference(multiplied(*engine, q, multiplier), multiplied(*fresh, q, fresh_multiplier));
+        err = relative_difference(diffused(*engine, q, multiplier), diffused(*fresh, q, fresh_multiplier));
         ok &= check_difference(name, "multiplier of the new cell against a fresh engine", err);
     }
     else
@@ -223,13 +211,14 @@ int main()
         const std::array<double, 6> orthorhombic = {2.0, 1.7, 1.5, right, right, right};
         const std::array<double, 6> hexagonal = {4.0, 4.0, 3.0, right, right, 2.0 * std::numbers::pi / 3.0};
         const std::array<int, 3> nx = {16, 12, 8};
+        const std::array<double, 9> no_translations{};   // m3 mirrors through the origin
         const std::array<int, 3> nx_hex = {12, 12, 8};
         const std::vector<std::array<int, 3>> z_work_grids = {{24, 24, 24}, {16, 16, 64}, {32, 32, 16}, {12, 12, 8}};
         bool ok = true;
 #ifdef USE_CPU_FFTW
         ok &= check_engine("FFTW Pmmm", [&] { return std::make_unique<CrysFFTPmmm>(nx, FFTBackend::FFTW); },
                            orthorhombic, true, rng);
-        ok &= check_engine("FFTW 3m", [&] { return std::make_unique<FftwCrysFFTRecursive3m>(nx); },
+        ok &= check_engine("FFTW 3m", [&] { return std::make_unique<CrysFFTRecursive3m>(nx, no_translations, FFTBackend::FFTW); },
                            orthorhombic, true, rng);
         ok &= check_engine("FFTW ObliqueZ", [&] { return std::make_unique<CrysFFTObliqueZ>(nx_hex, FFTBackend::FFTW); },
                            hexagonal, false, rng);
@@ -238,7 +227,7 @@ int main()
 #ifdef USE_CPU_MKL
         ok &= check_engine("MKL Pmmm", [&] { return std::make_unique<CrysFFTPmmm>(nx, FFTBackend::MKL); },
                            orthorhombic, true, rng);
-        ok &= check_engine("MKL 3m", [&] { return std::make_unique<MklCrysFFTRecursive3m>(nx); },
+        ok &= check_engine("MKL 3m", [&] { return std::make_unique<CrysFFTRecursive3m>(nx, no_translations, FFTBackend::MKL); },
                            orthorhombic, true, rng);
         ok &= check_engine("MKL ObliqueZ", [&] { return std::make_unique<CrysFFTObliqueZ>(nx_hex, FFTBackend::MKL); },
                            hexagonal, false, rng);

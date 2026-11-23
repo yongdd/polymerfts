@@ -33,7 +33,7 @@
 #include "CudaPseudo.h"
 #include "CudaTypeDispatch.h"
 #include "CudaSolverPseudoRK2.h"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 template <typename T>
 CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(

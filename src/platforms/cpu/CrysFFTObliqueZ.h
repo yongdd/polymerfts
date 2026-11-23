@@ -13,10 +13,8 @@
 #define CRYS_FFT_OBLIQUEZ_H_
 
 #include <array>
-#include <cmath>
 #include <complex>
 #include <memory>
-#include <numbers>
 #include <vector>
 
 #include "AlignedScratch.h"
@@ -65,12 +63,7 @@ public:
         M_physical_ = nx_physical_[0] * nx_physical_[1] * n;
         M_spectral_ = nx_physical_[0] * nx_physical_[1] * (n / 2 + 1);
         norm_factor_ = 1.0 / static_cast<double>(nx_logical[0] * nx_logical[1] * nx_logical[2]);
-
-        for (int kz = 0; kz < n / 2 + 1; ++kz)
-        {
-            const double angle = std::numbers::pi * kz / n;
-            twiddle_.emplace_back(std::cos(angle), std::sin(angle));
-        }
+        twiddle_ = obliquez_twiddle(n);
         fft_ = createRealFFT(std::vector<int>(nx_physical_.begin(), nx_physical_.end()), backend);
     }
 

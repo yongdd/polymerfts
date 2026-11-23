@@ -19,25 +19,13 @@ bool cufft_aligned(const void* p)
     return reinterpret_cast<std::uintptr_t>(p) % alignof(cufftDoubleComplex) == 0;
 }
 
+// The k-space product of the fold on the half spectrum (Nz2c = Nz2/2 + 1 stored z modes).
+// `table` holds 16 arrays of M values: the real parts re_j of the eight folded octants
+// at table + j*M, then their imaginary parts im_j at table + (8 + j)*M, rows of Nz2 values.
 __global__ void ker_apply_k_3m(
     cufftDoubleComplex* __restrict__ dst,
     const cufftDoubleComplex* __restrict__ src,
-    const double* __restrict__ k_re0,
-    const double* __restrict__ k_re1,
-    const double* __restrict__ k_re2,
-    const double* __restrict__ k_re3,
-    const double* __restrict__ k_re4,
-    const double* __restrict__ k_re5,
-    const double* __restrict__ k_re6,
-    const double* __restrict__ k_re7,
-    const double* __restrict__ k_im0,
-    const double* __restrict__ k_im1,
-    const double* __restrict__ k_im2,
-    const double* __restrict__ k_im3,
-    const double* __restrict__ k_im4,
-    const double* __restrict__ k_im5,
-    const double* __restrict__ k_im6,
-    const double* __restrict__ k_im7,
+    const double* __restrict__ table, size_t M,
     int Nx2, int Ny2, int Nz2, int Nz2c)
 {
     const int total = Nx2 * Ny2 * Nz2c;
@@ -57,7 +45,9 @@ __global__ void ker_apply_k_3m(
         size_t base_c_110 = static_cast<size_t>(ix_m * Ny2 + iy_m) * Nz2c;
         size_t base_c_010 = static_cast<size_t>(ix * Ny2 + iy_m) * Nz2c;
         size_t base_c_100 = static_cast<size_t>(ix_m * Ny2 + iy) * Nz2c;
-        size_t idx_k = base_k + iz;
+        const double* k = table + base_k + iz;
+        auto re = [k, M](int j) { return k[j * M]; };
+        auto im = [k, M](int j) { return k[(8 + j) * M]; };
 
         cufftDoubleComplex s000 = src[base_c + iz];
         cufftDoubleComplex s110 = src[base_c_110 + iz];
@@ -65,16 +55,16 @@ __global__ void ker_apply_k_3m(
         cufftDoubleComplex s100 = src[base_c_100 + iz];
 
         double out_re =
-            s000.x * k_re0[idx_k] - s000.y * k_im7[idx_k] +
-            s110.x * k_re6[idx_k] - s110.y * k_im1[idx_k] +
-            s010.x * k_re2[idx_k] - s010.y * k_im5[idx_k] +
-            s100.x * k_re4[idx_k] - s100.y * k_im3[idx_k];
+            s000.x * re(0) - s000.y * im(7) +
+            s110.x * re(6) - s110.y * im(1) +
+            s010.x * re(2) - s010.y * im(5) +
+            s100.x * re(4) - s100.y * im(3);
 
         double out_im =
-            s000.x * k_im0[idx_k] + s000.y * k_re7[idx_k] +
-            s110.x * k_im6[idx_k] + s110.y * k_re1[idx_k] +
-            s010.x * k_im2[idx_k] + s010.y * k_re5[idx_k] +
-            s100.x * k_im4[idx_k] + s100.y * k_re3[idx_k];
+            s000.x * im(0) + s000.y * re(7) +
+            s110.x * im(6) + s110.y * re(1) +
+            s010.x * im(2) + s010.y * re(5) +
+            s100.x * im(4) + s100.y * re(3);
 
         dst[base_c + iz].x = out_re;
         dst[base_c + iz].y = out_im;
@@ -142,37 +132,27 @@ void CudaCrysFFTRecursive3m::build_multiplier(CudaDeviceBuffer<double>& table, c
 }
 
 void CudaCrysFFTRecursive3m::diffusion(
-    double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
+    const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
 {
     use_stream(stream);
 
-    // The out-of-place D2Z keeps d_q_in, and the Z2D reads only d_step2_, so an
-    // out-of-place call preserves its input without a copy; d_q_out may alias d_q_in.
-    // cuFFT needs the arrays it reads and writes aligned to a cufftDoubleComplex, as
-    // the work buffers and propagators are.
+    // The out-of-place D2Z keeps d_q_in (cuFFT takes it as non-const all the same), and
+    // the Z2D reads only d_step2_, so an out-of-place call preserves its input without a
+    // copy; d_q_out may alias d_q_in. cuFFT needs the arrays it reads and writes aligned
+    // to a cufftDoubleComplex, as the work buffers and propagators are.
     if (!cufft_aligned(d_q_in) || !cufft_aligned(d_q_out))
         throw_with_line_number("CudaCrysFFTRecursive3m: the input and output must be aligned to a cufftDoubleComplex.");
-    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, d_q_in, d_step1_));
+    CUFFT_CHECK(cufftExecD2Z(plan_r2c_, const_cast<double*>(d_q_in), d_step1_));
 
     const int threads = 256;
     const int blocks = grid_blocks(M_complex_, threads);
 
-    const double* k = table.get();
-    const size_t M = M_physical_;
     ker_apply_k_3m<<<blocks, threads, 0, stream_>>>(
-        d_step2_, d_step1_,
-        k, k + M, k + 2 * M, k + 3 * M, k + 4 * M, k + 5 * M, k + 6 * M, k + 7 * M,
-        k + 8 * M, k + 9 * M, k + 10 * M, k + 11 * M, k + 12 * M, k + 13 * M, k + 14 * M, k + 15 * M,
+        d_step2_, d_step1_, table.get(), static_cast<size_t>(M_physical_),
         nx_physical_[0], nx_physical_[1], nx_physical_[2], nx_physical_[2] / 2 + 1);
     CUDA_CHECK_LAUNCH();
 
     CUFFT_CHECK(cufftExecZ2D(plan_c2r_, d_step2_, d_q_out));
-}
-
-void CudaCrysFFTRecursive3m::apply_multiplier(
-    double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table, cudaStream_t stream)
-{
-    diffusion(d_q_in, d_q_out, table, stream);
 }
 
 void CudaCrysFFTRecursive3m::use_stream(cudaStream_t stream)

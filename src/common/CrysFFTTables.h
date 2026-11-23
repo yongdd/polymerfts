@@ -1,7 +1,7 @@
 /**
  * @file CrysFFTTables.h
  * @brief k-space tables of the Pmmm and recursive 3m crystallographic FFTs, built on the
- *        host for the CPU (CrysFFTPmmm, CrysFFTRecursive3mBase) and CUDA (CudaCrysFFT,
+ *        host for the CPU (CrysFFTPmmm, CrysFFTRecursive3m) and CUDA (CudaCrysFFTPmmm,
  *        CudaCrysFFTRecursive3m) engines.
  *
  * A table holds the value of each mode of the physical grid: the Boltzmann factors
@@ -9,8 +9,8 @@
  * bond factor of discrete chains). The Pmmm physical grid holds N_d/2 points per
  * axis, and its cosine series has the wavenumbers k_d = 2π m_d / L_d with
  * m_d < N_d/2; a Pmmm table holds one value per point of the physical grid, z
- * fastest. The recursive 3m engines fold the values of the logical grid into the
- * 16 arrays of a table (Recursive3mTables).
+ * fastest (pmmm_table()). The recursive 3m engines fold the values of the logical
+ * grid into the 16 arrays of a table (Recursive3mTables).
  */
 
 #ifndef CRYS_FFT_TABLES_H_
@@ -56,65 +56,29 @@ inline double crysfft_multiplier_value(int axes, double coeff, double kx2, doubl
 }
 
 /**
- * @brief The Boltzmann factors exp(-k² ds) of the Pmmm physical grid.
+ * @brief Write value_at(kx², ky², kz²) of each point of the Pmmm physical grid into
+ *        `table`, z fastest, with k_d = 2π m_d / L_d and m_d < N_d/2.
  *
- * @param table       Resized to the physical grid
+ * The value is crysfft_boltzmann_value() for a Boltzmann table and
+ * crysfft_multiplier_value() for a stress multiplier, times the round-trip
+ * normalization of the engine when its tables hold it.
+ *
+ * @param table       Resized to the physical grid (in place when it has that size)
  * @param nx_physical Physical grid (N/2 per axis)
  * @param cell        Cell [Lx, Ly, Lz, alpha, beta, gamma] (orthogonal)
- * @param ds          Step coefficient (b² Δs / 6 of a full step)
+ * @param value_at    Callable double(double kx2, double ky2, double kz2)
  */
-inline void build_pmmm_boltzmann(std::vector<double>& table, const std::array<int, 3>& nx_physical,
-                                 const std::array<double, 6>& cell, double ds)
+template <typename ValueAt>
+inline void pmmm_table(std::vector<double>& table, const std::array<int, 3>& nx_physical,
+                       const std::array<double, 6>& cell, ValueAt&& value_at)
 {
-    table.assign(static_cast<size_t>(nx_physical[0]) * nx_physical[1] * nx_physical[2], 0.0);
-
-    const double Lx = cell[0];
-    const double Ly = cell[1];
-    const double Lz = cell[2];
-    const double PI = std::numbers::pi;
-
-    int idx = 0;
-    for (int ix = 0; ix < nx_physical[0]; ++ix)
-    {
-        double kx = ix * 2.0 * PI / Lx;
-        double kx2 = kx * kx;
-
-        for (int iy = 0; iy < nx_physical[1]; ++iy)
-        {
-            double ky = iy * 2.0 * PI / Ly;
-            double ky2 = ky * ky;
-
-            for (int iz = 0; iz < nx_physical[2]; ++iz)
-            {
-                double kz = iz * 2.0 * PI / Lz;
-                double kz2 = kz * kz;
-
-                table[idx++] = crysfft_boltzmann_value(ds, kx2, ky2, kz2);
-            }
-        }
-    }
-}
-
-/**
- * @brief The stress multipliers crysfft_multiplier_value() of the Pmmm physical grid.
- *
- * @param table       Resized to the physical grid
- * @param nx_physical Physical grid (N/2 per axis)
- * @param cell        Cell [Lx, Ly, Lz, alpha, beta, gamma] (orthogonal)
- * @param axes        Bit mask of the axes: 1 (x), 2 (y), 4 (z)
- * @param coeff       b² Δs / 6 of the bond factor, or 0 without it
- */
-inline void build_pmmm_multiplier(std::vector<double>& table, const std::array<int, 3>& nx_physical,
-                                  const std::array<double, 6>& cell, int axes, double coeff)
-{
-    check_crysfft_axes(axes);
     table.assign(static_cast<size_t>(nx_physical[0]) * nx_physical[1] * nx_physical[2], 0.0);
 
     const double factor_x = 2.0 * std::numbers::pi / cell[0];
     const double factor_y = 2.0 * std::numbers::pi / cell[1];
     const double factor_z = 2.0 * std::numbers::pi / cell[2];
 
-    int idx = 0;
+    size_t idx = 0;
     for (int ix = 0; ix < nx_physical[0]; ++ix)
     {
         const double kx = ix * factor_x;
@@ -127,7 +91,7 @@ inline void build_pmmm_multiplier(std::vector<double>& table, const std::array<i
             {
                 const double kz = iz * factor_z;
                 const double kz2 = kz * kz;
-                table[idx++] = crysfft_multiplier_value(axes, coeff, kx2, ky2, kz2);
+                table[idx++] = value_at(kx2, ky2, kz2);
             }
         }
     }
@@ -136,12 +100,14 @@ inline void build_pmmm_multiplier(std::vector<double>& table, const std::array<i
 /**
  * @class Recursive3mTables
  * @brief The host part of the recursive 2x2y2z (3m) CrysFFT, shared by the CPU
- *        (CrysFFTRecursive3mBase) and CUDA (CudaCrysFFTRecursive3m) engines.
+ *        (CrysFFTRecursive3m) and CUDA (CudaCrysFFTRecursive3m) engines.
  *
  * Checks the grid, holds the pairing permutation and the twiddle factors of the
  * fold, and folds the values of the logical grid into a table. A table holds 16
  * arrays of M_physical values, `stride` values apart: the real parts of the eight
- * folded octants, then their imaginary parts. The algorithm is described in
+ * folded octants, then their imaginary parts. An array has the rows of the
+ * physical grid, Nz/2 values each, of which the engines read the first Nz/4 + 1,
+ * the z modes of the half spectrum of the real FFT. The algorithm is described in
  * "Accelerated pseudo-spectral method of self-consistent field theory via
  * crystallographic fast Fourier transform", Macromolecules (2020).
  */
@@ -160,9 +126,10 @@ public:
             if (nx_logical_[d] <= 0 || nx_logical_[d] % 2 != 0)
                 throw_with_line_number("The recursive 3m CrysFFT requires even, positive grid dimensions.");
         }
-        // The CPU multiply loop pads the packed z count to whole 64-byte lines, clamped
-        // to the row stride Nz/2, which covers the packed range [0, Nz/4] for any
-        // Nz/2 >= 2; the CUDA kernels take any size. Both platforms take the same grids.
+        // The engines of both platforms run the z modes of the half spectrum exactly, with
+        // no padding, and so take any size; Nz/2 >= 2 is the bound of the m3 physical basis
+        // and of plan_crysfft() (the smallest grids checked against the full-grid FFT have
+        // Nz/2 = 4: Im-3m 8^3 in TestCrysFFTM3SmallGrid).
         if (nx_logical_[2] / 2 < 2)
             throw_with_line_number("The recursive 3m CrysFFT requires Nz/2 >= 2.");
 

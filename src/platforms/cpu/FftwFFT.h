@@ -34,12 +34,6 @@ inline bool has_fftw_plan_alignment(const void* p)
     return fftw_alignment_of(static_cast<double*>(const_cast<void*>(p))) == 0;
 }
 
-/// Deleter of a planning array of fftw_malloc held by a std::unique_ptr
-struct FftwFree
-{
-    void operator()(void* p) const { fftw_free(p); }
-};
-
 /**
  * @class FftwRealFFT
  * @brief FFTW's unnormalized real FFT of a grid, the FFT under MakhoulTransform.

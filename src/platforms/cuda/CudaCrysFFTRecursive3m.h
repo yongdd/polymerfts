@@ -3,7 +3,7 @@
  * @brief CUDA crystallographic FFT using 2x2x2 (3m) algorithm.
  *
  * This implements the generalized 3m symmetry using only cuFFT and
- * precomputed k-matrix factors. It mirrors the CPU FftwCrysFFTRecursive3m
+ * precomputed k-matrix factors. It mirrors the CPU CrysFFTRecursive3m
  * algorithm but runs fully on GPU.
  */
 
@@ -17,7 +17,7 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
 
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 class Recursive3mTables;
 
@@ -37,13 +37,11 @@ public:
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
-    void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+    /// D2Z -> the table's k-space product -> Z2D (the input is kept when out of place).
+    void diffusion(const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                    cudaStream_t stream) override;
     void build_multiplier(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                           int axes, double coeff, cudaStream_t stream) const override;
-    /// The same D2Z -> k-multiply -> Z2D pipeline as diffusion() (the input is kept when out of place).
-    void apply_multiplier(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
-                          cudaStream_t stream) override;
 
 private:
     /// The grid checks, the twiddle factors and the fold of the tables (CrysFFTTables.h,

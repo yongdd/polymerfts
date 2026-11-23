@@ -4,7 +4,7 @@
  *        permuted real 3D FFT, see CudaCrysFFTObliqueZ.h).
  */
 
-#include <cmath>
+#include <complex>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -13,10 +13,6 @@
 #include "CudaCommon.h"
 #include "CrysFFTObliqueZTable.h"
 #include "Exception.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace {
 
@@ -145,16 +141,11 @@ void CudaCrysFFTObliqueZ::init_transforms()
     const int n = nx_physical_[2];
     if (!d_twiddle_)
     {
-        const int nz_c = n / 2 + 1;
-        std::vector<double> h_twiddle(2 * nz_c);
-        for (int kz = 0; kz < nz_c; ++kz)
-        {
-            const double angle = M_PI * kz / n;
-            h_twiddle[2 * kz] = std::cos(angle);
-            h_twiddle[2 * kz + 1] = std::sin(angle);
-        }
-        auto d_twiddle = std::make_shared<CudaDeviceBuffer<double>>(2 * nz_c);
-        CUDA_CHECK(cudaMemcpy(*d_twiddle, h_twiddle.data(), sizeof(double) * 2 * nz_c, cudaMemcpyHostToDevice));
+        // (cos, sin) pairs, the layout of std::complex<double> (shared with the CPU engine)
+        const std::vector<std::complex<double>> h_twiddle = obliquez_twiddle(n);
+        auto d_twiddle = std::make_shared<CudaDeviceBuffer<double>>(2 * h_twiddle.size());
+        CUDA_CHECK(cudaMemcpy(*d_twiddle, h_twiddle.data(), sizeof(std::complex<double>) * h_twiddle.size(),
+                              cudaMemcpyHostToDevice));
         d_twiddle_ = std::move(d_twiddle);
     }
 
@@ -194,7 +185,7 @@ void CudaCrysFFTObliqueZ::use_stream(cudaStream_t stream)
     CUFFT_CHECK(cufftSetStream(plan_bwd_, stream_));
 }
 
-void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+void CudaCrysFFTObliqueZ::diffusion(const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                                     cudaStream_t stream)
 {
     use_stream(stream);

@@ -43,7 +43,7 @@
 #include "CudaTypeDispatch.h"
 #include "CudaDeviceOps.cuh"
 #include "CudaSolverPseudoRQM4.h"
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 namespace
 {

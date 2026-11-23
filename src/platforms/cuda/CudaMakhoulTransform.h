@@ -4,7 +4,7 @@
  *
  * The CUDA counterpart of MakhoulTransform: the cosine and sine transforms of the
  * wall boxes (the propagator solvers and CudaFourierTransform), the Pmmm CrysFFT
- * (CudaCrysFFT) and the boxes that mix periodic axes and walls (CudaFourierTransform);
+ * (CudaCrysFFTPmmm) and the boxes that mix periodic axes and walls (CudaFourierTransform);
  * docs/internals/FFTImplementation.md, Section 2.5, gives the derivation.
  *
  * Each wall axis is reordered as in Makhoul's cosine transform: the even samples
