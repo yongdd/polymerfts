@@ -19,9 +19,9 @@
  *
  * **cuFFT Plans:**
  *
- * Pre-created FFT plans for efficiency:
- * - cuFFT plans (batch 1 for the full step, batch 2 for the half-step pair)
- *   and the cosine and sine series of wall boxes are owned by CudaSolverPseudoBase
+ * The cuFFT plans of periodic boxes (batch 2 for the full step with the first half
+ * step, batch 1 for the second half step) and the cosine and sine series of wall
+ * boxes are owned by CudaSolverPseudoBase
  *
  * **Stress Array Convention (Voigt Notation):**
  *
@@ -67,7 +67,9 @@ class CudaCrysFFTBase;  // Forward declaration
  * Same algorithm as CPU version:
  *     q(s+ds) = (4/3) q^(ds/2,ds/2) - (1/3) q^(ds)
  *
- * But both terms computed in parallel using batched FFTs.
+ * On a periodic full grid the full step and the first half step take their transforms
+ * together, as one cuFFT batch of two fields; the second half step follows alone. Walls
+ * (bond_step()) and the CrysFFT path take one field at a time.
  *
  * **Memory per Stream:**
  *
@@ -104,15 +106,10 @@ public:
      * @param molecules           Molecules container
      * @param n_streams           Number of parallel streams
      * @param streams             Pre-created CUDA streams
-     * @param space_group             Space group of the reduced basis, or nullptr
-     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
-     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
+     * @param space_group         Space group of the reduced basis, or nullptr
      */
     CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-                            SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
-
-    /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
-    ~CudaSolverPseudoRQM4();
+                            SpaceGroup* space_group);
 
     /**
      * @brief Update Boltzmann factors.

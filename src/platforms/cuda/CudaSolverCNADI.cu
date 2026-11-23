@@ -147,10 +147,8 @@ CudaSolverCNADI::CudaSolverCNADI(
     Molecules *molecules,
     int n_streams,
     cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group,
-    const int* d_reduced_basis_indices,
-    const int* d_full_to_reduced_map)
-    : CudaSolver<double>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
+    SpaceGroup* space_group)
+    : CudaSolver<double>(cb, molecules, n_streams, streams, space_group)
 {
     try{
         if(molecules->get_model_name() != "continuous")
@@ -228,7 +226,6 @@ CudaSolverCNADI::CudaSolverCNADI(
         throw_without_line_number(exc.what());   // the owning members release what was acquired
     }
 }
-CudaSolverCNADI::~CudaSolverCNADI() = default;
 
 void CudaSolverCNADI::update_laplacian_operator()
 {

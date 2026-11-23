@@ -74,11 +74,9 @@ private:
                   int derivative_axis = -1, const DeviceAxis* derivative = nullptr);
 
 public:
-    /// space_group (or nullptr) with the backend's device maps reduced -> full and full -> reduced index
+    /// space_group: the group of the reduced basis, or nullptr
     CudaSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules, int n_streams,
-                                cudaStream_t streams[MAX_STREAMS], SpaceGroup* space_group,
-                                const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
-    ~CudaSolverRealSpaceDiscrete() override = default;
+                                cudaStream_t streams[MAX_STREAMS], SpaceGroup* space_group);
 
     void update_laplacian_operator() override;
     void update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w) override;

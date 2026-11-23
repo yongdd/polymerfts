@@ -82,15 +82,10 @@ public:
      * @param molecules           Molecules container
      * @param n_streams           Number of parallel streams
      * @param streams             Pre-created CUDA streams
-     * @param space_group             Space group of the reduced basis, or nullptr
-     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
-     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
+     * @param space_group         Space group of the reduced basis, or nullptr
      */
     CudaSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-                           SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
-
-    /// Destructor.
-    ~CudaSolverPseudoRK2();
+                           SpaceGroup* space_group);
 
     /**
      * @brief Update Boltzmann factors.

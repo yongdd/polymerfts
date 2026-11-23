@@ -16,9 +16,10 @@
  *
  * All input/output arrays are device pointers (CuDeviceData<T>).
  * No host-device transfers occur within solver methods. With a space group,
- * which the solvers take in their constructors with the backend's device index
- * maps, the propagators are in its reduced basis: the base class expands them to
- * the full grid around the steps, reduces the results back and multiplies the mask.
+ * which the solvers take in their constructors, the propagators are in its
+ * reduced basis: the base class holds the device index maps of the group, expands
+ * the propagators to the full grid around the steps, reduces the results back and
+ * multiplies the mask.
  *
  * @see CudaSolverPseudoRQM4 for continuous chain pseudo-spectral
  * @see CudaSolverPseudoDiscrete for discrete chain pseudo-spectral
@@ -55,7 +56,7 @@ class SpaceGroup;  // Forward declaration
  * - d_exp_dw_half: Half segment Boltzmann factor (per ds_index)
  *
  * **Shared context:** the computation box, the molecules, the backend's streams,
- * the space group with the backend's index maps, and the full-grid buffers of a
+ * the space group with its device index maps, and the full-grid buffers of a
  * reduced-basis run, with the expansion, reduction and mask around the steps.
  */
 template <typename T>
@@ -161,6 +162,20 @@ public:
     /// compute the segment stresses (default: nothing).
     virtual void prepare_stress() {}
 
+    /**
+     * @brief exp(-w·ds) of the global contour step (ds index 0) in the basis of the
+     *        propagators, which the discrete-chain computation multiplies and divides by.
+     *
+     * d_exp_dw[0] when the tables are in that basis (no space group, or the CrysFFT
+     * steps), otherwise the copy in the reduced basis that update_dw() keeps for the
+     * discrete-chain solvers. The continuous-chain solvers keep exp(-w·ds/2) and are
+     * not asked.
+     *
+     * @param monomer_type Monomer type
+     * @return Device array of n_basis values
+     */
+    const CuDeviceData<T>* boltzmann_factor(const std::string& monomer_type) const;
+
 protected:
     ComputationBox<T>* cb;                   ///< Computation box
     Molecules* molecules;                    ///< Molecules container
@@ -171,15 +186,18 @@ protected:
     /// With a space group the propagators, fields and mask are in its reduced basis: the
     /// steps expand their input to the full grid and reduce their result back.
     /// @{
-    SpaceGroup* space_group_;                ///< nullptr without a space group
-    const int* d_reduced_basis_indices_;     ///< Device map reduced -> full index (lent by the backend; nullptr without a group)
-    const int* d_full_to_reduced_map_;       ///< Device map full -> reduced index (lent by the backend; nullptr without a group)
-    int n_basis_;                            ///< Values of a propagator: the reduced basis, or the full grid without a group
+    SpaceGroup* space_group_;                        ///< nullptr without a space group
+    CudaDeviceBuffer<int> d_reduced_basis_indices_;  ///< Device map reduced -> full index (empty without a group)
+    CudaDeviceBuffer<int> d_full_to_reduced_map_;    ///< Device map full -> reduced index (empty without a group)
+    int n_basis_;                                    ///< Values of a propagator: the reduced basis, or the full grid without a group
     /// The full grid of a step, per stream (provide_full_grid()): the input expanded from
     /// the reduced basis, which a step turns into its result in place
     CudaDeviceBuffer<CuDeviceData<T>> d_q_full_[MAX_STREAMS];
     /// A second full grid per stream, for steps that cannot run in place (the rs bonds)
     CudaDeviceBuffer<CuDeviceData<T>> d_q_full_out_[MAX_STREAMS];
+    /// exp(-w·ds) of ds index 0 in the reduced basis by monomer type, when the tables of a
+    /// discrete-chain solver are on the full grid (boltzmann_factor())
+    std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_boltzmann_factor_;
     /// @}
 
     /**
@@ -189,12 +207,11 @@ protected:
      * @param molecules               Molecules container
      * @param n_streams               Number of parallel streams
      * @param streams                 The backend's CUDA streams
-     * @param space_group             Space group of the reduced basis, or nullptr (real fields only)
-     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend; nullptr without a group)
-     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend; nullptr without a group)
+     * @param space_group             Space group of the reduced basis, or nullptr (real fields only);
+     *                                its index maps are uploaded here
      */
     CudaSolver(ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-               SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
+               SpaceGroup* space_group);
 
     /// With a space group, allocate d_q_full_ and, with separate_output, d_q_full_out_ for
     /// every stream unless they are; nothing without a group
@@ -228,8 +245,10 @@ protected:
      * @param with_half            Also d_exp_dw_half
      * @param factor               Factor of ds in d_exp_dw
      * @param factor_half          Factor of ds in d_exp_dw_half
+     * @param basis_copy           Tables on the full grid of a space group: also d_exp_dw[0] in the
+     *                             reduced basis (d_boltzmann_factor_; the discrete-chain solvers)
      */
     void compute_exp_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w, bool reduced_basis_tables,
-                        bool with_half, double factor, double factor_half);
+                        bool with_half, double factor, double factor_half, bool basis_copy = false);
 };
 #endif

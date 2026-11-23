@@ -87,29 +87,14 @@ CudaComputationBackend<T>::CudaComputationBackend(
     ComputationBox<T>* cb_in, Molecules* molecules,
     const NumericalMethodInfo& method_info,
     SpaceGroup* space_group, int max_n_streams)
-    : cb(dynamic_cast<CudaComputationBox<T>*>(cb_in)), space_group(space_group),
-      discrete_chains(std::string(method_info.chain_model) == "discrete"),
-      n_streams(0), n_basis(0), force_off_diagonal_stress(false), exp_dw_ds(0.0)
+    : cb(dynamic_cast<CudaComputationBox<T>*>(cb_in)), n_streams(0), n_basis(0)
 {
     // The members own what they hold: if a step below throws, what was allocated is released
     // (the solver before the streams, see the header)
     if (cb == nullptr)
         throw_with_line_number("The CUDA backend requires a CudaComputationBox.");
 
-    const int M = cb->get_total_grid();
     n_basis = cb->get_n_basis();
-
-    // Index maps between the full grid and the reduced basis
-    if (space_group != nullptr)
-    {
-        const int n_reduced = space_group->get_n_reduced_basis();
-        d_reduced_basis_indices.allocate(n_reduced);
-        CUDA_CHECK(cudaMemcpy(d_reduced_basis_indices, space_group->get_reduced_basis_indices().data(),
-                                   sizeof(int)*n_reduced, cudaMemcpyHostToDevice));
-        d_full_to_reduced_map.allocate(M);
-        CUDA_CHECK(cudaMemcpy(d_full_to_reduced_map, space_group->get_full_to_reduced_map().data(),
-                                   sizeof(int)*M, cudaMemcpyHostToDevice));
-    }
 
     // The streams, lent to the solver
     n_streams = std::min({this->n_streams_from_env(/*default_n_streams=*/MAX_STREAMS), MAX_STREAMS, max_n_streams});
@@ -120,37 +105,26 @@ CudaComputationBackend<T>::CudaComputationBackend(
         stream_handles[i] = streams[i];
     }
 
-    // The solver of the method, with the space group and the maps above (nullptr without
-    // a group): it expands and reduces around its full-grid steps and allocates the work
-    // of its path, so that the computations allocate no solver work
-    const int* d_reduced = d_reduced_basis_indices.get();
-    const int* d_full = d_full_to_reduced_map.get();
+    // The solver of the method, with the space group (nullptr without one): it holds the
+    // index maps of the group, expands and reduces around its full-grid steps and allocates
+    // the work of its path, so that the computations allocate no solver work
     switch (method_info.id)
     {
     case NumericalMethodId::PS:
-    {
-        auto discrete = std::make_unique<CudaSolverPseudoDiscrete<T>>(
-            cb, molecules, n_streams, stream_handles, space_group, d_reduced, d_full);
-        solver_discrete = discrete.get();
-        solver = std::move(discrete);
+        solver = std::make_unique<CudaSolverPseudoDiscrete<T>>(cb, molecules, n_streams, stream_handles, space_group);
         break;
-    }
     case NumericalMethodId::RS:
-        solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(
-            cb, molecules, n_streams, stream_handles, space_group, d_reduced, d_full);
+        solver = std::make_unique<CudaSolverRealSpaceDiscrete<T>>(cb, molecules, n_streams, stream_handles, space_group);
         break;
     case NumericalMethodId::RQM4:
-        solver = std::make_unique<CudaSolverPseudoRQM4<T>>(
-            cb, molecules, n_streams, stream_handles, space_group, d_reduced, d_full);
+        solver = std::make_unique<CudaSolverPseudoRQM4<T>>(cb, molecules, n_streams, stream_handles, space_group);
         break;
     case NumericalMethodId::RK2:
-        solver = std::make_unique<CudaSolverPseudoRK2<T>>(
-            cb, molecules, n_streams, stream_handles, space_group, d_reduced, d_full);
+        solver = std::make_unique<CudaSolverPseudoRK2<T>>(cb, molecules, n_streams, stream_handles, space_group);
         break;
     case NumericalMethodId::CNADI2:
         if constexpr (std::is_same_v<T, double>)
-            solver = std::make_unique<CudaSolverCNADI>(
-                cb, molecules, n_streams, stream_handles, space_group, d_reduced, d_full);
+            solver = std::make_unique<CudaSolverCNADI>(cb, molecules, n_streams, stream_handles, space_group);
         else
             throw_with_line_number("The cn-adi2 method is only available for real fields.");
         break;
@@ -159,24 +133,19 @@ CudaComputationBackend<T>::CudaComputationBackend(
                                std::string(method_info.name) + "\".");
     }
 
-    // The contour step of the Boltzmann factor of discrete chains (the global ds, index 0),
-    // which update_dw() computes in the reduced basis
-    if (discrete_chains && space_group != nullptr)
-        exp_dw_ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-
     // Ones for free chain ends
-    std::vector<T> unity(M, T(1.0));
-    d_q_unity.allocate(M);
-    CUDA_CHECK(cudaMemcpy(d_q_unity, unity.data(), sizeof(T)*M, cudaMemcpyHostToDevice));
+    std::vector<T> unity(n_basis, T(1.0));
+    d_q_unity.allocate(n_basis);
+    CUDA_CHECK(cudaMemcpy(d_q_unity, unity.data(), sizeof(T)*n_basis, cudaMemcpyHostToDevice));
 
-    // Mask (the box stores it in the reduced basis when a space group is set)
+    // Mask (the box stores it in the reduced basis of its space group)
     if (cb->get_mask() != nullptr)
     {
         d_q_mask.allocate(n_basis);
         CUDA_CHECK(cudaMemcpy(d_q_mask, cb->get_mask(), sizeof(double)*n_basis, cudaMemcpyHostToDevice));
     }
 
-    d_sum.allocate(M);
+    d_sum.allocate(n_basis);
     // The accumulator of a junction product over several launches of device-resident
     // sources: only a vertex with more arms than one launch takes needs it (checkpoint
     // products allocate it with their staging, allocate_checkpoint())
@@ -197,9 +166,6 @@ CudaComputationBackend<T>::CudaComputationBackend(
         h_block_stress[i].allocate(6);
     }
 }
-
-template <typename T>
-CudaComputationBackend<T>::~CudaComputationBackend() = default;
 
 template <typename T>
 void CudaComputationBackend<T>::synchronize()
@@ -291,41 +257,11 @@ void CudaComputationBackend<T>::update_dw(const std::map<std::string, BackendArr
     for (const auto& [monomer_type, w_monomer] : w)
         d_w[monomer_type] = raw(w_monomer);
     solver->update_dw(d_w);
-
-    // The discrete solvers keep exp(-w ds) on the full grid, unless the CrysFFT path of the
-    // pseudo-spectral one stores it in the basis already (boltzmann_factor() then returns the
-    // solver's table). Its copy in the basis is computed here from the fields, which come in
-    // the basis: the same values as the solver's table at the points of the basis.
-    if (discrete_chains && space_group != nullptr && !exp_dw_in_solver_basis())
-    {
-        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-        for (const auto& item : w)
-        {
-            const std::string& monomer_type = item.first;
-            auto found = d_exp_dw_reduced.find(monomer_type);
-            if (found == d_exp_dw_reduced.end())
-            {
-                // Enter the buffer only once it exists, so a failed allocation can be retried
-                found = d_exp_dw_reduced.emplace(monomer_type, CudaDeviceBuffer<CuDeviceData<T>>(n_basis)).first;
-            }
-            ker_exp<<<N_BLOCKS, N_THREADS>>>(found->second.get(), raw(item.second), 1.0, -exp_dw_ds, n_basis);
-            CUDA_CHECK_LAUNCH();
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
-    }
-}
-
-template <typename T>
-bool CudaComputationBackend<T>::exp_dw_in_solver_basis() const
-{
-    return solver_discrete != nullptr && solver_discrete->exp_dw_stored_reduced();
 }
 
 template <typename T>
 void CudaComputationBackend<T>::set_force_off_diagonal_stress(bool force)
 {
-    force_off_diagonal_stress = force;
     solver->set_force_off_diagonal_stress(force);
 }
 
@@ -346,10 +282,9 @@ void CudaComputationBackend<T>::advance_propagator_half_bond_step(
 template <typename T>
 BackendArray<T>* CudaComputationBackend<T>::boltzmann_factor(const std::string& monomer_type)
 {
-    // exp(-w ds) of the global ds in the propagator basis
-    if (space_group != nullptr && !exp_dw_in_solver_basis())
-        return wrap(d_exp_dw_reduced.at(monomer_type));
-    return wrap(solver->d_exp_dw.at(0).at(monomer_type));
+    // exp(-w ds) of the global ds in the propagator basis, kept by the solver; the computations
+    // only read it
+    return wrap(const_cast<CuDeviceData<T>*>(solver->boltzmann_factor(monomer_type)));
 }
 
 // ==================== Propagator initial conditions ====================
@@ -551,12 +486,7 @@ std::array<T, 6> CudaComputationBackend<T>::block_stress(
     if (pairs.empty())
         return stress;
 
-    // Components the solver computes: 3D orthogonal 3, 3D non-orthogonal 6, 2D 3, 1D 1.
-    // Forced off-diagonal stress (angle optimization from 90°) counts as non-orthogonal.
-    const int DIM = cb->get_dim();
-    const bool is_ortho = cb->is_orthogonal() && !force_off_diagonal_stress;
-    const int N_STRESS_DIM = (DIM == 3) ? (is_ortho ? 3 : 6) : ((DIM == 2) ? 3 : 1);
-
+    // All six components, as on the CPU: those the solver does not compute stay zero
     cudaStream_t s = streams[stream];
     CuDeviceData<T>* d_segment = d_segment_stress[stream];
     CuDeviceData<T>* d_block   = d_block_stress[stream];
@@ -569,16 +499,16 @@ std::array<T, 6> CudaComputationBackend<T>::block_stress(
         // block += weight * segment, summed on the device
         solver->compute_single_segment_stress(stream, raw(pair.q_1), raw(pair.q_2), d_segment,
                                               monomer_type, pair.is_half_bond_length);
-        ker_lin_comb<<<1, 32, 0, s>>>(d_block, 1.0, d_block, pair.weight, d_segment, N_STRESS_DIM);
+        ker_lin_comb<<<1, 32, 0, s>>>(d_block, 1.0, d_block, pair.weight, d_segment, 6);
         CUDA_CHECK_LAUNCH();
     }
 
     // One copy per block; waiting on this stream only lets the other streams run on
-    CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*N_STRESS_DIM,
+    CUDA_CHECK(cudaMemcpyAsync(h_block_stress[stream], d_block, sizeof(T)*6,
                                     cudaMemcpyDeviceToHost, s));
     CUDA_CHECK(cudaStreamSynchronize(s));
 
-    for (int d = 0; d < N_STRESS_DIM; d++)
+    for (int d = 0; d < 6; d++)
         stress[d] = h_block_stress[stream][d];
     return stress;
 }

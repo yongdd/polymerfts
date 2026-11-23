@@ -52,11 +52,8 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
     Molecules *molecules,
     int n_streams,
     cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group,
-    const int* d_reduced_basis_indices,
-    const int* d_full_to_reduced_map)
-    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
-                              space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/1,
+    SpaceGroup* space_group)
+    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, space_group, /*max_fft_batch=*/1,
                               /*with_exp_dw_half=*/false)
 {
     try{
@@ -69,13 +66,11 @@ CudaSolverPseudoDiscrete<T>::CudaSolverPseudoDiscrete(
     }
 }
 template <typename T>
-CudaSolverPseudoDiscrete<T>::~CudaSolverPseudoDiscrete() = default;
-
-template <typename T>
 void CudaSolverPseudoDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
-    // exp(-w ds): one full segment per discrete bond step, in the basis of the steps
-    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/use_crysfft_, false, 1.0, 0.0);
+    // exp(-w ds): one full segment per discrete bond step, in the basis of the steps, and in the
+    // basis of the propagators when the steps take the full grid of a space group
+    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/use_crysfft_, false, 1.0, 0.0, /*basis_copy=*/true);
 }
 template <typename T>
 void CudaSolverPseudoDiscrete<T>::advance_propagator(
@@ -95,20 +90,12 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator(
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
         if (use_crysfft_)
         {
-            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
-                // Bond convolution, then the full-segment weight exp(-w*ds)
-                this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, nullptr, nullptr, _d_exp_dw);
-                this->multiply_mask(STREAM, d_q_out, d_q_mask);
-                return;
-            }
+            // Bond convolution, then the full-segment weight exp(-w*ds)
+            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, nullptr, nullptr, _d_exp_dw);
+            this->multiply_mask(STREAM, d_q_out, d_q_mask);
+            return;
         }
 
         // Bond factors of the full grid (the Pseudo tables exist on this path only)
@@ -144,18 +131,10 @@ void CudaSolverPseudoDiscrete<T>::advance_propagator_half_bond_step(
         const int M = cb->get_total_grid();
         if (use_crysfft_)
         {
-            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
+            const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, 0, true);
 
-                this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_half, nullptr, nullptr, nullptr);
-                return;
-            }
+            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_half, nullptr, nullptr, nullptr);
+            return;
         }
 
         // Discrete chains always use ds_index=0 (global ds); the Pseudo tables exist on the full-grid path only

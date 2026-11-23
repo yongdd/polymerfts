@@ -31,44 +31,27 @@
 #include "SpaceGroup.h"
 
 template <typename T>
-class CudaSolverPseudoDiscrete;
-
-template <typename T>
 class CudaComputationBackend : public ComputationBackend<T>
 {
 private:
     CudaComputationBox<T>* cb;
-    SpaceGroup* space_group;
-    bool discrete_chains;                          ///< the chains are discrete (exp(-w ds) also in the reduced basis)
     int n_streams;
     int n_basis;
-    bool force_off_diagonal_stress;
-    double exp_dw_ds;                              ///< Discrete chains with a space group: the ds of d_exp_dw_reduced
 
     // Members are destroyed in the reverse order of their declaration: the streams, declared
     // before everything that runs on them, outlive the solver and its cuFFT plans (declared last)
     CudaStream streams[MAX_STREAMS];       ///< One stream per stream index
 
-    CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (full grid)
+    CudaDeviceBuffer<CuDeviceData<T>> d_q_unity;                     ///< All ones (propagator basis)
     CudaDeviceBuffer<double> d_q_mask;                               ///< Mask in the propagator basis, or empty
-    CudaDeviceBuffer<int> d_reduced_basis_indices;                   ///< Space group: reduced -> full index (lent to the solver)
-    CudaDeviceBuffer<int> d_full_to_reduced_map;                     ///< Space group: full -> reduced index (lent to the solver)
     CudaDeviceBuffer<CuDeviceData<T>> d_junction_stage[MAX_STREAMS]; ///< Junctions: two checkpoints staged per launch
     CudaDeviceBuffer<double> d_junction_state[MAX_STREAMS];          ///< Junctions: accumulator scratch, two doubles per point
     CudaDeviceBuffer<CuDeviceData<T>> d_segment_stress[MAX_STREAMS]; ///< Stress: six sums of one segment per stream
     CudaDeviceBuffer<CuDeviceData<T>> d_block_stress[MAX_STREAMS];   ///< Stress: weighted sum over the segments of a block
     CudaPinnedBuffer<T> h_block_stress[MAX_STREAMS];                 ///< Stress: pinned host copy of d_block_stress
-    CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< Serial statistics/sum_to_host scratch
+    CudaDeviceBuffer<CuDeviceData<T>> d_sum;        ///< sum_to_host scratch (propagator basis)
 
-    /// Discrete chains with a space group: exp(-w ds) in the reduced basis, unless the
-    /// solver stores it there itself (exp_dw_in_solver_basis())
-    std::map<std::string, CudaDeviceBuffer<CuDeviceData<T>>> d_exp_dw_reduced;
-
-    std::unique_ptr<CudaSolver<T>> solver;                    ///< The solver of the method (runs on the streams)
-    CudaSolverPseudoDiscrete<T>* solver_discrete = nullptr;   ///< The pseudo-spectral solver of discrete chains (not owning)
-
-    /// The discrete solver's exp(-w ds) tables are in the reduced basis already (its CrysFFT path)
-    bool exp_dw_in_solver_basis() const;
+    std::unique_ptr<CudaSolver<T>> solver;          ///< The solver of the method (runs on the streams)
 
     static CuDeviceData<T>* raw(BackendArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
     static CuDeviceData<T>* raw(CheckpointArray<T>* a) { return reinterpret_cast<CuDeviceData<T>*>(a); }
@@ -87,7 +70,6 @@ public:
     CudaComputationBackend(ComputationBox<T>* cb, Molecules* molecules,
                            const NumericalMethodInfo& method_info,
                            SpaceGroup* space_group, int max_n_streams = MAX_STREAMS);
-    ~CudaComputationBackend();
 
     int get_n_streams() const override { return n_streams; }
     void synchronize() override;

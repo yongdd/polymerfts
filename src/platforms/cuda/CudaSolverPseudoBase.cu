@@ -222,11 +222,9 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     int n_streams,
     cudaStream_t streams[MAX_STREAMS],
     SpaceGroup* space_group,
-    const int* d_reduced_basis_indices,
-    const int* d_full_to_reduced_map,
     int max_fft_batch,
     bool with_exp_dw_half)
-    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
+    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group)
 {
     this->dim_ = cb->get_dim();
     this->max_fft_batch_ = max_fft_batch;
@@ -258,9 +256,6 @@ CudaSolverPseudoBase<T>::CudaSolverPseudoBase(
     // end of the derived constructor, and the workspace of the CrysFFT stress fast
     // path in prepare_stress()
 }
-
-template <typename T>
-CudaSolverPseudoBase<T>::~CudaSolverPseudoBase() = default;
 
 template <typename T>
 void CudaSolverPseudoBase<T>::init_fft()
@@ -380,74 +375,82 @@ void CudaSolverPseudoBase<T>::bond_step(
 
 template <typename T>
 void CudaSolverPseudoBase<T>::crysfft_diffuse(
-    int STREAM, double* d_q_in, double* d_q_out, double coeff,
-    const double* pre, const double* mid, const double* post)
+    int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, double coeff,
+    const CuDeviceData<T>* pre, const CuDeviceData<T>* mid, const CuDeviceData<T>* post)
 {
-    const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
-    const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    const int M_phys = crysfft_physical_size_;
-    const cudaStream_t stream = streams[STREAM];
-    CudaCrysFFTBase* crysfft = work_[STREAM].crysfft.get();
-    const auto boltz_it = crysfft_boltz_.find(coeff);
-    if (boltz_it == crysfft_boltz_.end())
-        throw_with_line_number("No CrysFFT table was built for the step coefficient " + std::to_string(coeff) +
-            " (see crysfft_block_coeffs()).");
-    const CudaDeviceBuffer<double>& boltz = boltz_it->second;
-
-    if (crysfft_identity_map_)
+    // [real-only feature] The CrysFFT path folds real fields: init_path() enables it for them only
+    if constexpr (!std::is_same_v<T, double>)
     {
-        // The physical grid is the reduced basis: work in d_q_out, in place (an
-        // out-of-place diffusion would first copy its input into d_q_out)
+        throw_with_line_number("The CrysFFT path is only supported for real fields.");
+    }
+    else
+    {
+        const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
+        const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+        const int M_phys = crysfft_physical_size_;
+        const cudaStream_t stream = streams[STREAM];
+        CudaCrysFFTBase* crysfft = work_[STREAM].crysfft.get();
+        const auto boltz_it = crysfft_boltz_.find(coeff);
+        if (boltz_it == crysfft_boltz_.end())
+            throw_with_line_number("No CrysFFT table was built for the step coefficient " + std::to_string(coeff) +
+                " (see crysfft_block_coeffs()).");
+        const CudaDeviceBuffer<double>& boltz = boltz_it->second;
+
+        if (crysfft_identity_map_)
+        {
+            // The physical grid is the reduced basis: work in d_q_out, in place (an
+            // out-of-place diffusion would first copy its input into d_q_out)
+            if (pre != nullptr)
+            {
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_in, pre, 1.0, M_phys);
+                CUDA_CHECK_LAUNCH();
+                crysfft->diffusion(d_q_out, d_q_out, boltz, stream);
+            }
+            else
+            {
+                crysfft->diffusion(d_q_in, d_q_out, boltz, stream);   // preserves d_q_in when out of place
+            }
+            if (mid != nullptr)
+            {
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_out, mid, 1.0, M_phys);
+                CUDA_CHECK_LAUNCH();
+                crysfft->diffusion(d_q_out, d_q_out, boltz, stream);
+            }
+            if (post != nullptr)
+            {
+                ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_out, post, 1.0, M_phys);
+                CUDA_CHECK_LAUNCH();
+            }
+            return;
+        }
+
+        // Expand to the physical grid, diffuse there in place and reduce back
+        double* d_work = work_[STREAM].d_crysfft_in;
         if (pre != nullptr)
-        {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_in, pre, 1.0, M_phys);
-            CUDA_CHECK_LAUNCH();
-            crysfft->diffusion(d_q_out, d_q_out, boltz, stream);
-        }
+            ker_expand_reduced_basis_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_work, d_q_in, pre, d_crysfft_phys_to_reduced_, M_phys);
         else
-        {
-            crysfft->diffusion(d_q_in, d_q_out, boltz, stream);   // preserves d_q_in when out of place
-        }
+            ker_gather<<<N_BLOCKS, N_THREADS, 0, stream>>>(
+                d_work, d_q_in, d_crysfft_phys_to_reduced_, M_phys);
+        CUDA_CHECK_LAUNCH();
+
+        crysfft->diffusion(d_work, d_work, boltz, stream);
         if (mid != nullptr)
         {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_out, mid, 1.0, M_phys);
+            ker_multi_map<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work, mid, d_crysfft_phys_to_reduced_, M_phys);
             CUDA_CHECK_LAUNCH();
-            crysfft->diffusion(d_q_out, d_q_out, boltz, stream);
+            crysfft->diffusion(d_work, d_work, boltz, stream);
         }
         if (post != nullptr)
         {
-            ker_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_q_out, d_q_out, post, 1.0, M_phys);
+            ker_multi_map<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work, post, d_crysfft_phys_to_reduced_, M_phys);
             CUDA_CHECK_LAUNCH();
         }
-        return;
-    }
 
-    // Expand to the physical grid, diffuse there in place and reduce back
-    double* d_work = work_[STREAM].d_crysfft_in;
-    if (pre != nullptr)
-        ker_expand_reduced_basis_multi<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-            d_work, d_q_in, pre, d_crysfft_phys_to_reduced_, M_phys);
-    else
         ker_gather<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-            d_work, d_q_in, d_crysfft_phys_to_reduced_, M_phys);
-    CUDA_CHECK_LAUNCH();
-
-    crysfft->diffusion(d_work, d_work, boltz, stream);
-    if (mid != nullptr)
-    {
-        ker_multi_map<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work, mid, d_crysfft_phys_to_reduced_, M_phys);
-        CUDA_CHECK_LAUNCH();
-        crysfft->diffusion(d_work, d_work, boltz, stream);
-    }
-    if (post != nullptr)
-    {
-        ker_multi_map<<<N_BLOCKS, N_THREADS, 0, stream>>>(d_work, post, d_crysfft_phys_to_reduced_, M_phys);
+            d_q_out, d_work, d_crysfft_reduced_to_phys_, n_basis_);
         CUDA_CHECK_LAUNCH();
     }
-
-    ker_gather<<<N_BLOCKS, N_THREADS, 0, stream>>>(
-        d_q_out, d_work, d_crysfft_reduced_to_phys_, n_basis_);
-    CUDA_CHECK_LAUNCH();
 }
 
 template <typename T>
@@ -461,7 +464,7 @@ void CudaSolverPseudoBase<T>::init_path()
             init_crysfft();
     }
 
-    // The backend's maps and the CrysFFT setup above are snapshots: freeze the physical basis
+    // The index maps (CudaSolver) and the CrysFFT setup above are snapshots: freeze the physical basis
     if (space_group_ != nullptr)
         space_group_->mark_in_use();
 
@@ -477,13 +480,9 @@ void CudaSolverPseudoBase<T>::init_crysfft()
     // Engine choice and its basis map, shared with the CPU solver
     const CrysFFTPlan plan = plan_crysfft(
         space_group_, nx_logical, dim_, is_periodic_, cb->is_orthogonal(), cb->is_z_axis_orthogonal());
-    if (plan.engine != CrysFFTEngine::None)
-        setup_crysfft(plan);
-}
+    if (plan.engine == CrysFFTEngine::None)
+        return;
 
-template <typename T>
-void CudaSolverPseudoBase<T>::setup_crysfft(const CrysFFTPlan& plan)
-{
     const CrysFFTBasisMapping& map = plan.map;
     crysfft_physical_size_ = map.M_phys;
     crysfft_identity_map_ = map.identity;
@@ -504,9 +503,6 @@ void CudaSolverPseudoBase<T>::setup_crysfft(const CrysFFTPlan& plan)
     d_crysfft_orbit_counts_.allocate(map.M_reduced);
     CUDA_CHECK(cudaMemcpy(d_crysfft_orbit_counts_, orbit_counts.data(),
                                sizeof(int) * map.M_reduced, cudaMemcpyHostToDevice));
-
-    const auto nx = cb->get_nx();
-    const std::array<int, 3> nx_logical = {nx[0], nx[1], nx[2]};
 
     for (int i = 0; i < n_streams; i++)
     {
@@ -933,35 +929,16 @@ void CudaSolverPseudoBase<T>::compute_single_segment_stress(
         const bool is_orthogonal = (this->cb->is_orthogonal() && !this->force_off_diagonal_stress_) || !is_periodic_;
 
         // Dyad components V_c = Σ_k integrand(k)·basis_c(k)·basis_factor, written to
-        // d_segment_stress[0..n_comp-1]
+        // d_segment_stress[0..n_comp-1] in this order: the diagonal V₁₁ .. V_DD, then, for
+        // non-orthogonal boxes, the cross terms V₁₂ (2D) or V₁₂, V₁₃, V₂₃ (3D)
+        const double* diagonal[3] = {_d_fourier_basis_x, _d_fourier_basis_y, _d_fourier_basis_z};
+        const double* cross[3] = {_d_fourier_basis_xy, _d_fourier_basis_xz, _d_fourier_basis_yz};
         StressBases bases{};
         int n_comp = 0;
-        auto add_component = [&](const double* d_basis) { bases.basis[n_comp++] = d_basis; };
-        if ( DIM == 3 )
-        {
-            add_component(_d_fourier_basis_x);   // V₁₁
-            add_component(_d_fourier_basis_y);   // V₂₂
-            add_component(_d_fourier_basis_z);   // V₃₃
-
-            // Cross-terms: only compute for non-orthogonal boxes (triclinic lattices)
-            if (!is_orthogonal)
-            {
-                add_component(_d_fourier_basis_xy);   // V₁₂
-                add_component(_d_fourier_basis_xz);   // V₁₃
-                add_component(_d_fourier_basis_yz);   // V₂₃
-            }
-        }
-        if ( DIM == 2 )
-        {
-            add_component(_d_fourier_basis_x);   // V₁₁
-            add_component(_d_fourier_basis_y);   // V₂₂
-
-            // V₁₂: only compute for non-orthogonal boxes
-            if (!is_orthogonal)
-                add_component(_d_fourier_basis_xy);
-        }
-        if ( DIM == 1 )
-            add_component(_d_fourier_basis_x);
+        for (int d = 0; d < DIM; ++d)
+            bases.basis[n_comp++] = diagonal[d];
+        for (int c = 0; !is_orthogonal && c < DIM * (DIM - 1) / 2; ++c)
+            bases.basis[n_comp++] = cross[c];
 
         // One pass over k for all components, then the block partials in block order
         launch_stress_dyads(d_segment_stress, work.d_stress_partial.get(), work.d_q_multi.get(), bases, n_comp,

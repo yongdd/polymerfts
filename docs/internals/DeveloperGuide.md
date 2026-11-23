@@ -384,11 +384,13 @@ the Boltzmann factors exp(-w ds) of every solver (`compute_exp_dw()`, which each
 `update_dw()` calls with its factor of ds).
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base. It holds what
-every CUDA solver shares: the computation box, the molecules, the backend's streams, and the
-space group with the backend's index maps, which every solver takes in its constructor, and
+every CUDA solver shares: the computation box, the molecules, the backend's streams, the
+space group, which every solver takes in its constructor, with its device index maps, and
 the full-grid buffers of a reduced-basis run with the expansion, reduction and mask around
 the steps (`expand_to_full_grid()`, `full_grid_output()`, `store_full_grid()`); its
-`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver.
+`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver, and
+`boltzmann_factor()` gives the discrete-chain computation exp(-w ds) in the basis of the
+propagators (a reduced-basis copy when the tables of a space group are on the full grid).
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the
 three pseudo-spectral solvers share -- the `Pseudo` helper, the stress reduction workspace
 and the CrysFFT fast path -- and implements `update_laplacian_operator()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries

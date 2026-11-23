@@ -170,8 +170,8 @@ __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ o
 template <typename T>
 CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
-    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
+    SpaceGroup* space_group)
+    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group)
 {
     try
     {
@@ -293,8 +293,9 @@ void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const
         // Even a one-bead chain (with no convolution) needs a completed update.
         if (!refusal_.empty())
             throw_with_line_number(refusal_);
-        // exp(-w ds) on the full grid: one full segment per bond
-        this->compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 1.0, 0.0);
+        // exp(-w ds) on the full grid: one full segment per bond, and in the basis of the
+        // propagators with a space group
+        this->compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 1.0, 0.0, /*basis_copy=*/true);
     }
     catch (std::exception& exc)
     {

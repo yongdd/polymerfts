@@ -59,8 +59,6 @@
 #include "PseudoSolverHelpers.h"
 #include "SpaceGroup.h"   // CrysFFTEngine
 
-struct CrysFFTPlan;
-
 template <typename T>
 class CudaSolverPseudoBase : public CudaSolver<T>
 {
@@ -139,17 +137,13 @@ protected:
      * The derived constructor ends with init_path(), which needs its overrides.
      *
      * @param space_group               Space group of the reduced basis, or nullptr
-     * @param d_reduced_basis_indices   Device map reduced -> full index (lent by the backend; nullptr without a group)
-     * @param d_full_to_reduced_map     Device map full -> reduced index (lent by the backend; nullptr without a group)
      * @param max_fft_batch             Largest number of fields the derived solver
      *                                  transforms in one cuFFT call (1 or 2).
      * @param with_exp_dw_half          Also allocate d_exp_dw_half (half-step Boltzmann factors).
      */
     CudaSolverPseudoBase(
         ComputationBox<T>* cb, Molecules *molecules, int n_streams,
-        cudaStream_t streams[MAX_STREAMS],
-        SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map,
-        int max_fft_batch, bool with_exp_dw_half);
+        cudaStream_t streams[MAX_STREAMS], SpaceGroup* space_group, int max_fft_batch, bool with_exp_dw_half);
 
     /**
      * @brief Set up the CrysFFT path of the space group (3D, periodic, real fields)
@@ -225,10 +219,11 @@ protected:
      *
      * d_q_out = post · D · (mid · D ·) pre · d_q_in with D = exp(coeff ∇²): the
      * factors are reduced-basis Boltzmann factors, nullptr to skip one, and a
-     * non-null mid adds the second diffusion step. d_q_out may alias d_q_in.
+     * non-null mid adds the second diffusion step. d_q_out may alias d_q_in. Real
+     * fields only, as the CrysFFT path (init_path()).
      */
-    void crysfft_diffuse(int STREAM, double* d_q_in, double* d_q_out, double coeff,
-                         const double* pre, const double* mid, const double* post);
+    void crysfft_diffuse(int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, double coeff,
+                         const CuDeviceData<T>* pre, const CuDeviceData<T>* mid, const CuDeviceData<T>* post);
 
     /**
      * @brief Boltzmann bond factor multiplied into the stress integrand (full-grid path).
@@ -290,10 +285,10 @@ private:
     /// Compute and upload the Pseudo tables (Boltzmann bond factors, Fourier basis) of the
     /// current cell, creating them at the first call.
     void update_pseudo();
-    /// Select and build the CrysFFT fast path for the current space group (3D periodic, real fields).
+    /// Select the CrysFFT engine of the space group (3D periodic, real fields) and, when one
+    /// applies, upload the index maps of its plan, create the per-stream CrysFFT objects and
+    /// build the Boltzmann tables of the blocks.
     void init_crysfft();
-    /// Upload the index maps of the plan and create the per-stream CrysFFT objects of its engine.
-    void setup_crysfft(const CrysFFTPlan& plan);
     /// Rebuild every CrysFFT table for the current cell.
     void update_crysfft_tables();
     /// True when the segment stress takes the CrysFFT fast path (Pmmm or 3m, orthogonal 3D cell).
@@ -313,8 +308,6 @@ private:
                                 const double* d_q_1, const double* d_q_2, double* d_segment_stress);
 
 public:
-    virtual ~CudaSolverPseudoBase();
-
     /**
      * @brief Stress contribution of one segment: V_ij = sum_k q1(k) q2(-k) v_i v_j.
      *

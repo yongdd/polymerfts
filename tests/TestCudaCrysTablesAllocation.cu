@@ -245,13 +245,9 @@ struct Streams
 template <typename Solver>
 static std::pair<long long, long long> solver_bytes(Computation& s, int n_streams)
 {
-    // The backend's index maps of the reduced basis and its device fields
-    const int M = s.cb->get_total_grid();
+    // The device fields (the solver holds the index maps of the reduced basis, the same with any
+    // number of streams)
     const int n_basis = s.sg->get_n_reduced_basis();
-    CudaDeviceBuffer<int> d_reduced(n_basis), d_full(M);
-    CUDA_CHECK(cudaMemcpy(d_reduced, s.sg->get_reduced_basis_indices().data(), sizeof(int) * n_basis,
-                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_full, s.sg->get_full_to_reduced_map().data(), sizeof(int) * M, cudaMemcpyHostToDevice));
     CudaDeviceBuffer<double> d_w_a(n_basis), d_w_b(n_basis);
     CUDA_CHECK(cudaMemcpy(d_w_a, s.w_a.data(), sizeof(double) * n_basis, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_w_b, s.w_b.data(), sizeof(double) * n_basis, cudaMemcpyHostToDevice));
@@ -259,7 +255,7 @@ static std::pair<long long, long long> solver_bytes(Computation& s, int n_stream
 
     const CudaBufferCounters& counters = CudaDeviceMemory::counters();
     const long long start = counters.live_bytes.load();
-    Solver solver(s.cb.get(), s.molecules.get(), n_streams, streams.s, s.sg.get(), d_reduced, d_full);
+    Solver solver(s.cb.get(), s.molecules.get(), n_streams, streams.s, s.sg.get());
     solver.update_dw({{"A", d_w_a.get()}, {"B", d_w_b.get()}});
     solver.prepare_stress();
     const long long flag_off = counters.live_bytes.load() - start;

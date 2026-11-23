@@ -41,11 +41,8 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
     Molecules *molecules,
     int n_streams,
     cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group,
-    const int* d_reduced_basis_indices,
-    const int* d_full_to_reduced_map)
-    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams,
-                              space_group, d_reduced_basis_indices, d_full_to_reduced_map, /*max_fft_batch=*/1,
+    SpaceGroup* space_group)
+    : CudaSolverPseudoBase<T>(cb, molecules, n_streams, streams, space_group, /*max_fft_batch=*/1,
                               /*with_exp_dw_half=*/false)
 {
     try{
@@ -57,9 +54,6 @@ CudaSolverPseudoRK2<T>::CudaSolverPseudoRK2(
         throw_without_line_number(exc.what());   // the owning members release what was acquired
     }
 }
-
-template <typename T>
-CudaSolverPseudoRK2<T>::~CudaSolverPseudoRK2() = default;
 
 template <typename T>
 void CudaSolverPseudoRK2<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
@@ -86,19 +80,11 @@ void CudaSolverPseudoRK2<T>::advance_propagator(
         CuDeviceData<T> *_d_exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type);
         if (use_crysfft_)
         {
-            // [real-only feature] Space-group reduced basis and CrysFFT are implemented for real fields; complex fields take the generic path or raise.
-            if constexpr (!std::is_same_v<T, double>)
-            {
-                throw_with_line_number("CrysFFT path is only supported for real fields.");
-            }
-            else
-            {
-                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
 
-                this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
-                this->multiply_mask(STREAM, d_q_out, d_q_mask);
-                return;
-            }
+            this->crysfft_diffuse(STREAM, d_q_in, d_q_out, coeff_full, _d_exp_dw, nullptr, _d_exp_dw);
+            this->multiply_mask(STREAM, d_q_out, d_q_mask);
+            return;
         }
 
         // Bond factors of the full grid (the Pseudo tables exist on this path only)

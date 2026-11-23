@@ -17,9 +17,8 @@
 template <typename T>
 CudaSolver<T>::CudaSolver(
     ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
-    : cb(cb), molecules(molecules), n_streams(n_streams), space_group_(space_group),
-      d_reduced_basis_indices_(d_reduced_basis_indices), d_full_to_reduced_map_(d_full_to_reduced_map)
+    SpaceGroup* space_group)
+    : cb(cb), molecules(molecules), n_streams(n_streams), space_group_(space_group)
 {
     // [real-only feature] The reduced basis of a space group is implemented for real fields
     if (space_group != nullptr && !std::is_same_v<T, double>)
@@ -27,6 +26,28 @@ CudaSolver<T>::CudaSolver(
     for (int i = 0; i < n_streams; i++)
         this->streams[i] = streams[i];
     n_basis_ = (space_group != nullptr) ? space_group->get_n_reduced_basis() : cb->get_total_grid();
+
+    // The index maps between the full grid and the reduced basis
+    if (space_group != nullptr)
+    {
+        const int M = cb->get_total_grid();
+        d_reduced_basis_indices_.allocate(n_basis_);
+        CUDA_CHECK(cudaMemcpy(d_reduced_basis_indices_, space_group->get_reduced_basis_indices().data(),
+                              sizeof(int)*n_basis_, cudaMemcpyHostToDevice));
+        d_full_to_reduced_map_.allocate(M);
+        CUDA_CHECK(cudaMemcpy(d_full_to_reduced_map_, space_group->get_full_to_reduced_map().data(),
+                              sizeof(int)*M, cudaMemcpyHostToDevice));
+    }
+}
+
+template <typename T>
+const CuDeviceData<T>* CudaSolver<T>::boltzmann_factor(const std::string& monomer_type) const
+{
+    // The copy in the reduced basis when the tables are on the full grid of a space group
+    const auto copy = d_boltzmann_factor_.find(monomer_type);
+    if (copy != d_boltzmann_factor_.end())
+        return copy->second.get();
+    return d_exp_dw.at(0).at(monomer_type).get();
 }
 
 template <typename T>
@@ -94,7 +115,7 @@ void CudaSolver<T>::multiply_mask(int STREAM, CuDeviceData<T>* d_q, const double
 template <typename T>
 void CudaSolver<T>::compute_exp_dw(
     const std::map<std::string, const CuDeviceData<T>*>& d_w_input, bool reduced_basis_tables,
-    bool with_half, double factor, double factor_half)
+    bool with_half, double factor, double factor_half, bool basis_copy)
 {
     try
     {
@@ -114,6 +135,21 @@ void CudaSolver<T>::compute_exp_dw(
                 const auto tables = d_exp_dw.find(ds_idx);
                 if (tables == d_exp_dw.end() || !tables->second.contains(monomer_type))
                     throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in d_exp_dw[" + std::to_string(ds_idx) + "].");
+            }
+
+            // exp(-w ds) of ds index 0 also in the reduced basis, from the field in that basis:
+            // the values of the table below at the points of the basis
+            if (expand && basis_copy)
+            {
+                auto copy = d_boltzmann_factor_.find(monomer_type);
+                if (copy == d_boltzmann_factor_.end())
+                {
+                    // Enter the buffer only once it exists, so a failed allocation can be retried
+                    copy = d_boltzmann_factor_.emplace(monomer_type, CudaDeviceBuffer<CuDeviceData<T>>(n_basis_)).first;
+                }
+                ker_exp<<<N_BLOCKS, N_THREADS>>>(copy->second.get(), d_w_input_monomer, 1.0,
+                                                 -factor*mapping.get_ds_from_index(0), n_basis_);
+                CUDA_CHECK_LAUNCH();
             }
 
             // The field of the tables: the input itself, or its expansion from the reduced
