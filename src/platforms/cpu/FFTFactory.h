@@ -10,8 +10,8 @@
  * **Usage:**
  *
  * @code
- * std::unique_ptr<FFT<double>> fft = createFFT<double, 3>(nx, bc, FFTBackend::FFTW);
- * auto fft_mkl = createFFT<double, 3>(nx, bc, FFTBackend::MKL);
+ * std::unique_ptr<FFT<double>> fft = createFFT<double>(nx, bc, FFTBackend::FFTW);
+ * auto fft_mkl = createFFT<double>(nx, bc, FFTBackend::MKL);
  * @endcode
  *
  * @see FFT for the abstract interface
@@ -23,9 +23,7 @@
 #define FFT_FACTORY_H_
 
 #include <algorithm>
-#include <array>
 #include <memory>
-#include <type_traits>
 #include <vector>
 #include "FFT.h"
 #include "ComputationBox.h"
@@ -117,62 +115,42 @@ public:
  * A periodic box gets the FFT of the backend (FftwFFT or MklFFT), a box of
  * reflecting and absorbing axes MakhoulFFT over the real FFT of the backend.
  *
- * @tparam T   Numeric type (double or std::complex<double>)
- * @tparam DIM Dimensionality (1, 2, or 3)
+ * @tparam T Numeric type (double or std::complex<double>)
  *
- * @param nx      Grid dimensions
- * @param bc      Boundary conditions per dimension: all periodic or none
+ * @param nx      Grid dimensions (one to three axes)
+ * @param bc      Boundary condition of each axis: all periodic or none
  * @param backend FFT backend to use (FFTW or MKL)
  *
  * @return Owning pointer to the new FFT object
  *
  * @throws Exception if periodic and non-periodic axes are mixed or the requested backend is not available
  */
-template <typename T, int DIM>
-std::unique_ptr<FFT<T>> createFFT(std::array<int, DIM> nx, std::array<BoundaryCondition, DIM> bc, FFTBackend backend)
+template <typename T>
+std::unique_ptr<FFT<T>> createFFT(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,
+                                  FFTBackend backend)
 {
-    const auto periodic = std::count(bc.begin(), bc.end(), BoundaryCondition::PERIODIC);
+    if (bc.size() != nx.size())
+        throw_with_line_number("createFFT needs one boundary condition per axis.");
+    const size_t periodic = static_cast<size_t>(std::count(bc.begin(), bc.end(), BoundaryCondition::PERIODIC));
     if (periodic == 0)
-        return std::make_unique<MakhoulFFT<T>>(std::vector<int>(nx.begin(), nx.end()),
-                                               std::vector<BoundaryCondition>(bc.begin(), bc.end()), backend);
-    if (periodic != DIM)
+        return std::make_unique<MakhoulFFT<T>>(nx, bc, backend);
+    if (periodic != nx.size())
         throw_with_line_number("Mixed periodic and non-periodic BCs not yet supported. "
                                "Use all periodic or all non-periodic (reflecting/absorbing).");
 
 #ifdef USE_CPU_MKL
     if (backend == FFTBackend::MKL)
-        return std::make_unique<MklFFT<T, DIM>>(nx);
+        return std::make_unique<MklFFT<T>>(nx);
 #endif
 
 #ifdef USE_CPU_FFTW
     if (backend == FFTBackend::FFTW)
-        return std::make_unique<FftwFFT<T, DIM>>(nx);
+        return std::make_unique<FftwFFT<T>>(nx);
 #endif
 
     (void)backend;
     throw_with_line_number("Requested FFT backend is not available. "
         "Compile with POLYMERFTS_USE_FFTW=ON or POLYMERFTS_USE_MKL=ON.");
-}
-
-/**
- * @brief Create an FFT object with default (periodic) boundary conditions.
- *
- * Convenience overload that creates an FFT with all periodic boundaries.
- *
- * @tparam T   Numeric type (double or std::complex<double>)
- * @tparam DIM Dimensionality (1, 2, or 3)
- *
- * @param nx      Grid dimensions
- * @param backend FFT backend to use (FFTW or MKL)
- *
- * @return Owning pointer to the new FFT object
- */
-template <typename T, int DIM>
-std::unique_ptr<FFT<T>> createFFT(std::array<int, DIM> nx, FFTBackend backend)
-{
-    std::array<BoundaryCondition, DIM> bc;
-    bc.fill(BoundaryCondition::PERIODIC);
-    return createFFT<T, DIM>(nx, bc, backend);
 }
 
 #endif  // FFT_FACTORY_H_

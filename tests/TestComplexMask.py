@@ -162,11 +162,11 @@ def main():
         ok = False
 
     def make_solver_with_space_group():
-        cb = factory.create_computation_box(nx, lx)
+        space_group = _core.SpaceGroup(nx, "Im-3m", 529)
+        cb = factory.create_computation_box(nx, lx, space_group=space_group)
         molecules = make_molecules()
         optimizer = factory.create_propagator_computation_optimizer(molecules, True)
-        space_group = _core.SpaceGroup(nx, "Im-3m", 529)
-        solver = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4", space_group)
+        solver = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4")
         refs = {"box": weakref.ref(cb), "molecules": weakref.ref(molecules),
                 "optimizer": weakref.ref(optimizer), "space group": weakref.ref(space_group)}
         return solver, cb, refs
@@ -185,13 +185,12 @@ def main():
         print(f"FAILED: {alive(refs)} outlive the box and the solver")
         ok = False
 
-    cb = factory.create_computation_box(nx, lx)
     space_group = _core.SpaceGroup(nx, "Im-3m", 529)
-    cb.set_space_group(space_group)
+    cb = factory.create_computation_box(nx, lx, space_group=space_group)
     refs = {"space group": weakref.ref(space_group)}
     del space_group
     if alive(refs) != ["space group"]:
-        print("FAILED: set_space_group does not keep the space group alive")
+        print("FAILED: the box does not keep its space group alive")
         ok = False
     del cb
     if alive(refs):

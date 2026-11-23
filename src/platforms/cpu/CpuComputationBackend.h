@@ -32,14 +32,9 @@ class CpuComputationBackend : public ComputationBackend<T>
 {
 private:
     ComputationBox<T>* cb;
-    SpaceGroup* space_group;
-    std::string chain_model;
     std::unique_ptr<CpuSolver<T>> solver;
     int n_streams;
     int n_basis;
-
-    /// Discrete chains with a space group: exp(-w ds) in the reduced basis
-    std::map<std::string, std::vector<T>> exp_dw_reduced;
 
     static T* raw(BackendArray<T>* a) { return reinterpret_cast<T*>(a); }
     static T* raw(CheckpointArray<T>* a) { return reinterpret_cast<T*>(a); }

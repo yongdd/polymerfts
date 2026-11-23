@@ -12,10 +12,7 @@
 
 #include "CudaCommon.h"
 #include "CudaCrysFFTObliqueZ.h"
-#include "FftwCrysFFTObliqueZ.h"
-#ifdef USE_CPU_MKL
-#include "MklCrysFFTObliqueZ.h"
-#endif
+#include "CrysFFTObliqueZ.h"
 #include "SpaceGroup.h"
 #include "TestNanSafe.h"
 
@@ -202,8 +199,7 @@ __global__ void ker_apply_boltzmann_oblique(
 // Test functions
 //==============================================================================
 
-template <typename Engine>
-static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int Nz, double ds)
+static bool test_cpu_oblique_glide_engine(const char* label, FFTBackend backend, int Nx, int Ny, int Nz, double ds)
 {
     const double Lx = 4.0, Ly = 4.0, Lz = 4.0;
     const std::array<double, 6> cell_hex = {Lx, Ly, Lz, M_PI / 2, M_PI / 2, 2.0 * M_PI / 3.0};
@@ -246,7 +242,7 @@ static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int
 
     expand_oblique_z(q_phys.data(), q_logical.data(), Nx, Ny, Nz, z_shift);
 
-    Engine crys({Nx, Ny, Nz});
+    CrysFFTObliqueZ crys({Nx, Ny, Nz}, backend);
     std::vector<double> boltz;
     crys.build_boltzmann(boltz, cell_hex, ds);
     crys.diffusion(q_phys.data(), q_phys_out.data(), boltz);
@@ -279,7 +275,7 @@ static bool test_cpu_oblique_glide_engine(const char* label, int Nx, int Ny, int
 
 static bool test_cpu_oblique_glide(int Nx, int Ny, int Nz, double ds)
 {
-    return test_cpu_oblique_glide_engine<FftwCrysFFTObliqueZ>("CPU-FFTW:", Nx, Ny, Nz, ds);
+    return test_cpu_oblique_glide_engine("CPU-FFTW:", FFTBackend::FFTW, Nx, Ny, Nz, ds);
 }
 
 static bool test_cuda_oblique_glide(int Nx, int Ny, int Nz, double ds)
@@ -414,10 +410,10 @@ int main()
     ok &= test_cpu_oblique_glide(Nx, Ny, Nz, ds);
     ok &= test_cuda_oblique_glide(Nx, Ny, Nz, ds);
 #ifdef USE_CPU_MKL
-    ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", Nx, Ny, Nz, ds);
-    // Same Nx*Ny*Nz, different Nz (TestCpuCrysFFTTables checks the engine's z work arrays)
-    ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", 16, 16, 64, ds);
-    ok &= test_cpu_oblique_glide_engine<MklCrysFFTObliqueZ>("CPU-MKL:", 32, 32, 16, ds);
+    ok &= test_cpu_oblique_glide_engine("CPU-MKL:", FFTBackend::MKL, Nx, Ny, Nz, ds);
+    // Same Nx*Ny*Nz, different Nz (TestCpuCrysFFTTables checks the engine's scratch)
+    ok &= test_cpu_oblique_glide_engine("CPU-MKL:", FFTBackend::MKL, 16, 16, 64, ds);
+    ok &= test_cpu_oblique_glide_engine("CPU-MKL:", FFTBackend::MKL, 32, 32, 16, ds);
 #endif
 
     std::printf(ok ? "\nAll passed!\n" : "\nFAILED!\n");

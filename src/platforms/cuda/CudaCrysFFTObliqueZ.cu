@@ -4,20 +4,15 @@
  *        permuted real 3D FFT, see CudaCrysFFTObliqueZ.h).
  */
 
-#include <cmath>
+#include <complex>
 #include <limits>
 #include <stdexcept>
 #include <vector>
 
 #include "CudaCrysFFTObliqueZ.h"
 #include "CudaCommon.h"
+#include "CrysFFTObliqueZTable.h"
 #include "Exception.h"
-#include "MinimalFormAlias.h"
-#include "ReciprocalMetric.h"
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace {
 
@@ -146,16 +141,11 @@ void CudaCrysFFTObliqueZ::init_transforms()
     const int n = nx_physical_[2];
     if (!d_twiddle_)
     {
-        const int nz_c = n / 2 + 1;
-        std::vector<double> h_twiddle(2 * nz_c);
-        for (int kz = 0; kz < nz_c; ++kz)
-        {
-            const double angle = M_PI * kz / n;
-            h_twiddle[2 * kz] = std::cos(angle);
-            h_twiddle[2 * kz + 1] = std::sin(angle);
-        }
-        auto d_twiddle = std::make_shared<CudaDeviceBuffer<double>>(2 * nz_c);
-        CUDA_CHECK(cudaMemcpy(*d_twiddle, h_twiddle.data(), sizeof(double) * 2 * nz_c, cudaMemcpyHostToDevice));
+        // (cos, sin) pairs, the layout of std::complex<double> (shared with the CPU engine)
+        const std::vector<std::complex<double>> h_twiddle = obliquez_twiddle(n);
+        auto d_twiddle = std::make_shared<CudaDeviceBuffer<double>>(2 * h_twiddle.size());
+        CUDA_CHECK(cudaMemcpy(*d_twiddle, h_twiddle.data(), sizeof(std::complex<double>) * h_twiddle.size(),
+                              cudaMemcpyHostToDevice));
         d_twiddle_ = std::move(d_twiddle);
     }
 
@@ -176,66 +166,9 @@ void CudaCrysFFTObliqueZ::init_transforms()
 void CudaCrysFFTObliqueZ::build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                                           double ds, cudaStream_t stream) const
 {
-    const int Nx = nx_physical_[0];
-    const int Ny = nx_physical_[1];
-    const int n = nx_physical_[2];
-    const int nz_c = n / 2 + 1;
-    std::vector<double> h_table(2 * static_cast<size_t>(M_spectral_));
-
-    const std::array<double, 6> recip_metric = cell_geometry(cell).recip_metric;
-    const double G11 = recip_metric[0];
-    const double G12 = recip_metric[1];
-    const double G13 = recip_metric[2];
-    const double G22 = recip_metric[3];
-    const double G23 = recip_metric[4];
-    const double G33 = recip_metric[5];
-    const double factor = 4.0 * M_PI * M_PI;
-
-    // For oblique in-plane cells (gamma != 90), pick the in-plane alias
-    // representative minimizing the metric form, matching the invariant
-    // (first-Brillouin-zone) convention used by Pseudo for the standard
-    // full-grid path (see CrysFFTObliqueZBase::build_boltzmann on CPU).
-    // The z (DCT) index is a true non-negative frequency and needs no
-    // re-aliasing (ObliqueZ requires alpha = beta = 90, i.e. G13 = G23 = 0).
-    // The minimal form is the same for (kx, ky) and (-kx, -ky), which makes
-    // the factors even in (kx, ky) as the spectral kernel requires; the search
-    // is exact (MinimalFormAlias.h), since a window of one period misses the
-    // minimum on cells with strongly anisotropic grid spacing.
-    // Relative-tolerance gate: gamma of exactly 90 degrees gives
-    // cos(pi/2) ~ 6e-17; do not flip rectangular cells onto the
-    // minimal-form alias path.
-    const bool oblique_xy = reciprocal_axes_coupled(G11, G22, G12);
-    const AliasSearch search_xy({Nx, Ny, 1}, IndexMetric{G11, G22, 0.0, G12, 0.0, 0.0});
-    auto form_xy = [&](double a, double b, double) {
-        return G11 * a * a + 2.0 * G12 * a * b + G22 * b * b;
-    };
-
-    // (S, D) = (B(kz) + B(n - kz), B(kz) - B(n - kz)) with B(n) = 0, per half-spectrum entry
-    size_t idx = 0;
-    for (int ix = 0; ix < Nx; ++ix)
-    {
-        for (int iy = 0; iy < Ny; ++iy)
-        {
-            std::array<int, 3> rep = {(ix > Nx / 2) ? (ix - Nx) : ix, (iy > Ny / 2) ? (iy - Ny) : iy, 0};
-            if (oblique_xy)
-                min_form_alias_rep(rep, search_xy, form_xy);
-            const int m1 = rep[0], m2 = rep[1];
-            auto boltzmann = [&](int m3) {
-                const double gmm = G11 * m1 * m1 + G22 * m2 * m2 + G33 * m3 * m3
-                                 + 2.0 * (G12 * m1 * m2 + G13 * m1 * m3 + G23 * m2 * m3);
-                return std::exp(-factor * gmm * ds) * norm_factor_;
-            };
-            for (int kz = 0; kz < nz_c; ++kz)
-            {
-                const double b = boltzmann(kz);
-                const double b_mirror = (kz == 0) ? 0.0 : boltzmann(n - kz);
-                h_table[2 * idx] = b + b_mirror;
-                h_table[2 * idx + 1] = b - b_mirror;
-                ++idx;
-            }
-        }
-    }
-
+    // The (S, D) pairs of the half spectrum, with the normalization (shared with the CPU engine)
+    std::vector<double> h_table;
+    build_obliquez_boltzmann(h_table, nx_physical_, cell, ds, norm_factor_);
     upload_table(table, h_table, stream);
 }
 
@@ -252,7 +185,7 @@ void CudaCrysFFTObliqueZ::use_stream(cudaStream_t stream)
     CUFFT_CHECK(cufftSetStream(plan_bwd_, stream_));
 }
 
-void CudaCrysFFTObliqueZ::diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+void CudaCrysFFTObliqueZ::diffusion(const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                                     cudaStream_t stream)
 {
     use_stream(stream);

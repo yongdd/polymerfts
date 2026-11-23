@@ -15,10 +15,7 @@
 #define CRYSFFT_BASIS_MAPPING_H_
 
 #include <array>
-#include <string>
 #include <vector>
-
-#include "Exception.h"
 
 struct CrysFFTBasisMapping
 {
@@ -126,45 +123,6 @@ inline CrysFFTBasisMapping build_crysfft_mapping_z_mirror(
     }
     crysfft_mapping_detail::finish(map, full_to_reduced);
     return map;
-}
-
-/**
- * @brief Whether a mapping can be used for the CrysFFT path.
- *
- * With a physical basis enabled the space group already stores its fields on
- * the physical grid, so the mapping must be the identity; a mismatch is a
- * configuration error and throws `mismatch_message`. Without a physical basis
- * the mapping is usable when it reaches every reduced-basis point.
- */
-inline bool crysfft_mapping_usable(
-    const CrysFFTBasisMapping& map, bool physical_basis_enabled, const char* mismatch_message)
-{
-    if (physical_basis_enabled)
-    {
-        if (!map.identity)
-            throw_with_line_number(std::string(mismatch_message));
-        return true;
-    }
-    return map.covers_all_reduced;
-}
-
-/**
- * @brief Axis groups of the CrysFFT stress fast path, as bit masks (1: x, 2: y, 4: z).
- *
- * A per-axis multiplier k_d² is not invariant under point-group operations
- * that permute axes (cubic: x, y, z; tetragonal: x, y), so on the reduced basis
- * only its sum over such a group of axes is well defined. The stress routines
- * apply one multiplier Σ_{d in group} k_d² per group and give every axis of the
- * group the group sum divided by the group size; the kernel q1·q2 is symmetric,
- * so this is the exact value of each diagonal component.
- */
-inline std::vector<int> crysfft_stress_axis_groups(const std::string& crystal_system)
-{
-    if (crystal_system == "Cubic")
-        return {7};
-    if (crystal_system == "Tetragonal")
-        return {3, 4};
-    return {1, 2, 4};
 }
 
 #endif  // CRYSFFT_BASIS_MAPPING_H_

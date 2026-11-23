@@ -2,9 +2,7 @@
 """Errors of the propagator computation reach Python once, as RuntimeError.
 
 An error found in the native layer names the place where it was found in one
-"File: ..." line: the catch blocks that rethrow it on its way (the computation
-classes and the bindings) pass it through unchanged instead of prepending their
-own location. Checked for a missing field (compute_propagators), an unknown monomer
+"File: ..." line: it passes through its callers unchanged. Checked for a missing field (compute_propagators), an unknown monomer
 type (get_total_concentration) and a segment out of range (get_chain_propagator), for
 continuous and discrete chains with full and reduced memory on every platform.
 """

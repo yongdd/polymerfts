@@ -17,7 +17,6 @@ from types import MappingProxyType
 from pathlib import Path
 import numpy as np
 
-from .validation import NumericalError
 from .mat_fields import _encode_mat_fields
 
 
@@ -168,42 +167,6 @@ def atomic_write_text(path, text):
     _atomic_write(path, "w", lambda stream: stream.write(text))
 
 
-def report_partition_consistency(prop_solver):
-    """Print the forward/backward partition error of each polymer; True if all are within tolerance."""
-    from .. import _core
-    errors = prop_solver.partition_errors()
-    print("Relative contour partition error of each polymer: " +
-          ", ".join(f"{p}: {error:.3e}" for p, error in enumerate(errors)))
-    return all(np.isfinite(error) and error <= _core.PARTITION_TOLERANCE for error in errors)
-
-
-def check_partition_functions(prop_solver, state, fields=None):
-    """Reject an accepted state with a non-positive or non-finite occupied partition (NumericalError).
-
-    With real fields Q is a sum of positive Boltzmann weights. Intermediate iterates can
-    still give Q <= 0 (the Richardson extrapolation of rqm4 or Crank-Nicolson steps on a
-    coarse grid in strong fields), so only accepted states are checked: the final SCFT
-    fields and an L-FTS saddle point whose Hamiltonian, which contains log Q, is not
-    finite. An absent canonical polymer contributes no log Q term, including when
-    a zero graft makes Q vanish. Complex fields (CL-FTS) have no sign to check.
-    `fields` is a function that returns the monomer fields of the state for NumericalError.fields
-    (as in check_partition_once), called only when the check fails; without it the error has none.
-    """
-    if prop_solver.field_type != "real":
-        return
-    for p in range(prop_solver.get_n_polymer_types()):
-        if prop_solver.get_polymer(p).get_volume_fraction() == 0.0:
-            continue
-        Q = prop_solver.get_partition_function(p)
-        if not (np.isfinite(Q) and Q > 0):
-            raise NumericalError(
-                f"The partition function of polymer {p} is {Q:.6e} at {state}, but with real fields it must "
-                "be positive and finite. Either the discretization is too coarse for the fields (refine the "
-                "grid or the contour step), or the propagators fell below the round-off level of the spectral "
-                "transforms, which is relative to their largest value on the grid (for example strong fields "
-                "next to absorbing walls or a grafted source).", None if fields is None else fields())
-
-
 def simulation_metadata(sim, random_seed=None):
     """Build provenance comes from the loaded extension, never the current cwd."""
     import scipy
@@ -242,79 +205,6 @@ def simulation_metadata(sim, random_seed=None):
     return json_ready(metadata)
 
 
-class DriftTailSummary:
-    """Distribution of the largest drift of each step, summarized at the end of a CL-FTS run.
-
-    Complex Langevin averages need the distribution of the drift magnitude to fall off
-    exponentially or faster (Nagata, Nishimura & Shimasaki, Phys. Rev. D 94, 114515 (2016)).
-    The counts stay in memory, twenty bins per decade (the printed median and maximum are
-    bin edges); the step values themselves are recorded as drift_max_step_history and
-    psi_drift_max_step_history. The summary gives
-    numbers, not a verdict: a finite run cannot show an exponential tail, and the weight of
-    a power-law tail sets the size of the bias.
-    """
-    EDGES = 10.0 ** (np.arange(-120, 241) / 20)
-
-    def __init__(self, labels):
-        self.labels = list(labels)
-        self.counts = np.zeros((len(self.labels), self.EDGES.size + 1), dtype=np.int64)
-
-    def add(self, values):
-        self.counts[np.arange(len(self.labels)), np.searchsorted(self.EDGES, values)] += 1
-
-    def report(self):
-        steps = int(self.counts[0].sum()) if self.labels else 0
-        if steps == 0:
-            return
-        print(f"Largest drift per step ({steps} steps of this run); S(u) = P(drift > u) at 10 and 100 "
-              "times the median, and the log-log slope of S between them (scripts/analysis/drift_tail.py):")
-        for label, counts in zip(self.labels, self.counts):
-            beyond = steps - np.cumsum(counts)          # steps above EDGES[k]
-            k_median = int(np.searchsorted(-beyond, -steps / 2))
-            if k_median >= self.EDGES.size:
-                continue
-            median = self.EDGES[k_median]
-            if median <= self.EDGES[0]:
-                print(f"  {label}: no drift")
-                continue
-            k10 = min(np.searchsorted(self.EDGES, 10 * median), self.EDGES.size - 1)
-            k100 = min(np.searchsorted(self.EDGES, 100 * median), self.EDGES.size - 1)
-            s10, s100 = beyond[k10] / steps, beyond[k100] / steps
-            slope = f"{np.log(s100 / s10) / np.log(self.EDGES[k100] / self.EDGES[k10]):.2f}" \
-                if beyond[k100] >= 20 else "-"
-            largest = self.EDGES[min(np.flatnonzero(counts).max(), self.EDGES.size - 1)]
-            print(f"  {label}: median ~{median:.3g}, maximum < {largest:.3g}, "
-                  f"S(10x) {s10:.3g}, S(100x) {s100:.3g}, slope {slope}")
-
-
-class PartitionRatioSummary:
-    """Smallest |Q_s|/<|e^(-u_s)|> of each canonical single-site species (ThermodynamicOperators.partition_ratios) over
-    a run, and the fractions of steps below 0.1 and 0.01. The step values are recorded as
-    partition_ratio_step_history. Like the drift summary it gives numbers, not a verdict: a ratio
-    near 0 means Q_s came close to its zero, the pole of -n_s ln Q_s."""
-    THRESHOLDS = (0.1, 0.01)
-
-    def __init__(self, labels):
-        self.labels = list(labels)
-        self.steps = 0
-        self.smallest = np.full(len(self.labels), np.inf)
-        self.below = np.zeros((len(self.labels), len(self.THRESHOLDS)), dtype=np.int64)
-
-    def add(self, ratios):
-        self.steps += 1
-        self.smallest = np.minimum(self.smallest, ratios)
-        self.below += np.asarray(ratios)[:, None] < np.asarray(self.THRESHOLDS)[None, :]
-
-    def report(self):
-        if self.steps == 0 or not self.labels:
-            return
-        print(f"Partition ratio |Q_s|/<|e^(-u_s)|> of the single-site species ({self.steps} steps of this run; "
-              "near 0: close to the pole of -n_s ln Q_s):")
-        for label, smallest, below in zip(self.labels, self.smallest, self.below):
-            print(f"  {label}: minimum {smallest:.3g}, steps below 0.1 {below[0] / self.steps:.3g}, "
-                  f"below 0.01 {below[1] / self.steps:.3g}")
-
-
 def notify_callbacks(sim, step, w_aux, phi, hamiltonian, drift_max, error_level, step_seconds):
     """Observers receive detached, read-only snapshots of accepted steps only."""
     callbacks = [cb for cb in sim.callbacks.values() if step % getattr(cb, "interval", 1) == 0]
@@ -338,7 +228,7 @@ def notify_callbacks(sim, step, w_aux, phi, hamiltonian, drift_max, error_level,
 
 
 
-def display_system(sim, chain_model):
+def display_system(sim):
     """Prints the box, the chains and the interactions of a simulation."""
     solver = sim.prop_solver
     print("---------- Simulation Parameters ----------")
@@ -350,7 +240,7 @@ def display_system(sim, chain_model):
     print("dx:", solver.get_dx())
     print("Volume: %f" % (solver.get_volume()))
 
-    print("Chain model: %s" % (chain_model))
+    print("Chain model: %s" % (sim.chain_model))
     print("Segment lengths:\n\t", list(sim.segment_lengths.items()))
     print("Conformational asymmetry (epsilon):")
     for monomer_pair in itertools.combinations(sim.monomer_types, 2):

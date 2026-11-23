@@ -42,43 +42,10 @@
 //------------------------------------------------------------------------------
 template <typename T>
 CpuSolverPseudoRQM4<T>::CpuSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend)
+    : CpuSolverPseudoBase<T>(cb, molecules, space_group, /*with_half=*/true)
 {
-    try
-    {
-        // Initialize shared components (FFT, Pseudo, etc.)
-        this->init_shared(cb, molecules, space_group, backend);
-
-        const int M = cb->get_total_grid();
-
-        // Create exp_dw vectors for each ds_index and monomer type (init_shared()
-        // finalized the ContourLengthMapping)
-        const int n_unique_ds = molecules->get_contour_length_mapping().get_n_unique_ds();
-        for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-        {
-            for (const auto& item : molecules->get_bond_lengths())
-            {
-                std::string monomer_type = item.first;
-                this->exp_dw[ds_idx][monomer_type].resize(M);
-                this->exp_dw_half[ds_idx][monomer_type].resize(M);
-            }
-        }
-    }
-    catch (std::exception& exc)
-    {
-        // Nothing to free here: the FFT and Pseudo objects created by
-        // init_shared() are owning members of CpuSolverPseudoBase
-        throw_without_line_number(exc.what());
-    }
-}
-
-//------------------------------------------------------------------------------
-// Destructor
-//------------------------------------------------------------------------------
-template <typename T>
-CpuSolverPseudoRQM4<T>::~CpuSolverPseudoRQM4()
-{
-    // exp_dw and exp_dw_half vectors are automatically cleaned up;
-    // the shared components (FFT, Pseudo) are owning members of the base
+    // Initialize shared components (FFT, Pseudo, etc.)
+    this->init_shared(backend);
 }
 
 //------------------------------------------------------------------------------
@@ -87,42 +54,8 @@ CpuSolverPseudoRQM4<T>::~CpuSolverPseudoRQM4()
 template <typename T>
 void CpuSolverPseudoRQM4<T>::update_dw(std::map<std::string, const T*> w_input)
 {
-    // Fields on the grid the Boltzmann factors live on (full grid, or the
-    // reduced basis on the CrysFFT path); M_use is the size of each exp_dw array
-    std::map<std::string, std::vector<T>> w_full_cache;
-    std::map<std::string, const T*> w_use;
-    const int M_use = this->expand_w_for_update_dw(w_input, w_full_cache, w_use);
-
-    // Get unique ds values from ContourLengthMapping
-    const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-    int n_unique_ds = mapping.get_n_unique_ds();
-
-    // Compute exp_dw for each ds_index and monomer type
-    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-    {
-        double local_ds = mapping.get_ds_from_index(ds_idx);
-
-        for (const auto& item : w_use)
-        {
-            const std::string& monomer_type = item.first;
-            const T* w = item.second;
-
-            if (!this->exp_dw[ds_idx].contains(monomer_type))
-                throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
-
-            std::vector<T>& exp_dw_vec = this->exp_dw.at(ds_idx).at(monomer_type);
-            std::vector<T>& exp_dw_half_vec = this->exp_dw_half.at(ds_idx).at(monomer_type);
-
-            exp_dw_vec.resize(M_use);
-            exp_dw_half_vec.resize(M_use);
-
-            for (int i = 0; i < M_use; ++i)
-            {
-                exp_dw_vec[i] = std::exp(-w[i] * local_ds * 0.5);
-                exp_dw_half_vec[i] = std::exp(-w[i] * local_ds * 0.25);
-            }
-        }
-    }
+    // exp(-w·ds/2) and exp(-w·ds/4), in the reduced basis on the CrysFFT path
+    this->compute_exp_dw(w_input, /*reduced_basis_tables=*/this->use_crysfft(), true, 0.5, 0.25);
 }
 
 //------------------------------------------------------------------------------
@@ -132,142 +65,87 @@ template <typename T>
 void CpuSolverPseudoRQM4<T>::advance_propagator(
     T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index)
 {
-    try
+    // Boltzmann factors exp(-w·ds/2) and exp(-w·ds/4) of this contour step
+    const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
+    const T* _exp_dw_half = this->exp_dw_half.at(ds_index).at(monomer_type).data();
+
+    // The results of the full step and of the two half steps, work arrays of this
+    // thread (called from OpenMP parallel regions)
+    typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
+    std::vector<T>& q_out1 = work.q_1;
+    std::vector<T>& q_out2 = work.q_2;
+
+    if (this->use_crysfft())
     {
-        const int M_full = this->cb->get_total_grid();
-        const int M_reduced = (this->space_group_ != nullptr)
-            ? this->space_group_->get_n_reduced_basis()
-            : M_full;
-        const int M_COMPLEX = this->pseudo->get_total_complex_grid();
-
-        // For periodic BC, coefficient array is actually complex (interleaved real/imag)
-        // so allocate extra space
-        int coeff_size = this->complex_coeffs() ? M_COMPLEX * 2 : M_COMPLEX;
-
-        // The CrysFFT path works on the physical grid and returns the reduced basis;
-        // the other paths work on the full grid
-        const bool crysfft_path = this->use_crysfft() && this->space_group_ != nullptr;
-        const int M_out = crysfft_path ? M_reduced : M_full;
-
-        // Work arrays, kept per thread (called from OpenMP parallel regions)
-        typename CpuSolverPseudoBase<T>::WorkArrays& work = this->work_arrays();
-        std::vector<T>& q_out1 = work.q_1;
-        std::vector<T>& q_out2 = work.q_2;
-        std::vector<double>& k_q_in1 = work.k_1;
-        std::vector<double>& k_q_in2 = work.k_2;
-        q_out1.resize(M_out);
-        q_out2.resize(M_out);
-        if (!crysfft_path)
+        // [real-only feature] The CrysFFT steps fold real fields on the physical sub-grid (init_crysfft())
+        if constexpr (!std::is_same_v<T, double>)
         {
-            k_q_in1.resize(coeff_size);
-            k_q_in2.resize(coeff_size);
-        }
-
-        // Get Boltzmann factors for the correct ds_index
-        const T* _exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        const T* _exp_dw_half = this->exp_dw_half.at(ds_index).at(monomer_type).data();
-
-        // Determine input pointer (expand reduced basis if space_group is set;
-        // the CrysFFT path reads the reduced basis directly)
-        T* fft_in = q_in;
-
-        // Work array of this thread for expand (called from OpenMP parallel regions)
-        std::vector<T>& q_full_in_local = work.q_full_in;
-
-        if (this->space_group_ != nullptr && !crysfft_path)
-        {
-            q_full_in_local.resize(M_full);
-            // Expand reduced basis → full grid
-            if constexpr (std::is_same_v<T, double>)
-                this->space_group_->from_reduced_basis(q_in, q_full_in_local.data(), 1);
-            fft_in = q_full_in_local.data();
-        }
-
-        // ===== Step 1: one full step (q_out1); Step 2: two half steps (q_out2) =====
-        if (crysfft_path)
-        {
-            // On the CrysFFT physical grid, from and into the reduced basis (real fields only, init_crysfft)
-            if constexpr (std::is_same_v<T, double>)
-            {
-                auto [phys_in, phys_out] = this->crysfft_grids(work);
-
-                // Full step: exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2)
-                const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
-                this->fill_crysfft_from_reduced(q_in, phys_in);
-                this->crysfft_step(phys_in, phys_out, coeff_full, _exp_dw, _exp_dw);
-                this->reduce_crysfft_to_reduced(phys_out, q_out1.data());
-
-                // Two half steps (exp(-w·ds/4) outside, exp(-w·ds/2) between them)
-                const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
-                this->fill_crysfft_from_reduced(q_in, phys_in);
-                this->crysfft_step(phys_in, phys_out, coeff_half, _exp_dw_half, _exp_dw);   // first half step
-                this->crysfft_step(phys_out, phys_in, coeff_half, nullptr, _exp_dw_half);   // second half step
-                this->reduce_crysfft_to_reduced(phys_in, q_out2.data());
-            }
+            throw_with_line_number("CrysFFT path is only supported for real fields.");
         }
         else
         {
-            const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
-            const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, ds_index);
+            const int M = this->n_basis_;
+            const double coeff_full = this->get_effective_diffusion_coeff(monomer_type, ds_index, false);
+            const double coeff_half = this->get_effective_diffusion_coeff(monomer_type, ds_index, true);
+            q_out1.resize(M);
+            q_out2.resize(M);
 
-            // The full step and the first half step start from the same input
-            for (int i = 0; i < M_full; ++i)
-            {
-                q_out1[i] = _exp_dw[i] * fft_in[i];
-                q_out2[i] = _exp_dw_half[i] * fft_in[i];
-            }
+            // Full step exp(-w·ds/2) exp(b²ds/6 ∇²) exp(-w·ds/2), and two half steps with
+            // exp(-w·ds/4) outside and exp(-w·ds/2) between them, in the reduced basis
+            this->crysfft_diffuse(q_in, q_out1.data(), coeff_full, _exp_dw, nullptr, _exp_dw);
+            this->crysfft_diffuse(q_in, q_out2.data(), coeff_half, _exp_dw_half, _exp_dw, _exp_dw_half);
 
-            // Full step (its last factor exp(-w·ds/2) comes with the extrapolation)
-            this->transform_forward(q_out1.data(), k_q_in1.data());
-            this->transform_backward(k_q_in1.data(), _boltz_bond, q_out1.data(), nullptr);
-
-            // Two half steps, exp(-w·ds/2) between them (the last exp(-w·ds/4) comes with the extrapolation)
-            this->transform_forward(q_out2.data(), k_q_in2.data());
-            this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), _exp_dw);
-            this->transform_forward(q_out2.data(), k_q_in2.data());
-            this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), nullptr);
-        }
-
-        // ===== RQM4: Richardson extrapolation =====
-        // Into q_out, unless a full-grid result is reduced to the basis of a space group afterwards
-        const bool reduce_full_grid = this->space_group_ != nullptr && !crysfft_path;
-        T* q_richardson = reduce_full_grid ? q_out2.data() : q_out;
-        if (crysfft_path)
-        {
-            for (int i = 0; i < M_out; ++i)
-                q_richardson[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
-        }
-        else
-        {
-            for (int i = 0; i < M_out; ++i)
-            {
-                const T q_full = q_out1[i] * _exp_dw[i];
-                const T q_half = q_out2[i] * _exp_dw_half[i];
-                q_richardson[i] = (4.0 * q_half - q_full) / 3.0;
-            }
-        }
-
-        // Reduce full grid → reduced basis
-        if (reduce_full_grid)
-        {
-            if constexpr (std::is_same_v<T, double>)
-                this->space_group_->to_reduced_basis(q_out2.data(), q_out, 1);
-        }
-
-        // Apply the mask on the output. The computation box stores the mask in the
-        // basis of the propagators (reduced with a space group, full otherwise), so it
-        // is applied after the reduction; the mask is symmetric, so this equals masking
-        // on the full grid.
-        if (q_mask != nullptr)
-        {
-            for (int i = 0; i < M_reduced; ++i)
-                q_out[i] *= q_mask[i];
+            // ===== RQM4: Richardson extrapolation =====
+            for (int i = 0; i < M; ++i)
+                q_out[i] = (4.0 * q_out2[i] - q_out1[i]) / 3.0;
+            this->multiply_mask(q_out, q_mask);
+            return;
         }
     }
-    catch (std::exception& exc)
+
+    const int M = this->cb->get_total_grid();
+    const double* _boltz_bond = this->pseudo->get_boltz_bond(monomer_type, ds_index);
+    const double* _boltz_bond_half = this->pseudo->get_boltz_bond_half(monomer_type, ds_index);
+
+    // Full-grid input/output (expanded from / reduced to the basis with a space group) and
+    // the spectra; the Richardson extrapolation writes fft_out after the steps have read fft_in
+    T* fft_in = this->expand_to_full_grid(q_in, work.q_full);
+    T* fft_out = this->full_grid_output(q_out, work.q_full);
+    std::vector<double>& k_q_in1 = work.k_1;
+    std::vector<double>& k_q_in2 = work.k_2;
+    q_out1.resize(M);
+    q_out2.resize(M);
+    k_q_in1.resize(this->spectrum_size());
+    k_q_in2.resize(this->spectrum_size());
+
+    // ===== Step 1: one full step (q_out1); Step 2: two half steps (q_out2) =====
+    // The full step and the first half step start from the same input
+    for (int i = 0; i < M; ++i)
     {
-        throw_without_line_number(exc.what());
+        q_out1[i] = _exp_dw[i] * fft_in[i];
+        q_out2[i] = _exp_dw_half[i] * fft_in[i];
     }
+
+    // Full step (its last factor exp(-w·ds/2) comes with the extrapolation)
+    this->transform_forward(q_out1.data(), k_q_in1.data());
+    this->transform_backward(k_q_in1.data(), _boltz_bond, q_out1.data(), nullptr);
+
+    // Two half steps, exp(-w·ds/2) between them (the last exp(-w·ds/4) comes with the extrapolation)
+    this->transform_forward(q_out2.data(), k_q_in2.data());
+    this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), _exp_dw);
+    this->transform_forward(q_out2.data(), k_q_in2.data());
+    this->transform_backward(k_q_in2.data(), _boltz_bond_half, q_out2.data(), nullptr);
+
+    // ===== RQM4: Richardson extrapolation =====
+    for (int i = 0; i < M; ++i)
+    {
+        const T q_full = q_out1[i] * _exp_dw[i];
+        const T q_half = q_out2[i] * _exp_dw_half[i];
+        fft_out[i] = (4.0 * q_half - q_full) / 3.0;
+    }
+
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(fft_out, q_out, q_mask);
 }
 
 // Explicit template instantiation

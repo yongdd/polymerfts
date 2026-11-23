@@ -17,7 +17,7 @@ import numpy as np
 from scipy.io import loadmat
 
 from polymerfts import SCFT, NumericalError
-from polymerfts.utils.common import check_partition_functions
+from polymerfts.theory.chains import check_partition_functions
 from fts_checks import cpu_platform, quiet
 
 

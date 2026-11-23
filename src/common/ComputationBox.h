@@ -134,8 +134,8 @@ protected:
     std::vector<double> lx;       ///< Box lengths in each direction [Lx, Ly, Lz] (units: a_Ref*N^0.5)
     std::vector<double> dx;       ///< Grid spacing in each direction [dx, dy, dz] = lx/nx
     int total_grid;               ///< Total number of grid points M = Nx*Ny*Nz
-    std::vector<double> mask;     ///< The mask in the reduced basis while a space group is set (empty otherwise; get_mask() then returns mask_full_)
-    std::vector<double> mask_full_; ///< Mask for impenetrable regions (0=blocked, 1=accessible) on the full grid, as given; empty if no mask. dv and every set_space_group() start from it
+    std::vector<double> mask;     ///< The mask in the reduced basis of a space group (empty otherwise; get_mask() then returns mask_full_)
+    std::vector<double> mask_full_; ///< Mask for impenetrable regions (0=blocked, 1=accessible) on the full grid, as given; empty if no mask. dv and the reduced mask start from it
     double dv_base_;              ///< Volume element of a grid point: Π dx[d] in an orthogonal cell, V/M in an oblique one
     std::vector<double> dv;       ///< Volume element weights for integration (dv_base_ times the mask)
     double volume;                ///< Total system volume V = a·(b×c) for general lattice
@@ -201,9 +201,9 @@ protected:
     // ==================== Space Group Support ====================
 
     /**
-     * @brief Pointer to space group for reduced basis operations.
+     * @brief The space group of the reduced basis, fixed when the box is made (nullptr: none).
      *
-     * When set, integral(), inner_product(), etc. operate on reduced basis
+     * With a group, integral(), inner_product(), etc. operate on reduced basis
      * arrays of size n_basis instead of full grid arrays.
      */
     SpaceGroup* space_group_;
@@ -223,18 +223,6 @@ protected:
      * dv carries the mask.
      */
     std::vector<double> basis_weights_;
-
-    /**
-     * @brief Reduced-basis integration weights for a space group (orbit counts
-     *        times the reduced mask); does not change the box.
-     */
-    std::vector<double> make_basis_weights(SpaceGroup* sg) const;
-
-    /**
-     * @brief The checks of set_space_group (walls, grid, cell, mask symmetry), without
-     *        changing the box; throws if the group cannot be set.
-     */
-    void check_space_group(SpaceGroup* sg) const;
 
     /**
      * @brief Number of reduced-basis points.
@@ -258,41 +246,41 @@ private:
      */
     void update_cell();
 
+    /**
+     * @brief Take the space group of the box: check it against the box (real fields,
+     *        walls, grid, cell, mask symmetry) and build its reduced basis (basis size,
+     *        orbit counts, reduced mask and integration weights).
+     *
+     * The sizes and maps are snapshots of the group, so its physical basis is
+     * frozen from now on (SpaceGroup::mark_in_use()).
+     */
+    void use_space_group(SpaceGroup* sg);
+
+    /// Store checked angles (three, in degrees) in radians with the orthogonality flags
+    void set_angles(const std::vector<double>& full_angles);
+
+protected:
+    /// The weights of the integrals in the basis of the fields: ∫ g dV = scale Σ_i weight[i] g[i]
+    /// over n points (the reduced-basis weights and dv_base_ while a space group is set, dv and 1 otherwise)
+    struct IntegralWeights
+    {
+        int n;
+        const double* weight;
+        double scale;
+    };
+    IntegralWeights integral_weights() const;
+
 public:
     /**
      * @brief Keep the cell orthogonal while a computation needs it.
      *
-     * The factory calls hold_orthogonal_cell() for a computation whose
-     * numerical method requires an orthogonal cell (cn-adi2), and the
-     * computation releases it when it is destroyed. While it is held,
-     * set_lattice_parameters() rejects other angles before changing the box.
+     * A computation whose numerical method requires an orthogonal cell
+     * (cn-adi2, rs) holds it from the end of its construction until it is
+     * destroyed, and so does a Fourier transform with wall axes. While it is
+     * held, set_lattice_parameters() rejects other angles before changing the box.
      */
     void hold_orthogonal_cell() { orthogonal_cell_holders_++; }
     void release_orthogonal_cell() noexcept { orthogonal_cell_holders_--; }
-
-    /**
-     * Attach a computation's group while its constructors run. A failed backend
-     * or propagator allocation restores the old box and the group's freeze flag
-     * without allocating memory. Factories commit only after full construction.
-     */
-    class SpaceGroupGuard
-    {
-        ComputationBox* box;
-        SpaceGroup* group;
-        SpaceGroup* previous_group = nullptr;
-        int previous_n_basis = 0;
-        bool previously_in_use = false;
-        bool committed = false;
-        std::vector<int> previous_orbit_counts;
-        std::vector<double> previous_mask, previous_basis_weights;
-        void restore() noexcept;
-    public:
-        SpaceGroupGuard(ComputationBox* box, SpaceGroup* group);
-        ~SpaceGroupGuard();
-        SpaceGroupGuard(const SpaceGroupGuard&) = delete;
-        SpaceGroupGuard& operator=(const SpaceGroupGuard&) = delete;
-        void commit();
-    };
 
     /**
      * @brief Construct a ComputationBox with specified grid and box parameters.
@@ -331,9 +319,13 @@ public:
      *               - beta:  angle between a and c vectors
      *               - gamma: angle between a and b vectors
      * @param mask   Optional mask array for impenetrable regions
+     * @param space_group Optional space group (real fields only): the fields of the box
+     *               are in its reduced basis for the whole life of the box. It must
+     *               outlive the box, fit its grid, cell, boundary conditions and mask,
+     *               and its physical basis is frozen (SpaceGroup::mark_in_use())
      *
      * @throws Exception if angles are invalid (must be > 0 and < 180 and form a cell of
-     *         volume at least 0.1 abc)
+     *         volume at least 0.1 abc), or if the space group does not fit the box
      *
      * @example
      * @code
@@ -347,7 +339,7 @@ public:
      * @endcode
      */
     ComputationBox(std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
-                   std::vector<double> angles, const double* mask=nullptr);
+                   std::vector<double> angles, const double* mask=nullptr, SpaceGroup* space_group=nullptr);
 
     /// Virtual destructor.
     virtual ~ComputationBox();
@@ -487,19 +479,13 @@ public:
     // ==================== Space Group Methods ====================
 
     /**
-     * @brief Set space group for reduced basis operations.
+     * @brief Get the space group of the box.
      *
-     * When a space group is set, integral(), inner_product(), multi_inner_product(),
+     * With a space group, integral(), inner_product(), multi_inner_product(),
      * and zero_mean() operate on reduced basis arrays (size n_basis) instead
      * of full grid arrays (size total_grid).
      *
-     * @param sg Pointer to SpaceGroup, or nullptr to disable reduced basis mode
-     */
-    virtual void set_space_group(SpaceGroup* sg);
-
-    /**
-     * @brief Get the current space group.
-     * @return Pointer to SpaceGroup, or nullptr if not set
+     * @return Pointer to SpaceGroup, or nullptr if the box has none
      */
     SpaceGroup* get_space_group() const;
 

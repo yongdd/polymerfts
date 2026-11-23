@@ -18,16 +18,11 @@
 #include <complex>
 #include <vector>
 
+#include "CudaDeviceOps.cuh"
 #include "CudaSolverRealSpaceDiscrete.h"
 
 namespace
 {
-__device__ inline double scaled(double a, double x) { return a * x; }
-__device__ inline cuDoubleComplex scaled(double a, cuDoubleComplex x) { return make_cuDoubleComplex(a * x.x, a * x.y); }
-__device__ inline double added(double x, double y) { return x + y; }
-__device__ inline cuDoubleComplex added(cuDoubleComplex x, cuDoubleComplex y) { return make_cuDoubleComplex(x.x + y.x, x.y + y.y); }
-__device__ inline double multiplied(double x, double y) { return x * y; }
-__device__ inline cuDoubleComplex multiplied(cuDoubleComplex x, cuDoubleComplex y) { return cuCmul(x, y); }
 
 // The last pass of a bond multiplies by exp(-w ds) and the mask (null when absent)
 template <typename D>
@@ -43,8 +38,6 @@ __device__ inline D finished(D sum, long m, const D* __restrict__ factor, const 
 // Sum of a b over the grid in a fixed order: partial sums of the blocks, then their sum times factor
 constexpr int reduce_threads = 256;
 constexpr int reduce_blocks = 256;
-__device__ inline double zero_of(double) { return 0.0; }
-__device__ inline cuDoubleComplex zero_of(cuDoubleComplex) { return make_cuDoubleComplex(0.0, 0.0); }
 
 template <typename D>
 __global__ void ker_dot_partial(const D* __restrict__ a, const D* __restrict__ b, D* __restrict__ partial, const long n)
@@ -177,35 +170,28 @@ __global__ void ker_folded_bond_pass(const D* __restrict__ in, D* __restrict__ o
 template <typename T>
 CudaSolverRealSpaceDiscrete<T>::CudaSolverRealSpaceDiscrete(
     ComputationBox<T>* cb, Molecules* molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-    SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map)
-    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group, d_reduced_basis_indices, d_full_to_reduced_map)
+    SpaceGroup* space_group)
+    : CudaSolver<T>(cb, molecules, n_streams, streams, space_group)
 {
-    try
-    {
-        if (molecules->get_model_name() != "discrete")
-            throw_with_line_number("The rs method is for discrete chains.");
+    if (molecules->get_model_name() != "discrete")
+        throw_with_line_number("The rs method is for discrete chains.");
 
-        const int M = cb->get_total_grid();
-        molecules->finalize_contour_length_mapping();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            for (const auto& item : molecules->get_bond_lengths())
-                this->d_exp_dw[ds_idx][item.first].allocate(M);
-        for (int i = 0; i < n_streams; ++i)
-        {
-            d_work_a[i].allocate(M);
-            d_work_b[i].allocate(M);
-        }
-        // The full grid around the bonds of a reduced-basis run: the input and, as a bond
-        // does not run in place, the output
-        this->provide_full_grid(/*separate_output=*/true);
-
-        update_laplacian_operator();
-    }
-    catch (std::exception& exc)
+    const int M = cb->get_total_grid();
+    molecules->finalize_contour_length_mapping();
+    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
+    for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
+        for (const auto& item : molecules->get_bond_lengths())
+            this->d_exp_dw[ds_idx][item.first].allocate(M);
+    for (int i = 0; i < n_streams; ++i)
     {
-        throw_without_line_number(exc.what());   // the owning members release what was acquired
+        d_work_a[i].allocate(M);
+        d_work_b[i].allocate(M);
     }
+    // The full grid around the bonds of a reduced-basis run: the input and, as a bond
+    // does not run in place, the output
+    this->provide_full_grid(/*separate_output=*/true);
+
+    update_laplacian_operator();
 }
 
 template <typename T>
@@ -230,83 +216,70 @@ void CudaSolverRealSpaceDiscrete<T>::update_laplacian_operator()
     // Uploads replace live buffers in place. If any allocation/copy fails,
     // neither propagation nor stress may use the mixture of old and new tables.
     refusal_ = "The rs operator update has not completed. Call update_laplacian_operator() successfully before computing again.";
-    try
+    // The box is orthogonal: the computation refuses a skewed box for rs and holds its angles
+    const RealSpaceBond::Bonds bonds = RealSpaceBond::bonds(*molecules, *cb);
+    const RealSpaceBond::Ghosts& ghosts = bonds.ghosts;
+    const auto nx = cb->get_nx();
+
+    // Every pass must fit the shared memory of a block: the longest kernel of an axis (its halo;
+    // the derivatives have the lengths of the bonds) is checked before the solver changes. The box
+    // has changed already, so a box that does not fit refuses every bond until one fits again,
+    // instead of leaving the kernels of the previous box in use.
+    for (int d = 0; d < cb->get_dim(); ++d)
     {
-        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles
-        const RealSpaceBond::Bonds bonds = RealSpaceBond::bonds(*molecules, *cb);
-        const RealSpaceBond::Ghosts& ghosts = bonds.ghosts;
-        const auto nx = cb->get_nx();
-
-        // Every pass must fit the shared memory of a block: the longest kernel of an axis (its halo;
-        // the derivatives have the lengths of the bonds) is checked before the solver changes. The box
-        // has changed already, so a box that does not fit refuses every bond until one fits again,
-        // instead of leaving the kernels of the previous box in use.
-        for (int d = 0; d < cb->get_dim(); ++d)
+        long inner = 1;
+        for (int e = d + 1; e < cb->get_dim(); ++e)
+            inner *= nx[e];
+        if (tile_of<CuDeviceData<T>>(nx[d], inner, ghosts.halo[d]).bytes > max_shared_bytes)
         {
-            long inner = 1;
-            for (int e = d + 1; e < cb->get_dim(); ++e)
-                inner *= nx[e];
-            if (tile_of<CuDeviceData<T>>(nx[d], inner, ghosts.halo[d]).bytes > max_shared_bytes)
-            {
-                refusal_ = "The bond spans " + std::to_string(2 * ghosts.halo[d] + 1) + " grid points along axis " +
-                           std::to_string(d) + ", more than the shared memory of a block holds; use a coarser grid.";
-                throw_with_line_number(refusal_);
-            }
+            refusal_ = "The bond spans " + std::to_string(2 * ghosts.halo[d] + 1) + " grid points along axis " +
+                       std::to_string(d) + ", more than the shared memory of a block holds; use a coarser grid.";
+            throw_with_line_number(refusal_);
         }
+    }
 
-        // The kernel of each axis of the box; a derivative holds that of its own axis only
-        const int dim = cb->get_dim();
-        for (const auto& [ds_idx, kernels] : bonds.full)
-            for (const auto& [monomer_type, k] : kernels)
-                for (int d = 0; d < dim; ++d)
-                    upload(k[d], k.folded[d], d_bond[ds_idx][monomer_type][d]);
-        for (const auto& [monomer_type, k] : bonds.half)
-        {
+    // The kernel of each axis of the box; a derivative holds that of its own axis only
+    const int dim = cb->get_dim();
+    for (const auto& [ds_idx, kernels] : bonds.full)
+        for (const auto& [monomer_type, k] : kernels)
             for (int d = 0; d < dim; ++d)
-            {
-                const RealSpaceBond::Derivative& full = bonds.full_dlength.at(monomer_type)[d];
-                const RealSpaceBond::Derivative& half = bonds.half_dlength.at(monomer_type)[d];
-                upload(k[d], k.folded[d], d_bond_half[monomer_type][d]);
-                upload(full.stencil, full.folded, d_bond_dlength[monomer_type][d]);
-                upload(half.stencil, half.folded, d_bond_half_dlength[monomer_type][d]);
-            }
-        }
-        halo = ghosts.halo;
-        for (int d = 0; d < cb->get_dim(); ++d)
-        {
-            const size_t count = ghosts.index[d].size();
-            if (d_ghost_index[d].size() != count)
-                d_ghost_index[d].allocate(count);
-            // A previous attempt may have allocated the index but failed while
-            // replacing the sign buffer. Each buffer must be retried separately.
-            if (d_ghost_sign[d].size() != count)
-                d_ghost_sign[d].allocate(count);
-            CUDA_CHECK(cudaMemcpy(d_ghost_index[d], ghosts.index[d].data(), sizeof(int) * count, cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(d_ghost_sign[d], ghosts.sign[d].data(), sizeof(double) * count, cudaMemcpyHostToDevice));
-        }
-        refusal_.clear();
-    }
-    catch (std::exception& exc)
+                upload(k[d], k.folded[d], d_bond[ds_idx][monomer_type][d]);
+    for (const auto& [monomer_type, k] : bonds.half)
     {
-        throw_without_line_number(exc.what());
+        for (int d = 0; d < dim; ++d)
+        {
+            const RealSpaceBond::Derivative& full = bonds.full_dlength.at(monomer_type)[d];
+            const RealSpaceBond::Derivative& half = bonds.half_dlength.at(monomer_type)[d];
+            upload(k[d], k.folded[d], d_bond_half[monomer_type][d]);
+            upload(full.stencil, full.folded, d_bond_dlength[monomer_type][d]);
+            upload(half.stencil, half.folded, d_bond_half_dlength[monomer_type][d]);
+        }
     }
+    halo = ghosts.halo;
+    for (int d = 0; d < cb->get_dim(); ++d)
+    {
+        const size_t count = ghosts.index[d].size();
+        if (d_ghost_index[d].size() != count)
+            d_ghost_index[d].allocate(count);
+        // A previous attempt may have allocated the index but failed while
+        // replacing the sign buffer. Each buffer must be retried separately.
+        if (d_ghost_sign[d].size() != count)
+            d_ghost_sign[d].allocate(count);
+        CUDA_CHECK(cudaMemcpy(d_ghost_index[d], ghosts.index[d].data(), sizeof(int) * count, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_ghost_sign[d], ghosts.sign[d].data(), sizeof(double) * count, cudaMemcpyHostToDevice));
+    }
+    refusal_.clear();
 }
 
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::update_dw(const std::map<std::string, const CuDeviceData<T>*>& d_w)
 {
-    try
-    {
-        // Even a one-bead chain (with no convolution) needs a completed update.
-        if (!refusal_.empty())
-            throw_with_line_number(refusal_);
-        // exp(-w ds) on the full grid: one full segment per bond
-        this->compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 1.0, 0.0);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // Even a one-bead chain (with no convolution) needs a completed update.
+    if (!refusal_.empty())
+        throw_with_line_number(refusal_);
+    // exp(-w ds) on the full grid: one full segment per bond, and in the basis of the
+    // propagators with a space group
+    this->compute_exp_dw(d_w, /*reduced_basis_tables=*/false, false, 1.0, 0.0, /*basis_copy=*/true);
 }
 
 template <typename T>
@@ -374,44 +347,30 @@ void CudaSolverRealSpaceDiscrete<T>::advance_propagator(
     const int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, std::string monomer_type,
     double* d_q_mask, int ds_index)
 {
-    try
+    const auto& kernels = d_bond.at(ds_index).at(monomer_type);
+    const CuDeviceData<T>* exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type).get();
+    if (space_group_ == nullptr)
     {
-        const auto& kernels = d_bond.at(ds_index).at(monomer_type);
-        const CuDeviceData<T>* exp_dw = this->d_exp_dw.at(ds_index).at(monomer_type).get();
-        if (space_group_ == nullptr)
-        {
-            convolve(STREAM, d_q_in, d_q_out, kernels, exp_dw, d_q_mask);
-            return;
-        }
-        // From and back to the reduced basis, where the mask is
-        convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM], kernels, exp_dw, nullptr);
-        this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, d_q_mask);
+        convolve(STREAM, d_q_in, d_q_out, kernels, exp_dw, d_q_mask);
+        return;
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // From and back to the reduced basis, where the mask is
+    convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM], kernels, exp_dw, nullptr);
+    this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, d_q_mask);
 }
 
 template <typename T>
 void CudaSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(
     const int STREAM, CuDeviceData<T>* d_q_in, CuDeviceData<T>* d_q_out, std::string monomer_type)
 {
-    try
+    if (space_group_ == nullptr)
     {
-        if (space_group_ == nullptr)
-        {
-            convolve(STREAM, d_q_in, d_q_out, d_bond_half.at(monomer_type), nullptr, nullptr);
-            return;
-        }
-        convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM],
-                 d_bond_half.at(monomer_type), nullptr, nullptr);
-        this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, nullptr);
+        convolve(STREAM, d_q_in, d_q_out, d_bond_half.at(monomer_type), nullptr, nullptr);
+        return;
     }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    convolve(STREAM, this->expand_to_full_grid(STREAM, d_q_in), d_q_full_out_[STREAM],
+             d_bond_half.at(monomer_type), nullptr, nullptr);
+    this->store_full_grid(STREAM, d_q_full_out_[STREAM], d_q_out, nullptr);
 }
 
 template <typename T>
@@ -434,36 +393,29 @@ void CudaSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
     const int STREAM, CuDeviceData<T>* d_q_1, CuDeviceData<T>* d_q_2, CuDeviceData<T>* d_segment_stress,
     std::string monomer_type, bool is_half_bond_length)
 {
-    try
-    {
-        // The cell stays orthogonal (the factory holds it so), so there are no shear components
-        if (this->force_off_diagonal_stress_)
-            throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
+    // The cell stays orthogonal (the computation holds it so), so there are no shear components
+    if (this->force_off_diagonal_stress_)
+        throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
 
-        // V_aa = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2), as in CpuSolverRealSpaceDiscrete
-        const long M = cb->get_total_grid();
-        const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-        // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
-        const DeviceKernels& kernels = is_half_bond_length ? d_bond_half.at(monomer_type) : d_bond.at(0).at(monomer_type);
-        const auto& derivatives = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
-        cudaStream_t stream = streams[STREAM];
-        // The pair on the full grid, expanded from the reduced basis with a space group
-        const CuDeviceData<T>* q_1 = this->expand_to_full_grid(STREAM, d_q_1, d_q_full_out_[STREAM]);
-        const CuDeviceData<T>* q_2 = this->expand_to_full_grid(STREAM, d_q_2);
-        for (int a = 0; a < cb->get_dim(); ++a)
-        {
-            convolve(STREAM, q_2, d_work_stress[STREAM], kernels, nullptr, nullptr, a, &derivatives[a]);
-            ker_dot_partial<<<reduce_blocks, reduce_threads, 0, stream>>>(
-                q_1, d_work_stress[STREAM].get(), d_partial_sums[STREAM].get(), M);
-            CUDA_CHECK_LAUNCH();
-            ker_sum_partial<<<1, 1, 0, stream>>>(d_partial_sums[STREAM].get(), reduce_blocks,
-                                                 M * 3.0 / (ds * cb->get_lx(a)), d_segment_stress + a);
-            CUDA_CHECK_LAUNCH();
-        }
-    }
-    catch (std::exception& exc)
+    // V_aa = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2), as in CpuSolverRealSpaceDiscrete
+    const long M = cb->get_total_grid();
+    const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
+    // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
+    const DeviceKernels& kernels = is_half_bond_length ? d_bond_half.at(monomer_type) : d_bond.at(0).at(monomer_type);
+    const auto& derivatives = (is_half_bond_length ? d_bond_half_dlength : d_bond_dlength).at(monomer_type);
+    cudaStream_t stream = streams[STREAM];
+    // The pair on the full grid, expanded from the reduced basis with a space group
+    const CuDeviceData<T>* q_1 = this->expand_to_full_grid(STREAM, d_q_1, d_q_full_out_[STREAM]);
+    const CuDeviceData<T>* q_2 = this->expand_to_full_grid(STREAM, d_q_2);
+    for (int a = 0; a < cb->get_dim(); ++a)
     {
-        throw_without_line_number(exc.what());
+        convolve(STREAM, q_2, d_work_stress[STREAM], kernels, nullptr, nullptr, a, &derivatives[a]);
+        ker_dot_partial<<<reduce_blocks, reduce_threads, 0, stream>>>(
+            q_1, d_work_stress[STREAM].get(), d_partial_sums[STREAM].get(), M);
+        CUDA_CHECK_LAUNCH();
+        ker_sum_partial<<<1, 1, 0, stream>>>(d_partial_sums[STREAM].get(), reduce_blocks,
+                                             M * 3.0 / (ds * cb->get_lx(a)), d_segment_stress + a);
+        CUDA_CHECK_LAUNCH();
     }
 }
 

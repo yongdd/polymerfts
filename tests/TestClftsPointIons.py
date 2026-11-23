@@ -32,12 +32,13 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat
-from polymerfts import CLFTS, PlatformSelector, ValidationError
+from polymerfts import CLFTS, PlatformSelector
 from polymerfts.utils.checkpoint import _measurement_key
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.utils.validation import validate_lfts_params
+from checks import expect_validation_error, smooth
 from cuda_part import cpu_platform
-from fts_checks import exact_restart, quiet, silenced
+from fts_checks import exact_restart, hamiltonian, quiet, silenced
 
 NX, LX, NBAR, N = [12, 10], [2.0, 1.8], 1e4, 20
 Z_A = 0.2
@@ -64,21 +65,6 @@ def parameters(directory, steps=2, screening_length=None, ions=None, **electrost
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as error:
-        assert message in str(error), f"expected '{message}', got '{error}'"
-        return
-    raise AssertionError(f"expected a ValidationError with '{message}'")
-
-
-def smooth(x, std):
-    k = np.meshgrid(*[np.fft.fftfreq(m) * m for m in NX], indexing="ij")
-    y = np.real(np.fft.ifftn(np.fft.fftn(np.reshape(x, NX)) * np.exp(-0.08 * sum(kk ** 2 for kk in k)))).ravel()
-    return std * (y - y.mean()) / y.std()
 
 
 def inputs(root):
@@ -118,15 +104,6 @@ def inputs(root):
     sim = quiet(continuous(n_segments=N, bjerrum_length=0.01))
     expected = 4 * np.pi * 0.01 * N ** 2 * np.sqrt(NBAR)
     assert abs(sim.electrostatics.coupling - expected) < 1e-12 * expected, "bjerrum_length with n_segments"
-
-
-def hamiltonian(sim, w_aux):
-    phi, _ = sim.compute_concentrations(w_aux)
-    phi_smeared = sim.smearing.apply_to_dict(phi)
-    partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
-    h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
-                                    include_const_term=True, phi=phi_smeared)
-    return h + sim.electrostatics.hamiltonian(), phi_smeared
 
 
 def forces(root):
@@ -191,14 +168,14 @@ def records(root):
     assert sim.thermodynamics.partition_ratio_species == ["ion Na", "ion Cl"], sim.thermodynamics.partition_ratio_species
     # 1 for a real psi; |Q_s| for an imaginary psi, whose weights all have the modulus 1
     w_aux = np.zeros((2, n_grid), dtype=complex)
-    es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 5.0)
+    es.psi = smooth(rng.normal(0.0, 1.0, n_grid), NX, 5.0)
     assert np.max(np.abs(sim.thermodynamics.partition_ratios(w_aux) - 1.0)) < 1e-14
-    es.psi = 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
+    es.psi = 1j * smooth(rng.normal(0.0, 1.0, n_grid), NX, 20.0)
     expected = [np.exp(np.real(log_q)) for log_q in es.ion_densities()[1]]
     assert max(expected) < 0.99 and np.allclose(sim.thermodynamics.partition_ratios(w_aux), expected, rtol=1e-12, atol=0), expected
     # A complex psi, whose real part varies over the grid, makes the ratio depend on the sign of the
     # exponent: |Q_s| / <e^(-Re u_s)> with u_s = z_s (Gamma_s * psi)/N, smeared here with numpy
-    es.psi = smooth(rng.normal(0.0, 1.0, n_grid), 20.0) + 1j * smooth(rng.normal(0.0, 1.0, n_grid), 20.0)
+    es.psi = smooth(rng.normal(0.0, 1.0, n_grid), NX, 20.0) + 1j * smooth(rng.normal(0.0, 1.0, n_grid), NX, 20.0)
     for ion, log_q, ratio in zip(es.ions, es.ion_densities()[1], sim.thermodynamics.partition_ratios(w_aux)):
         smeared = np.fft.ifftn(np.fft.fftn(np.reshape(es.psi, NX)) * np.exp(-ion["smearing_length"] ** 2 * es.k_sq / 2))
         expected = np.exp(np.real(log_q)) / np.mean(np.exp(-ion["valence"] * np.real(smeared) / N))
@@ -228,9 +205,9 @@ def pressure(root):
         rng = np.random.default_rng(7)
         sim = quiet(lambda: CLFTS(params))
         n_grid, M = int(np.prod(NX)), len(sim.monomer_types)
-        w_aux = np.array([smooth(rng.normal(0, 1, n_grid), 5.0) + 1j * smooth(rng.normal(0, 1, n_grid), 1.0)
+        w_aux = np.array([smooth(rng.normal(0, 1, n_grid), NX, 5.0) + 1j * smooth(rng.normal(0, 1, n_grid), NX, 1.0)
                           for _ in range(M)])
-        psi = smooth(rng.normal(0, 1, n_grid), 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), 0.5)
+        psi = smooth(rng.normal(0, 1, n_grid), NX, 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), NX, 0.5)
         volume = sim.prop_solver.get_volume()
         ions = np.array([N * ion["concentration"] for ion in sim.electrostatics.ions])
 

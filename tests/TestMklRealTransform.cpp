@@ -33,8 +33,8 @@ static void check_roundtrip_1d(int N,
     fill_random(data, static_cast<int>(fwd_type) * 10 + N);
     std::vector<double> original = data;
 
-    MklRealTransform1D fwd(N, fwd_type);
-    MklRealTransform1D bwd(N, bwd_type);
+    MklRealTransform fwd({N}, {fwd_type});
+    MklRealTransform bwd({N}, {bwd_type});
 
     fwd.execute(data.data());
     bwd.execute(data.data());
@@ -64,8 +64,8 @@ static void check_roundtrip_2d(int Nx, int Ny,
     fill_random(data, static_cast<int>(fwd_x) * 100 + static_cast<int>(fwd_y) * 10 + Nx + Ny);
     std::vector<double> original = data;
 
-    MklRealTransform2D fwd(Nx, Ny, fwd_x, fwd_y);
-    MklRealTransform2D bwd(Nx, Ny, bwd_x, bwd_y);
+    MklRealTransform fwd({Nx, Ny}, {fwd_x, fwd_y});
+    MklRealTransform bwd({Nx, Ny}, {bwd_x, bwd_y});
 
     fwd.execute(data.data());
     bwd.execute(data.data());
@@ -92,8 +92,8 @@ static void check_roundtrip_3d(int Nx, int Ny, int Nz,
     fill_random(data, static_cast<int>(type) * 100 + Nx + Ny + Nz);
     std::vector<double> original = data;
 
-    MklRealTransform3D fwd(Nx, Ny, Nz, type);
-    MklRealTransform3D bwd(Nx, Ny, Nz, type);
+    MklRealTransform fwd({Nx, Ny, Nz}, {type, type, type});
+    MklRealTransform bwd({Nx, Ny, Nz}, {type, type, type});
 
     fwd.execute(data.data());
     bwd.execute(data.data());

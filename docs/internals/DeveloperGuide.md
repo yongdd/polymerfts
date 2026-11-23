@@ -137,9 +137,9 @@ The classes each platform provides (the computation classes above them are share
 | Discrete chains, PS | `CpuSolverPseudoDiscrete` | `CudaSolverPseudoDiscrete` |
 | Real space, CN-ADI2 | `CpuSolverCNADI` | `CudaSolverCNADI` |
 | Discrete chains, real space (RS) | `CpuSolverRealSpaceDiscrete` (kernels and ghost tables from `RealSpaceBond::bonds`) | `CudaSolverRealSpaceDiscrete` (the same tables, uploaded to the device) |
-| Transforms | periodic: `FftwFFT<T,DIM>`, `MklFFT<T,DIM>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaFFT<T,DIM>` over `CudaRealTransform` |
+| Transforms | periodic: `FftwFFT<T>`, `MklFFT<T>`; DCT/DST: `MakhoulFFT<T>` (`MakhoulTransform` over the real FFT of either library) | periodic: cuFFT plans (`CufftPlan`) in `CudaSolverPseudoBase`; DCT/DST: `CudaMakhoulTransform<T>` (one cuFFT of the grid) |
 | Fourier-space tables | `Pseudo<T>` | `CudaPseudo<T>` (device copy) |
-| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm` (over the real FFT of either library), `{Fftw,Mkl}CrysFFT{Recursive3m,ObliqueZ}` | `CudaCrysFFT` (Pmmm), `CudaCrysFFTRecursive3m`, `CudaCrysFFTObliqueZ` |
+| CrysFFT (space groups) | `CpuCrysFFT`: `CrysFFTPmmm`, `CrysFFTRecursive3m` and `CrysFFTObliqueZ` (over the real FFT of either library) | `CudaCrysFFTBase`: `CudaCrysFFTPmmm`, `CudaCrysFFTRecursive3m` and `CudaCrysFFTObliqueZ` |
 | Field update | `CpuAndersonMixing` | `CudaAndersonMixing` (history in device or, memory-saving, pinned host memory) |
 
 ### Platform Selection
@@ -166,16 +166,16 @@ std::unique_ptr<AbstractFactory<std::complex<double>>> factory_complex =
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `create_computation_box(nx, lx, bc, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Orthogonal simulation grid with boundary conditions; optional mask for impenetrable regions |
-| `create_computation_box(nx, lx, bc, angles, mask=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask |
+| `create_computation_box(nx, lx, bc, angles, mask=nullptr, space_group=nullptr)` | `std::unique_ptr<ComputationBox<T>>` | Grid with lattice angles in degrees for non-orthogonal cells (`angles` empty: orthogonal; `[gamma]` for 2D; `[alpha, beta, gamma]` for 3D); optional mask; optional `SpaceGroup*` whose reduced basis the box and its computations use (real fields only) |
 | `create_propagator_computation_optimizer(molecules, aggregate)` | `std::unique_ptr<PropagatorComputationOptimizer>` | Propagator dependency graph with optional aggregation (concrete method of the base class) |
 | `create_molecules_information(model, ds, bond_lengths)` | `std::unique_ptr<Molecules>` | Polymer/solvent container (concrete method of the base class) |
-| `create_propagator_computation(box, molecules, optimizer, method, space_group=nullptr)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default); optional `SpaceGroup*` enables space-group symmetry (concrete method of the base class; the platform supplies the backend) |
+| `create_propagator_computation(box, molecules, optimizer, method)` | `std::unique_ptr<PropagatorComputation<T>>` | Propagator solver (method: rqm4, rk2 or cn-adi2 for continuous chains, ps or rs for discrete chains; empty for the default), in the basis of the box (concrete method of the base class; the platform supplies the backend) |
 | `create_anderson_mixing(n_var, max_hist, ...)` | `std::unique_ptr<AndersonMixing<T>>` | Field update accelerator |
 | `create_fourier_transform(box, bc)` | `std::unique_ptr<FourierTransform<T>>` | Transforms and Fourier multipliers of whole fields (one transform per axis, see Section 3.4) |
 
 The caller owns the created objects. An object created from others keeps raw pointers
-to them (the optimizer to its molecules; the computation to its box, molecules,
-optimizer and space group), so they must outlive it. Local `unique_ptr`s are destroyed
+to them (the optimizer to its molecules; the box to its space group; the computation
+to its box, molecules and optimizer), so they must outlive it. Local `unique_ptr`s are destroyed
 in reverse order of declaration, so creating the objects in this order destroys each
 computation before the objects it points to. The Python bindings keep these arguments
 alive with `py::keep_alive`.
@@ -198,26 +198,21 @@ ComputationBox<T>                     [CPU memory; the CPU platforms use it dire
 │   ├── dx[3]           - grid spacing
 │   ├── bc[6]           - boundary conditions
 │   ├── mask_full_      - impenetrable regions on the full grid (optional)
-│   └── mask            - the same, reduced, while a space group is set
+│   └── mask            - the same, reduced, with a space group
 ├── Methods:
 │   ├── integral(g)              - ∫g(r)dr
 │   ├── inner_product(g, h)      - ∫g(r)h(r)dr
 │   ├── multi_inner_product()    - sum of inner products
 │   ├── zero_mean(g)             - remove spatial mean
 │   ├── set_lx(lx)               - update box lengths [virtual]
-│   ├── set_lattice_parameters() - update with angles [virtual]
-│   └── set_space_group(sg)      - reduced basis on/off [virtual]
+│   └── set_lattice_parameters() - update with angles [virtual]
         │
         └── CudaComputationBox<T>     [GPU Memory]
 ```
 
-**Space groups.** `set_space_group(sg)` switches the box to the reduced basis of `sg`
-(or back to the full grid for `nullptr`): `get_n_basis()`, the orbit counts and
-`get_mask()` follow it. It rejects a group built for another grid, reduces the
-full-grid mask afresh every time, and changes nothing if a step fails. A propagator
-computation sets the box's group (also to none) when it is created and refuses to run
-if the box got another group afterwards, so a box can be reused one computation at a
-time but not shared by computations with different groups.
+**Space groups.** A box made with a space group (`create_computation_box(..., space_group)`)
+works in its reduced basis for its whole life, and so do its computations: `get_n_basis()`,
+the orbit counts and `get_mask()` follow it.
 
 **Boundary Conditions:**
 
@@ -234,26 +229,23 @@ time but not shared by computations with different groups.
 Central computational engine for solving modified diffusion equations and computing polymer statistics.
 
 ```
-PropagatorComputation<T>                      [Abstract Base]
+PropagatorComputation<T>                      [Abstract Base: backend, φ storage, getters, solvents]
 ├── compute_propagators(w, q_init)            [pure virtual]
 ├── compute_concentrations()                  [pure virtual]
 ├── compute_stress()                          [pure virtual]
-├── compute_concentrations_and_stress()       [pure virtual]
-├── get_total_partition(polymer)              [pure virtual]
+├── compute_concentrations_and_stress()       [virtual]
 ├── get_chain_propagator(p, v, u, n)          [pure virtual]
-├── get_total_concentration(monomer)          [pure virtual]
 ├── compute_partition_errors()                [pure virtual]
+├── get_total_partition(polymer), get_total_concentration(monomer), ...
 ├── check_total_partition(tolerance)
-└── update_laplacian_operator()               [pure virtual]
+└── update_laplacian_operator()
         │
-        └── ComputationCommon<T>              [backend, φ storage, getters, solvents]
-            │
-            ├── ComputationContinuous<T>      full storage, scheduler groups; RQM4, RK2 or CN-ADI2
-            ├── ComputationDiscrete<T>        full storage, scheduler groups; bond convolution and half bonds
-            │
-            └── ComputationReduceMemoryBase<T> [checkpoints and recomputation]
-                ├── ComputationReduceMemoryContinuous<T>
-                └── ComputationReduceMemoryDiscrete<T>
+        ├── ComputationContinuous<T>          full storage, scheduler groups; RQM4, RK2 or CN-ADI2
+        ├── ComputationDiscrete<T>            full storage, scheduler groups; bond convolution and half bonds
+        │
+        └── ComputationReduceMemoryBase<T>    [checkpoints and recomputation]
+            ├── ComputationReduceMemoryContinuous<T>
+            └── ComputationReduceMemoryDiscrete<T>
 
 ComputationBackend<T>                         [Abstract Base, grid operations]
         ├── CpuComputationBackend<T>          host arrays, OpenMP threads, CpuSolver
@@ -340,8 +332,13 @@ differently grouped sums of the two modes differently (see
 
 ```
 CpuSolver<T>                                  [Abstract Base]
-├── exp_dw[monomer]         - Boltzmann factors
-├── exp_dw_half[monomer]    - Half-step Boltzmann factors
+├── exp_dw[ds_index][monomer]       - Boltzmann factors
+├── exp_dw_half[ds_index][monomer]  - Half-step Boltzmann factors (RQM4)
+├── cb, molecules, space_group_, n_basis_   - shared context (protected constructor)
+├── compute_exp_dw()        - the body of every update_dw()
+├── boltzmann_factor()      - exp(-w ds) of a discrete segment in the basis of the propagators
+├── expand_to_full_grid(), full_grid_output(), store_full_grid(), multiply_mask()
+│                           - the reduced basis and the mask around the full-grid steps
 ├── update_dw(w)            [pure virtual]
 ├── advance_propagator()    [pure virtual]
 └── compute_single_segment_stress() [pure virtual]
@@ -352,6 +349,7 @@ CpuSolver<T>                                  [Abstract Base]
         │   ├── transform_backward()
         │   ├── crysfft_           - std::unique_ptr<CpuCrysFFT>, with a space group; its k-space tables
         │   │                        are the solver's (crysfft_boltz_, crysfft_multipliers_)
+        │   ├── crysfft_diffuse()  - the CrysFFT diffusion of reduced-basis propagators
         │   ├── update_laplacian_operator()
         │   ├── prepare_stress()                 [the CrysFFT stress multipliers]
         │   ├── compute_single_segment_stress()  [shared implementation]
@@ -384,25 +382,37 @@ CpuSolver<T>                                  [Abstract Base]
 
 Every CPU solver takes the space group (`nullptr` for the full grid) in its constructor
 and builds the tables of the cell there; `update_laplacian_operator()` rebuilds them for a
-new cell.
+new cell. `CpuSolver<T>` holds what every CPU solver shares, as `CudaSolver<T>` does on the
+GPU: the computation box, the molecules, the space group and the size of a propagator,
+the Boltzmann factors exp(-w ds) of every solver (`compute_exp_dw()`, which each
+`update_dw()` calls with its factor of ds) with the factor of a discrete segment in the
+basis of the propagators that the backend reads (`boltzmann_factor()`), and the expansion,
+reduction and mask around the full-grid steps (`expand_to_full_grid()`, `full_grid_output()`,
+`store_full_grid()`, `multiply_mask()`, on a full grid of the calling thread). Each step
+function writes out its two paths, the CrysFFT steps in the reduced basis
+(`crysfft_diffuse()` of `CpuSolverPseudoBase`, the counterpart of CUDA's) and the full grid,
+as its CUDA twin does. With a space group the pseudo-spectral and CN-ADI steps and the
+pseudo-spectral stress work in one full grid per thread; the rs bonds, which cannot run in
+place, and the rs stress take a second.
 
 The CUDA side mirrors this layout. `CudaSolver<T>` is the abstract base. It holds what
-every CUDA solver shares: the computation box, the molecules, the backend's streams, and the
-space group with the backend's index maps, which every solver takes in its constructor, and
+every CUDA solver shares: the computation box, the molecules, the backend's streams, the
+space group, which every solver takes in its constructor, with its device index maps, and
 the full-grid buffers of a reduced-basis run with the expansion, reduction and mask around
 the steps (`expand_to_full_grid()`, `full_grid_output()`, `store_full_grid()`); its
-`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver.
+`compute_exp_dw()` computes the Boltzmann factors exp(-w ds) of every CUDA solver, and
+`boltzmann_factor()` gives the discrete-chain computation exp(-w ds) in the basis of the
+propagators (a reduced-basis copy when the tables of a space group are on the full grid).
 `CudaSolverPseudoBase<T>` (`src/platforms/cuda/CudaSolverPseudoBase.h`) holds what the
 three pseudo-spectral solvers share -- the `Pseudo` helper, the stress reduction workspace
 and the CrysFFT fast path -- and implements `update_laplacian_operator()`. It also owns the spectral transforms: cuFFT plans for periodic boundaries
 (`fft_forward()` / `fft_backward()`, batch of 1 or 2 fields, the largest batch is a
-constructor argument; the plans of a stream share one work area) and per-stream DCT/DST objects (`fft_`) for non-periodic ones.
+constructor argument, 1 on the CrysFFT path; the plans of a stream share one work area) and the per-stream cosine and sine series (`CudaMakhoulTransform`) for walls.
 The physical-grid ↔ reduced-basis maps of the CrysFFT fast path are built by the
 platform-independent `CrysFFTBasisMapping.h` and shared with the CPU solver.
 It also implements `compute_single_segment_stress()` once for the three solvers
 (as `CpuSolverPseudoBase` does on the CPU) and owns the spectral scratch that the
-propagator steps and the stress share (`d_qk_` for periodic boundaries, `d_rk_1_`/`d_rk_2_`
-for walls); the discrete solver overrides
+propagator steps and the stress share (one or two spectra per stream); the discrete solver overrides
 `get_stress_boltz_bond()` and `stress_has_bond_factor()` (the base defaults, nullptr and
 false, are the continuous chain). The full-grid transforms, work buffers and `CudaPseudo`
 tables exist only for a path that uses them (`provide_work()` with the derived solvers'
@@ -410,7 +420,7 @@ tables exist only for a path that uses them (`provide_work()` with the derived s
 again by `prepare_stress()`, as the off-diagonal stress flag can turn the stress to the full
 grid; the `CudaPseudo` tables are created when a full-grid path first needs them), so the
 Pmmm and recursive 3m CrysFFT with the stress fast path hold none of them, and the stress
-workspace (for RK2 and discrete chains also the second spectrum, which only the stress reads)
+workspace (also the second spectrum, which only the stress reads, except for the batch of the periodic RQM4 step)
 exists only from the first `prepare_stress()` on. The steps reuse what they have
 read: the RK2 step runs in its output, and with a space group the pseudo-spectral and CN-ADI
 steps work in place in one full grid per stream (the rs bonds, which cannot run in place,
@@ -418,16 +428,22 @@ take a second).
 `CudaSolverPseudoRQM4`, `CudaSolverPseudoRK2` and `CudaSolverPseudoDiscrete` keep
 `update_dw()`/`advance_propagator()` (RQM4 also the buffers of its full and half steps);
 `CudaSolverCNADI` is the finite-difference solver, and `CudaSolverRealSpaceDiscrete` sums the
-bond of discrete chains on the grid. The non-periodic DCT/DST
-objects are held through `CudaFFTBase<T>`, whose `forward_stream()` /
-`backward_stream()` run the transform on the propagator's stream. Mechanical real/complex
+bond of discrete chains on the grid. The work of each stream is one `StreamWork` of
+`CudaSolverPseudoBase`: the cuFFT plans of a periodic box or the `CudaMakhoulTransform` of
+a box with walls, the spectral scratch, the stress workspace and the CrysFFT engine.
+`bond_step()` runs the bond convolution of a full-grid field on its stream, the forward
+transform, the bond factor and the backward transform of either kind of box, without the
+normalization 1/M, which the caller multiplies into its next kernel, and
+`transform_forward()` gives the spectra of the stress; they are the counterparts of
+`transform_forward()` and `transform_backward()` of the CPU solvers. The batch of two fields
+of the periodic RQM4 step and the CrysFFT steps keep their own paths. Mechanical real/complex
 differences (D2Z vs Z2Z transforms, CUB sum vs reduce) are hidden behind the overloads
 in `CudaTypeDispatch.h`, so a remaining `if constexpr` on the field type marks a genuine
 algorithmic difference or a real-only feature and is commented as such.
 
 ### 3.4 FFT Hierarchy
 
-**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`, `src/platforms/cuda/CudaFFT.h`
+**Location**: `src/platforms/cpu/FFT.h`, `src/platforms/cpu/FftwFFT.h`, `src/platforms/cpu/MklFFT.h`, `src/platforms/cpu/FFTFactory.h`
 
 ```
 FFT<T>                                        [Abstract Base]
@@ -435,26 +451,20 @@ FFT<T>                                        [Abstract Base]
 ├── backward(double* spectral, T* real)       [pure virtual]
 └── backward_with_factors(...)                [k_factor · coefficients, r_factor · field]
         │
-        ├── FftwFFT<T, DIM>                    [CPU - FFTW backend, periodic]
-        │   └── DIM = 1, 2, or 3 (compile-time)
+        ├── FftwFFT<T>                         [CPU - FFTW backend, periodic, grid of 1 to 3 axes]
         │
-        ├── MklFFT<T, DIM>                     [CPU - MKL backend, periodic]
-        │   └── DIM = 1, 2, or 3 (compile-time)
+        ├── MklFFT<T>                          [CPU - MKL backend, periodic, grid of 1 to 3 axes]
         │
-        ├── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
-        │   └── MakhoulTransform over FftwRealFFT or MklRealFFT
-        │
-        └── CudaFFTBase<T>                    [GPU abstract base]
-            ├── forward_stream(..., cudaStream_t)   [pure virtual; double* and complex* overloads]
-            ├── backward_stream(..., cudaStream_t)  [pure virtual; double* and complex* overloads]
-            │
-            └── CudaFFT<T, DIM>               [GPU/cuFFT + CudaRealTransform]
-                ├── forward()/backward() call the stream versions on stream 0
-                └── Uses CudaRealTransform for non-periodic BC (DCT/DST)
+        └── MakhoulFFT<T>                      [CPU - DCT/DST, either backend]
+            └── MakhoulTransform over FftwRealFFT or MklRealFFT
 ```
 
 On the CPU, `createFFT()` (`FFTFactory.h`) returns `FftwFFT` or `MklFFT` for a periodic
-box and `MakhoulFFT` for a box of reflecting and absorbing axes.
+box and `MakhoulFFT` for a box of reflecting and absorbing axes. `FFT<T>` is a CPU
+interface. On CUDA the solvers hold cuFFT plans for periodic boxes and
+`CudaMakhoulTransform<T>` for boxes with walls, whose coefficients have the layout of
+`FFT<T>` and the scale of `MakhoulFFT` there (half of FFTW's REDFT10/RODFT10 per axis);
+`CudaCrysFFTPmmm` and `CudaFourierTransform` use `CudaMakhoulTransform` as well.
 
 **Transform Types:**
 
@@ -486,11 +496,11 @@ hold both k and −k, where the inverse r2c transforms of FFTW, MKL and cuFFT wo
 other values differently; on the device every field starts an even number of doubles from
 the next (cuFFT needs 16-byte aligned real data). A box that mixes periodic and wall axes
 has complex coefficients, with the full spectrum on the periodic axes, and real fields take
-the real part of `backward`. Both versions compute them with one FFT of the grid whose wall
-axes are reordered and combined as in Makhoul's cosine transform: `MakhoulTransform` with
-periodic axes on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid between a reordering
-and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
-Section 2.5). `PropagatorSolver.fourier` uses the
+the real part of `backward`. Both versions compute the transforms of boxes with walls with
+one FFT of the grid whose wall axes are reordered and combined as in Makhoul's cosine
+transform: `MakhoulTransform` on the CPU, `CudaMakhoulTransform` (one cuFFT of the grid
+between a reordering and a combining kernel) on CUDA ([FFTImplementation.md](FFTImplementation.md),
+Sections 2.4 and 2.5). `PropagatorSolver.fourier` uses the
 cosine series along walls, whose fields have no boundary value. The Langevin steps use it
 for smearing, the transforms of ψ, the `etd` integrator, the dilation of the smearing
 (osmotic pressure), the LR compressor of L-FTS along periodic axes and reflecting walls
@@ -594,21 +604,10 @@ All computational classes use explicit template instantiation for:
 **Location**: `src/common/TemplateInstantiations.h`
 
 ```cpp
-// For single-parameter templates (most classes)
 INSTANTIATE_CLASS(ComputationContinuous);
 // Expands to:
 //   template class ComputationContinuous<double>;
 //   template class ComputationContinuous<std::complex<double>>;
-
-// For FFT classes with dimension parameter
-INSTANTIATE_FFT_CLASS(FftwFFT);
-// Expands to:
-//   template class FftwFFT<double, 1>;
-//   template class FftwFFT<double, 2>;
-//   template class FftwFFT<double, 3>;
-//   template class FftwFFT<std::complex<double>, 1>;
-//   template class FftwFFT<std::complex<double>, 2>;
-//   template class FftwFFT<std::complex<double>, 3>;
 ```
 
 ---
@@ -660,17 +659,19 @@ When adding new computational features, you must implement them for both platfor
 | Which objects a platform creates | the factories |
 | Flow of each method and its parameters | `src/python/scft/scft.py`, `src/python/fts/lfts.py`, `src/python/fts/clfts.py` |
 | Saddle point search and compressors of L-FTS | `src/python/fts/saddle.py` (`sim.saddle`) |
-| Structure functions of L-FTS and CL-FTS | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
+| Structure functions of L-FTS and CL-FTS, and the mean concentrations of CL-FTS (`recording.concentrations`) | `src/python/fts/structure_functions.py` (`sim.structure_functions`) |
 | Thermodynamic operators of CL-FTS | `src/python/fts/thermodynamics.py` (`sim.thermodynamics`) |
+| Summaries of a CL-FTS run: the distribution of the largest drift of each step and the partition ratios | `src/python/fts/diagnostics.py` (`RunDiagnostics`) |
 | WTMD bias and statistics, and their checkpoint state | `src/python/fts/wtmd.py` (`sim.wtmd`) |
 | Electrostatics of the FTS methods: ψ, the ions and their checkpoint state | `src/python/theory/electrostatics.py` (`sim.electrostatics`) |
 | Langevin steps; the Jacobian of the CL-FTS forces that `etd` integrates | `src/python/fts/integrators.py`; `src/python/fts/force_jacobian.py` |
+| The grid of the SCFT fields: the axis order of the input, the space group and the bases of the fields | `src/python/scft/grid.py` (`sim.grid`) |
 | Cell relaxation of SCFT: the stress and its part of the error | `src/python/scft/cell_relaxation.py` (`sim.cell`) |
 | What SCFT returns and writes after a run, and its chemical potentials | `src/python/scft/scft_results.py` |
 | What a Langevin run records, saves and restores | `src/python/utils/checkpoint.py` (`RunRecord`; `run_status.json`: `recording_run_status`) |
-| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `prepare_run`) |
+| Reading, drawing and solving the polymer chains, and their `PropagatorSolver`; the checks of their partition functions; the fields a Langevin run starts from | `src/python/theory/chains.py` (`chain_solver`, `check_partition_once`, `check_partition_functions`, `prepare_run`) |
 | Parameter files and VTK fields | `src/python/utils/file_formats.py` |
-| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section, polymer and block | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`, `POLYMER_KEYS`, `BLOCK_KEYS`) |
+| Parameter checks shared by SCFT, L-FTS and CL-FTS (box, lattice angles, chains), the top-level keys each method reads and the keys of each option section, polymer, block, point ion and Gibbs box | `src/python/utils/validation.py` (`validate_system_params`, `METHOD_KEYS`, `SECTION_KEYS`, `POLYMER_KEYS`, `BLOCK_KEYS`, `ION_KEYS`, `GIBBS_BOX_KEYS`) |
 
 A change to how propagators, concentrations or stress are assembled belongs in
 the computation classes in `src/common/` (Section 3.2); a new kind of grid
@@ -708,13 +709,13 @@ Raw pointers are lent, never owned. The factory functions (`create_computation_b
 take over as the holders of their objects. Two places hand out ownership through raw
 pointers on purpose: the backends' `allocate()`/`deallocate()` and
 `allocate_checkpoint()`/`deallocate_checkpoint()` pairs,
-the allocators of the propagator handles and the reduce-memory checkpoints, which the
-computation classes free in one place; and the `CudaCommon` singleton, which is created
+the allocators of the propagator handles and the reduce-memory checkpoints, which one owner
+per computation (`BackendMemory` in `PropagatorComputation`) frees before the backend; and the `CudaCommon` singleton, which is created
 with `new` and deliberately never deleted (it lives until the process exits). cuFFT plans
 are held by `CufftPlan`, which counts them through `count_cufft_plan(...)` and
-`release_cufft_plan()`. CUDA streams are destroyed explicitly where their order
-matters (the solver before the streams it runs on); they are created through
-`count_cuda_stream(...)` and destroyed with `release_cuda_stream()`. These helpers keep live counts
+`release_cufft_plan()`, and CUDA streams by `CudaStream`, which counts them through
+`count_cuda_stream(...)` and `release_cuda_stream()`; an owner declares its streams before
+the objects that run on them (the backend's solver), so that those are destroyed first. These helpers keep live counts
 (`cuda_handle_counters()`, plans included); every release
 helper, like `counted_cuda_release()`, takes the resource off the count even when the
 release call fails, and counts the failure in `cuda_release_failures()`. The CPU FFT classes keep their FFTW/MKL
@@ -746,7 +747,7 @@ may accept it.
 
 ### Propagator Computation Optimizer
 
-The `PropagatorComputationOptimizer` automatically detects redundant calculations using hash tables of `PropagatorCode` objects. Avoid manual optimization.
+The `PropagatorComputationOptimizer` automatically detects redundant calculations: equal propagator keys (`PropagatorCode`) are one computation. Each key is written once, with a `ComputationEdge` that records what it computes (monomer type, ds index, start, graft label, dependencies); code that needs these reads the record, never the key string. Avoid manual optimization.
 
 ### New Monomer Types or Interactions
 
@@ -768,11 +769,11 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
 - Use C++20 features where appropriate
 - Follow existing naming conventions
 - Document public APIs
-- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`). A catch block
-  that frees resources rethrows with `throw_without_line_number(exc.what())`: an `Exception`
-  passes through unchanged, so its message names one location, and another exception
-  (`std::out_of_range`, ...) becomes an `Exception` there, which Python sees as `RuntimeError`.
-  The bindings convert the exceptions of the calls they wrap in the same way.
+- Throw errors with `throw_with_line_number(message)` (`src/common/Exception.h`) and let them
+  pass to Python unchanged: catch an exception only to do work (free, roll back, carry it out of
+  an OpenMP region with `ParallelErrors`) and rethrow it with `throw;`. An `Exception` or a CUDA
+  error reaches Python as `RuntimeError`, a standard exception with the pybind11 mapping
+  (`std::bad_alloc` as `MemoryError`, `std::out_of_range` as `IndexError`, ...).
 - CUDA error checks follow the CUDA C++ Best Practices Guide (2.3): wrap every call that returns
   an error code (`CUDA_CHECK(...)` for runtime and CUB calls, `CUFFT_CHECK(...)` for
   cuFFT) and follow every kernel launch with `CUDA_CHECK_LAUNCH();`. The check
@@ -780,8 +781,7 @@ Modify only the parameter dictionary - the code supports arbitrary numbers of mo
   error is reported at the launch that caused it. Release calls run in destructors and
   `release()` paths and do not throw: wrap `cudaFree`/`cudaFreeHost` in
   `ignore_release_error(...)`, so a failed one is not reported later by an unrelated check,
-  hold cuFFT plans in `CufftPlan`, and destroy streams with the counting `release_cuda_stream()`
-  helper.
+  hold cuFFT plans in `CufftPlan` and streams in `CudaStream`.
 
 ### Python
 

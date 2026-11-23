@@ -46,9 +46,8 @@ template <typename T>
 class CpuSolverRealSpaceDiscrete : public CpuSolver<T>
 {
 private:
-    ComputationBox<T>* cb;
-    Molecules* molecules;
-    SpaceGroup* space_group_;   ///< propagators in its reduced basis when set
+    using CpuSolver<T>::cb;
+    using CpuSolver<T>::molecules;
 
     /// Kernels of the full and half bonds, their length derivatives and the ghost tables of the box
     RealSpaceBond::Bonds bonds;
@@ -70,10 +69,6 @@ private:
     /// of axis derivative_axis
     void convolve(const T* q_in, T* q_out, const RealSpaceBond::Kernels& kernels, WorkArrays& work,
                   int derivative_axis = -1, const RealSpaceBond::Derivative* derivative = nullptr) const;
-    /// q on the full grid: q itself, or with a space group its expansion into buffer
-    const T* expanded(const T* q, std::vector<T>& buffer) const;
-    /// The full-grid q_full in the basis of the propagators (a copy of the reduced points with a space group)
-    void reduced(const T* q_full, T* q) const;
 
 public:
     /// The solver of the box, with the propagators in the reduced basis of space_group (nullptr: full grid)

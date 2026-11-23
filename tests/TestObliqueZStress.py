@@ -34,6 +34,8 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 DS = 0.025
@@ -59,15 +61,7 @@ CASES = [
 METHODS = [("continuous", "rqm4"), ("continuous", "rk2"), ("discrete", None)]
 BASES = ["none", "irreducible", "z-mirror"]
 
-FAILURES = []
-
-
-def check(condition, message):
-    """Record a named assertion."""
-    status = "PASS" if condition else "FAIL"
-    print(f"    [{status}] {message}")
-    if not condition:
-        FAILURES.append(message)
+checks.indent = "    "   # the check lines print indented
 
 
 def make_space_group(symbol, hall, nx, basis):
@@ -163,17 +157,8 @@ def main():
                             compare(f"{name}/{tag_method}/{basis}/lattice {k}: {platform} vs cuda",
                                     runs[(platform, basis)][k], runs[("cuda", basis)][k])
 
-    elapsed = time.time() - t_start
-    print("\n" + "=" * 64)
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} assertion(s) failed (runtime {elapsed:.1f} s):")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print(f"All ObliqueZ stress tests PASSED (runtime {elapsed:.1f} s)")
-    return 0
+    print(f"\nruntime {time.time() - t_start:.1f} s")
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

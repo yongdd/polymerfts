@@ -37,25 +37,13 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import LFTS, CLFTS
+from checks import check, summary
 from cuda_part import cpu_platform
 
 LFTS.draw_architectures = CLFTS.draw_architectures = False   # no polymer_<id>.png of the runs
 
 CHI_N, F, NX, LX, NBAR, STEPS = 6.0, 0.5, 32, 4.0, 1e6, 20000
 N_MODES = 8
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def debye(f, x):
@@ -162,8 +150,7 @@ def main():
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

@@ -17,12 +17,11 @@
  *
  * **Design Rationale:**
  *
- * This allows storing transform objects of different dimensions (1D, 2D, 3D)
- * in a single FFT<T>* pointer without void* casts and if-else dispatch.
- * Since all simulations run in fixed dimensions, a single pointer suffices.
+ * A solver holds one FFT<T>* whatever the library and the boundary conditions
+ * (FftwFFT, MklFFT, or MakhoulFFT for boxes with walls) and needs no dispatch.
  *
  * @see FftwFFT for FFTW implementation
- * @see CudaFFT for CUDA implementation
+ * @see MklFFT for MKL implementation
  */
 
 #ifndef FFT_H_
@@ -86,8 +85,6 @@ public:
     /**
      * @brief Perform forward transform (real coefficient interface).
      *
-     * The CPU implementations take all boundary conditions; CudaFFT, which the
-     * CUDA solvers build for walls only, refuses periodic boxes.
      * - PERIODIC: real-to-complex FFT (output is interleaved real/imag)
      * - REFLECTING: DCT-II
      * - ABSORBING: DST-II
@@ -118,16 +115,10 @@ public:
      * coefficient, or a real one of the cosine and sine series), r_factor one per
      * grid point; either may be nullptr. The products are those of separate loops
      * around backward(), so the result is the same bit for bit. cdata may be
-     * overwritten. The CPU transforms implement it (FftwFFT, MklFFT, MakhoulFFT);
-     * the default refuses, for CudaFFT, whose solvers run their own kernels. It has
-     * a name of its own: an overload of backward() would be hidden in every
-     * transform that overrides backward().
+     * overwritten. It has a name of its own: an overload of backward() would be
+     * hidden in every transform that overrides backward().
      */
-    virtual void backward_with_factors(double* /*cdata*/, const double* /*k_factor*/, T* /*rdata*/,
-                                       const T* /*r_factor*/)
-    {
-        throw_with_line_number("This transform has no backward_with_factors().");
-    }
+    virtual void backward_with_factors(double* cdata, const double* k_factor, T* rdata, const T* r_factor) = 0;
 };
 
 #endif

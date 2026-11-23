@@ -54,8 +54,10 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
-from polymerfts.utils.validation import (ValidationError, polymer_block_copies, validate_lfts_params,
+from polymerfts.utils.validation import (ValidationError, polymer_block_copies, validate_clfts_params,
                                          validate_system_params)
+import checks
+from checks import check, smooth_field, summary
 from cuda_part import cuda_part_missing
 
 NX = [12, 10, 8]
@@ -63,27 +65,7 @@ LX = [2.0, 1.8, 1.5]
 DS = 0.05
 BONDS = {"A": 1.0, "B": 1.2}
 
-FAILURES = []
-
-
-def check(condition, message):
-    status = "PASS" if condition else "FAIL"
-    print(f"    [{status}] {message}")
-    if not condition:
-        FAILURES.append(message)
-
-
-def smooth_field(rng):
-    x = [np.arange(n) * l / n for n, l in zip(NX, LX)]
-    X, Y, Z = np.meshgrid(*x, indexing="ij")
-    f = np.zeros(NX)
-    for _ in range(4):
-        kx, ky, kz = rng.integers(1, 3, size=3)
-        f += rng.normal() * (np.cos(2 * np.pi * kx * X / LX[0] + rng.uniform(0, 2 * np.pi))
-                             * np.cos(2 * np.pi * ky * Y / LX[1] + rng.uniform(0, 2 * np.pi))
-                             * np.cos(2 * np.pi * kz * Z / LX[2] + rng.uniform(0, 2 * np.pi)))
-    f = f - f.mean()
-    return (f / f.std() * 5.0).flatten()
+checks.indent = "    "   # the check lines print indented
 
 
 def make_solver(platform, chain_model, aggregate=True, reduce_memory=False, field_type="real", lx=LX, ds=DS):
@@ -424,7 +406,7 @@ def check_input_errors(w, platforms):
         try:
             # CL-FTS adds its integer rule to the system checks that every method shares
             if complex_fields:
-                validate_lfts_params(params, complex_fields=True)
+                validate_clfts_params(params)
             else:
                 validate_system_params(params)
             message = None
@@ -556,7 +538,7 @@ def check_lfts(platform):
 
 def main():
     rng = np.random.default_rng(11)
-    w = {"A": smooth_field(rng), "B": smooth_field(rng)}
+    w = {"A": smooth_field(rng, NX, LX), "B": smooth_field(rng, NX, LX)}
     platforms = _core.PlatformSelector.avail_platforms()
     check_integer_multiplicities(w, platforms)
     check_real_multiplicities(w, platforms)
@@ -564,13 +546,7 @@ def main():
     check_scft(platforms[0])
     check_lfts(platforms[0])
 
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} check(s)")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print("All block-multiplicity checks PASSED")
-    return 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

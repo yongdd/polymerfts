@@ -28,22 +28,9 @@ import sys
 import numpy as np
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from checks import check, summary
 from cuda_part import cpu_platform
 from fts_checks import quiet, silenced
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
-
 
 BLOCKS = [["A", 0.4, 0, 1], ["B", 0.6, 1, 2]]
 
@@ -143,8 +130,7 @@ def main():
     err = np.max(np.abs(st[3:6] - fd)) / np.max(np.abs(fd))
     check(err < 1e-7, f"orthogonal 10x12x14: forced angle derivatives = central differences ({err:.1e})")
 
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

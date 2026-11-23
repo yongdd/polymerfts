@@ -29,20 +29,8 @@ import contextlib
 import numpy as np
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from checks import check, summary
 from cuda_part import cpu_platform
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def solver(nx, lx, ds, bonds, aggregate=True, mask=None):
@@ -206,8 +194,7 @@ def main():
     test_aggregation_mixed_ds()
     test_masked_solvent()
     test_mask_space_group()
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

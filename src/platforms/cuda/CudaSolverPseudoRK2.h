@@ -42,9 +42,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
-#include "CudaCrysFFT.h"
-#include "FFT.h"
+#include "CudaCrysFFTBase.h"
 #include "SpaceGroup.h"
 
 class CudaCrysFFTBase;
@@ -64,8 +62,8 @@ class CudaCrysFFTBase;
  *
  * **Memory per Stream:**
  *
- * None of its own: the step runs in its full-grid output, and the spectra go to the
- * base's scratch (d_qk_ or d_rk_1_), which the stress shares.
+ * None of its own: the step runs in its full-grid output, and the spectrum goes to the
+ * base's scratch, which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
@@ -73,10 +71,8 @@ class CudaSolverPseudoRK2 : public CudaSolverPseudoBase<T>
 private:
     using Base = CudaSolverPseudoBase<T>;
     using Base::cb; using Base::pseudo;
-    using Base::is_periodic_; using Base::streams;
+    using Base::streams;
     using Base::use_crysfft_;
-    using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_;
 
 public:
     /**
@@ -86,15 +82,10 @@ public:
      * @param molecules           Molecules container
      * @param n_streams           Number of parallel streams
      * @param streams             Pre-created CUDA streams
-     * @param space_group             Space group of the reduced basis, or nullptr
-     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
-     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
+     * @param space_group         Space group of the reduced basis, or nullptr
      */
     CudaSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-                           SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
-
-    /// Destructor.
-    ~CudaSolverPseudoRK2();
+                           SpaceGroup* space_group);
 
     /**
      * @brief Update Boltzmann factors.
@@ -124,7 +115,7 @@ public:
     /// CrysFFT steps of a block: full steps only
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
-        return {this->crysfft_coeff(monomer_type, ds_index, 6.0)};
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false)};
     }
 };
 #endif

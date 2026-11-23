@@ -36,7 +36,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from scipy.io import loadmat, savemat
-from polymerfts import LFTS, CLFTS, PlatformSelector, ValidationError
+from polymerfts import LFTS, CLFTS, PlatformSelector
+from checks import expect_validation_error, smooth
 from fts_checks import cpu_platform, exact_restart, quiet, recording_dir
 
 NX, LX = [8, 6, 7], [1.6, 1.3, 1.45]
@@ -76,13 +77,6 @@ def parameters(directory, lx=LX, charged=True, screening_length=None, smearing="
     if charged and screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def smooth(x, nx, std):
-    """Smooth random field with the given standard deviation."""
-    k = np.meshgrid(*[np.fft.fftfreq(m) * m for m in nx], indexing="ij")
-    y = np.real(np.fft.ifftn(np.fft.fftn(np.reshape(x, nx)) * np.exp(-0.08 * sum(kk ** 2 for kk in k)))).ravel()
-    return std * (y - y.mean()) / y.std()
 
 
 def normalization(sim):
@@ -270,15 +264,6 @@ def restart(root):
         values = np.atleast_2d(records[key])
         assert values.shape == shape and np.all(np.isnan(values[:3] if shape[0] == 4 else values[0, :3])) \
             and np.all(np.isfinite(values[3] if shape[0] == 4 else values[0, 3])), f"NaN for samples without records: {key}"
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as exc:
-        assert message in str(exc), (message, str(exc))
-        return
-    raise AssertionError(f"Expected ValidationError: {message}")
 
 
 def input_checks(root):

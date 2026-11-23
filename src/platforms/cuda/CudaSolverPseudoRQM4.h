@@ -19,9 +19,9 @@
  *
  * **cuFFT Plans:**
  *
- * Pre-created FFT plans for efficiency:
- * - cuFFT plans (batch 1 for the full step, batch 2 for the half-step pair)
- *   and DCT/DST objects are owned by CudaSolverPseudoBase
+ * The cuFFT plans of periodic boxes (batch 2 for the full step with the first half
+ * step, batch 1 for the second half step) and the cosine and sine series of wall
+ * boxes are owned by CudaSolverPseudoBase
  *
  * **Stress Array Convention (Voigt Notation):**
  *
@@ -48,9 +48,7 @@
 #include "CudaSolver.h"
 #include "CudaSolverPseudoBase.h"
 #include "CudaCommon.h"
-#include "CudaFFT.h"
-#include "CudaCrysFFT.h"
-#include "FFT.h"
+#include "CudaCrysFFTBase.h"
 
 class SpaceGroup;  // Forward declaration
 class CudaCrysFFTBase;  // Forward declaration
@@ -69,7 +67,9 @@ class CudaCrysFFTBase;  // Forward declaration
  * Same algorithm as CPU version:
  *     q(s+ds) = (4/3) q^(ds/2,ds/2) - (1/3) q^(ds)
  *
- * But both terms computed in parallel using batched FFTs.
+ * On a periodic full grid the full step and the first half step take their transforms
+ * together, as one cuFFT batch of two fields; the second half step follows alone. Walls
+ * (bond_step()) and the CrysFFT path take one field at a time.
  *
  * **Memory per Stream:**
  *
@@ -78,7 +78,7 @@ class CudaCrysFFTBase;  // Forward declaration
  *   cuFFT (2*M; full-grid steps with periodic BC), the full step staying in the first half
  * - d_q_step_1_one: the full step of the other paths (the reduced basis on the CrysFFT path)
  *
- * The spectra go to the base's scratch (d_qk_ or d_rk_1_/d_rk_2_), which the stress shares.
+ * The spectra go to the base's scratch, which the stress shares.
  */
 template <typename T>
 class CudaSolverPseudoRQM4 : public CudaSolverPseudoBase<T>
@@ -89,8 +89,7 @@ private:
     using Base::n_streams; using Base::is_periodic_; using Base::streams;
     using Base::n_basis_; using Base::use_crysfft_; using Base::crysfft_identity_map_;
     using Base::crysfft_physical_size_;
-    using Base::fft_; using Base::fft_forward; using Base::fft_backward;
-    using Base::d_qk_; using Base::d_rk_1_; using Base::d_rk_2_;
+    using Base::fft_forward; using Base::fft_backward; using Base::spectrum;
 
     /// @name Workspace Arrays (per stream)
     /// @{
@@ -107,15 +106,10 @@ public:
      * @param molecules           Molecules container
      * @param n_streams           Number of parallel streams
      * @param streams             Pre-created CUDA streams
-     * @param space_group             Space group of the reduced basis, or nullptr
-     * @param d_reduced_basis_indices Device map reduced -> full index (lent by the backend)
-     * @param d_full_to_reduced_map   Device map full -> reduced index (lent by the backend)
+     * @param space_group         Space group of the reduced basis, or nullptr
      */
     CudaSolverPseudoRQM4(ComputationBox<T>* cb, Molecules *molecules, int n_streams, cudaStream_t streams[MAX_STREAMS],
-                            SpaceGroup* space_group, const int* d_reduced_basis_indices, const int* d_full_to_reduced_map);
-
-    /// Destructor. Frees the workspaces (the base class destroys the cuFFT plans).
-    ~CudaSolverPseudoRQM4();
+                            SpaceGroup* space_group);
 
     /**
      * @brief Update Boltzmann factors.
@@ -146,7 +140,7 @@ public:
     /// CrysFFT steps of a block: a full step and two half steps
     std::vector<double> crysfft_block_coeffs(const std::string& monomer_type, int ds_index) const override
     {
-        return {this->crysfft_coeff(monomer_type, ds_index, 6.0), this->crysfft_coeff(monomer_type, ds_index, 12.0)};
+        return {this->get_effective_diffusion_coeff(monomer_type, ds_index, false), this->get_effective_diffusion_coeff(monomer_type, ds_index, true)};
     }
 };
 #endif

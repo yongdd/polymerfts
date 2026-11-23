@@ -23,19 +23,15 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 DS = 0.02
 TOL_Q_REL = 1e-10
 TOL_PHI_ABS = 1e-10
 TOL_STRESS_REL = 1e-8
-FAILURES = []
-
-
-def check(condition, message):
-    print(f"    [{'PASS' if condition else 'FAIL'}] {message}")
-    if not condition:
-        FAILURES.append(message)
+checks.indent = "    "   # the check lines print indented
 
 
 def make_space_group(nx, m3_basis):
@@ -77,7 +73,7 @@ def main():
         nx, lx = [n] * 3, [1.6] * 3
         sg_full = make_space_group(nx, m3_basis=False)
         sg = make_space_group(nx, m3_basis=True)
-        check(sg.using_m3_physical_basis(), f"Im-3m {n}^3: the m3 basis is enabled")
+        check(sg.physical_basis_name() == "m3", f"Im-3m {n}^3: the m3 basis is enabled")
         check(not sg_full.m3_crysfft_feasible(),
               f"Im-3m {n}^3: m3_crysfft_feasible() keeps the size heuristic (SCFT does not choose m3 here)")
         w_full = {}
@@ -103,13 +99,7 @@ def main():
                 check(dphi < TOL_PHI_ABS, f"{tag}: phi max abs diff {dphi:.2e} < {TOL_PHI_ABS}")
                 check(rel_s < TOL_STRESS_REL, f"{tag}: stress[0:3] relative diff {rel_s:.2e} < {TOL_STRESS_REL}")
                 check(cons < 1e-12, f"{tag}: |mean(phi_A + phi_B) - 1| = {cons:.2e} < 1e-12")
-    if FAILURES:
-        print(f"\nFAILED: {len(FAILURES)} check(s)")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print("\nm3 basis on small grids: PASSED")
-    return 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

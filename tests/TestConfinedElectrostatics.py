@@ -34,20 +34,12 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.fft import dct, idct
 from scipy.optimize import root as solve_root
-from polymerfts import CLFTS, SCFT, PlatformSelector, ValidationError
+from polymerfts import CLFTS, SCFT, PlatformSelector
+from checks import expect_validation_error
 from cuda_part import cpu_platform
-from fts_checks import exact_restart, quiet, silenced
+from fts_checks import exact_restart, hamiltonian, quiet, silenced
 
 N, E = 20, 200.0
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as error:
-        assert message in str(error), f"expected '{message}', got '{error}'"
-        return
-    raise AssertionError(f"expected a ValidationError with '{message}'")
 
 
 def layers(nx, lx):
@@ -144,15 +136,6 @@ def poisson_boltzmann(root):
         sim.run({"A": np.zeros(64), "B": np.zeros(64)})
     error = np.max(np.abs(sim.electrostatics.psi - psi))
     assert error < 1e-5 * np.max(np.abs(psi)), f"CL-FTS mean field: max |psi - PB| = {error:.2e}"
-
-
-def hamiltonian(sim, w_aux):
-    phi, _ = sim.compute_concentrations(w_aux)
-    phi_smeared = sim.smearing.apply_to_dict(phi)
-    partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
-    h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
-                                    include_const_term=True, phi=phi_smeared)
-    return h + sim.electrostatics.hamiltonian(), phi_smeared
 
 
 def forces(root, lateral="reflecting"):

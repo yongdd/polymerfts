@@ -12,114 +12,30 @@
  * FFT-based O(N log N) implementations:
  *   - DCT-I: via 2(N-1) point FFT symmetric extension
  *   - DST-I: via 2(N+1) point FFT antisymmetric extension
- *   - DCT-II, DCT-III, DST-II, DST-III: N point FFT, cuHelmholtz algorithm (Makhoul 1980)
+ *   - DCT-II, DCT-III, DST-II, DST-III: N point FFT, MakhoulTransform (Makhoul 1980)
  */
 
 #include "MklRealTransform.h"
 
-#include <cmath>
 #include <complex>
 #include <cstring>
-#include <numbers>
 #include <string>
 #include <vector>
 
 #include "mkl_dfti.h"
 #include "mkl_trig_transforms.h"
-#include "MklStatusCheck.h"
-
-/**
- * @brief Get normalization factor for round-trip transform (FFTW convention).
- */
-static double get_norm_factor(MklTransformType type, int N)
-{
-    switch (type)
-    {
-        case MKL_DCT_1: return 2.0 * (N - 1);
-        case MKL_DST_1: return 2.0 * (N + 1);
-        case MKL_DCT_2:
-        case MKL_DCT_3:
-        case MKL_DCT_4:
-        case MKL_DST_2:
-        case MKL_DST_3:
-        case MKL_DST_4:
-            return 2.0 * N;
-        default:
-            return 1.0;
-    }
-}
+#include "Exception.h"
+#include "MakhoulTransform.h"
+#include "MklFFT.h"
 
 //==============================================================================
 // FFT-based O(N log N) implementations
 //==============================================================================
 
 /**
- * @brief FFT handle for DCT-I/II/III and DST-I/II/III transforms
- */
-class MklFFTHandle
-{
-public:
-    MklFFTHandle(int fft_size)
-        : fft_size_(fft_size)
-    {
-        try
-        {
-            mkl_dfti_check(DftiCreateDescriptor(&hand_forward_, DFTI_DOUBLE, DFTI_REAL, 1, fft_size), "DftiCreateDescriptor (forward)");
-            mkl_dfti_check(DftiSetValue(hand_forward_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, forward)");
-            mkl_dfti_check(DftiSetValue(hand_forward_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, forward)");
-            mkl_dfti_check(DftiCommitDescriptor(hand_forward_), "DftiCommitDescriptor (forward)");
-
-            mkl_dfti_check(DftiCreateDescriptor(&hand_backward_, DFTI_DOUBLE, DFTI_REAL, 1, fft_size), "DftiCreateDescriptor (backward)");
-            mkl_dfti_check(DftiSetValue(hand_backward_, DFTI_PLACEMENT, DFTI_NOT_INPLACE), "DftiSetValue(DFTI_PLACEMENT, backward)");
-            mkl_dfti_check(DftiSetValue(hand_backward_, DFTI_CONJUGATE_EVEN_STORAGE, DFTI_COMPLEX_COMPLEX), "DftiSetValue(DFTI_CONJUGATE_EVEN_STORAGE, backward)");
-            mkl_dfti_check(DftiCommitDescriptor(hand_backward_), "DftiCommitDescriptor (backward)");
-        }
-        catch (...)
-        {
-            // The destructor does not run for a partly constructed object
-            release();
-            throw;
-        }
-    }
-
-    ~MklFFTHandle()
-    {
-        release();
-    }
-
-    void forward(double* in, std::complex<double>* out)
-    {
-        mkl_dfti_check(DftiComputeForward(hand_forward_, in, out), "DftiComputeForward");
-    }
-
-    void backward(std::complex<double>* in, double* out)
-    {
-        mkl_dfti_check(DftiComputeBackward(hand_backward_, in, out), "DftiComputeBackward");
-    }
-
-    int size() const { return fft_size_; }
-
-private:
-    int fft_size_;
-    DFTI_DESCRIPTOR_HANDLE hand_forward_{nullptr};
-    DFTI_DESCRIPTOR_HANDLE hand_backward_{nullptr};
-
-    /// Free the descriptors (also after a failed construction); idempotent.
-    void release()
-    {
-        if (hand_forward_ != nullptr)
-            DftiFreeDescriptor(&hand_forward_);
-        if (hand_backward_ != nullptr)
-            DftiFreeDescriptor(&hand_backward_);
-        hand_forward_ = nullptr;
-        hand_backward_ = nullptr;
-    }
-};
-
-/**
  * @brief DCT-I via FFT: O(N log N) using 2(N-1) point symmetric extension
  */
-static void fft_dct1(double* data, int N, MklFFTHandle& fft)
+static void fft_dct1(double* data, int N, const MklRealFFT& fft)
 {
     int M = 2 * (N - 1);
 
@@ -148,7 +64,7 @@ static void fft_dct1(double* data, int N, MklFFTHandle& fft)
 /**
  * @brief DST-I via FFT: O(N log N) using 2(N+1) point antisymmetric extension
  */
-static void fft_dst1(double* data, int N, MklFFTHandle& fft)
+static void fft_dst1(double* data, int N, const MklRealFFT& fft)
 {
     int M = 2 * (N + 1);
 
@@ -176,261 +92,6 @@ static void fft_dst1(double* data, int N, MklFFTHandle& fft)
         data[k] = -fft_out[k + 1].imag();
 }
 
-/**
- * @brief DCT-II via FFT: O(N log N) using cuHelmholtz algorithm
- *
- * DCT-II formula (FFTW REDFT10):
- * Y[k] = 2 * sum_{n=0}^{N-1} x[n] cos(π*(2n+1)*k/(2N))
- */
-static void fft_dct2(double* data, int N, MklFFTHandle& fft,
-                     const std::vector<double>& cos_tbl,
-                     const std::vector<double>& sin_tbl)
-{
-    int complex_size = N / 2 + 1;
-
-    thread_local std::vector<std::complex<double>> fft_in;
-    thread_local std::vector<double> fft_out;
-    thread_local std::vector<double> result;
-
-    // Each buffer grows on its own: N = 6 then N = 7 keeps complex_size at 4 but needs 7 doubles
-    if (static_cast<int>(fft_in.size()) < complex_size)
-        fft_in.resize(complex_size);
-    if (static_cast<int>(fft_out.size()) < N)
-        fft_out.resize(N);
-    if (static_cast<int>(result.size()) < N)
-        result.resize(N);
-
-    // DCT-II preprocessing: rearrange into complex format
-    fft_in[0] = std::complex<double>(data[0], 0.0);
-    for (int k = 1; k < complex_size - 1; ++k)
-    {
-        double x_2k = data[2 * k];
-        double x_2k_1 = data[2 * k - 1];
-        fft_in[k] = std::complex<double>((x_2k + x_2k_1) / 2.0, -(x_2k_1 - x_2k) / 2.0);
-    }
-    if (N % 2 == 0)
-    {
-        fft_in[N / 2] = std::complex<double>(data[N - 1], 0.0);
-    }
-    else
-    {
-        int k = N / 2;
-        double x_2k = data[2 * k];
-        double x_2k_1 = data[2 * k - 1];
-        fft_in[k] = std::complex<double>((x_2k + x_2k_1) / 2.0, -(x_2k_1 - x_2k) / 2.0);
-    }
-
-    // IFFT (c2r)
-    fft.backward(fft_in.data(), fft_out.data());
-
-    // DCT-II postprocessing: apply twiddle factors
-    // FFTW has factor of 2 in formula
-    result[0] = fft_out[0] * 2.0;  // DC needs 2x
-    for (int k = 1; k <= N / 2; ++k)
-    {
-        double Ta = fft_out[k] + fft_out[N - k];
-        double Tb = fft_out[k] - fft_out[N - k];
-
-        double result_k = Ta * cos_tbl[k] + Tb * sin_tbl[k];
-        double result_nk = Ta * sin_tbl[k] - Tb * cos_tbl[k];
-
-        result[k] = result_k;
-        if (k < N - k)
-            result[N - k] = result_nk;
-    }
-
-    std::memcpy(data, result.data(), N * sizeof(double));
-}
-
-/**
- * @brief DCT-III via FFT: O(N log N) using cuHelmholtz algorithm
- *
- * DCT-III formula (FFTW REDFT01):
- * Y[k] = x[0] + 2 * sum_{n=1}^{N-1} x[n] cos(π*n*(2k+1)/(2N))
- */
-static void fft_dct3(double* data, int N, MklFFTHandle& fft,
-                     const std::vector<double>& cos_tbl,
-                     const std::vector<double>& sin_tbl)
-{
-    int complex_size = N / 2 + 1;
-
-    thread_local std::vector<double> fft_in;
-    thread_local std::vector<std::complex<double>> fft_out;
-    thread_local std::vector<double> result;
-
-    if (static_cast<int>(fft_in.size()) < N)
-    {
-        fft_in.resize(N);
-        fft_out.resize(complex_size);
-        result.resize(N);
-    }
-
-    // DCT-III preprocessing: apply twiddle factors
-    fft_in[0] = data[0];
-    for (int k = 0; k < N / 2; ++k)
-    {
-        double val_k = data[k + 1];
-        double val_nk = data[N - k - 1];
-
-        double Ta = val_k + val_nk;
-        double Tb = val_k - val_nk;
-
-        fft_in[k + 1] = Ta * sin_tbl[k + 1] + Tb * cos_tbl[k + 1];
-        fft_in[N - k - 1] = Ta * cos_tbl[k + 1] - Tb * sin_tbl[k + 1];
-    }
-
-    // FFT (r2c)
-    fft.forward(fft_in.data(), fft_out.data());
-
-    // DCT-III postprocessing: FFTW is unnormalized
-    result[0] = fft_out[0].real();
-    for (int k = 1; k <= N / 2; ++k)
-    {
-        double re = fft_out[k].real();
-        double im = fft_out[k].imag();
-
-        if (2 * k - 1 < N)
-            result[2 * k - 1] = re - im;
-        if (2 * k < N)
-            result[2 * k] = re + im;
-    }
-
-    std::memcpy(data, result.data(), N * sizeof(double));
-}
-
-/**
- * @brief DST-II via FFT: O(N log N) using cuHelmholtz algorithm
- *
- * DST-II formula (FFTW RODFT10):
- * Y[k] = 2 * sum_{n=0}^{N-1} x[n] sin(π*(2n+1)*(k+1)/(2N))
- */
-static void fft_dst2(double* data, int N, MklFFTHandle& fft,
-                     const std::vector<double>& cos_tbl,
-                     const std::vector<double>& sin_tbl)
-{
-    int complex_size = N / 2 + 1;
-
-    thread_local std::vector<std::complex<double>> fft_in;
-    thread_local std::vector<double> fft_out;
-    thread_local std::vector<double> result;
-
-    // Each buffer grows on its own: N = 6 then N = 7 keeps complex_size at 4 but needs 7 doubles
-    if (static_cast<int>(fft_in.size()) < complex_size)
-        fft_in.resize(complex_size);
-    if (static_cast<int>(fft_out.size()) < N)
-        fft_out.resize(N);
-    if (static_cast<int>(result.size()) < N)
-        result.resize(N);
-
-    // DST-II preprocessing: create complex for IFFT
-    fft_in[0] = std::complex<double>(data[0], 0.0);
-    for (int k = 1; k < complex_size - 1; ++k)
-    {
-        double x_2k = data[2 * k];
-        double x_2k_1 = data[2 * k - 1];
-        fft_in[k] = std::complex<double>((x_2k - x_2k_1) / 2.0, -((x_2k + x_2k_1) / 2.0));
-    }
-    if (N % 2 == 0)
-    {
-        fft_in[N / 2] = std::complex<double>(-data[N - 1], 0.0);
-    }
-    else
-    {
-        int k = N / 2;
-        double x_2k = data[2 * k];
-        double x_2k_1 = data[2 * k - 1];
-        fft_in[k] = std::complex<double>((x_2k - x_2k_1) / 2.0, -((x_2k + x_2k_1) / 2.0));
-    }
-
-    // IFFT (c2r)
-    fft.backward(fft_in.data(), fft_out.data());
-
-    // DST-II postprocessing: apply twiddle factors
-    // FFTW has factor of 2 in formula, so no 0.5 scaling here
-    for (int k = 1; k <= N / 2; ++k)
-    {
-        double Ta = fft_out[k] + fft_out[N - k];
-        double Tb = fft_out[k] - fft_out[N - k];
-
-        double result_k = Ta * sin_tbl[k] + Tb * cos_tbl[k];
-        double result_nk = Ta * cos_tbl[k] - Tb * sin_tbl[k];
-
-        result[k - 1] = result_k;
-        if (k < N - k)
-            result[N - k - 1] = result_nk;
-    }
-    result[N - 1] = fft_out[0] * 2.0;  // DC also needs 2x for FFTW convention
-
-    std::memcpy(data, result.data(), N * sizeof(double));
-}
-
-/**
- * @brief DST-III via FFT: O(N log N) using cuHelmholtz algorithm
- *
- * DST-III formula (FFTW RODFT01):
- * Y[k] = (-1)^k * x[N-1] + 2 * sum_{n=0}^{N-2} x[n] sin(π*(n+1)*(2k+1)/(2N))
- */
-static void fft_dst3(double* data, int N, MklFFTHandle& fft,
-                     const std::vector<double>& cos_tbl,
-                     const std::vector<double>& sin_tbl)
-{
-    int complex_size = N / 2 + 1;
-
-    thread_local std::vector<double> fft_in;
-    thread_local std::vector<std::complex<double>> fft_out;
-    thread_local std::vector<double> result;
-
-    if (static_cast<int>(fft_in.size()) < N)
-    {
-        fft_in.resize(N);
-        fft_out.resize(complex_size);
-        result.resize(N);
-    }
-
-    // Save last element for the (-1)^k term
-    double x_last = data[N - 1];
-
-    // DST-III preprocessing: apply twiddle factors (only first N-1 elements)
-    fft_in[0] = 0.0;
-    for (int k = 1; k <= N / 2; ++k)
-    {
-        double val_k = data[k - 1];
-        // For val_nk, ensure we don't use data[N-1] in the FFT part
-        double val_nk = (k == N - k) ? val_k : ((N - k - 1 >= 0 && N - k - 1 < N - 1) ? data[N - k - 1] : 0.0);
-
-        double Ta = val_k + val_nk;
-        double Tb = val_k - val_nk;
-
-        fft_in[k] = Ta * cos_tbl[k] + Tb * sin_tbl[k];
-        if (k < N - k)
-            fft_in[N - k] = Ta * sin_tbl[k] - Tb * cos_tbl[k];
-    }
-
-    // FFT (r2c)
-    fft.forward(fft_in.data(), fft_out.data());
-
-    // DST-III postprocessing (no scaling - FFTW is unnormalized)
-    result[0] = fft_out[0].real();
-    for (int k = 1; k <= N / 2; ++k)
-    {
-        double re = fft_out[k].real();
-        double im = -fft_out[k].imag();
-
-        if (2 * k - 1 < N)
-            result[2 * k - 1] = im - re;
-        if (2 * k < N)
-            result[2 * k] = re + im;
-    }
-
-    // Add the (-1)^k * X[N-1] term for FFTW RODFT01 formula
-    for (int k = 0; k < N; ++k)
-    {
-        result[k] += ((k % 2 == 0) ? 1.0 : -1.0) * x_last;
-    }
-
-    std::memcpy(data, result.data(), N * sizeof(double));
-}
-
 //==============================================================================
 // MKL TT Wrapper Classes
 //==============================================================================
@@ -446,20 +107,16 @@ class MklTTHandle
 {
 public:
     MklTTHandle(int N, MklTransformType type)
-        : N_(N)
+        : N_(N), scale_(static_cast<double>(N))
     {
-        // Determine MKL TT type and direction
+        // Determine MKL TT type
         switch (type)
         {
             case MKL_DCT_4:
                 tt_type_ = MKL_STAGGERED2_COSINE_TRANSFORM;
-                use_backward_ = false;
-                scale_ = static_cast<double>(N);
                 break;
             case MKL_DST_4:
                 tt_type_ = MKL_STAGGERED2_SINE_TRANSFORM;
-                use_backward_ = false;
-                scale_ = static_cast<double>(N);
                 break;
             default:
                 throw_with_line_number("Transform type not supported by MKL TT: " +
@@ -501,12 +158,7 @@ public:
         std::memcpy(work_.data(), data, N_ * sizeof(double));
 
         MKL_INT stat = 0;
-
-        if (use_backward_)
-            d_backward_trig_transform(work_.data(), &handle_, ipar_, dpar_.data(), &stat);
-        else
-            d_forward_trig_transform(work_.data(), &handle_, ipar_, dpar_.data(), &stat);
-
+        d_forward_trig_transform(work_.data(), &handle_, ipar_, dpar_.data(), &stat);
         if (stat != 0)
             throw_with_line_number("MKL TT transform failed, stat: " + std::to_string(stat));
 
@@ -518,7 +170,6 @@ public:
 private:
     int N_;
     MKL_INT tt_type_;
-    bool use_backward_;
     double scale_;
     DFTI_DESCRIPTOR_HANDLE handle_{nullptr};
     MKL_INT ipar_[128]{};
@@ -538,281 +189,113 @@ private:
 };
 
 //==============================================================================
-// MklRealTransform1D
+// MklRealTransform::Line
 //==============================================================================
 
-MklRealTransform1D::MklRealTransform1D(int N, MklTransformType type)
-    : N_(N), type_(type)
+/// The transform of a line of n contiguous values, in place
+class MklRealTransform::Line
 {
-    if (N < 2)
-        throw_with_line_number("Transform size must be >= 2");
-    init();
-}
-
-MklRealTransform1D::~MklRealTransform1D()
-{
-    // Handles are freed by unique_ptr automatically
-}
-
-void MklRealTransform1D::init()
-{
-    const double PI = std::numbers::pi;
-
-    // DCT-4, DST-4 use MKL TT (no simple FFT-based algorithm)
-    if (type_ == MKL_DCT_4 || type_ == MKL_DST_4)
+public:
+    Line(int n, MklTransformType type) : n_(n), type_(type)
     {
-        tt_handle_ = std::make_unique<MklTTHandle>(N_, type_);
-    }
-    // DCT-1 uses 2(N-1) point FFT
-    else if (type_ == MKL_DCT_1)
-    {
-        fft_handle_ = std::make_unique<MklFFTHandle>(2 * (N_ - 1));
-    }
-    // DST-1 uses 2(N+1) point FFT
-    else if (type_ == MKL_DST_1)
-    {
-        fft_handle_ = std::make_unique<MklFFTHandle>(2 * (N_ + 1));
-    }
-    // DCT-2, DCT-3, DST-2, DST-3 use N point FFT with twiddle factors (cuHelmholtz)
-    else if (type_ == MKL_DCT_2 || type_ == MKL_DCT_3 ||
-             type_ == MKL_DST_2 || type_ == MKL_DST_3)
-    {
-        fft_handle_ = std::make_unique<MklFFTHandle>(N_);
-
-        // Precompute twiddle factors
-        int num_twiddles = N_ / 2 + 1;
-        cos_tbl_.resize(num_twiddles);
-        sin_tbl_.resize(num_twiddles);
-        for (int k = 0; k <= N_ / 2; ++k)
+        switch (type)
         {
-            cos_tbl_[k] = std::cos(k * PI / (2.0 * N_));
-            sin_tbl_[k] = std::sin(k * PI / (2.0 * N_));
+            case MKL_DCT_1:
+                extension_fft_ = std::make_unique<MklRealFFT>(std::vector<int>{2 * (n - 1)});
+                break;
+            case MKL_DST_1:
+                extension_fft_ = std::make_unique<MklRealFFT>(std::vector<int>{2 * (n + 1)});
+                break;
+            case MKL_DCT_2:
+            case MKL_DCT_3:
+            case MKL_DST_2:
+            case MKL_DST_3:
+            {
+                const BoundaryCondition axis = (type == MKL_DCT_2 || type == MKL_DCT_3)
+                    ? BoundaryCondition::REFLECTING : BoundaryCondition::ABSORBING;
+                makhoul_ = std::make_unique<MakhoulTransform>(std::vector<int>{n}, std::vector<BoundaryCondition>{axis},
+                                                              std::make_unique<MklRealFFT>(std::vector<int>{n}));
+                break;
+            }
+            case MKL_DCT_4:
+            case MKL_DST_4:
+                tt_ = std::make_unique<MklTTHandle>(n, type);
+                break;
+            default:
+                throw_with_line_number("Unknown transform type " + std::to_string(static_cast<int>(type)) + ".");
         }
     }
 
-    initialized_ = true;
-}
-
-void MklRealTransform1D::execute(double* data)
-{
-    if (!initialized_)
-        throw_with_line_number("MklRealTransform1D not initialized");
-
-    if (tt_handle_)
-    {
-        tt_handle_->execute(data);
-    }
-    else if (fft_handle_)
+    void execute(double* line)
     {
         switch (type_)
         {
-            case MKL_DCT_1:
-                fft_dct1(data, N_, *fft_handle_);
-                break;
+            case MKL_DCT_1: fft_dct1(line, n_, *extension_fft_); break;
+            case MKL_DST_1: fft_dst1(line, n_, *extension_fft_); break;
             case MKL_DCT_2:
-                fft_dct2(data, N_, *fft_handle_, cos_tbl_, sin_tbl_);
-                break;
+            case MKL_DST_2: makhoul_->forward(line, line, 1.0); break;    // REDFT10, RODFT10
             case MKL_DCT_3:
-                fft_dct3(data, N_, *fft_handle_, cos_tbl_, sin_tbl_);
-                break;
-            case MKL_DST_1:
-                fft_dst1(data, N_, *fft_handle_);
-                break;
-            case MKL_DST_2:
-                fft_dst2(data, N_, *fft_handle_, cos_tbl_, sin_tbl_);
-                break;
-            case MKL_DST_3:
-                fft_dst3(data, N_, *fft_handle_, cos_tbl_, sin_tbl_);
-                break;
-            default:
-                throw_with_line_number("Unsupported transform type for FFT handle.");
+            case MKL_DST_3: makhoul_->backward(line, line, 1.0); break;   // REDFT01, RODFT01
+            default:        tt_->execute(line); break;
         }
     }
-    else
+
+private:
+    int n_;
+    MklTransformType type_;
+    std::unique_ptr<MklRealFFT> extension_fft_;   ///< DCT-I, DST-I: the real FFT of the extended line
+    std::unique_ptr<MakhoulTransform> makhoul_;   ///< DCT-II/III, DST-II/III
+    std::unique_ptr<MklTTHandle> tt_;             ///< DCT-IV, DST-IV
+};
+
+//==============================================================================
+// MklRealTransform
+//==============================================================================
+
+MklRealTransform::MklRealTransform(const std::vector<int>& nx, const std::vector<MklTransformType>& types)
+    : nx_(nx)
+{
+    if (nx.empty() || nx.size() > 3 || types.size() != nx.size())
+        throw_with_line_number("MklRealTransform takes one to three axes and one transform type per axis.");
+    for (size_t d = 0; d < nx.size(); ++d)
     {
-        throw_with_line_number("No transform handle available for type: " +
-                               std::string(getTransformName(type_)));
+        if (nx[d] < 2)
+            throw_with_line_number("Transform sizes must be >= 2");
+        lines_.push_back(std::make_unique<Line>(nx[d], types[d]));
     }
 }
 
-double MklRealTransform1D::get_normalization() const
+MklRealTransform::~MklRealTransform() = default;
+
+void MklRealTransform::execute(double* data)
 {
-    return get_norm_factor(type_, N_);
-}
+    const int rank = static_cast<int>(nx_.size());
+    thread_local std::vector<double> line;
 
-//==============================================================================
-// MklRealTransform2D
-//==============================================================================
-
-MklRealTransform2D::MklRealTransform2D(int Nx, int Ny, MklTransformType type)
-    : MklRealTransform2D(Nx, Ny, type, type)
-{
-}
-
-MklRealTransform2D::MklRealTransform2D(int Nx, int Ny, MklTransformType type_x, MklTransformType type_y)
-    : nx_{Nx, Ny}, type_x_(type_x), type_y_(type_y)
-{
-    if (Nx < 2 || Ny < 2)
-        throw_with_line_number("Transform sizes must be >= 2");
-
-    init();
-}
-
-MklRealTransform2D::~MklRealTransform2D()
-{
-}
-
-void MklRealTransform2D::init()
-{
-    transform_x_ = std::make_unique<MklRealTransform1D>(nx_[0], type_x_);
-    transform_y_ = std::make_unique<MklRealTransform1D>(nx_[1], type_y_);
-    initialized_ = true;
-}
-
-void MklRealTransform2D::getStrides(int dim, int& stride, int& num_transforms) const
-{
-    stride = 1;
-    for (int d = dim + 1; d < 2; ++d)
-        stride *= nx_[d];
-
-    num_transforms = 1;
-    for (int d = 0; d < dim; ++d)
-        num_transforms *= nx_[d];
-}
-
-void MklRealTransform2D::apply1D(double* data, int dim, MklRealTransform1D* transform) const
-{
-    int n = nx_[dim];
-    int stride, num_transforms;
-    getStrides(dim, stride, num_transforms);
-
-    thread_local std::vector<double> slice;
-    if (static_cast<int>(slice.size()) < n)
-        slice.resize(n);
-
-    for (int batch = 0; batch < num_transforms; ++batch)
+    // The lines of the last axis first, then those of the axes before it
+    for (int d = rank - 1; d >= 0; --d)
     {
-        for (int s = 0; s < stride; ++s)
+        const int n = nx_[d];
+        int stride = 1;
+        for (int e = d + 1; e < rank; ++e)
+            stride *= nx_[e];
+        int num_lines = 1;
+        for (int e = 0; e < d; ++e)
+            num_lines *= nx_[e];
+        if (static_cast<int>(line.size()) < n)
+            line.resize(n);
+
+        for (int batch = 0; batch < num_lines; ++batch)
         {
-            int offset = batch * n * stride + s;
-
-            // Extract slice
-            for (int j = 0; j < n; ++j)
-                slice[j] = data[offset + j * stride];
-
-            // Transform
-            transform->execute(slice.data());
-
-            // Write back
-            for (int j = 0; j < n; ++j)
-                data[offset + j * stride] = slice[j];
+            for (int s = 0; s < stride; ++s)
+            {
+                double* first = data + batch * n * stride + s;
+                for (int j = 0; j < n; ++j)
+                    line[j] = first[j * stride];
+                lines_[d]->execute(line.data());
+                for (int j = 0; j < n; ++j)
+                    first[j * stride] = line[j];
+            }
         }
     }
-}
-
-void MklRealTransform2D::execute(double* data)
-{
-    if (!initialized_)
-        throw_with_line_number("MklRealTransform2D not initialized");
-
-    // Transform along y (fastest varying) first, then x
-    apply1D(data, 1, transform_y_.get());
-    apply1D(data, 0, transform_x_.get());
-}
-
-double MklRealTransform2D::get_normalization() const
-{
-    return get_norm_factor(type_x_, nx_[0]) * get_norm_factor(type_y_, nx_[1]);
-}
-
-//==============================================================================
-// MklRealTransform3D
-//==============================================================================
-
-MklRealTransform3D::MklRealTransform3D(int Nx, int Ny, int Nz, MklTransformType type)
-    : MklRealTransform3D(Nx, Ny, Nz, type, type, type)
-{
-}
-
-MklRealTransform3D::MklRealTransform3D(int Nx, int Ny, int Nz,
-                                       MklTransformType type_x,
-                                       MklTransformType type_y,
-                                       MklTransformType type_z)
-    : nx_{Nx, Ny, Nz}, type_x_(type_x), type_y_(type_y), type_z_(type_z)
-{
-    if (Nx < 2 || Ny < 2 || Nz < 2)
-        throw_with_line_number("Transform sizes must be >= 2");
-
-    init();
-}
-
-MklRealTransform3D::~MklRealTransform3D()
-{
-}
-
-void MklRealTransform3D::init()
-{
-    transform_x_ = std::make_unique<MklRealTransform1D>(nx_[0], type_x_);
-    transform_y_ = std::make_unique<MklRealTransform1D>(nx_[1], type_y_);
-    transform_z_ = std::make_unique<MklRealTransform1D>(nx_[2], type_z_);
-    initialized_ = true;
-}
-
-void MklRealTransform3D::getStrides(int dim, int& stride, int& num_transforms) const
-{
-    stride = 1;
-    for (int d = dim + 1; d < 3; ++d)
-        stride *= nx_[d];
-
-    num_transforms = 1;
-    for (int d = 0; d < dim; ++d)
-        num_transforms *= nx_[d];
-}
-
-void MklRealTransform3D::apply1D(double* data, int dim, MklRealTransform1D* transform) const
-{
-    int n = nx_[dim];
-    int stride, num_transforms;
-    getStrides(dim, stride, num_transforms);
-
-    thread_local std::vector<double> slice;
-    if (static_cast<int>(slice.size()) < n)
-        slice.resize(n);
-
-    for (int batch = 0; batch < num_transforms; ++batch)
-    {
-        for (int s = 0; s < stride; ++s)
-        {
-            int offset = batch * n * stride + s;
-
-            // Extract slice
-            for (int j = 0; j < n; ++j)
-                slice[j] = data[offset + j * stride];
-
-            // Transform
-            transform->execute(slice.data());
-
-            // Write back
-            for (int j = 0; j < n; ++j)
-                data[offset + j * stride] = slice[j];
-        }
-    }
-}
-
-void MklRealTransform3D::execute(double* data)
-{
-    if (!initialized_)
-        throw_with_line_number("MklRealTransform3D not initialized");
-
-    // Transform along z (fastest varying) first, then y, then x
-    apply1D(data, 2, transform_z_.get());
-    apply1D(data, 1, transform_y_.get());
-    apply1D(data, 0, transform_x_.get());
-}
-
-double MklRealTransform3D::get_normalization() const
-{
-    return get_norm_factor(type_x_, nx_[0]) *
-           get_norm_factor(type_y_, nx_[1]) *
-           get_norm_factor(type_z_, nx_[2]);
 }

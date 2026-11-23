@@ -6,13 +6,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <numbers>
 #include <numeric>
 #include <string>
 #include <type_traits>
 
 #include "MinimalFormAlias.h"
 #include "FourierTransform.h"
+#include "Pseudo.h"
 
 template <typename T>
 FourierTransform<T>::FourierTransform(ComputationBox<T>* cb, std::vector<BoundaryCondition> bc)
@@ -109,42 +109,14 @@ void FourierTransform<T>::make_hermitian(std::complex<double>* values, long long
 template <typename T>
 std::vector<double> FourierTransform<T>::get_k_squared() const
 {
-    const double PI = std::numbers::pi;
-    const std::vector<int> nx = cb_->get_nx();
-    std::vector<double> k_sq(n_coefficients_);
-
+    // Separable wavenumbers with walls (orthogonal cell), as in the propagator solvers (Pseudo)
     if (!periodic_)
-    {
-        // Separable wavenumbers (orthogonal cell): k = πm/L (cosine), π(m+1)/L (sine)
-        // or 2πm/L with the signed index m of the FFT (periodic axes of a mixed box);
-        // the axes padded to three at the end have k = 0
-        const std::array<int, 3> tnx = padded_grid(nx);
-        const std::vector<double> lx = cb_->get_lx();
-        std::array<std::vector<double>, 3> k_axis;
-        for (int d = 0; d < 3; ++d)
-        {
-            k_axis[d].assign(tnx[d], 0.0);
-            if (d >= dim_)
-                continue;
-            for (int m = 0; m < tnx[d]; ++m)
-            {
-                if (bc_[d] == BoundaryCondition::PERIODIC)
-                    k_axis[d][m] = 2.0 * PI * ((m > tnx[d] / 2) ? m - tnx[d] : m) / lx[d];
-                else
-                    k_axis[d][m] = PI * (m + (bc_[d] == BoundaryCondition::ABSORBING ? 1 : 0)) / lx[d];
-            }
-        }
-        for (int i = 0; i < tnx[0]; ++i)
-            for (int j = 0; j < tnx[1]; ++j)
-                for (int k = 0; k < tnx[2]; ++k)
-                    k_sq[(static_cast<long long>(i) * tnx[1] + j) * tnx[2] + k] =
-                        k_axis[0][i] * k_axis[0][i] + k_axis[1][j] * k_axis[1][j] + k_axis[2][k] * k_axis[2][k];
-        return k_sq;
-    }
+        return separable_k_squared(cb_->get_nx(), bc_, cb_->get_lx());
 
     // |k|² = 4π² uᵀ g⁻¹ u of the alias u of least form, as in the propagator solvers (Pseudo)
-    alias_k_squared(padded_grid(nx), padded_grid(coefficient_shape_), index_metric_of(cb_->get_recip_metric(), dim_),
-                    k_sq.data());
+    std::vector<double> k_sq(n_coefficients_);
+    alias_k_squared(padded_grid(cb_->get_nx()), padded_grid(coefficient_shape_),
+                    index_metric_of(cb_->get_recip_metric(), dim_), k_sq.data());
     return k_sq;
 }
 

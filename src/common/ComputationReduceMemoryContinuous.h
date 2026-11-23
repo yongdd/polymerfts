@@ -37,9 +37,7 @@ private:
     /// construction, and keys grow with the size of a polymer
     struct Job
     {
-        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
-        const ComputationEdge* edge;  ///< Its monomer type, dependencies and max_n_segment
-        int ds_index;                 ///< Contour step of the propagator
+        const ComputationEdge* edge;  ///< Its start, monomer type, contour step, dependencies and max_n_segment
         std::vector<std::pair<CheckpointArray<T>*, double>> sources;  ///< (q_i, n_i) of a junction or aggregation
         std::vector<CheckpointArray<T>*> checkpoints;  ///< Checkpoint of q(n), or nullptr
     };
@@ -50,18 +48,16 @@ private:
     std::vector<std::tuple<int, std::string, int, std::string, double>> single_partition_segment;
 
 protected:
-    int propagator_ds_index(const std::string& key) const override;
     void compute_blocks(bool with_concentrations, bool with_stress) override;
 
 public:
     ComputationReduceMemoryContinuous(ComputationBox<T>* cb, Molecules* molecules,
                                       PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                      const NumericalMethodInfo& method, SpaceGroup* space_group,
+                                      const NumericalMethodInfo& method,
                                       const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
 
     void compute_propagators(std::map<std::string, const T*> w_input,
                              std::map<std::string, const T*> q_init = {}) override;
-    void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;
     std::vector<double> compute_partition_errors() override;
 };

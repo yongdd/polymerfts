@@ -1,10 +1,9 @@
 import os
 import time
-import json
 import numpy as np
 from ..theory.symmetric_formulation import SymmetricPolymerTheory
 from ..utils.validation import (with_overrides, validate_lfts_params, ValidationError, NumericalError,
-                                initial_field_values, previous_noise_values)
+                                initial_field_values, previous_noise_values, first_langevin_step)
 from ..utils.common import (
     display_system,
     calculate_sigma,
@@ -17,6 +16,7 @@ from ..utils.checkpoint import (
     load_checkpoint,
     recording_run_status,
     RunRecord,
+    save_statistics,
     initialize_extensions,
     extension_state,
     restore_extensions,
@@ -109,18 +109,35 @@ class LFTS:
         # Propagator solver with the polymers: the C++ computation box, molecules and solver live inside it
         self.prop_solver = chain_solver(params, self.segment_lengths, self.polymers)
 
-        # Computation box as a public attribute (this creates the C++ objects)
+        # Computation box as a public attribute (display_statistics() below creates the propagator computation)
         self.cb = self.prop_solver.computation_box
 
         # Display factory info
         self.prop_solver.display_platform_info()
 
-        # Initialize smearing (must be after self.cb is set)
+        # Settings of the run: the Langevin step with the standard deviation of its noise, the scaling
+        # dt_scaling[i] of dH/dw_aux[i], what is printed and what is recorded
+        self.params = params
+        self.chain_model = params["chain_model"]
+        self.ds = params["ds"]
+        self.langevin = params["langevin"].copy()
+        self.langevin["sigma"] = calculate_sigma(params["langevin"]["nbar"], params["langevin"]["dt"],
+                                                 np.prod(params["nx"]), self.prop_solver.get_volume())
+        self.dt_scaling = self.mpt.dt_scaling()
+        self.verbose_level = params["verbose_level"]
+        self.recording = params["recording"].copy()
+
+        # Random bit generator of the noise (random_seed None: non-reproducible)
+        self.random_bg = np.random.PCG64(random_seed)
+        self.random = np.random.Generator(self.random_bg)
+
+        # Smearing of the interactions
         self.smearing = smearing_of(params, self.prop_solver)
         self._periodic_box = all(b == "periodic" for b in self.prop_solver.bc_lower)   # WTMD and S(k) transform with rfftn
 
-        # Well-Tempered Metadynamics (WTMD), if the input asks for it
+        # Well-Tempered Metadynamics (WTMD), if the input asks for it; L-FTS has no electrostatics
         self.wtmd = self._create_wtmd(params)
+        self.electrostatics = None
 
         # The saddle point of the imaginary fields, with its compressor
         self.saddle = SaddlePointSearch(self, params)
@@ -128,34 +145,16 @@ class LFTS:
         # Structure functions
         self.structure_functions = LftsStructureFunctions(self)
 
-        # Standard deviation of normal noise of Langevin dynamics
-        langevin_sigma = calculate_sigma(params["langevin"]["nbar"], params["langevin"]["dt"], np.prod(params["nx"]), self.prop_solver.get_volume())
-
-        # dH/dw_aux[i] is scaled by dt_scaling[i]
-        self.dt_scaling = self.mpt.dt_scaling()
-
-        # Random bit generator of the noise (random_seed None: non-reproducible)
-        self.random_bg = np.random.PCG64(random_seed)
-        self.random = np.random.Generator(self.random_bg)
-
-        display_system(self, params["chain_model"])
+        display_system(self)
 
         print("Invariant Polymerization Index (N_Ref): %d" % (params["langevin"]["nbar"]))
-        print("Langevin Sigma: %f" % (langevin_sigma))
-        print("Scaling factor of delta tau N for each field: ", self.dt_scaling)
-        print("Random Number Generator: ", self.random_bg.state)
+        print("Langevin Sigma: %f" % (self.langevin["sigma"]))
+        print("Scaling factor of delta tau N for each field:", self.dt_scaling)
+        print("Random Number Generator:", self.random_bg.state)
 
         self.prop_solver.display_statistics()
 
-        #  Save internal variables
-        self.params = params
-        self.chain_model = params["chain_model"]
-        self.ds = params["ds"]
-        self.langevin = params["langevin"].copy()
-        self.langevin.update({"sigma":langevin_sigma})
-
-        self.verbose_level = params["verbose_level"]
-        self.recording = params["recording"].copy()
+        # The metadata of the files, and the integrator and the callbacks (docs/internals/Extensions.md)
         self.metadata = simulation_metadata(self, random_seed)
         initialize_extensions(self, integrator if integrator is not None else self.langevin.get("integrator", "lm"), callbacks)
         # The linear response of the homogeneous state (the "etd" integrator) is measured by CLFTS only
@@ -172,8 +171,8 @@ class LFTS:
         if wtmd_params is not None:
             wtmd = WTMD(
                 wtmd_params,
-                nx=list(self.cb.get_nx()),
-                lx=list(self.cb.get_lx()),
+                nx=list(self.prop_solver.nx),
+                lx=list(self.prop_solver.get_lx()),
                 angles=self.prop_solver.get_angles_degrees(),
                 nbar=params["langevin"]["nbar"],
                 eigenvalues=self.mpt.eigenvalues,
@@ -224,6 +223,13 @@ class LFTS:
 
         check_partition_once(self, lambda: self.mpt.to_monomer_fields_dict(w_aux))
         return phi, elapsed_time
+
+    def forces(self, w_aux, phi_smeared):
+        """δH/δw of the real auxiliary fields from the smeared concentrations, with the bias of WTMD at the
+        order parameter Ψ (same as deep-langevin-fts); returns the forces and Ψ (None without WTMD)."""
+        forces = self.mpt.compute_func_deriv(w_aux, phi_smeared, self.mpt.aux_fields_real_idx)
+        psi = None if self.wtmd is None else self.wtmd.add_bias(w_aux, forces)
+        return forces, psi
 
     def save_simulation_data(self, path, w_aux, phi, langevin_step, normal_noise_prev, record):
         """Save L-FTS simulation checkpoint data to MATLAB file.
@@ -309,19 +315,20 @@ class LFTS:
         normal_noise_prev = previous_noise_values(normal_noise_prev, "normal_noise_prev",
                                                   len(self.mpt.aux_fields_real_idx), self.prop_solver.n_grid,
                                                   "real auxiliary fields")
+        start_langevin_step = first_langevin_step(start_langevin_step)
         with recording_run_status(self, start_langevin_step, fields, _restart_data, saddle_search=True,
                                   saddle_failures=0, noise_resamples=0):
             if _restart_data is None:
                 restore_extensions(self)
                 # A fresh run keeps the WTMD bias the object holds and drops the samples an earlier run
                 # left pending; a manual continuation (start_langevin_step > 1) keeps both
-                if self.wtmd is not None and start_langevin_step in (None, 1):
+                if self.wtmd is not None and start_langevin_step == 1:
                     self.wtmd.start_fresh_run()
             self._run(fields, normal_noise_prev, start_langevin_step, _restart_data=_restart_data)
         return dict(self.run_status)
 
-    def _run(self, initial_fields, normal_noise_prev=None, start_langevin_step=None, *, _restart_data=None):
-        """Run Langevin Field-Theoretic Simulation (L-FTS).
+    def _run(self, initial_fields, normal_noise_prev, start_langevin_step, *, _restart_data):
+        """Run Langevin Field-Theoretic Simulation (L-FTS) with the arguments that run() has checked.
 
         Performs Langevin dynamics to sample compositional fluctuations in the
         field-theoretic representation of the polymer system. At each Langevin
@@ -341,14 +348,12 @@ class LFTS:
             Initial monomer potential fields, {monomer_type: field_array}.
             Typically initialized from SCFT saddle point for faster equilibration.
             Each array has length total_grid.
-        normal_noise_prev : ndarray, optional
-            Previous Langevin noise array for Leimkuhler-Matthews method,
-            shape (R, total_grid) where R = number of real auxiliary fields.
-            Default: None (initialized as zeros). Used when continuing from checkpoint.
-        start_langevin_step : int, optional
-            Starting Langevin iteration number. Default: 1.
-            Used when continuing from checkpoint; a value above 1 assumes the
-            fields are already at the saddle point, as a checkpoint stores them.
+        normal_noise_prev : ndarray
+            Previous Langevin noise of the Leimkuhler-Matthews method, shape (R, total_grid)
+            where R = number of real auxiliary fields (zeros for a new run).
+        start_langevin_step : int
+            Starting Langevin iteration number. A value above 1 (a continued run) assumes
+            the fields are already at the saddle point, as a checkpoint stores them.
         """
 
         print("---------- Run  ----------")
@@ -358,9 +363,6 @@ class LFTS:
 
         # The architecture drawings and the auxiliary fields to start from (chains.prepare_run)
         w_aux, restored = prepare_run(self, initial_fields, _restart_data)
-
-        if start_langevin_step is None:
-            start_langevin_step = 1
 
         # Find the saddle point of the initial fields. A continued run loads fields
         # that are already at the saddle point; solving again would change the
@@ -382,12 +384,6 @@ class LFTS:
         record = RunRecord(series, self.structure_functions.empty_sums())
         record.restore(_restart_data, start_langevin_step)
 
-        # The previous noise of the Leimkuhler-Matthews step (run() has checked its values), zero without one
-        if normal_noise_prev is None:
-            normal_noise_prev = np.zeros([R, self.prop_solver.n_grid], dtype=np.float64)
-        else:
-            normal_noise_prev = np.reshape(normal_noise_prev, [R, self.prop_solver.n_grid])
-
         # Init timers
         self.saddle.iterations = 0
         time_start = time.time()
@@ -399,10 +395,8 @@ class LFTS:
             if self.verbose_level >= 1:
                 print("Langevin step: ", langevin_step)
 
-            # Forces on the real fields, with the bias of WTMD at the order parameter Ψ (same as deep-langevin-fts)
-            w_lambda = self.mpt.compute_func_deriv(w_aux, phi_smeared, self.mpt.aux_fields_real_idx)
-            if self.wtmd is not None:
-                psi = self.wtmd.add_bias(w_aux, w_lambda)
+            # Forces on the real fields, with the bias of WTMD at the order parameter Ψ
+            w_lambda, psi = self.forces(w_aux, phi_smeared)
             drift_max = float(np.max(np.abs(w_lambda * self.dt_scaling[self.mpt.aux_fields_real_idx, None]))) if R else 0.0
 
             # One Langevin step of the real fields and the saddle point of the imaginary fields
@@ -433,12 +427,7 @@ class LFTS:
 
             # Statistics files: H and dH/dχN, then S(k)
             if langevin_step % self.recording["statistics_save_interval"] == 0:
-                mdic = record.statistics()
-                mdic["simulation_metadata_json"] = json.dumps(self.metadata)
-                atomic_savemat(os.path.join(self.recording["dir"], "dH_%06d.mat" % (langevin_step)), mdic,
-                               long_field_names=True, do_compression=True)
-                self.structure_functions.save(langevin_step, record)
-                record.clear(langevin_step + 1)
+                save_statistics(self, langevin_step, record)
 
             # Observe an accepted state before saving its callback/integrator state.
             notify_callbacks(self, langevin_step, w_aux, phi, hamiltonian, drift_max,

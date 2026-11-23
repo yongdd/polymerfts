@@ -207,15 +207,15 @@ def save_results(sim, path):
 
     # Add w fields to the dictionary (expand to full grid if space group is set)
     for i, name in enumerate(sim.monomer_types):
-        m_dic["w_" + name] = sim._to_full_grid(sim.w[i])
+        m_dic["w_" + name] = sim.grid.to_full_grid(sim.w[i])
 
     # Add concentrations to the dictionary (expand to full grid if space group is set)
     for name in sim.monomer_types:
-        m_dic["phi_" + name] = sim._to_full_grid(sim.phi[name])
+        m_dic["phi_" + name] = sim.grid.to_full_grid(sim.phi[name])
 
     # Electrostatic potential and the chemical potentials of the point ions
     if sim.electrostatics is not None:
-        m_dic["psi"] = sim._to_full_grid(sim.electrostatics.psi)
+        m_dic["psi"] = sim.grid.to_full_grid(sim.electrostatics.psi)
         if sim.ion_chemical_potentials is not None:
             m_dic["ion_chemical_potentials"] = sim.ion_chemical_potentials
 
@@ -285,8 +285,8 @@ def scft_result(sim):
         free_energy=sim.free_energy,
         error_level=sim.error_level,
         iterations=sim.iter,
-        phi={name: sim._to_full_grid(sim.phi[name]) for name in sim.monomer_types},
-        w={name: sim._to_full_grid(sim.w[i]) for i, name in enumerate(sim.monomer_types)},
+        phi={name: sim.grid.to_full_grid(sim.phi[name]) for name in sim.monomer_types},
+        w={name: sim.grid.to_full_grid(sim.w[i]) for i, name in enumerate(sim.monomer_types)},
         partition_functions=list(sim.partition_functions),
         lx=list(sim.prop_solver.get_lx()),
         nx=list(sim.prop_solver.nx),
@@ -300,7 +300,7 @@ def scft_result(sim):
         grand_potential=sim.grand_potential,
         polymer_lengths=list(sim.polymer_lengths),
         polymer_volume_fractions=list(sim.polymer_volume_fractions),
-        psi=None if es is None else sim._to_full_grid(es.psi),
+        psi=None if es is None else sim.grid.to_full_grid(es.psi),
         ion_chemical_potentials=sim.ion_chemical_potentials
     )
 

@@ -17,8 +17,8 @@ Fields: AB diblock, random real parts of standard deviation 5 and imaginary part
    quadrature, so they are checked through the complex step instead: the stress is holomorphic
    in the fields, so for the fields w + i eps v its real part is the stress at w and its
    imaginary part over eps the derivative along v, the central difference of the stress of real
-   fields (rqm4 and rk2 on the CPU, relative 1e-8 at eps = 1e-4).
-3. CUDA equals the CPU backends for ps and rs (relative 1e-11).
+   fields (rqm4 and rk2 on every platform, relative 1e-8 at eps = 1e-4).
+3. CUDA equals the CPU backends for rqm4, rk2, ps and rs (relative 1e-11).
 
 Exit code 1 in a CUDA build without a visible CUDA device, after the CPU parts.
 """
@@ -31,18 +31,14 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
-FAILURES = []
+checks.indent = "    "   # the check lines print indented
 DIBLOCK = [["A", 0.4, 0, 1], ["B", 0.6, 1, 2]]
 BOND = {"A": 1.0, "B": 1.2}
 CHAIN_MODEL = {"rqm4": "continuous", "rk2": "continuous", "ps": "discrete", "rs": "discrete"}
-
-
-def check(condition, message):
-    print(f"    [{'PASS' if condition else 'FAIL'}] {message}")
-    if not condition:
-        FAILURES.append(message)
 
 
 def fields(rng, nx, field_type):
@@ -82,8 +78,6 @@ def periodic_image(platforms, rng):
             w2 = {m: mirrored(w[m]) for m in w}
             for method in ("rqm4", "rk2", "ps", "rs"):
                 for platform in platforms:
-                    if platform == "cuda" and field_type == "complex" and CHAIN_MODEL[method] == "continuous":
-                        continue   # the CUDA continuous-chain solvers take no complex fields with walls
                     q, stress = solve(method, platform, nx, lx, ["reflecting"] * (2 * len(nx)), w)
                     q2, stress2 = solve(method, platform, [2 * n for n in nx], [2 * l for l in lx],
                                         ["periodic"] * (2 * len(nx)), w2)
@@ -127,14 +121,13 @@ def absorbing(platforms, rng):
             ds = np.max(np.abs(s_ps - s_rs)) / np.max(np.abs(s_rs))
             check(dq < 1e-12 and ds < 1e-10, f"{nx} {bc[::2]} {platform}: ps against rs, Q {dq:.1e}, stress {ds:.1e}")
 
-    # Continuous chains through the complex step (the CUDA continuous-chain solvers take no complex fields
-    # with walls)
+    # Continuous chains through the complex step
     eps = 1e-4
     for nx, lx, bc in (([48], [2.3], ["absorbing"] * 2),
                        ([24, 20], [1.5, 1.25], ["absorbing", "absorbing", "reflecting", "reflecting"])):
         w = fields(rng, nx, "real")
         v = {m: rng.normal(0.0, 1.0, nx) for m in w}
-        for platform in [p for p in platforms if p.startswith("cpu")]:
+        for platform in platforms:
             for method in ("rqm4", "rk2"):
                 stress = solve(method, platform, nx, lx, bc, {m: w[m] + 1j * eps * v[m] for m in w})[1]
                 real = solve(method, platform, nx, lx, bc, w)[1]
@@ -154,7 +147,7 @@ def cuda_against_cpu(cpus, rng):
                        ([24, 20, 16], [1.5, 1.25, 1.0], ["absorbing", "absorbing", "reflecting", "reflecting",
                                                          "absorbing", "absorbing"])):
         w = fields(rng, nx, "complex")
-        for method in ("ps", "rs"):
+        for method in ("rqm4", "rk2", "ps", "rs"):
             q_gpu, s_gpu = solve(method, "cuda", nx, lx, bc, w)
             for cpu in cpus:
                 q_cpu, s_cpu = solve(method, cpu, nx, lx, bc, w)
@@ -176,11 +169,7 @@ def main():
     if not platforms:
         print("No platform available: skipped")
         return 77
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} check(s)")
-        return 1
-    print("PASSED")
-    return 0
+    return summary()
 
 
 if __name__ == "__main__":

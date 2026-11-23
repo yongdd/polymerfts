@@ -9,13 +9,12 @@
  *
  * @see FFT for the abstract interface
  * @see MakhoulTransform for the DCT and DST
- * @see CudaFFT for GPU implementation
+ * @see CudaFourierTransform and CudaSolverPseudoBase for the cuFFT plans on the GPU
  */
 
 #ifndef FFTW_FFT_H_
 #define FFTW_FFT_H_
 
-#include <array>
 #include <memory>
 #include <vector>
 #include <complex>
@@ -34,12 +33,6 @@ inline bool has_fftw_plan_alignment(const void* p)
 {
     return fftw_alignment_of(static_cast<double*>(const_cast<void*>(p))) == 0;
 }
-
-/// Deleter of a planning array of fftw_malloc held by a std::unique_ptr
-struct FftwFree
-{
-    void operator()(void* p) const { fftw_free(p); }
-};
 
 /**
  * @class FftwRealFFT
@@ -71,8 +64,7 @@ public:
  * @class FftwFFT
  * @brief FFTW3-based periodic FFT.
  *
- * @tparam T   Input type for forward transform (double or std::complex<double>)
- * @tparam DIM Dimensionality of the transform (1, 2, or 3)
+ * @tparam T Input type for forward transform (double or std::complex<double>)
  *
  * **Thread Safety:**
  *
@@ -97,11 +89,11 @@ public:
  *
  * Backward transforms include 1/N scaling so backward(forward(x)) = x.
  */
-template <typename T, int DIM>
+template <typename T>
 class FftwFFT : public FFT<T>
 {
 private:
-    std::array<int, DIM> nx_;                      ///< Grid dimensions
+    std::vector<int> nx_;                          ///< Grid dimensions (one to three axes)
     int total_grid_;                               ///< Total real grid size
     int total_complex_grid_;                       ///< Total complex grid size
 
@@ -124,16 +116,13 @@ private:
     void periodic_backward(std::complex<double>* modes, const double* k_factor, T* field, const T* r_factor,
                            bool keep_modes) const;
 
-    /// Initialize the FFTW plans.
-    void initPeriodicFFT();
-
 public:
     /**
      * @brief Construct the FFTW FFT of a periodic grid.
      *
      * @param nx Grid dimensions [Nx] for 1D, [Nx, Ny] for 2D, [Nx, Ny, Nz] for 3D
      */
-    FftwFFT(std::array<int, DIM> nx);
+    explicit FftwFFT(const std::vector<int>& nx);
 
     /// Destructor. Frees the FFTW plans.
     ~FftwFFT();

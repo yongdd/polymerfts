@@ -11,13 +11,58 @@
 #include <iostream>
 #include <algorithm>
 #include <set>
+#include <utility>
 
 #include "PropagatorAggregator.h"
 #include "PropagatorComputationOptimizer.h"
 #include "PropagatorCode.h"
 
+namespace
+{
+/*
+ * The block of the aggregated propagator that sums the sliced propagators of slices and continues
+ * for n_segment segments, and its key, which edges gets. Its key "[k1n1:c1,k2n2,...]M+ds" lists
+ * the slices in reverse ComparePropagatorKey order: each key without "+ds", the segment it was
+ * sliced to (n_segment_right in blocks) and its copies when more than one. The slices all
+ * continue blocks of one left key, so they share the monomer type and ds index.
+ */
+std::pair<std::string, ComputationBlock> aggregated_block(
+    const std::map<std::string, ComputationBlock, ComparePropagatorKey>& slices,
+    const std::map<std::string, ComputationBlock>& blocks,
+    int n_segment,
+    std::map<std::string, ComputationEdge>& edges)
+{
+    ComputationEdge aggregated;
+    aggregated.start = PropagatorStart::AGGREGATED;
+    aggregated.monomer_type = slices.begin()->second.monomer_type;
+    aggregated.ds_index = edges.at(slices.rbegin()->first).ds_index;
+
+    ComputationBlock block;
+    block.monomer_type = aggregated.monomer_type;
+    block.n_segment_right = n_segment;
+    block.n_segment_left = n_segment;
+    block.n_repeated = 1;
+
+    std::string key = "[";
+    for (auto it = slices.rbegin(); it != slices.rend(); it++)
+    {
+        const ComputationBlock& slice = blocks.at(it->first);
+        if (it != slices.rbegin())
+            key += ",";
+        key += PropagatorCode::dependency_code(it->first, slice.n_segment_right);
+        if (slice.n_repeated > 1)
+            key += ":" + PropagatorCode::format_count(slice.n_repeated);
+        aggregated.deps.push_back(std::make_tuple(it->first, slice.n_segment_right, slice.n_repeated));
+        block.v_u.insert(block.v_u.end(), slice.v_u.begin(), slice.v_u.end());
+    }
+    key += "]" + aggregated.monomer_type + "+" + std::to_string(aggregated.ds_index);
+    edges.emplace(key, std::move(aggregated));
+    return {key, block};
+}
+}  // namespace
+
 std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_continuous_chain(
-    std::map<std::string, ComputationBlock> set_I)
+    std::map<std::string, ComputationBlock> set_I, std::map<std::string, ComputationEdge>& edges)
 {
     // Example) Continuous chain aggregation
     //
@@ -28,7 +73,7 @@ std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_continuo
     //   4,               (E)B+0,    4,              2
     //   2,               (F)B+0,    2,              1
     //
-    //      ↓   Aggregation (sliced propagators: n_segment=0 → length_index=0)
+    //      ↓   Aggregation (sliced propagators: n_segment=0)
     //
     // Output:
     //   6,               (C)B+0,              6,  1
@@ -61,51 +106,15 @@ std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_continuo
         for (const auto& item : set_S)
             set_I[item.first].n_segment_right = 0;
 
-        // Build aggregated key: [dep1,dep2,...]monomer+ds_index
-        std::string monomer_type = PropagatorCode::get_monomer_type_from_key(set_S.begin()->second.monomer_type);
-        std::string aggregated_key = "[";
-        std::vector<std::tuple<int, int>> all_v_u;
-        int ds_index = -1;
-        bool first = true;
-
-        for (auto it = set_S.rbegin(); it != set_S.rend(); it++)
-        {
-            const std::string& key = it->first;
-
-            // Extract ds_index (same for all in set_S)
-            if (ds_index < 0)
-                ds_index = PropagatorCode::get_ds_index_from_key(key);
-
-            // Strip +ds_index to get DK part
-            size_t plus_pos = key.rfind('+');
-            std::string dk_part = (plus_pos != std::string::npos) ? key.substr(0, plus_pos) : key;
-
-            if (!first) aggregated_key += ",";
-            first = false;
-
-            // Append "0" (length_index=0 for sliced propagators with n_segment=0)
-            aggregated_key += dk_part + "0";
-
-            if (set_I[key].n_repeated > 1)
-                aggregated_key += ":" + PropagatorCode::format_count(set_I[key].n_repeated);
-
-            // Collect v_u
-            all_v_u.insert(all_v_u.end(), set_I[key].v_u.begin(), set_I[key].v_u.end());
-        }
-        aggregated_key += "]" + monomer_type + "+" + std::to_string(ds_index);
-
-        // Add aggregated block
-        set_I[aggregated_key].monomer_type = monomer_type;
-        set_I[aggregated_key].n_segment_right = n_segment_current;
-        set_I[aggregated_key].n_segment_left = n_segment_current;
-        set_I[aggregated_key].v_u = all_v_u;
-        set_I[aggregated_key].n_repeated = 1;
+        // Add aggregated block: [dep1,dep2,...]monomer+ds_index
+        auto [aggregated_key, block] = aggregated_block(set_S, set_I, n_segment_current, edges);
+        set_I[aggregated_key] = block;
     }
     return set_I;
 }
 
 std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_discrete_chain(
-    std::map<std::string, ComputationBlock> set_I)
+    std::map<std::string, ComputationBlock> set_I, std::map<std::string, ComputationEdge>& edges)
 {
     // Example) Discrete chain aggregation (hierarchical merging)
     //
@@ -160,46 +169,10 @@ std::map<std::string, ComputationBlock> PropagatorAggregator::aggregate_discrete
         for (const auto& item : set_S)
             set_F[item.first].n_segment_right -= slice_amount;
 
-        // Build aggregated key: [dep1,dep2,...]monomer+ds_index
-        std::string monomer_type = PropagatorCode::get_monomer_type_from_key(set_S.begin()->second.monomer_type);
-        std::string aggregated_key = "[";
-        std::vector<std::tuple<int, int>> all_v_u;
-        int ds_index = -1;
-        bool first = true;
-
-        for (auto it = set_S.rbegin(); it != set_S.rend(); it++)
-        {
-            const std::string& key = it->first;
-
-            if (ds_index < 0)
-                ds_index = PropagatorCode::get_ds_index_from_key(key);
-
-            // Strip +ds_index to get DK part
-            size_t plus_pos = key.rfind('+');
-            std::string dk_part = (plus_pos != std::string::npos) ? key.substr(0, plus_pos) : key;
-
-            if (!first) aggregated_key += ",";
-            first = false;
-
-            // Append sliced n_segment (discrete chains use n_segment directly)
-            aggregated_key += dk_part + std::to_string(set_F[key].n_segment_right);
-
-            if (set_F[key].n_repeated > 1)
-                aggregated_key += ":" + PropagatorCode::format_count(set_F[key].n_repeated);
-
-            all_v_u.insert(all_v_u.end(), set_F[key].v_u.begin(), set_F[key].v_u.end());
-        }
-        aggregated_key += "]" + monomer_type + "+" + std::to_string(ds_index);
-
-        // Add aggregated block to both sets
-        int n_segment_agg = n_segment_threshold - MIN_N_SEGMENT;
-        set_F[aggregated_key].monomer_type = monomer_type;
-        set_F[aggregated_key].n_segment_right = n_segment_agg;
-        set_F[aggregated_key].n_segment_left = n_segment_agg;
-        set_F[aggregated_key].v_u = all_v_u;
-        set_F[aggregated_key].n_repeated = 1;
-
-        set_I[aggregated_key] = set_F[aggregated_key];
+        // Add aggregated block to both sets: [dep1,dep2,...]monomer+ds_index
+        auto [aggregated_key, block] = aggregated_block(set_S, set_F, n_segment_threshold - MIN_N_SEGMENT, edges);
+        set_F[aggregated_key] = block;
+        set_I[aggregated_key] = block;
 
         // Remove merged propagators from working set
         for (const auto& item : set_S)

@@ -35,49 +35,48 @@
 #include <tuple>
 #include <vector>
 
-#include "ComputationCommon.h"
+#include "PropagatorComputation.h"
 
 template <typename T>
-class ComputationReduceMemoryBase : public ComputationCommon<T>
+class ComputationReduceMemoryBase : public PropagatorComputation<T>
 {
 protected:
     /// First stored segment of a propagator: 0 for continuous chains, 1 for discrete chains
     const int first_segment;
     int checkpoint_interval;  ///< Segments between regular checkpoints
 
+    /// Stored states of propagators, by (key, n)
+    using CheckpointMap = std::map<std::tuple<std::string, int>, CheckpointArray<T>*>;
+
+    // In the backend memory of PropagatorComputation
     /// q(r, n) of propagator key at the checkpointed segments n
-    std::map<std::tuple<std::string, int>, CheckpointArray<T>*> checkpoint;
+    CheckpointMap checkpoint;
 
     std::vector<BackendArray<T>*> q_recal;           ///< Recomputed consecutive segments of one propagator
     BackendArray<T>* q_work[2]  = {nullptr, nullptr}; ///< Propagator being advanced (ping-pong)
     BackendArray<T>* q_right[2] = {nullptr, nullptr}; ///< The other propagator of a block, advanced along it
 
-    /// Free the checkpoints and the work fields (also on a failed construction).
-    void free_storage();
-
     /**
      * @param first_segment 0 for continuous chains, 1 for discrete chains
-     * @param create_backend See ComputationCommon
+     * @param create_backend See PropagatorComputation
      */
     ComputationReduceMemoryBase(ComputationBox<T>* cb, Molecules* molecules,
                                 PropagatorComputationOptimizer* propagator_computation_optimizer,
-                                const NumericalMethodInfo& numerical_method, SpaceGroup* space_group, int first_segment,
+                                const NumericalMethodInfo& numerical_method, int first_segment,
                                 const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
-
-    /// Contour step index used to advance propagator key (discrete chains: 0).
-    virtual int propagator_ds_index(const std::string& key) const = 0;
 
     /// The concentrations, the stress or both, in one walk along each block.
     virtual void compute_blocks(bool with_concentrations, bool with_stress) = 0;
 
-    /// Allocate the checkpoint (key, n) if it does not exist yet.
-    void add_checkpoint(const std::string& key, int n);
-    CheckpointArray<T>* checkpoint_at(const std::string& key, int n);
+    /// Allocate stored[(key, n)] (checkpoint, or the half-bond states of discrete chains)
+    /// if it does not exist yet.
+    void add_checkpoint(CheckpointMap& stored, const std::string& key, int n);
+    /// stored[(key, n)]; throws if there is none
+    static CheckpointArray<T>* checkpoint_at(const CheckpointMap& stored, const std::string& key, int n);
 
     /// stored[(key, n)] for n = n_first..n_last, nullptr where there is none.
     static std::vector<CheckpointArray<T>*> stored_segments(
-        const std::map<std::tuple<std::string, int>, CheckpointArray<T>*>& stored,
-        const std::string& key, int n_first, int n_last);
+        const CheckpointMap& stored, const std::string& key, int n_first, int n_last);
 
     /// Add the regular checkpoints; call after the model-specific ones.
     void add_regular_checkpoints();
@@ -107,8 +106,6 @@ protected:
                                bool past_last = false);
 
 public:
-    virtual ~ComputationReduceMemoryBase();
-
     void compute_concentrations() override;
     void compute_stress() override;
     void compute_concentrations_and_stress() override;

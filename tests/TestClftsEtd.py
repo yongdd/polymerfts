@@ -43,9 +43,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import scipy.linalg
 from scipy.io import loadmat
-from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver, ValidationError
+from polymerfts import LFTS, CLFTS, PlatformSelector, PropagatorSolver
 from polymerfts.fts.integrators import ExponentialTimeDifferencing, LeimkuhlerMatthews
 from polymerfts.fts.force_jacobian import force_jacobian, symmetric_jacobian
+from checks import expect_validation_error
 from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, silenced
 
@@ -206,7 +207,7 @@ def linear():
 def jacobian(root):
     for screening_length in (None, 0.3):
         sim = quiet(lambda: CLFTS(parameters(root / "jacobian", screening_length=screening_length), random_seed=5))
-        J = force_jacobian(sim)
+        J = force_jacobian(sim, joint_psi=True)
         M, n_grid, eps = 3, int(np.prod(NX)), 1e-6
         assert J.shape == (M + 1, M + 1) + tuple(NX)
         scale, worst = np.max(np.abs(J)), 0.0
@@ -215,7 +216,7 @@ def jacobian(root):
                 continue
             kick = np.zeros((M + 1, n_grid), dtype=complex)
             kick[j, 0] = eps
-            difference = (sim._evaluate_force_with_psi(kick) - sim._evaluate_force_with_psi(-kick)) / (2 * eps)
+            difference = (sim.evaluate_force(kick) - sim.evaluate_force(-kick)) / (2 * eps)
             for i in range(M + 1):
                 worst = max(worst, np.max(np.abs(np.fft.fftn(np.reshape(difference[i], NX)) - J[i, j])) / scale)
         assert worst < 1e-6, f"Jacobian against central differences (screening_length {screening_length}): {worst:.2e}"
@@ -227,7 +228,7 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.0}, smearing=None,
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.3}, {"type": "B", "length": 0.7}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J, eps = force_jacobian(sim), 1e-6
+    J, eps = force_jacobian(sim, joint_psi=False), 1e-6
     worst = 0.0
     for j in range(2):
         kick = np.zeros((2, 67), dtype=complex)
@@ -244,9 +245,9 @@ def jacobian(root):
                   segment_lengths={"A": 1.0, "B": 1.2},
                   polymers=[{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5}, {"type": "B", "length": 0.5}]}])
     sim = quiet(lambda: CLFTS(params, random_seed=5))
-    J = force_jacobian(sim)
-    ratio = (sim._integrated_noise_direction()[None, :] / sim._integrated_noise_direction()[:, None])[:, :, None]
-    K, K_symmetric = J * ratio, symmetric_jacobian(sim, J) * ratio
+    J, direction = force_jacobian(sim, joint_psi=False), sim._integrated_noise_direction()
+    ratio = (direction[None, :] / direction[:, None])[:, :, None]
+    K, K_symmetric = J * ratio, symmetric_jacobian(sim, J, direction, sim.dt_scaling) * ratio
     asymmetry = np.max(np.abs(K - np.swapaxes(K, 0, 1))) / np.max(np.abs(K))
     assert 1e-5 < asymmetry < 1e-3, f"asymmetry of the measured Jacobian {asymmetry:.1e}"
     assert np.max(np.abs(K_symmetric - 0.5 * (K + np.swapaxes(K, 0, 1)))) < 1e-14 * np.max(np.abs(K)), \
@@ -368,15 +369,6 @@ def runs(root):
     for label in (f"auxiliary field {dropped[0]} (dropped): no drift", f"auxiliary field {other} ({kind}): ",
                   "psi: "):
         assert label in output.getvalue(), (label, output.getvalue())
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as exc:
-        assert message in str(exc), (message, str(exc))
-        return
-    raise AssertionError(f"Expected ValidationError: {message}")
 
 
 def input_checks(root):

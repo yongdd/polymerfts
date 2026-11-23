@@ -70,7 +70,7 @@ def test_exported_presets(preset, tmp_path, monkeypatch):
     if values["mode"] == "SCFT":
         VALIDATION["validate_scft_params"](params)
     else:
-        VALIDATION["validate_lfts_params"](params, complex_fields=values["mode"] == "CL-FTS")
+        VALIDATION["validate_clfts_params" if values["mode"] == "CL-FTS" else "validate_lfts_params"](params)
     assert calls["cwd"] == tmp_path / "export" / values["output_dir"]
     assert calls["fields"]["A"].shape == tuple(params["nx"])
     assert np.isfinite(calls["fields"]["A"]).all()

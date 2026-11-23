@@ -15,9 +15,9 @@ def validation(monkeypatch):
     return runpy.run_path(str(Path(__file__).resolve().parents[2] / "src/python/utils/validation.py"))
 
 
-def parameters(validator="validate_scft_params", options=None):
-    """The input of the validator with options, with the keys that its method reads: SCFT, L-FTS or CL-FTS
-    (complex_fields, without the saddle and compressor of L-FTS); each method ignores the others."""
+def parameters(validator="validate_scft_params"):
+    """The input of the validator, with the keys that its method reads: SCFT, L-FTS or CL-FTS (without the
+    saddle and compressor of L-FTS); each method ignores the others."""
     params = {"nx": [4], "lx": [2.0], "ds": 1e-6, "chain_model": "discrete",
               "segment_lengths": {"A": 1.0, "B": 1.0}, "chi_n": {"A,B": 2.0},
               "polymers": [{"volume_fraction": 1.0,
@@ -30,34 +30,31 @@ def parameters(validator="validate_scft_params", options=None):
     params.update(langevin={"nbar": 1e4, "dt": 0.01, "max_step": 1}, verbose_level=0,
                   recording={"dir": "unused", "checkpoint_interval": 1, "sample_interval": 1,
                              "statistics_save_interval": 1})
-    if not (options or {}).get("complex_fields"):
+    if validator == "validate_lfts_params":
         params.update(saddle={"max_iter": 10, "tolerance": 1e-8}, compressor={"name": "lr"})
     return params
 
 
-@pytest.mark.parametrize("validator, options", (("validate_scft_params", {}),
-                                              ("validate_lfts_params", {}),
-                                              ("validate_lfts_params", {"complex_fields": True})))
-def test_discrete_validation_without_backend(validation, validator, options):
-    params = parameters(validator, options)
+@pytest.mark.parametrize("validator", ("validate_scft_params", "validate_lfts_params", "validate_clfts_params"))
+def test_discrete_validation_without_backend(validation, validator):
+    params = parameters(validator)
     original = copy.deepcopy(params)
-    validation[validator](params, **options)
+    validation[validator](params)
     assert validation["polymer_block_lengths"](params, params["polymers"][0]) == (1e-6, 1e-6)
     assert params == original
     params["polymers"][0]["blocks"][0]["length"] = 1.5e-6
     with pytest.raises(validation["ValidationError"], match=r"polymers\[0\].blocks\[0\].length.*integer multiple"):
-        validation[validator](params, **options)
+        validation[validator](params)
 
 
-@pytest.mark.parametrize("validator, options", (("validate_scft_params", {}),
-                                              ("validate_lfts_params", {"complex_fields": True})))
-def test_charge_validation_without_backend(validation, validator, options):
-    params = parameters(validator, options)
+@pytest.mark.parametrize("validator", ("validate_scft_params", "validate_clfts_params"))
+def test_charge_validation_without_backend(validation, validator):
+    params = parameters(validator)
     params["smearing"] = {"type": "gaussian", "a_int": 0.1}
     params["electrostatics"] = {"charges": {"A": 1.0, "B": -1.0}, "coupling": 1.0,
                                "ions": {"X": {"valence": -1.0, "concentration": 0.0,
                                               "smearing_length": 0.1}}, "counterion": "X"}
-    validation[validator](params, **options)
+    validation[validator](params)
     assert validation["net_polymer_charge"](params) == 0.0
     assert validation["point_ion_concentrations"](params) == {"X": 0.0}
 

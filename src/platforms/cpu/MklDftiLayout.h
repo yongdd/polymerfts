@@ -19,19 +19,11 @@ inline constexpr auto forward_input_strides = DFTI_FWD_STRIDES;
 inline constexpr auto forward_output_strides = DFTI_BWD_STRIDES;
 inline constexpr auto backward_input_strides = DFTI_BWD_STRIDES;
 inline constexpr auto backward_output_strides = DFTI_FWD_STRIDES;
-inline constexpr auto forward_input_distance = DFTI_FWD_DISTANCE;
-inline constexpr auto forward_output_distance = DFTI_BWD_DISTANCE;
-inline constexpr auto backward_input_distance = DFTI_BWD_DISTANCE;
-inline constexpr auto backward_output_distance = DFTI_FWD_DISTANCE;
 #else
 inline constexpr auto forward_input_strides = DFTI_INPUT_STRIDES;
 inline constexpr auto forward_output_strides = DFTI_OUTPUT_STRIDES;
 inline constexpr auto backward_input_strides = DFTI_INPUT_STRIDES;
 inline constexpr auto backward_output_strides = DFTI_OUTPUT_STRIDES;
-inline constexpr auto forward_input_distance = DFTI_INPUT_DISTANCE;
-inline constexpr auto forward_output_distance = DFTI_OUTPUT_DISTANCE;
-inline constexpr auto backward_input_distance = DFTI_INPUT_DISTANCE;
-inline constexpr auto backward_output_distance = DFTI_OUTPUT_DISTANCE;
 #endif
 }  // namespace mkl_dfti
 

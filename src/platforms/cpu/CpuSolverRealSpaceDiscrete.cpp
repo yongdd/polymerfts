@@ -19,10 +19,8 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <type_traits>
 
 #include "CpuSolverRealSpaceDiscrete.h"
-#include "SpaceGroup.h"
 
 namespace
 {
@@ -127,84 +125,26 @@ void pass_contiguous(const T* in, T* out, int n, long lines, const RealSpaceBond
 template <typename T>
 CpuSolverRealSpaceDiscrete<T>::CpuSolverRealSpaceDiscrete(ComputationBox<T>* cb, Molecules* molecules,
                                                           SpaceGroup* space_group)
-    : cb(cb), molecules(molecules), space_group_(space_group)
+    : CpuSolver<T>(cb, molecules, space_group, /*with_half=*/false)
 {
-    try
-    {
-        if (molecules->get_model_name() != "discrete")
-            throw_with_line_number("The rs method is for discrete chains.");
+    if (molecules->get_model_name() != "discrete")
+        throw_with_line_number("The rs method is for discrete chains.");
 
-        const int M = cb->get_total_grid();
-        molecules->finalize_contour_length_mapping();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            for (const auto& item : molecules->get_bond_lengths())
-                this->exp_dw[ds_idx][item.first].resize(M);
-
-        update_laplacian_operator();
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-}
-
-template <typename T>
-const T* CpuSolverRealSpaceDiscrete<T>::expanded(const T* q, std::vector<T>& buffer) const
-{
-    if (space_group_ == nullptr)
-        return q;
-    if constexpr (std::is_same_v<T, double>)
-    {
-        buffer.resize(cb->get_total_grid());
-        space_group_->from_reduced_basis(q, buffer.data(), 1);
-        return buffer.data();
-    }
-    throw_with_line_number("Space groups need real fields.");
-}
-
-template <typename T>
-void CpuSolverRealSpaceDiscrete<T>::reduced(const T* q_full, T* q) const
-{
-    if constexpr (std::is_same_v<T, double>)
-        if (space_group_ != nullptr)
-            space_group_->to_reduced_basis(q_full, q, 1);
+    update_laplacian_operator();
 }
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_laplacian_operator()
 {
-    try
-    {
-        // The box is orthogonal: the factory refuses a skewed box for rs and holds its angles
-        bonds = RealSpaceBond::bonds(*molecules, *cb);
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // The box is orthogonal: the computation refuses a skewed box for rs and holds its angles
+    bonds = RealSpaceBond::bonds(*molecules, *cb);
 }
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::update_dw(std::map<std::string, const T*> w_input)
 {
     // exp(-w ds) on the full grid (the fields come in the reduced basis with a space group)
-    const int M = cb->get_total_grid();
-    const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-    std::vector<T> w_full;
-    for (const auto& [monomer_type, w_in] : w_input)
-    {
-        const T* w = expanded(w_in, w_full);
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-        {
-            if (!this->exp_dw[ds_idx].contains(monomer_type))
-                throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
-            const double local_ds = mapping.get_ds_from_index(ds_idx);
-            std::vector<T>& exp_dw = this->exp_dw.at(ds_idx).at(monomer_type);
-            for (int i = 0; i < M; ++i)
-                exp_dw[i] = std::exp(-w[i] * local_ds);
-        }
-    }
+    this->compute_exp_dw(w_input, /*reduced_basis_tables=*/false, false, 1.0, 0.0);
 }
 
 template <typename T>
@@ -259,95 +199,61 @@ template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::advance_propagator(
     T* q_in, T* q_out, std::string monomer_type, const double* q_mask, int ds_index)
 {
-    try
-    {
-        // On the full grid; with a space group from and back to its reduced basis, where the mask is
-        const int M = cb->get_total_grid();
-        const int n_basis = space_group_ != nullptr ? space_group_->get_n_reduced_basis() : M;
-        const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
-        WorkArrays& work = work_arrays();
-        T* out = q_out;
-        if (space_group_ != nullptr)
-        {
-            work.full_2.resize(M);
-            out = work.full_2.data();
-        }
-        convolve(expanded(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
-        for (int i = 0; i < M; ++i)
-            out[i] *= exp_dw[i];
-        reduced(out, q_out);
-        if (q_mask != nullptr)
-            for (int i = 0; i < n_basis; ++i)
-                q_out[i] *= q_mask[i];
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // On the full grid; with a space group from and back to its reduced basis, where the mask
+    // is, through a second full grid (the bond does not run in place)
+    const int M = cb->get_total_grid();
+    const T* exp_dw = this->exp_dw.at(ds_index).at(monomer_type).data();
+    WorkArrays& work = work_arrays();
+    T* out = this->full_grid_output(q_out, work.full_2);
+    convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.full.at(ds_index).at(monomer_type), work);
+    for (int i = 0; i < M; ++i)
+        out[i] *= exp_dw[i];
+    this->store_full_grid(out, q_out, q_mask);
 }
 
 template <typename T>
 void CpuSolverRealSpaceDiscrete<T>::advance_propagator_half_bond_step(T* q_in, T* q_out, std::string monomer_type)
 {
-    try
-    {
-        WorkArrays& work = work_arrays();
-        if (space_group_ == nullptr)
-            convolve(q_in, q_out, bonds.half.at(monomer_type), work);
-        else
-        {
-            work.full_2.resize(cb->get_total_grid());
-            convolve(expanded(q_in, work.full_1), work.full_2.data(), bonds.half.at(monomer_type), work);
-            reduced(work.full_2.data(), q_out);
-        }
-    }
-    catch (std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    WorkArrays& work = work_arrays();
+    T* out = this->full_grid_output(q_out, work.full_2);
+    convolve(this->expand_to_full_grid(q_in, work.full_1), out, bonds.half.at(monomer_type), work);
+    this->store_full_grid(out, q_out, nullptr);
 }
 
 template <typename T>
 std::vector<T> CpuSolverRealSpaceDiscrete<T>::compute_single_segment_stress(
     T* q_1, T* q_2, std::string monomer_type, bool is_half_bond_length)
 {
-    try
-    {
-        // The cell stays orthogonal (the factory holds it so), so there are no shear components
-        if (this->force_off_diagonal_stress_)
-            throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
+    // The cell stays orthogonal (the computation holds it so), so there are no shear components
+    if (this->force_off_diagonal_stress_)
+        throw_with_line_number("The rs method keeps the cell orthogonal and computes no shear stress.");
 
-        // The sums V_aa = sum_k b^2 g(k) q_1 q_2 k_a^2 / L_a^2 of the pseudo-spectral solvers: in real
-        // space k_a^2 g(k) is (L_a / sigma^2) dG/dL_a, with sigma^2 the variance of the (half) bond
-        // and b^2 the squared bond length (halved for a half bond), so
-        // V_aa = M (b^2 / sigma^2) / L_a sum_r q_1 (dG/dL_a q_2) = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2)
-        const int M = cb->get_total_grid();
-        const int dim = cb->get_dim();
-        const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
-        // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
-        const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
-                                                                    : bonds.full.at(0).at(monomer_type);
-        const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
-        WorkArrays& work = work_arrays();
-        std::vector<T>& dq = work.dq;
-        dq.resize(M);
-        const T* full_q_1 = expanded(q_1, work.full_1);
-        const T* full_q_2 = expanded(q_2, work.full_2);
-        std::vector<T> stress(6, T(0.0));
-        for (int a = 0; a < dim; ++a)
-        {
-            convolve(full_q_2, dq.data(), kernels, work, a, &derivatives[a]);
-            T sum = 0.0;
-            for (int i = 0; i < M; ++i)
-                sum += full_q_1[i] * dq[i];
-            stress[a] = sum * (M * 3.0 / (ds * cb->get_lx(a)));
-        }
-        return stress;
-    }
-    catch (std::exception& exc)
+    // The sums V_aa = sum_k b^2 g(k) q_1 q_2 k_a^2 / L_a^2 of the pseudo-spectral solvers: in real
+    // space k_a^2 g(k) is (L_a / sigma^2) dG/dL_a, with sigma^2 the variance of the (half) bond
+    // and b^2 the squared bond length (halved for a half bond), so
+    // V_aa = M (b^2 / sigma^2) / L_a sum_r q_1 (dG/dL_a q_2) = M (3 / ds) / L_a sum_r q_1 (dG/dL_a q_2)
+    const int M = cb->get_total_grid();
+    const int dim = cb->get_dim();
+    const double ds = molecules->get_contour_length_mapping().get_ds_from_index(0);
+    // The bond of the global ds (index 0), whose kernel along axis a is replaced by its derivative
+    const RealSpaceBond::Kernels& kernels = is_half_bond_length ? bonds.half.at(monomer_type)
+                                                                : bonds.full.at(0).at(monomer_type);
+    const auto& derivatives = (is_half_bond_length ? bonds.half_dlength : bonds.full_dlength).at(monomer_type);
+    WorkArrays& work = work_arrays();
+    std::vector<T>& dq = work.dq;
+    dq.resize(M);
+    const T* full_q_1 = this->expand_to_full_grid(q_1, work.full_1);
+    const T* full_q_2 = this->expand_to_full_grid(q_2, work.full_2);
+    std::vector<T> stress(6, T(0.0));
+    for (int a = 0; a < dim; ++a)
     {
-        throw_without_line_number(exc.what());
+        convolve(full_q_2, dq.data(), kernels, work, a, &derivatives[a]);
+        T sum = 0.0;
+        for (int i = 0; i < M; ++i)
+            sum += full_q_1[i] * dq[i];
+        stress[a] = sum * (M * 3.0 / (ds * cb->get_lx(a)));
     }
+    return stress;
 }
 
 #include "TemplateInstantiations.h"

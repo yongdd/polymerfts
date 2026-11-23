@@ -198,7 +198,7 @@ double test_accuracy_3d(int Nx, int Ny, int Nz, MklTransformType type)
 
     // MKL
     vector<double> mkl_out = input;
-    MklRealTransform3D transform(Nx, Ny, Nz, type);
+    MklRealTransform transform({Nx, Ny, Nz}, {type, type, type});
     transform.execute(mkl_out.data());
 
     return max_abs_diff(fftw_out, mkl_out);
@@ -243,7 +243,7 @@ double benchmark_mkl_3d(int Nx, int Ny, int Nz, MklTransformType type, int num_i
     for (int i = 0; i < total; ++i)
         data[i] = dist(gen);
 
-    MklRealTransform3D transform(Nx, Ny, Nz, type);
+    MklRealTransform transform({Nx, Ny, Nz}, {type, type, type});
 
     for (int i = 0; i < NUM_WARMUP; ++i)
         transform.execute(data.data());

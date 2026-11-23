@@ -232,11 +232,11 @@ std::unique_ptr<FFT<T>> make_fft(const std::string& library, const std::array<in
 {
 #ifdef USE_CPU_FFTW
     if (library == "fftw")
-        return std::make_unique<FftwFFT<T, DIM>>(nx);
+        return std::make_unique<FftwFFT<T>>(std::vector<int>(nx.begin(), nx.end()));
 #endif
 #ifdef USE_CPU_MKL
     if (library == "mkl")
-        return std::make_unique<MklFFT<T, DIM>>(nx);
+        return std::make_unique<MklFFT<T>>(std::vector<int>(nx.begin(), nx.end()));
 #endif
     throw_with_line_number("No FFT library " + library + ".");
 }

@@ -10,13 +10,12 @@
  *
  * @see FFT for the abstract interface
  * @see MakhoulTransform for the DCT and DST
- * @see CudaFFT for GPU implementation
+ * @see CudaFourierTransform and CudaSolverPseudoBase for the cuFFT plans on the GPU
  */
 
 #ifndef MKL_FFT_H_
 #define MKL_FFT_H_
 
-#include <array>
 #include <memory>
 #include <vector>
 #include <complex>
@@ -58,10 +57,9 @@ public:
  * Out-of-place DFTI descriptors that run on the caller's arrays; the backward
  * transform includes the 1/N normalization.
  *
- * @tparam T   Input type for forward transform (double or std::complex<double>)
- * @tparam DIM Dimensionality of the transform (1, 2, or 3)
+ * @tparam T Input type for forward transform (double or std::complex<double>)
  */
-template <typename T, int DIM>
+template <typename T>
 class MklFFT : public FFT<T>
 {
 private:
@@ -80,7 +78,7 @@ public:
      *
      * @param nx Grid dimensions [Nx] for 1D, [Nx, Ny] for 2D, [Nx, Ny, Nz] for 3D
      */
-    MklFFT(std::array<int, DIM> nx);
+    explicit MklFFT(const std::vector<int>& nx);
 
     /// Destructor. Frees the MKL DFTI descriptors.
     ~MklFFT();

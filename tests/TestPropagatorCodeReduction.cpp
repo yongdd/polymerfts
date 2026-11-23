@@ -9,19 +9,48 @@
  * failure to the user rather than modifying the test to pass.
  ******************************************************************************/
 
+/**
+ * @file TestPropagatorCodeReduction.cpp
+ * @brief The dependencies recorded for aggregated and re-keyed propagators of discrete chains.
+ *
+ * Discrete chains write the sliced segments of an aggregated propagator into its key
+ * ("[...B1,...B1]B+0"), and a propagator re-keyed after an aggregation starts from the
+ * aggregated propagator at its full length ("([...]B7A2)B+0"). The optimizer records the
+ * dependencies of each key where it writes the key: the key of each dependency, the
+ * segment it is read at and its weight or power, in the order of the key.
+ */
+
 #include <iostream>
 #include <cmath>
 #include <numbers>
+#include <string>
+#include <tuple>
+#include <vector>
 
 #include "Molecules.h"
+#include "PropagatorCode.h"
 #include "PropagatorComputationOptimizer.h"
 #include "Polymer.h"
+
+using Deps = std::vector<std::tuple<std::string, int, double>>;
+
+// Whether the propagator key of the optimizer has this start, monomer type and dependencies
+static bool edge_is(PropagatorComputationOptimizer& optimizer, const std::string& key,
+                    PropagatorStart start, const std::string& monomer_type, const Deps& deps)
+{
+    const ComputationEdge& edge = optimizer.get_computation_propagator(key);
+    const bool ok = edge.start == start && edge.monomer_type == monomer_type && edge.deps == deps;
+    std::cout << (ok ? "  ok: " : "  FAILED: ") << key << std::endl;
+    for (const auto& [dep_key, dep_n_segment, dep_n_repeated] : edge.deps)
+        std::cout << "\t" << dep_key << ", " << dep_n_segment << ", " << PropagatorCode::format_count(dep_n_repeated) << std::endl;
+    return ok;
+}
 
 int main()
 {
     try
     {
-        std::vector<BlockInput> blocks = 
+        std::vector<BlockInput> blocks =
         {
             {"A", 0.2, 0, 1},
             {"A", 0.2, 1, 2},
@@ -38,102 +67,58 @@ int main()
             {"A", 0.2, 7,13},
         };
 
-        Molecules molecules("discrete", 0.1, {{"A",1.0}, {"B",1.0}});
-        molecules.add_polymer(1.0, blocks, {});
-        PropagatorComputationOptimizer propagator_computation_optimizer(&molecules, false);
-
-        // Display all blocks and branches
-        propagator_computation_optimizer.display_blocks();
-        propagator_computation_optimizer.display_propagators();
-
-        // Test get_deps_from_key
-        std::string key;
-        std::vector<std::tuple<std::string, int, double>> sub_deps;
-
+        bool ok = true;
         std::cout << "-------test---------------------------" << std::endl;
-        // sub_deps[
-        //     (((((A2B8)B8A2)A2(A2B8)B8)A2B4)A2B2)A:5:2,
-        //     ((((A2B2)A2B4)A2(A2B8)B8)A2(A2B8)B8)A:7:3,
-        //     [[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7B2]A:5:1,
-        key = "[[[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7B2]A5,((((A2B2)A2B4)A2(A2B8)B8)A2(A2B8)B8)A7:3,(((((A2B8)B8A2)A2(A2B8)B8)A2B4)A2B2)A5:2]A";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(std::get<0>(sub_deps[0]) != "[[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7B2]A"
-            || std::get<1>(sub_deps[0]) != 5 || std::get<2>(sub_deps[0]) != 1)
-            return -1;
-        if(std::get<0>(sub_deps[1]) != "((((A2B2)A2B4)A2(A2B8)B8)A2(A2B8)B8)A"
-            || std::get<1>(sub_deps[1]) != 7 || std::get<2>(sub_deps[1]) != 3)
-            return -1;
-        if(std::get<0>(sub_deps[2]) != "(((((A2B8)B8A2)A2(A2B8)B8)A2B4)A2B2)A"
-            || std::get<1>(sub_deps[2]) != 5 || std::get<2>(sub_deps[2]) != 2)
-            return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "A")
-            return -1;
+        {
+            // The same polymer with aggregation (length indices: 1 = 0.2, 2 = 0.4, 3 = 0.8)
+            Molecules aggregated_molecules("discrete", 0.1, {{"A",1.0}, {"B",1.0}});
+            aggregated_molecules.add_polymer(1.0, blocks, {});
+            PropagatorComputationOptimizer optimizer(&aggregated_molecules, true);
+            optimizer.display_propagators();
 
-        for (const auto& item: sub_deps)
-            std::cout << std::get<0>(item) + ", " + std::to_string(std::get<1>(item)) + ", " + std::to_string(std::get<2>(item)) << std::endl;
+            // Two propagators sliced to their first segment
+            const std::string aggregated = "[((((A1B1)A1B2)A1(A1B3)B3)A1A1)B1,(((A1B1)A1B2)A1((A1B3)B3A1)A1)B1]B+0";
+            ok &= edge_is(optimizer, aggregated, PropagatorStart::AGGREGATED, "B",
+                {{"((((A1B1)A1B2)A1(A1B3)B3)A1A1)B+0", 1, 1.0}, {"(((A1B1)A1B2)A1((A1B3)B3A1)A1)B+0", 1, 1.0}});
 
-        key = "[[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7A8]B";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(std::get<0>(sub_deps[0]) != "[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B"
-            || std::get<1>(sub_deps[0]) != 7 || std::get<2>(sub_deps[0]) != 1)
-            return -1;
-        if(std::get<0>(sub_deps[1]) != "A"
-            || std::get<1>(sub_deps[1]) != 8 || std::get<2>(sub_deps[1]) != 1)
-            return -1;
-        if(PropagatorCode::get_monomer_type_from_key(key) != "B")
-            return -1;
+            // Re-keyed after the aggregation: the aggregated propagator at its 7 segments, then the
+            // other branch at its last segment (a code ends with its number of segments here)
+            const std::string rekeyed = "(" + aggregated.substr(0, aggregated.size() - 2) + "7A2)B+0";
+            ok &= edge_is(optimizer, rekeyed, PropagatorStart::JUNCTION, "B", {{aggregated, 7, 1.0}, {"A+0", 2, 1.0}});
+            ok &= edge_is(optimizer, "(" + aggregated.substr(0, aggregated.size() - 2) + "7B8)A+0", PropagatorStart::JUNCTION, "A",
+                {{aggregated, 7, 1.0}, {"B+0", 8, 1.0}});
 
-        for (const auto& item: sub_deps)
-            std::cout << std::get<0>(item) + ", " + std::to_string(std::get<1>(item)) + ", " + std::to_string(std::get<2>(item)) << std::endl;
-
-        // Real counts of block multiplicities: the branch powers of a junction
-        key = "((B4)A2:4.6B4:5.6)A";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        if(sub_deps.size() != 2
-            || std::get<0>(sub_deps[0]) != "(B4)A" || std::get<1>(sub_deps[0]) != 2 || std::get<2>(sub_deps[0]) != 4.6
-            || std::get<0>(sub_deps[1]) != "B" || std::get<1>(sub_deps[1]) != 4 || std::get<2>(sub_deps[1]) != 5.6)
-            return -1;
+            // Aggregations nested in a hierarchy: an aggregated propagator sliced into the next one
+            const std::string inner = "[" + rekeyed.substr(0, rekeyed.size() - 2) + "5,((((A1B3)B3A1)A1(A1B3)B3)A1(A1B1)A1)B1]B+0";
+            ok &= edge_is(optimizer, inner, PropagatorStart::AGGREGATED, "B",
+                {{rekeyed, 5, 1.0}, {"((((A1B3)B3A1)A1(A1B3)B3)A1(A1B1)A1)B+0", 1, 1.0}});
+            ok &= edge_is(optimizer, "[" + inner.substr(0, inner.size() - 2) + "2,(((((A1B3)B3A1)A1(A1B3)B3)A1B2)A1A1)B1]B+0",
+                PropagatorStart::AGGREGATED, "B",
+                {{inner, 2, 1.0}, {"(((((A1B3)B3A1)A1(A1B3)B3)A1B2)A1A1)B+0", 1, 1.0}});
+        }
+        {
+            // Identical side chains: an aggregated propagator weights the copies of a branch
+            Molecules side_chains("discrete", 0.1, {{"A",1.0}, {"B",1.0}});
+            side_chains.add_polymer(1.0, {{"A",0.3,1,2}, {"A",0.3,2,3}, {"B",0.3,1,4}, {"B",0.3,2,5}, {"B",0.3,3,6}}, {});
+            PropagatorComputationOptimizer optimizer(&side_chains, true);
+            ok &= edge_is(optimizer, "[(((B1)A1B1)A1)B1:2,((B1)A1:2)B1]B+0", PropagatorStart::AGGREGATED, "B",
+                {{"(((B1)A1B1)A1)B+0", 1, 2.0}, {"((B1)A1:2)B+0", 1, 1.0}});
+            ok &= edge_is(optimizer, "((B1)A1:2)B+0", PropagatorStart::JUNCTION, "B", {{"(B1)A+0", 3, 2.0}});
+        }
+        {
+            // Real counts of block multiplicities: the branch powers of a junction
+            Molecules multiplicities("discrete", 0.1, {{"A",1.0}, {"B",1.0}});
+            multiplicities.add_polymer(1.0, {{"A", 0.2, 0, 1, 4.6}, {"B", 0.4, 1, 3}, {"B", 0.4, 0, 2, 5.6}, {"A", 0.2, 0, 4}}, {});
+            PropagatorComputationOptimizer optimizer(&multiplicities, false);
+            const std::string key = optimizer.get_propagator_key(0, 0, 4);
+            ok &= key == "((B2)A1:4.6B2:5.6)A+0";
+            ok &= edge_is(optimizer, key, PropagatorStart::JUNCTION, "A", {{"(B2)A+0", 2, 4.6}, {"B+0", 4, 5.6}});
+        }
         if(PropagatorCode::format_count(5.6) != "5.6" || PropagatorCode::format_count(3.0) != "3"
             || PropagatorCode::format_count(5.6 - 1.0) != "4.6")
             return -1;
 
-        key = "([(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7A8)B";
-        sub_deps = PropagatorCode::get_deps_from_key(key);
-        // if(std::get<0>(sub_deps[0]) != "[[(((A2B2)A2B4)A2((A2B8)B8A2)A2)B1:1,((((A2B2)A2B4)A2(A2B8)B8)A2A2)B1:1]B7B2]A"
-        //     || std::get<1>(sub_deps[0]) != 5 || std::get<2>(sub_deps[0]) != 1)
-        //     return -1;
-        // if(std::get<0>(sub_deps[1]) != "((((A2B2)A2B4)A2(A2B8)B8)A2(A2B8)B8)A"
-        //     || std::get<1>(sub_deps[1]) != 7 || std::get<2>(sub_deps[1]) != 3)
-        //     return -1;
-        // if(std::get<0>(sub_deps[2]) != "(((((A2B8)B8A2)A2(A2B8)B8)A2B4)A2B2)A"
-        //     || std::get<1>(sub_deps[2]) != 5 || std::get<2>(sub_deps[2]) != 2)
-        //     return -1;
-        // if(PropagatorCode::get_monomer_type_from_key(key) != "A")
-        for (const auto& item: sub_deps)
-            std::cout << std::get<0>(item) + ", " + std::to_string(std::get<1>(item)) + ", " + std::to_string(std::get<2>(item)) << std::endl;
-
-        // // sub_deps: [((((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B4+)B:4:1,
-        // //            (((A2B8)B4A2)A2(A2B8)B8)A2(A2B2)A:2:1]
-        // key = "((((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B4+)B4,(((A2B8)B4A2)A2(A2B8)B8)A2(A2B2)A2:1+)B";
-        // sub_deps = PropagatorCode::get_deps_from_key(key);
-        // if(std::get<0>(sub_deps[0]) != "((((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B4+)B"
-        //     || std::get<1>(sub_deps[0]) != 4 || std::get<2>(sub_deps[0]) != 1)
-        //     return -1;
-        // if(std::get<0>(sub_deps[1]) != "(((A2B8)B4A2)A2(A2B8)B8)A2(A2B2)A" || std::get<1>(sub_deps[1]) != 2 || std::get<2>(sub_deps[1]) != 1)
-        //     return -1;
-        // if(PropagatorCode::get_monomer_type_from_key(key) != "B")
-        //     return -1;
-
-        // // sub_deps: [((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B:4:1]
-        // key = "((((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B4+)B";
-        // sub_deps = PropagatorCode::get_deps_from_key(key);
-        // if(std::get<0>(sub_deps[0]) != "((((A2B2)A2B4)A2((A2B8)B4A2)A2)B4:1,(((A2B2)A2B4)A2(A2B8)B8)A2A2:1+)B"
-        //     || std::get<1>(sub_deps[0]) != 4 || std::get<2>(sub_deps[0]) != 1)
-        //     return -1;
-        // if(PropagatorCode::get_monomer_type_from_key(key) != "B")
-        //     return -1;
-
-        return 0;
+        return ok ? 0 : -1;
     }
     catch(std::exception& exc)
     {

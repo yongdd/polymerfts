@@ -77,20 +77,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
 from polymerfts import scft, ValidationError
+from checks import check, summary
 from cuda_part import cpu_platform
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def base(nx, lx, chi_n, blocks, box):
@@ -390,8 +378,7 @@ def main():
     test_polymer_figures()
     test_tied_lengths()
     test_stress_interval()
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

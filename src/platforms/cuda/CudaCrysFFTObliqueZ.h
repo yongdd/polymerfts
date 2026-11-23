@@ -12,7 +12,8 @@
  *
  * with S = B(kz) + B(Nz/2 - kz), D = B(kz) - B(Nz/2 - kz) and B(Nz/2) = 0.
  * This needs the Boltzmann factors to be even in (kx, ky), which holds for
- * alpha = beta = 90 degrees.
+ * alpha = beta = 90 degrees. The CPU engine (CrysFFTObliqueZ) runs the same
+ * algorithm with the same table (CrysFFTObliqueZTable.h).
  */
 
 #ifndef CUDA_CRYS_FFT_OBLIQUEZ_H_
@@ -24,7 +25,7 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
 
-#include "CudaCrysFFT.h"
+#include "CudaCrysFFTBase.h"
 
 /// Its tables hold the (S, D) pairs of the half spectrum (see the file comment).
 class CudaCrysFFTObliqueZ : public CudaCrysFFTBase
@@ -61,7 +62,7 @@ public:
     std::unique_ptr<CudaCrysFFTBase> clone() const override;
     void build_boltzmann(CudaDeviceBuffer<double>& table, const std::array<double, 6>& cell,
                          double coeff, cudaStream_t stream) const override;
-    void diffusion(double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
+    void diffusion(const double* d_q_in, double* d_q_out, const CudaDeviceBuffer<double>& table,
                    cudaStream_t stream) override;
 };
 

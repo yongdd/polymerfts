@@ -31,56 +31,40 @@
 #include "NumericalMethods.h"
 
 template <typename T>
-std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_computation(ComputationBox<T>* cb, Molecules *molecules, PropagatorComputationOptimizer* propagator_computation_optimizer, std::string numerical_method, SpaceGroup* space_group)
+std::unique_ptr<PropagatorComputation<T>> AbstractFactory<T>::create_propagator_computation(ComputationBox<T>* cb, Molecules *molecules, PropagatorComputationOptimizer* propagator_computation_optimizer, std::string numerical_method)
 {
-    try
-    {
-        // Validate before dispatch reads the model or the box geometry.
-        if (cb == nullptr)
-            throw_with_line_number("ComputationBox *cb is a null pointer");
-        if (molecules == nullptr)
-            throw_with_line_number("Molecules *molecules is a null pointer");
-        if (propagator_computation_optimizer == nullptr)
-            throw_with_line_number("PropagatorComputationOptimizer *propagator_computation_optimizer is a null pointer");
+    // Validate before dispatch reads the model or the box geometry.
+    if (cb == nullptr)
+        throw_with_line_number("ComputationBox *cb is a null pointer");
+    if (molecules == nullptr)
+        throw_with_line_number("Molecules *molecules is a null pointer");
+    if (propagator_computation_optimizer == nullptr)
+        throw_with_line_number("PropagatorComputationOptimizer *propagator_computation_optimizer is a null pointer");
 
-        if constexpr (std::is_same_v<T, std::complex<double>>)
-            if (space_group != nullptr)
-                throw_with_line_number("Space group reduced basis is only supported for real fields.");
+    // The solver of the numerical method of the chain model (ps or rs for discrete chains)
+    const bool discrete = (molecules->get_model_name() == "discrete");
+    const NumericalMethodInfo& method_info = resolve_numerical_method(molecules->get_model_name(), numerical_method);
+    const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+    const bool periodic = std::any_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b == BoundaryCondition::PERIODIC; });
+    const bool walls = std::any_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b != BoundaryCondition::PERIODIC; });
+    validate_numerical_method(method_info, std::is_same_v<T, std::complex<double>>, cb->is_orthogonal(),
+                              periodic && walls);
 
-        // The solver of the numerical method of the chain model (ps or rs for discrete chains)
-        const bool discrete = (molecules->get_model_name() == "discrete");
-        const NumericalMethodInfo& method_info = resolve_numerical_method(molecules->get_model_name(), numerical_method);
-        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
-        const bool periodic = std::any_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b == BoundaryCondition::PERIODIC; });
-        const bool walls = std::any_of(bc.begin(), bc.end(), [](BoundaryCondition b) { return b != BoundaryCondition::PERIODIC; });
-        validate_numerical_method(method_info, std::is_same_v<T, std::complex<double>>, cb->is_orthogonal(),
-                                  periodic && walls);
+    // Reduce-memory mode computes one propagator at a time; the backend works in the
+    // basis of the box (the reduced basis of its space group)
+    const int max_n_streams = this->reduce_memory ? 1 : INT_MAX;
+    auto make_backend = [=, this]() {
+        return this->create_backend(cb, molecules, method_info, cb->get_space_group(), max_n_streams);
+    };
 
-        // Reduce-memory mode computes one propagator at a time
-        const int max_n_streams = this->reduce_memory ? 1 : INT_MAX;
-        auto make_backend = [=, this]() {
-            return this->create_backend(cb, molecules, method_info, space_group, max_n_streams);
-        };
-
-        typename ComputationBox<T>::SpaceGroupGuard group_change(cb, space_group);
-        std::unique_ptr<PropagatorComputation<T>> computation;
-        if (discrete && !this->reduce_memory)
-            computation = std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
-        else if (discrete)
-            computation = std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
-        else if (!this->reduce_memory)
-            computation = std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
-        else
-            computation = std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, space_group, make_backend);
-        if (method_info.requires_orthogonal_cell)
-            computation->hold_orthogonal_cell();
-        group_change.commit();
-        return computation;
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    if (discrete && !this->reduce_memory)
+        return std::make_unique<ComputationDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
+    else if (discrete)
+        return std::make_unique<ComputationReduceMemoryDiscrete<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
+    else if (!this->reduce_memory)
+        return std::make_unique<ComputationContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
+    else
+        return std::make_unique<ComputationReduceMemoryContinuous<T>>(cb, molecules, propagator_computation_optimizer, method_info, make_backend);
 }
 
 // Explicit template instantiation

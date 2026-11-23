@@ -36,7 +36,8 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import numpy as np
-from polymerfts import SCFT, PlatformSelector, ValidationError
+from polymerfts import SCFT, PlatformSelector
+from checks import expect_validation_error
 from cuda_part import cpu_platform, cuda_part_missing
 
 NX, N = 64, 50
@@ -67,16 +68,6 @@ def run(params, initial_fields=None, initial_psi=None):
         result = sim.run(initial_fields=initial_fields, initial_psi=initial_psi, return_result=True)
     assert result.converged, "SCFT did not converge"
     return sim, result
-
-
-def expect_validation_error(make, message):
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            make()
-    except ValidationError as error:
-        assert message in str(error), f"expected '{message}', got '{error}'"
-        return
-    raise AssertionError(f"expected a ValidationError with '{message}'")
 
 
 def inputs():

@@ -10,6 +10,7 @@ import weakref
 import numpy as np
 
 from ..utils.validation import ValidationError
+from ..theory.chains import partition_functions
 
 
 class ThermodynamicOperators:
@@ -168,7 +169,7 @@ class ThermodynamicOperators:
         """
         M, dim, es = len(self.monomer_types), self.prop_solver.dim, self.electrostatics
         n_chains = np.sqrt(self.sim.langevin["nbar"]) * self.prop_solver.get_volume()   # C V/R₀³
-        total_partitions = [self.prop_solver.get_partition_function(p) for p in range(len(self.sim.polymers))]
+        total_partitions = partition_functions(self.sim)
         value = complex(np.sum(self.number_densities(total_partitions)[:len(self.sim.polymers)]))
 
         self.prop_solver.compute_stress()

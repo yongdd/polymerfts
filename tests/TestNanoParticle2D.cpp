@@ -26,7 +26,6 @@
 #include "Molecules.h"
 #include "PropagatorComputationOptimizer.h"
 #include "PropagatorComputation.h"
-#include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
 #include "TestCudaPart.h"
@@ -86,23 +85,7 @@ int main()
             {"B", 0.5, 7,28},
         };
 
-        // std::vector<std::string> block_species = {"A","A","A","A","A", "B","B","B","B", "B","B", "A","A"};
-        // std::vector<double> contour_lengths = {f,f,f,f,f, 1-f,1-f,(1-f)/2,(1-f)/4, 1-f,1-f, f,f};
-        // std::vector<int> v = {0,1,2,3,4, 1,2,3,4, 6,7, 6,7};
-        // std::vector<int> u = {1,2,3,4,5, 6,7,8,9, 10,12, 11,13};
-
-        // std::vector<std::string> block_species = {"A","A","A","A","A", "B","B", "B","B", "A","A"};
-        // std::vector<double> contour_lengths = {f,f,f,f,f, 0.8,0.4, 1-f,1-f, f,f};
-        // std::vector<int> v = {0,1,2,3,4, 1,2, 6,7, 6,7};
-        // std::vector<int> u = {1,2,3,4,5, 6,7, 10,12, 11,13};
-
         const int M = nx[0]*nx[1];
-
-        int am_n_var = 2*M+nx.size();  // A and B
-        int am_max_hist = 20;
-        double am_start_error = 1e-2;
-        double am_mix_min = 0.02;
-        double am_mix_init = 0.02;
 
         //-------------- allocate array ------------
         std::vector<double> w(2*M+nx.size());
@@ -125,7 +108,6 @@ int main()
         sum = 0.0;
         for(int i=0; i<M; i++)
              sum += mask[i]/M;
-        // std::cout << "Mean of mask, volume fraction of sphere: " << 1.0 - sum << ", " << 4.0/3.0*PI*pow(nano_particle_radius,3)/(lx[0]*lx[1]) << std::endl;
         std::cout << "Mean of mask, volume fraction of disk: " << 1.0 - sum << ", " << PI*pow(nano_particle_radius,2)/(lx[0]*lx[1]) << std::endl;
 
         // Choose platform
@@ -143,7 +125,6 @@ int main()
                     for(bool reduce_memory : reduce_memorys)
                     {
                         std::unique_ptr<AbstractFactory<double>> factory = PlatformSelector::create_factory<double>(platform, reduce_memory);
-                        // factory->display_info();
 
                         // Create instances and assign to the variables of base classes for the dynamic binding
                         std::unique_ptr<ComputationBox<double>> cb = factory->create_computation_box(nx, lx_backup, {}, mask.data());
@@ -151,8 +132,6 @@ int main()
                         molecules->add_polymer(1.0, blocks, {});
                         auto propagator_computation_optimizer = std::make_unique<PropagatorComputationOptimizer>(molecules.get(), aggregate_propagator_computation);
                         std::unique_ptr<PropagatorComputation<double>> solver = factory->create_propagator_computation(cb.get(), molecules.get(), propagator_computation_optimizer.get(), "");
-                        std::unique_ptr<AndersonMixing<double>> am = factory->create_anderson_mixing(am_n_var,
-                                            am_max_hist, am_start_error, am_mix_min, am_mix_init);
 
                         // -------------- Print simulation parameters ------------
                         std::cout << std::setprecision(default_precision);
@@ -161,10 +140,6 @@ int main()
                         std::cout << "Platform: " << platform << std::endl;
                         std::cout << "Using Aggregation: " << aggregate_propagator_computation << std::endl;
                         std::cout << "Reduce Memory Usage: " << reduce_memory << std::endl;
-
-                        // // display branches
-                        // PropagatorComputationOptimizer->display_blocks();
-                        // PropagatorComputationOptimizer->display_propagators();
 
                         // std::cout<< "w_a and w_b are initialized to a zero." << std::endl;
                         for(int i=0; i<M; i++)

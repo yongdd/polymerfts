@@ -106,9 +106,6 @@ public:
      */
     CpuSolverPseudoRK2(ComputationBox<T>* cb, Molecules *molecules, SpaceGroup* space_group, FFTBackend backend);
 
-    /// Destructor. Frees exp_dw arrays.
-    ~CpuSolverPseudoRK2();
-
     /**
      * @brief Update Boltzmann factors from potential fields.
      *
@@ -127,7 +124,7 @@ public:
      * @param q_out       Output propagator q(r,s+ds)
      * @param monomer_type Monomer type for Boltzmann factors
      * @param q_mask      Optional mask (set q=0 in masked regions)
-     * @param ds_index    Index for the ds value (0-based, default: 0 for global ds)
+     * @param ds_index    Index of the contour step ds of the block (0-based, from ContourLengthMapping)
      */
     void advance_propagator(T *q_in, T *q_out, std::string monomer_type, const double *q_mask, int ds_index) override;
 

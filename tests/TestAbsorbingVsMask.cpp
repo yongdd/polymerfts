@@ -53,25 +53,6 @@
 #include "PropagatorComputationOptimizer.h"
 #include "TestComputationFactory.h"
 
-#include "ComputationBox.h"
-
-#ifdef USE_CUDA
-#include "CudaComputationBox.h"
-#include <cuda_runtime.h>
-// A CUDA build tested on a node without a visible GPU fails, like the TestCuda*
-// tests: a skipped CUDA part would read as a passed CUDA test.
-[[maybe_unused]] static bool cuda_device_visible()
-{
-    int n_devices = 0;
-    if (cudaGetDeviceCount(&n_devices) != cudaSuccess || n_devices == 0)
-    {
-        std::cout << "FAILED: this build has the CUDA backend, but no CUDA device is visible." << std::endl;
-        std::exit(1);
-    }
-    return true;
-}
-#endif
-
 /**
  * @brief Create a boundary mask for simulating absorbing BC with periodic FFT.
  *
@@ -137,9 +118,7 @@ std::vector<double> create_boundary_mask(const std::vector<int>& nx)
 /**
  * @brief Run comparison test for a given platform.
  */
-template<template<typename> class ComputationBox>
-bool run_comparison(const std::string& platform_name,
-                    const std::vector<int>& nx,
+bool run_comparison(const std::vector<int>& nx,
                     const std::vector<double>& lx,
                     Molecules* molecules,
                     PropagatorComputationOptimizer* prop_opt,
@@ -180,28 +159,25 @@ bool run_comparison(const std::string& platform_name,
     std::vector<double> mask = create_boundary_mask(nx);
 
     // Method 1: Absorbing BC (DST-based)
-    ComputationBox<double>* cb_absorbing = new ComputationBox<double>(nx, lx, bc_absorbing);
-    PropagatorComputation<double>* solver_absorbing = make_propagator_computation<double>(
-        platform, false, cb_absorbing, molecules, prop_opt, "rqm4");
-    solver_absorbing->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
-    double Q_absorbing = solver_absorbing->get_total_partition(0);
-    delete solver_absorbing;
-    delete cb_absorbing;
+    double Q_absorbing, Q_masked;
+    {
+        PlatformRun<double> run = make_platform_run<double>(platform, false, nx, lx, bc_absorbing, molecules, prop_opt, "rqm4");
+        run.solver->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
+        Q_absorbing = run.solver->get_total_partition(0);
+    }
 
     // Method 2: Periodic BC with boundary mask
-    ComputationBox<double>* cb_masked = new ComputationBox<double>(nx, lx, bc_periodic, mask.data());
-    PropagatorComputation<double>* solver_masked = make_propagator_computation<double>(
-        platform, false, cb_masked, molecules, prop_opt, "rqm4");
-    solver_masked->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
-    double Q_masked = solver_masked->get_total_partition(0);
-    delete solver_masked;
-    delete cb_masked;
+    {
+        PlatformRun<double> run = make_platform_run<double>(platform, false, nx, lx, bc_periodic, molecules, prop_opt, "rqm4", mask.data());
+        run.solver->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
+        Q_masked = run.solver->get_total_partition(0);
+    }
 
     // Calculate relative difference
     // Note: These won't be identical - DST zeros at cell faces, mask zeros at cell centers
     double rel_diff = std::abs(Q_absorbing - Q_masked) / std::abs(Q_absorbing);
 
-    std::cout << "  " << platform_name << ": Q_absorbing=" << std::scientific << std::setprecision(6) << Q_absorbing
+    std::cout << "  " << platform << ": Q_absorbing=" << std::scientific << std::setprecision(6) << Q_absorbing
               << ", Q_masked=" << Q_masked
               << ", rel_diff=" << std::setprecision(2) << rel_diff << std::fixed;
 
@@ -224,9 +200,7 @@ bool run_comparison(const std::string& platform_name,
  * - Have Q < 1.0 (mass is absorbed at boundaries)
  * - Absorbing BC typically has slightly higher Q (zeros at faces, not cell centers)
  */
-template<template<typename> class ComputationBox>
-bool run_physical_test(const std::string& platform_name,
-                       const std::vector<int>& nx,
+bool run_physical_test(const std::vector<int>& nx,
                        const std::vector<double>& lx,
                        Molecules* molecules,
                        PropagatorComputationOptimizer* prop_opt,
@@ -254,33 +228,28 @@ bool run_physical_test(const std::string& platform_name,
     std::vector<double> mask = create_boundary_mask(nx);
 
     // Reflecting BC (reference: should have Q = 1.0 for w=0)
-    ComputationBox<double>* cb_ref = new ComputationBox<double>(nx, lx, bc_reflecting);
-    PropagatorComputation<double>* solver_ref = make_propagator_computation<double>(
-        platform, false, cb_ref, molecules, prop_opt, "rqm4");
-    solver_ref->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
-    double Q_reflecting = solver_ref->get_total_partition(0);
-    delete solver_ref;
-    delete cb_ref;
+    double Q_reflecting, Q_absorbing, Q_masked;
+    {
+        PlatformRun<double> run = make_platform_run<double>(platform, false, nx, lx, bc_reflecting, molecules, prop_opt, "rqm4");
+        run.solver->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
+        Q_reflecting = run.solver->get_total_partition(0);
+    }
 
     // Absorbing BC
-    ComputationBox<double>* cb_absorbing = new ComputationBox<double>(nx, lx, bc_absorbing);
-    PropagatorComputation<double>* solver_absorbing = make_propagator_computation<double>(
-        platform, false, cb_absorbing, molecules, prop_opt, "rqm4");
-    solver_absorbing->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
-    double Q_absorbing = solver_absorbing->get_total_partition(0);
-    delete solver_absorbing;
-    delete cb_absorbing;
+    {
+        PlatformRun<double> run = make_platform_run<double>(platform, false, nx, lx, bc_absorbing, molecules, prop_opt, "rqm4");
+        run.solver->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
+        Q_absorbing = run.solver->get_total_partition(0);
+    }
 
     // Periodic BC with mask
-    ComputationBox<double>* cb_masked = new ComputationBox<double>(nx, lx, bc_periodic, mask.data());
-    PropagatorComputation<double>* solver_masked = make_propagator_computation<double>(
-        platform, false, cb_masked, molecules, prop_opt, "rqm4");
-    solver_masked->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
-    double Q_masked = solver_masked->get_total_partition(0);
-    delete solver_masked;
-    delete cb_masked;
+    {
+        PlatformRun<double> run = make_platform_run<double>(platform, false, nx, lx, bc_periodic, molecules, prop_opt, "rqm4", mask.data());
+        run.solver->compute_propagators({{"A", w_A.data()}, {"B", w_B.data()}}, {});
+        Q_masked = run.solver->get_total_partition(0);
+    }
 
-    std::cout << "  " << platform_name << ": Q_reflecting=" << std::fixed << std::setprecision(6) << Q_reflecting
+    std::cout << "  " << platform << ": Q_reflecting=" << std::fixed << std::setprecision(6) << Q_reflecting
               << ", Q_absorbing=" << Q_absorbing
               << ", Q_masked=" << Q_masked;
 
@@ -313,10 +282,6 @@ bool run_physical_test(const std::string& platform_name,
 
 int main()
 {
-#if !defined(USE_CPU_FFTW) && !defined(USE_CUDA)
-    std::cout << "Neither CPU nor CUDA available, skipping test" << std::endl;
-    return 0;
-#else
     try
     {
         bool all_passed = true;
@@ -350,26 +315,9 @@ int main()
             std::vector<int> nx = {64};
             std::vector<double> lx = {4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_physical_test<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_physical_test(nx, lx, &molecules, &prop_opt, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         // 2D test
@@ -378,26 +326,9 @@ int main()
             std::vector<int> nx = {32, 32};
             std::vector<double> lx = {4.0, 4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_physical_test<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_physical_test(nx, lx, &molecules, &prop_opt, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         // 3D test
@@ -406,26 +337,9 @@ int main()
             std::vector<int> nx = {16, 16, 16};
             std::vector<double> lx = {4.0, 4.0, 4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_physical_test<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_physical_test<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_physical_test(nx, lx, &molecules, &prop_opt, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         //=======================================================================
@@ -445,26 +359,9 @@ int main()
             std::vector<int> nx = {64};
             std::vector<double> lx = {4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_comparison<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_comparison<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_comparison<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, tolerance, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_comparison(nx, lx, &molecules, &prop_opt, tolerance, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         // 2D comparison
@@ -473,26 +370,9 @@ int main()
             std::vector<int> nx = {32, 32};
             std::vector<double> lx = {4.0, 4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_comparison<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_comparison<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_comparison<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, tolerance, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_comparison(nx, lx, &molecules, &prop_opt, tolerance, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         // 3D comparison
@@ -501,26 +381,9 @@ int main()
             std::vector<int> nx = {16, 16, 16};
             std::vector<double> lx = {4.0, 4.0, 4.0};
 
-            #ifdef USE_CPU_FFTW
-            if (!run_comparison<ComputationBox>(
-                    "CPU-FFTW", nx, lx, &molecules, &prop_opt, tolerance, "cpu-fftw"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CPU_MKL
-            if (!run_comparison<ComputationBox>(
-                    "CPU-MKL", nx, lx, &molecules, &prop_opt, tolerance, "cpu-mkl"))
-                all_passed = false;
-            #endif
-
-            #ifdef USE_CUDA
-            if (cuda_device_visible())
-            {
-                if (!run_comparison<CudaComputationBox>(
-                        "CUDA", nx, lx, &molecules, &prop_opt, tolerance, "cuda"))
+            for (const std::string& platform : PlatformSelector::avail_platforms())
+                if (!run_comparison(nx, lx, &molecules, &prop_opt, tolerance, platform))
                     all_passed = false;
-            }
-            #endif
         }
 
         //=======================================================================
@@ -534,7 +397,7 @@ int main()
             std::cout << "  Both approaches model absorbing surfaces but differ in implementation:" << std::endl;
             std::cout << "  - Absorbing BC (DST): More accurate for smooth boundaries" << std::endl;
             std::cout << "  - Periodic + Mask: More flexible for complex geometries" << std::endl;
-            return 0;
+            return cuda_part_missing() ? 1 : 0;
         }
         else
         {
@@ -547,5 +410,4 @@ int main()
         std::cout << exc.what() << std::endl;
         return -1;
     }
-#endif
 }

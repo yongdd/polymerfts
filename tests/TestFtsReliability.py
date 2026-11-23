@@ -18,7 +18,7 @@ from scipy.io import loadmat
 from polymerfts import (LFTS, CLFTS, PlatformSelector, LeimkuhlerMatthews, ValidationError, SaddlePointError,
                         NumericalError)
 from polymerfts.utils.common import atomic_savemat
-from polymerfts.utils.validation import validate_lfts_params
+from polymerfts.utils.validation import validate_clfts_params, validate_lfts_params
 from fts_checks import (FailingLFTS, diblock_fields, diblock_parameters, exact_restart, expect_error,
                         silenced)
 
@@ -333,7 +333,8 @@ def main():
                                             ("recording", "sample_interval", 0)):
                     params = diblock_parameters(root, cls=CLFTS if complex_fields else LFTS)
                     (params if section is None else params[section])[key] = value
-                    expect_error(lambda: validate_lfts_params(params, complex_fields=complex_fields), ValidationError)
+                    validate = validate_clfts_params if complex_fields else validate_lfts_params
+                    expect_error(lambda: validate(params), ValidationError)
 
             target = root / "atomic.mat"
             target.write_bytes(b"previous checkpoint")

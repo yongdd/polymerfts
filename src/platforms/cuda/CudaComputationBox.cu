@@ -99,8 +99,8 @@ CudaComputationBox<T>::CudaComputationBox(
 template <typename T>
 CudaComputationBox<T>::CudaComputationBox(
     std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
-    std::vector<double> angles, const double* mask)
-    : ComputationBox<T>(nx, lx, bc, angles, mask)
+    std::vector<double> angles, const double* mask, SpaceGroup* space_group)
+    : ComputationBox<T>(nx, lx, bc, angles, mask, space_group)
 {
     initialize();   // the owning buffers release what was acquired if this throws
 }
@@ -109,6 +109,12 @@ void CudaComputationBox<T>::initialize()
 {
     d_dv.allocate(this->total_grid);
     CUDA_CHECK(cudaMemcpy(d_dv, this->dv.data(), sizeof(double)*this->total_grid, cudaMemcpyHostToDevice));
+    if (this->space_group_ != nullptr)
+    {
+        const std::vector<double>& weights = this->basis_weights_;
+        d_basis_weights_.allocate(weights.size());
+        CUDA_CHECK(cudaMemcpy(d_basis_weights_, weights.data(), sizeof(double)*weights.size(), cudaMemcpyHostToDevice));
+    }
 
     // Allocate memory for cub reduction sum
     d_sum.allocate(this->total_grid);
@@ -146,26 +152,12 @@ void CudaComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, s
 }
 //-----------------------------------------------------------
 template <typename T>
-void CudaComputationBox<T>::set_space_group(SpaceGroup* sg)
+typename ComputationBox<T>::IntegralWeights CudaComputationBox<T>::device_integral_weights() const
 {
-    // Check the group against the box first (the weights read the mask through the
-    // group's maps), then build the device integration weights (empty without a space
-    // group): if the allocation or the copy fails, or the base class rejects the
-    // group, the box keeps its previous group and state (the base class commits only
-    // at its end)
-    this->check_space_group(sg);
-    CudaDeviceBuffer<double> basis_weights_new;
-    if (sg != nullptr)
-    {
-        const std::vector<double> weights = this->make_basis_weights(sg);
-        basis_weights_new.allocate(weights.size());
-        CUDA_CHECK(cudaMemcpy(basis_weights_new, weights.data(), sizeof(double)*weights.size(), cudaMemcpyHostToDevice));
-    }
-
-    // Base class: checks the cell and the mask, builds the basis size, orbit counts,
-    // mask and weights, then commits them
-    ComputationBox<T>::set_space_group(sg);
-    d_basis_weights_ = std::move(basis_weights_new);
+    // The reduced-basis weights (orbit counts times the mask) with a space group, dv otherwise
+    typename ComputationBox<T>::IntegralWeights weights = this->integral_weights();
+    weights.weight = (this->space_group_ != nullptr) ? d_basis_weights_.get() : d_dv.get();
+    return weights;
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -173,28 +165,12 @@ T CudaComputationBox<T>::integral_device(const CuDeviceData<T> *d_g)
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    T sum{0.0};
+    const auto weights = device_integral_weights();
 
-    if (this->space_group_ != nullptr)
-    {
-        // Reduced basis mode: sum = Σ_j g[j] * weight[j] * dv_base (orbit counts times the mask)
-        int N = this->n_basis_;
-
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_basis_weights_, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-
-        sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(this->dv_base_);
-    }
-    else
-    {
-        // Full grid mode: sum = Σ_i g[i] * dv[i]
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_dv, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-
-        sum = reduce_sum_to_host(this->total_grid);
-        return sum;
-    }
+    // scale Σ_i g[i] weight[i]
+    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, weights.weight, 1.0, weights.n);
+    CUDA_CHECK_LAUNCH();
+    return reduce_sum_to_host(weights.n) * weights.scale;
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -208,31 +184,14 @@ T CudaComputationBox<T>::inner_product_device(const CuDeviceData<T>* d_g, const 
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    T sum{0.0};
+    const auto weights = device_integral_weights();
 
-    if (this->space_group_ != nullptr)
-    {
-        // Reduced basis mode: sum = Σ_j g[j] * h[j] * weight[j] * dv_base
-        int N = this->n_basis_;
-
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-
-        sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(this->dv_base_);
-    }
-    else
-    {
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_dv, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-
-        sum = reduce_sum_to_host(this->total_grid);
-        return sum;
-    }
+    // scale Σ_i g[i] h[i] weight[i]
+    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, weights.n);
+    CUDA_CHECK_LAUNCH();
+    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, weights.weight, 1.0, weights.n);
+    CUDA_CHECK_LAUNCH();
+    return reduce_sum_to_host(weights.n) * weights.scale;
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -240,38 +199,28 @@ T CudaComputationBox<T>::inner_product_inverse_weight_device(const CuDeviceData<
 {
     const int N_BLOCKS  = CudaCommon::get_instance().get_n_blocks();
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
-    T sum{0.0};
+    const auto weights = device_integral_weights();
+    const bool reduced = this->space_group_ != nullptr;
+    auto multiply_weights = [&]() {
+        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, weights.weight, 1.0, weights.n);
+        CUDA_CHECK_LAUNCH();
+    };
 
-    if (this->space_group_ != nullptr)
-    {
-        int N = this->n_basis_;
-
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        if (this->get_mask() != nullptr)
-            ker_divide_masked<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_basis_weights_, N);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_basis_weights_, 1.0, N);
-        CUDA_CHECK_LAUNCH();
-        sum = reduce_sum_to_host(N);
-        return sum * static_cast<T>(this->dv_base_);
-    }
+    // scale Σ_i g[i] h[i] weight[i] / w[i], nothing at a masked point (zero weight) whatever w
+    // is there. The full grid multiplies by its weights before the division, the reduced
+    // basis after it.
+    ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, weights.n);
+    CUDA_CHECK_LAUNCH();
+    if (!reduced)
+        multiply_weights();
+    if (this->get_mask() != nullptr)
+        ker_divide_masked<<<grid_blocks(weights.n, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, weights.weight, weights.n);
     else
-    {
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_g, d_h, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        ker_multi<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_dv, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        if (this->get_mask() != nullptr)
-            ker_divide_masked<<<grid_blocks(this->total_grid, N_THREADS), N_THREADS>>>(d_sum, d_sum, d_w, 1.0, d_dv, this->total_grid);
-        else
-            ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, this->total_grid);
-        CUDA_CHECK_LAUNCH();
-        sum = reduce_sum_to_host(this->total_grid);
-        return sum;
-    }
+        ker_divide<<<N_BLOCKS, N_THREADS>>>(d_sum, d_sum, d_w, 1.0, weights.n);
+    CUDA_CHECK_LAUNCH();
+    if (reduced)
+        multiply_weights();
+    return reduce_sum_to_host(weights.n) * weights.scale;
 }
 //-----------------------------------------------------------
 template <typename T>
@@ -279,16 +228,12 @@ double CudaComputationBox<T>::absolute_inner_product_device(
     const CuDeviceData<T>* d_g, const CuDeviceData<T>* d_h, const CuDeviceData<T>* d_divisor)
 {
     const int N_THREADS = CudaCommon::get_instance().get_n_threads();
+    const auto weights = device_integral_weights();
 
-    // The weights of integral_device(): orbit counts times the mask in the reduced basis
-    const bool reduced = this->space_group_ != nullptr;
-    const int N = reduced ? this->n_basis_ : this->total_grid;
-    const double* d_weight = reduced ? d_basis_weights_.get() : d_dv.get();
-
-    ker_absolute_product<<<grid_blocks(N, N_THREADS), N_THREADS>>>(d_sum, d_g, d_h, d_divisor, d_weight, N);
+    ker_absolute_product<<<grid_blocks(weights.n, N_THREADS), N_THREADS>>>(
+        d_sum, d_g, d_h, d_divisor, weights.weight, weights.n);
     CUDA_CHECK_LAUNCH();
-    const double sum = std::real(reduce_sum_to_host(N));
-    return reduced ? sum * this->dv_base_ : sum;
+    return std::real(reduce_sum_to_host(weights.n)) * weights.scale;
 }
 
 // Explicit template instantiation

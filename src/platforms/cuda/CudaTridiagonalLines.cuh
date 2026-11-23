@@ -37,19 +37,26 @@ __device__ __forceinline__ void solve_line(
 }
 
 /**
- * @brief CUDA kernel: REPEAT systems of size M, one per thread, starting at d_offset with stride INTERVAL.
+ * @brief CUDA kernel: the REPEAT lines of M points of a grid axis with stride INTERVAL, one per thread.
  *
- * Solves d_x from the right-hand side d_d with the factors in table. d_d and d_x are __restrict__:
- * they must not overlap (tridiagonal_lines_shared() solves in place, in shared memory).
+ * In a row-major grid the points of a line along an axis are INTERVAL apart (the product of the
+ * sizes of the axes after it); line n starts at (n / INTERVAL) * INTERVAL * M + n % INTERVAL, the
+ * outer index n / INTERVAL running over the axes before it and the inner one n % INTERVAL over the
+ * axes after it. The start is computed as n + (n / INTERVAL) * INTERVAL * (M - 1), with one
+ * division: the form with a remainder made the wall lines 17 % slower (A10, 64^3). Solves d_x
+ * from the right-hand side d_d with the factors in table. d_d and d_x are __restrict__: they must
+ * not overlap (tridiagonal_lines_shared() solves in place, in shared memory).
  */
 template <bool PERIODIC>
 __global__ void tridiagonal_lines(
     const double* __restrict__ table, const int M, const double v, const double denom,
-    const double* __restrict__ d_d, double* __restrict__ d_x,
-    const int* __restrict__ d_offset, const int REPEAT, const int INTERVAL)
+    const double* __restrict__ d_d, double* __restrict__ d_x, const int REPEAT, const int INTERVAL)
 {
     for (int n = blockIdx.x * blockDim.x + threadIdx.x; n < REPEAT; n += blockDim.x * gridDim.x)
-        solve_line<PERIODIC>(table, M, v, denom, d_d + d_offset[n], d_x + d_offset[n], INTERVAL);
+    {
+        const int offset = n + (n / INTERVAL) * (INTERVAL * (M - 1));
+        solve_line<PERIODIC>(table, M, v, denom, d_d + offset, d_x + offset, INTERVAL);
+    }
 }
 
 /**

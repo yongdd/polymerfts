@@ -34,8 +34,9 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from scipy.optimize import brentq
-from polymerfts import CLFTS, LFTS, PlatformSelector, ValidationError
+from polymerfts import CLFTS, LFTS, PlatformSelector
 from polymerfts.utils.validation import validate_scft_params
+from checks import expect_validation_error, smooth
 from cuda_part import cpu_platform
 from fts_checks import exact_restart, quiet, recording_dir, silenced
 
@@ -67,21 +68,6 @@ def parameters(directory, steps=2, charges=None, ions=None, screening_length=Non
     if screening_length is not None:
         params["electrostatics"]["screening_length"] = screening_length
     return params
-
-
-def expect_validation_error(make, message):
-    try:
-        quiet(make)
-    except ValidationError as error:
-        assert message in str(error), f"expected '{message}', got '{error}'"
-        return
-    raise AssertionError(f"expected a ValidationError with '{message}'")
-
-
-def smooth(x, std):
-    k = np.meshgrid(*[np.fft.fftfreq(m) * m for m in NX], indexing="ij")
-    y = np.real(np.fft.ifftn(np.fft.fftn(np.reshape(x, NX)) * np.exp(-0.08 * sum(kk ** 2 for kk in k)))).ravel()
-    return std * (y - y.mean()) / y.std()
 
 
 def inputs(root):
@@ -156,7 +142,7 @@ def ensembles(root):
     """The grand-canonical homopolymer equals the canonical one with e^(beta mu) = phi_h/(alpha_h Q_h)."""
     rng = np.random.default_rng(11)
     n_grid = int(np.prod(NX))
-    w_aux = np.array([smooth(rng.normal(0, 1, n_grid), 5.0) for _ in range(2)], dtype=np.complex128)
+    w_aux = np.array([smooth(rng.normal(0, 1, n_grid), NX, 5.0) for _ in range(2)], dtype=np.complex128)
     params = parameters(root / "ensembles")
     params.pop("electrostatics")
     canonical = {**params, "polymers": [params["polymers"][0], {"volume_fraction": 0.4, "blocks": params["polymers"][1]["blocks"]}]}
@@ -277,9 +263,9 @@ def pressure(root):
         rng = np.random.default_rng(7)
         sim = make()
         n_grid, M = int(np.prod(NX)), len(sim.monomer_types)
-        w_aux = np.array([smooth(rng.normal(0, 1, n_grid), 5.0) + 1j * smooth(rng.normal(0, 1, n_grid), 1.0)
+        w_aux = np.array([smooth(rng.normal(0, 1, n_grid), NX, 5.0) + 1j * smooth(rng.normal(0, 1, n_grid), NX, 1.0)
                           for _ in range(M)])
-        psi = 1.0 + smooth(rng.normal(0, 1, n_grid), 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), 0.5)
+        psi = 1.0 + smooth(rng.normal(0, 1, n_grid), NX, 0.5) + 1j * smooth(rng.normal(0, 1, n_grid), NX, 0.5)
         volume = sim.prop_solver.get_volume()
 
         def state(s):

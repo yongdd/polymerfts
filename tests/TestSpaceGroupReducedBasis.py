@@ -7,7 +7,7 @@ Tests:
 2. ComputationBox with space group - integral, inner_product with reduced basis
 3. SCFT with space group - full workflow with reduced basis
 4. save_results with space group - verify full grid output
-5. A masked ComputationBox given one space group, another and none
+5. Masked ComputationBoxes made with one space group, another and none
 """
 
 import sys
@@ -53,16 +53,14 @@ def test_propagator_computation_reduced_basis():
     molecules = factory.create_molecules_information("continuous", ds, bond_lengths)
     molecules.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
 
-    # Create computation box
-    cb = factory.create_computation_box(nx, lx, None, bc)
-
     # Create space group (Im-3m)
     sg = _core.SpaceGroup(nx, "Im-3m", 529)
     n_reduced = sg.get_n_reduced_basis()
 
-    # Create optimizer and propagator computation WITH space group (passed to constructor)
+    # Create computation box WITH space group, and the propagator computation in its basis
+    cb = factory.create_computation_box(nx, lx, None, bc, space_group=sg)
     optimizer = factory.create_propagator_computation_optimizer(molecules, False)
-    propagator = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4", sg)
+    propagator = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4")
 
     # Test with space group
     assert propagator.get_cb().get_n_basis() == n_reduced, f"n_grid should equal {n_reduced} with space group"
@@ -92,7 +90,7 @@ def test_propagator_computation_reduced_basis():
 
     # Test without space group (create separate computation box and propagator)
     cb_no_sg = factory.create_computation_box(nx, lx, None, bc)
-    propagator_no_sg = factory.create_propagator_computation(cb_no_sg, molecules, optimizer, "rqm4", None)
+    propagator_no_sg = factory.create_propagator_computation(cb_no_sg, molecules, optimizer, "rqm4")
     assert propagator_no_sg.get_cb().get_n_basis() == total_grid, "n_grid should equal total_grid without space group"
     print(f"  Without space group: n_grid = {propagator_no_sg.get_cb().get_n_basis()} (total_grid = {total_grid})")
 
@@ -112,16 +110,14 @@ def test_computation_box_reduced_basis():
 
     platform = get_platform()
     factory = _core.PlatformSelector.create_factory(platform, False)
-    cb = factory.create_computation_box(nx, lx, None, bc)
 
-    # Create space group
+    # Create space group, and the computation box in its basis
     sg = _core.SpaceGroup(nx, "Im-3m", 529)
     n_reduced = sg.get_n_reduced_basis()
-
-    # Set space group on computation box
-    cb.set_space_group(sg)
+    cb = factory.create_computation_box(nx, lx, None, bc, space_group=sg)
 
     assert cb.get_n_basis() == n_reduced, f"cb.get_n_basis() should be {n_reduced}"
+    assert cb.get_space_group() is sg and sg.in_use(), "the box keeps its group, whose basis is frozen"
     print(f"  n_grid = {cb.get_n_basis()} (n_reduced = {n_reduced})")
 
     # Test integral with reduced basis (constant field = 1.0)
@@ -140,22 +136,22 @@ def test_computation_box_reduced_basis():
     assert abs(inner_prod - expected_inner_prod) < 1e-10, f"Inner product failed: {inner_prod} != {expected_inner_prod}"
     print(f"  inner_product = {inner_prod:.6f} (expected: {expected_inner_prod:.6f})")
 
-    # Clear space group
-    cb.set_space_group(None)
-    assert cb.get_n_basis() == total_grid, "n_grid should return to total_grid"
-    print(f"  After clearing: n_grid = {cb.get_n_basis()}")
+    # A box without a group works on the full grid
+    cb_full = factory.create_computation_box(nx, lx, None, bc)
+    assert cb_full.get_n_basis() == total_grid and cb_full.get_space_group() is None, \
+        "n_grid should be total_grid without a space group"
+    print(f"  Without a group: n_grid = {cb_full.get_n_basis()}")
 
     print("  PASSED\n")
 
 
-def test_masked_box_changes_space_group():
-    """A masked box given a space group, then another, then none, computes the
-    partition function of a box built fresh for each case: the mask is reduced
-    from the full grid every time (it used to stay in the first group's basis,
-    so the later computations read past it). Also: a computation whose box got
-    another group refuses to run, a box-size change with a group set keeps the
-    full-grid volume elements, and a group built for another grid is rejected."""
-    print("Test 5: masked ComputationBox, space group changed twice and cleared")
+def test_masked_box_space_group():
+    """Masked boxes made with a space group, another one and none compute the
+    same partition function: the mask is reduced from the full grid in the basis
+    of each group. Also: a box-size change with a group keeps the full-grid volume
+    elements, and a group built for another grid is rejected when the box is
+    made, without freezing the group's basis."""
+    print("Test 5: masked ComputationBoxes with one space group, another and none")
     print("-" * 50)
 
     nx = [16, 16, 16]
@@ -182,8 +178,9 @@ def test_masked_box_changes_space_group():
     molecules.add_polymer(1.0, [["A", 1.0, 0, 1]])
     optimizer = factory.create_propagator_computation_optimizer(molecules, False)
 
-    def partition(cb, sg):
-        computation = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4", sg)
+    def partition(cb):
+        computation = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4")
+        sg = cb.get_space_group()
         w = sg.to_reduced_basis(w_full) if sg is not None else w_full
         computation.compute_propagators({"A": w})
         return computation.get_total_partition(0)
@@ -192,47 +189,27 @@ def test_masked_box_changes_space_group():
     sg_sc = _core.SpaceGroup(nx, "Pm-3m", 517)
     assert sg_bcc.get_n_reduced_basis() != sg_sc.get_n_reduced_basis()
 
-    # Reference: a fresh box for every case. The mask and the field have both
-    # symmetries, so all three cases describe the same system.
-    q_bcc = partition(factory.create_computation_box(nx, lx, None, bc, mask), sg_bcc)
-    q_sc = partition(factory.create_computation_box(nx, lx, None, bc, mask), sg_sc)
-    q_none = partition(factory.create_computation_box(nx, lx, None, bc, mask), None)
-    print(f"  fresh boxes: Q(Im-3m) = {q_bcc:.12e}, Q(Pm-3m) = {q_sc:.12e}, Q(none) = {q_none:.12e}")
+    # A box for every case. The mask and the field have both symmetries, so all
+    # three cases describe the same system.
+    q_bcc = partition(factory.create_computation_box(nx, lx, None, bc, mask, space_group=sg_bcc))
+    q_sc = partition(factory.create_computation_box(nx, lx, None, bc, mask, space_group=sg_sc))
+    q_none = partition(factory.create_computation_box(nx, lx, None, bc, mask))
+    print(f"  Q(Im-3m) = {q_bcc:.12e}, Q(Pm-3m) = {q_sc:.12e}, Q(none) = {q_none:.12e}")
     for name, q in (("Im-3m", q_bcc), ("Pm-3m", q_sc)):
         assert abs(q - q_none) <= 1e-12 * abs(q_none), f"Q({name}) {q} != Q without a group {q_none}"
 
-    # One box, given Im-3m, then Pm-3m, then no group by a computation created
-    # without one (the computation sets the box's group, also to none)
-    cb = factory.create_computation_box(nx, lx, None, bc, mask)
-    q1 = partition(cb, sg_bcc)
-    q2 = partition(cb, sg_sc)
-    q3 = partition(cb, None)
-    print(f"  one box:     Q(Im-3m) = {q1:.12e}, Q(Pm-3m) = {q2:.12e}, Q(none) = {q3:.12e}")
-    for name, q, ref in (("Im-3m", q1, q_bcc), ("Pm-3m", q2, q_sc), ("none", q3, q_none)):
-        assert abs(q - ref) <= 1e-10 * abs(ref), f"Q({name}) of the reused box {q} != fresh box {ref}"
-    assert cb.get_n_basis() == int(np.prod(nx))
-
-    # A computation whose box got another group later must refuse to run
-    computation_bcc = factory.create_propagator_computation(cb, molecules, optimizer, "rqm4", sg_bcc)
-    factory.create_propagator_computation(cb, molecules, optimizer, "rqm4", sg_sc)
-    try:
-        computation_bcc.compute_propagators({"A": sg_bcc.to_reduced_basis(w_full)})
-        raise AssertionError("a computation ran on a box whose space group had been changed")
-    except AssertionError:
-        raise
-    except Exception as e:
-        print(f"  a computation on a regrouped box refuses to run: {str(e).splitlines()[0][:90]}")
-
-    # A box-size change while a group is set: the volume elements come from the
-    # full-grid mask, so the box then matches a fresh box of the new size
+    # A box-size change: the volume elements come from the full-grid mask, so a
+    # box with or without the group then matches a fresh box of the new size
     lx_new = [4.4, 4.4, 4.4]
-    cb.set_space_group(sg_bcc)
+    cb = factory.create_computation_box(nx, lx, None, bc, mask, space_group=sg_bcc)
     cb.set_lx(lx_new)
-    q_resized = partition(cb, sg_bcc)
-    q_resized_none = partition(cb, None)
-    integral_resized = cb.integral(np.ones(int(np.prod(nx))))
+    q_resized = partition(cb)
+    integral_resized = cb.integral(np.ones(sg_bcc.get_n_reduced_basis()))
+    cb_none = factory.create_computation_box(nx, lx, None, bc, mask)
+    cb_none.set_lx(lx_new)
+    q_resized_none = partition(cb_none)
     fresh = factory.create_computation_box(nx, lx_new, None, bc, mask)
-    q_fresh = partition(fresh, None)
+    q_fresh = partition(fresh)
     integral_fresh = fresh.integral(np.ones(int(np.prod(nx))))
     print(f"  resized box: Q(Im-3m) = {q_resized:.12e}, Q(none) = {q_resized_none:.12e}, fresh {q_fresh:.12e}")
     assert abs(integral_resized - integral_fresh) <= 1e-12 * abs(integral_fresh), \
@@ -240,14 +217,16 @@ def test_masked_box_changes_space_group():
     for name, q in (("Im-3m", q_resized), ("none", q_resized_none)):
         assert abs(q - q_fresh) <= 1e-10 * abs(q_fresh), f"Q({name}) after set_lx {q} != fresh box {q_fresh}"
 
-    # A group built for another grid is rejected
+    # A group built for another grid is rejected before the box takes it: its basis is not frozen
+    group = _core.SpaceGroup([8, 8, 8], "Pm-3m", 517)
     try:
-        cb.set_space_group(_core.SpaceGroup([8, 8, 8], "Pm-3m", 517))
+        factory.create_computation_box(nx, lx, None, bc, mask, space_group=group)
         raise AssertionError("a space group for an 8x8x8 grid was accepted on a 16x16x16 box")
     except AssertionError:
         raise
     except Exception as e:
         print(f"  a space group for another grid is rejected: {str(e).splitlines()[0][:90]}")
+    assert not group.in_use(), "the rejected group was frozen"
 
     print("  PASSED\n")
 
@@ -497,7 +476,7 @@ def main():
         test_scft_with_space_group()
         test_save_results_full_grid()
         test_save_results_m3_same_size()
-        test_masked_box_changes_space_group()
+        test_masked_box_space_group()
         if cuda_part_missing():
             return 1
 

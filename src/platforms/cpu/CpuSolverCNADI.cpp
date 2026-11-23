@@ -214,59 +214,42 @@ void last_sweep(const TridiagonalLines& m, const int* lower, const int* upper, c
  * @throws Exception if discrete chain model is specified
  */
 CpuSolverCNADI::CpuSolverCNADI(ComputationBox<double>* cb, Molecules *molecules, SpaceGroup* space_group)
+    : CpuSolver<double>(cb, molecules, space_group, /*with_half=*/false)
 {
-    try{
-        this->cb = cb;
-        this->molecules = molecules;
-        this->space_group_ = space_group;
+    if(molecules->get_model_name() != "continuous")
+        throw_with_line_number("Real-space method only support 'continuous' chain model.");
 
-        if(molecules->get_model_name() != "continuous")
-            throw_with_line_number("Real-space method only support 'continuous' chain model.");
+    if(!cb->is_orthogonal())
+        throw_with_line_number("Real-space method only supports orthogonal unit cells. "
+                               "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
 
-        if(!cb->is_orthogonal())
-            throw_with_line_number("Real-space method only supports orthogonal unit cells. "
-                                   "Use pseudo-spectral method (chain_model='continuous') for non-orthogonal systems.");
+    dim_ = cb->get_dim();
+    nx_ = cb->get_nx();
 
-        dim_ = cb->get_dim();
-        nx_ = cb->get_nx();
+    // The tridiagonal solvers need at least two points on every axis
+    for (int d = 0; d < dim_; d++)
+        if (nx_[d] < 2)
+            throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
+                                   + std::to_string(d) + "] = " + std::to_string(nx_[d]) + ".");
 
-        // The tridiagonal solvers need at least two points on every axis
-        for (int d = 0; d < dim_; d++)
-            if (nx_[d] < 2)
-                throw_with_line_number("Real-space method needs at least 2 grid points on every axis, got nx["
-                                       + std::to_string(d) + "] = " + std::to_string(nx_[d]) + ".");
-
-        // Neighbours along each axis: a periodic side wraps around; at a wall the
-        // point itself, whose coefficient FiniteDifference sets to zero
-        const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
-        lower_.resize(dim_);
-        upper_.resize(dim_);
-        for (int d = 0; d < dim_; ++d)
-        {
-            const int n = nx_[d];
-            lower_[d].resize(n);
-            upper_[d].resize(n);
-            for (int i = 0; i < n; ++i)
-            {
-                lower_[d][i] = (bc[2*d] == BoundaryCondition::PERIODIC) ? (n + i - 1) % n : std::max(0, i - 1);
-                upper_[d][i] = (bc[2*d+1] == BoundaryCondition::PERIODIC) ? (i + 1) % n : std::min(n - 1, i + 1);
-            }
-        }
-
-        // Boltzmann factors for each unique ds value of the ContourLengthMapping
-        const int M = cb->get_total_grid();
-        molecules->finalize_contour_length_mapping();
-        const ContourLengthMapping& mapping = molecules->get_contour_length_mapping();
-        for (int ds_idx = 0; ds_idx < mapping.get_n_unique_ds(); ++ds_idx)
-            for (const auto& item : molecules->get_bond_lengths())
-                exp_dw[ds_idx][item.first].resize(M);
-
-        update_laplacian_operator();
-    }
-    catch(std::exception& exc)
+    // Neighbours along each axis: a periodic side wraps around; at a wall the
+    // point itself, whose coefficient FiniteDifference sets to zero
+    const std::vector<BoundaryCondition> bc = cb->get_boundary_conditions();
+    lower_.resize(dim_);
+    upper_.resize(dim_);
+    for (int d = 0; d < dim_; ++d)
     {
-        throw_without_line_number(exc.what());
+        const int n = nx_[d];
+        lower_[d].resize(n);
+        upper_[d].resize(n);
+        for (int i = 0; i < n; ++i)
+        {
+            lower_[d][i] = (bc[2*d] == BoundaryCondition::PERIODIC) ? (n + i - 1) % n : std::max(0, i - 1);
+            upper_[d][i] = (bc[2*d+1] == BoundaryCondition::PERIODIC) ? (i + 1) % n : std::min(n - 1, i + 1);
+        }
     }
+
+    update_laplacian_operator();
 }
 
 void CpuSolverCNADI::update_laplacian_operator()
@@ -312,46 +295,8 @@ void CpuSolverCNADI::update_dw(std::map<std::string, const double*> w_input)
     if (!cb->is_orthogonal())
         throw_with_line_number("CN-ADI requires an orthogonal computation box.");
 
-    const int M = this->cb->get_total_grid();
-    const bool use_reduced_basis = (this->space_group_ != nullptr);
-
-    std::map<std::string, std::vector<double>> w_full_cache;
-    if (use_reduced_basis)
-    {
-        for (const auto& item : w_input)
-        {
-            const std::string& monomer_type = item.first;
-            w_full_cache[monomer_type].resize(M);
-            this->space_group_->from_reduced_basis(item.second, w_full_cache[monomer_type].data(), 1);
-        }
-    }
-
-    // Get unique ds values from ContourLengthMapping
-    const ContourLengthMapping& mapping = this->molecules->get_contour_length_mapping();
-    int n_unique_ds = mapping.get_n_unique_ds();
-
-    // Compute exp_dw for each unique ds value
-    for (int ds_idx = 0; ds_idx < n_unique_ds; ++ds_idx)
-    {
-        double local_ds = mapping.get_ds_from_index(ds_idx);
-
-        for(const auto& item: w_input)
-        {
-            const std::string& monomer_type = item.first;
-            const double *w = use_reduced_basis ? w_full_cache[monomer_type].data() : item.second;
-
-            if( !exp_dw[ds_idx].contains(monomer_type))
-                throw_with_line_number("monomer_type \"" + monomer_type + "\" is not in exp_dw[" + std::to_string(ds_idx) + "].");
-
-            std::vector<double>& exp_dw_vec = exp_dw.at(ds_idx).at(monomer_type);
-
-            for(int i=0; i<M; i++)
-            {
-                // Full step: exp(-w*local_ds/2) for symmetric splitting
-                exp_dw_vec[i] = exp(-w[i]*local_ds*0.5);
-            }
-        }
-    }
+    // exp(-w·ds/2) for the symmetric splitting, on the full grid
+    compute_exp_dw(w_input, /*reduced_basis_tables=*/false, false, 0.5, 0.0);
 }
 
 CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
@@ -386,51 +331,28 @@ CpuSolverCNADI::WorkArrays& CpuSolverCNADI::work_arrays() const
 void CpuSolverCNADI::advance_propagator(
     double *q_in, double *q_out, std::string monomer_type, const double *q_mask, int ds_index)
 {
-    try
-    {
-        const int M = this->cb->get_total_grid();
-        WorkArrays& work = work_arrays();
-        const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
-        const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
+    const int M = this->cb->get_total_grid();
+    WorkArrays& work = work_arrays();
+    const double* _exp_dw = exp_dw.at(ds_index).at(monomer_type).data();   // exp(-w*local_ds/2)
+    const std::vector<TridiagonalLines>& matrices = matrices_.at(ds_index).at(monomer_type);
 
-        // On the full grid: with a space group from and back to its reduced basis
-        const double* q_full_in = q_in;
-        double* q_full_out = q_out;
-        if (this->space_group_ != nullptr)
-        {
-            work.q_full.resize(M);
-            this->space_group_->from_reduced_basis(q_in, work.q_full.data(), 1);
-            q_full_in = work.q_full.data();
-            q_full_out = work.q_full.data();
-        }
+    // On the full grid: with a space group from and back to its reduced basis, the step in
+    // place in one full grid (it reads q_full_in into work.q_exp before it writes)
+    const double* q_full_in = this->expand_to_full_grid(q_in, work.q_full);
+    double* q_full_out = this->full_grid_output(q_out, work.q_full);
 
-        // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
-        for (int i = 0; i < M; i++)
-            work.q_exp[i] = _exp_dw[i] * q_full_in[i];
-        if (dim_ == 3)
-            step_3d(matrices, _exp_dw, q_full_out, work);
-        else if (dim_ == 2)
-            step_2d(matrices, _exp_dw, q_full_out, work);
-        else
-            step_1d(matrices, _exp_dw, q_full_out, work);
+    // CN-ADI2: exp(-w*h/2), the ADI diffusion step, exp(-w*h/2)
+    for (int i = 0; i < M; i++)
+        work.q_exp[i] = _exp_dw[i] * q_full_in[i];
+    if (dim_ == 3)
+        step_3d(matrices, _exp_dw, q_full_out, work);
+    else if (dim_ == 2)
+        step_2d(matrices, _exp_dw, q_full_out, work);
+    else
+        step_1d(matrices, _exp_dw, q_full_out, work);
 
-        int n_out = M;
-        if (this->space_group_ != nullptr)
-        {
-            this->space_group_->to_reduced_basis(q_full_out, q_out, 1);
-            n_out = this->space_group_->get_n_reduced_basis();
-        }
-
-        // The box stores the mask in the basis of the propagators (reduced with a space
-        // group); it is symmetric, so masking after the reduction equals masking the full grid
-        if (q_mask != nullptr)
-            for (int i = 0; i < n_out; i++)
-                q_out[i] *= q_mask[i];
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
+    // Reduce to the basis (with a space group) and multiply the mask
+    this->store_full_grid(q_full_out, q_out, q_mask);
 }
 
 // ============================================================================

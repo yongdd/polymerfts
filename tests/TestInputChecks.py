@@ -139,11 +139,11 @@ def test_single_segment_reduced_basis(platform):
             q_out = []
             for group in (None, sg):
                 basis = (lambda x: x) if group is None else sg.to_reduced_basis
-                cb = fac.create_computation_box(nx, [3.0]*3)
+                cb = fac.create_computation_box(nx, [3.0]*3, space_group=group)
                 mol = fac.create_molecules_information(chain_model, 0.05, {"A": 1.0, "B": 1.0})
                 mol.add_polymer(1.0, [["A", 0.5, 0, 1], ["B", 0.5, 1, 2]])
                 opt = fac.create_propagator_computation_optimizer(mol, False)
-                pc = fac.create_propagator_computation(cb, mol, opt, "", group)
+                pc = fac.create_propagator_computation(cb, mol, opt, "")
                 rejects(lambda: pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1))
                 pc.compute_propagators({m: basis(w[m]) for m in "AB"})
                 out = pc.advance_propagator_single_segment(basis(q_in), 0, 0, 1)

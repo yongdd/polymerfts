@@ -2,7 +2,8 @@
 
 Each sample adds <μ_i(k) φ_j(-k)> to the sums of the RunRecord, and the files hold S(k) of the
 densities: the sums over the samples, scaled and with the smearing divided out. L-FTS uses the half
-spectrum of real fields, CL-FTS the full spectrum.
+spectrum of real fields, CL-FTS the full spectrum. With recording.concentrations the CL-FTS files also
+hold the mean concentrations of the run.
 """
 
 import itertools
@@ -28,6 +29,8 @@ class LftsStructureFunctions:
         # the field of the largest eigenvalue), which stays at its saddle point
         M = len(self.monomer_types)
         self.kept = [k for k in range(M-1) if not np.isclose(self.mpt.eigenvalues[k], 0.0)]
+        # The files hold no mean concentrations (recording.concentrations is CL-FTS only)
+        self.concentration_names = []
 
     def empty_sums(self):
         """Sums of <u(k) phi(-k)> on the half spectrum of rfftn."""
@@ -89,7 +92,9 @@ class LftsStructureFunctions:
 
 
 class ClftsStructureFunctions:
-    """The structure functions of a CLFTS simulation: empty_sums(), add() a sample and save() a file."""
+    """The structure functions of a CLFTS simulation: empty_sums(), add() a sample and save() a file; with
+    recording.concentrations, add_concentrations() adds each accepted state to the mean concentrations,
+    which the same files hold."""
 
     def __init__(self, sim):
         self.sim = weakref.proxy(sim)   # no cycle: a dropped simulation frees its solver at once
@@ -120,8 +125,16 @@ class ClftsStructureFunctions:
                 and self.electrostatics.fixed_charge is not None:
             self.fixed_charge_k = self._transform(self.electrostatics.fixed_charge)[0]
 
+        # With recording.concentrations the files also hold the means over all steps of the concentrations
+        # of the monomer types and the point ions
+        self.concentration_names = []
+        if sim.recording.get("concentrations", False):
+            self.concentration_names = self.monomer_types + (
+                [ion["name"] for ion in self.electrostatics.ions] if self.electrostatics is not None else [])
+
     def empty_sums(self):
-        """Sums of <u(k) phi(-k)> on the full spectrum of complex fields, and of the charge structure function."""
+        """Sums of <u(k) phi(-k)> on the full spectrum of complex fields, of the charge structure function and
+        of the mean concentrations."""
         nx = self.prop_solver.nx
         sums = {",".join(pair): np.zeros(nx, np.complex128)
                 for pair in itertools.combinations_with_replacement(self.monomer_types, 2)}
@@ -130,7 +143,26 @@ class ClftsStructureFunctions:
         # M + w D of least variance (docs/theory/StructureFunctionEstimators.md, Section 6)
         if self.electrostatics is not None and self.electrostatics.coupling > 0 and self.periodic_box:
             sums |= {key: np.zeros(nx, np.complex128) for key in self.electrostatics.CHARGE_SUMS}
+        # Mean concentrations on the grid: sums of φ_i of the monomer types and c_s of the point ions
+        # over every accepted step, and the number of those steps
+        if self.concentration_names:
+            sums |= {"concentration_" + name: np.zeros(self.prop_solver.n_grid, np.complex128)
+                     for name in self.concentration_names}
+            sums["concentration steps"] = np.zeros(1)
         return sums
+
+    def add_concentrations(self, phi, sums):
+        """Adds the concentrations of an accepted state to the sums of the mean concentrations (with
+        recording.concentrations)."""
+        if not self.concentration_names:
+            return
+        for name in self.monomer_types:
+            sums["concentration_" + name] += phi[name]
+        if self.electrostatics is not None:
+            densities, _ = self.electrostatics.ion_densities()
+            for ion, density in zip(self.electrostatics.ions, densities):
+                sums["concentration_" + ion["name"]] += density
+        sums["concentration steps"] += 1
 
     def _transform(self, fields):
         """fftn of each field (n_fields, n_grid) on the grid: with the platform FFT
@@ -250,11 +282,11 @@ class ClftsStructureFunctions:
                 mdic["charge_structure_function_" + form + "_real"] = np.real(s_form)
                 mdic["charge_structure_function_" + form + "_imag"] = np.imag(s_form)
         # Mean concentrations on the grid, shaped like nx
-        for name in self.sim.concentration_names:
+        for name in self.concentration_names:
             mean = np.reshape(sums["concentration_" + name], self.prop_solver.nx) / max(sums["concentration steps"][0], 1)
             mdic["concentration_" + name + "_real"] = np.real(mean)
             mdic["concentration_" + name + "_imag"] = np.imag(mean)
-        if self.sim.concentration_names:
+        if self.concentration_names:
             mdic["concentration_step_count"] = int(sums["concentration steps"][0])
         mdic["sample_count"] = sf_sample_count
         mdic["simulation_metadata_json"] = json.dumps(self.sim.metadata)

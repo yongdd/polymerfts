@@ -57,24 +57,6 @@
 
 #include "TestComputationFactory.h"
 #include "TestNanSafe.h"
-#include "ComputationBox.h"
-
-#ifdef USE_CUDA
-#include "CudaComputationBox.h"
-#include <cuda_runtime.h>
-// A CUDA build tested on a node without a visible GPU fails, like the TestCuda*
-// tests: a skipped CUDA part would read as a passed CUDA test.
-[[maybe_unused]] static bool cuda_device_visible()
-{
-    int n_devices = 0;
-    if (cudaGetDeviceCount(&n_devices) != cudaSuccess || n_devices == 0)
-    {
-        std::cout << "FAILED: this build has the CUDA backend, but no CUDA device is visible." << std::endl;
-        std::exit(1);
-    }
-    return true;
-}
-#endif
 
 /**
  * @brief Check if boundary conditions are mixed (different on each side of a direction).
@@ -161,17 +143,16 @@ bool mirror_oracle_passed(const std::string& platform, const std::vector<int>& n
                 q_2[doubled_index(o, reflecting_low ? n - 1 - i : 2 * n - 1 - i, r)] = q_init[mixed_index(o, i, r)];
             }
 
-    ComputationBox<T>* cb_2 = new ComputationBox<T>(nx_2, lx_2, bc_2);
-    PropagatorComputation<T>* solver_2 = make_propagator_computation<T>(platform, false, cb_2, &molecules, &prop_opt, "cn-adi2");
-    std::vector<double> w_2(q_2.size(), 0.0);
-    solver_2->compute_propagators({{"A", w_2.data()}}, {});
-    for (int step = 0; step < n_steps; ++step)
     {
-        solver_2->advance_propagator_single_segment(q_2.data(), q_out.data(), 0, 0, 1);
-        std::swap(q_2, q_out);
+        PlatformRun<T> run_2 = make_platform_run<T>(platform, false, nx_2, lx_2, bc_2, &molecules, &prop_opt, "cn-adi2");
+        std::vector<double> w_2(q_2.size(), 0.0);
+        run_2.solver->compute_propagators({{"A", w_2.data()}}, {});
+        for (int step = 0; step < n_steps; ++step)
+        {
+            run_2.solver->advance_propagator_single_segment(q_2.data(), q_out.data(), 0, 0, 1);
+            std::swap(q_2, q_out);
+        }
     }
-    delete solver_2;
-    delete cb_2;
 
     double max_diff = 0.0;
     for (int o = 0; o < outer; ++o)
@@ -287,194 +268,91 @@ bool run_comparison_test(
     bool mixed_bc = has_mixed_bc(bc);
 
     // ====================================================================
-    // CPU Tests: Compare pseudo-spectral vs real-space
-    // Both methods support non-periodic BCs on CPU (DCT/DST for pseudo-spectral)
-    // For mixed BCs, only test real-space (pseudo-spectral not supported)
+    // CPU platforms: pseudo-spectral against real-space (DCT/DST for the
+    // pseudo-spectral method); for mixed BCs, which the pseudo-spectral method
+    // does not take, real-space against the doubled box.
+    // CUDA: real-space against the result of the first CPU platform, its
+    // pseudo-spectral propagator (matching BCs) or its real-space one (mixed BCs).
     // ====================================================================
-#ifdef USE_CPU_FFTW
-    std::vector<double> q_cpu_ref(M);  // Reference for CUDA comparison
+    std::vector<double> q_cpu_ref;  // Reference for CUDA comparison
 
-    if (mixed_bc)
+    for (const std::string& platform : PlatformSelector::avail_platforms())
     {
-        // Mixed BCs: only test real-space, against the doubled box
-        std::cout << "  [CPU-FFTW RS, mirror oracle] " << std::flush;
-        ComputationBox<T>* cb_rs = new ComputationBox<T>(nx, lx, bc);
-        PropagatorComputation<T>* solver_rs = make_propagator_computation<T>("cpu-fftw", false, cb_rs, &molecules, &prop_opt, "cn-adi2");
-
-        // Run real-space solver
-        solver_rs->compute_propagators({{"A", w.data()}}, {});
-        q_rs = q_init;
-        for (int step = 0; step < n_steps; ++step)
+        if (platform != "cuda" && mixed_bc)
         {
-            solver_rs->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_rs, q_out);
-        }
+            // Mixed BCs: only test real-space, against the doubled box
+            std::cout << "  [" << platform << " RS, mirror oracle] " << std::flush;
+            PlatformRun<T> run_rs = make_platform_run<T>(platform, false, nx, lx, bc, &molecules, &prop_opt, "cn-adi2");
 
-        if (!mirror_oracle_passed<T>("cpu-fftw", nx, lx, bc, q_init, q_rs, n_steps, molecules, prop_opt))
-            all_passed = false;
-
-        q_cpu_ref = q_rs;  // Use CPU real-space as reference for CUDA
-
-        delete solver_rs;
-        delete cb_rs;
-    }
-    else
-    {
-        // Matching BCs: compare pseudo-spectral vs real-space
-        std::cout << "  [CPU-FFTW PS vs RS] " << std::flush;
-        ComputationBox<T>* cb_ps = new ComputationBox<T>(nx, lx, bc);
-        ComputationBox<T>* cb_rs = new ComputationBox<T>(nx, lx, bc);
-
-        PropagatorComputation<T>* solver_ps = make_propagator_computation<T>("cpu-fftw", false, cb_ps, &molecules, &prop_opt, "rqm4");
-        PropagatorComputation<T>* solver_rs = make_propagator_computation<T>("cpu-fftw", false, cb_rs, &molecules, &prop_opt, "cn-adi2");
-
-        // Run pseudo-spectral solver
-        solver_ps->compute_propagators({{"A", w.data()}}, {});
-        q_ps = q_init;
-        for (int step = 0; step < n_steps; ++step)
-        {
-            solver_ps->advance_propagator_single_segment(q_ps.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_ps, q_out);
-        }
-
-        // Run real-space solver
-        solver_rs->compute_propagators({{"A", w.data()}}, {});
-        q_rs = q_init;
-        for (int step = 0; step < n_steps; ++step)
-        {
-            solver_rs->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_rs, q_out);
-        }
-
-        max_diff = 0.0;
-        for (int i = 0; i < M; ++i)
-            { const double d = std::abs(q_ps[i] - q_rs[i]); if (std::isnan(d) || d > max_diff) max_diff = d; }  // a NaN stays
-        rel_err = max_diff / (max_or_nan(q_ps));
-
-        if (!(rel_err <= tolerance))
-        {
-            std::cout << "FAILED (rel_err=" << rel_err << ")" << std::endl;
-            all_passed = false;
-        }
-        else
-        {
-            std::cout << "PASSED (rel_err=" << rel_err << ")" << std::endl;
-        }
-
-        q_cpu_ref = q_ps;  // Use CPU pseudo-spectral as reference for CUDA
-
-        delete solver_ps;
-        delete solver_rs;
-        delete cb_ps;
-        delete cb_rs;
-    }
-#endif
-
-#ifdef USE_CPU_MKL
-#ifndef USE_CPU_FFTW
-    std::vector<double> q_cpu_ref(M);  // Reference for CUDA comparison
-#endif
-
-    if (mixed_bc)
-    {
-        // Mixed BCs: only test real-space, against the doubled box
-        std::cout << "  [CPU-MKL RS, mirror oracle] " << std::flush;
-        ComputationBox<T>* cb_rs_mkl = new ComputationBox<T>(nx, lx, bc);
-        PropagatorComputation<T>* solver_rs_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_rs_mkl, &molecules, &prop_opt, "cn-adi2");
-
-        // Run real-space solver
-        solver_rs_mkl->compute_propagators({{"A", w.data()}}, {});
-        q_rs = q_init;
-        for (int step = 0; step < n_steps; ++step)
-        {
-            solver_rs_mkl->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_rs, q_out);
-        }
-
-        if (!mirror_oracle_passed<T>("cpu-mkl", nx, lx, bc, q_init, q_rs, n_steps, molecules, prop_opt))
-            all_passed = false;
-
-#ifndef USE_CPU_FFTW
-        q_cpu_ref = q_rs;  // Use CPU real-space as reference for CUDA
-#endif
-
-        delete solver_rs_mkl;
-        delete cb_rs_mkl;
-    }
-    else
-    {
-        // Matching BCs: compare pseudo-spectral vs real-space
-        std::cout << "  [CPU-MKL PS vs RS] " << std::flush;
-        ComputationBox<T>* cb_ps_mkl = new ComputationBox<T>(nx, lx, bc);
-        ComputationBox<T>* cb_rs_mkl = new ComputationBox<T>(nx, lx, bc);
-
-        PropagatorComputation<T>* solver_ps_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_ps_mkl, &molecules, &prop_opt, "rqm4");
-        PropagatorComputation<T>* solver_rs_mkl = make_propagator_computation<T>("cpu-mkl", false, cb_rs_mkl, &molecules, &prop_opt, "cn-adi2");
-
-        // Run pseudo-spectral solver
-        solver_ps_mkl->compute_propagators({{"A", w.data()}}, {});
-        q_ps = q_init;
-        for (int step = 0; step < n_steps; ++step)
-        {
-            solver_ps_mkl->advance_propagator_single_segment(q_ps.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_ps, q_out);
-        }
-
-        // Run real-space solver
-        solver_rs_mkl->compute_propagators({{"A", w.data()}}, {});
-        q_rs = q_init;
-        for (int step = 0; step < n_steps; ++step)
-        {
-            solver_rs_mkl->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
-            std::swap(q_rs, q_out);
-        }
-
-        max_diff = 0.0;
-        for (int i = 0; i < M; ++i)
-            { const double d = std::abs(q_ps[i] - q_rs[i]); if (std::isnan(d) || d > max_diff) max_diff = d; }  // a NaN stays
-        rel_err = max_diff / (max_or_nan(q_ps));
-
-        if (!(rel_err <= tolerance))
-        {
-            std::cout << "FAILED (rel_err=" << rel_err << ")" << std::endl;
-            all_passed = false;
-        }
-        else
-        {
-            std::cout << "PASSED (rel_err=" << rel_err << ")" << std::endl;
-        }
-
-#ifndef USE_CPU_FFTW
-        q_cpu_ref = q_ps;  // Use CPU pseudo-spectral as reference for CUDA
-#endif
-
-        delete solver_ps_mkl;
-        delete solver_rs_mkl;
-        delete cb_ps_mkl;
-        delete cb_rs_mkl;
-    }
-#endif
-
-    // ====================================================================
-    // CUDA Tests: Compare CUDA real-space vs CPU reference
-    // For matching BCs: compare with CPU pseudo-spectral
-    // For mixed BCs: compare with CPU real-space
-    // ====================================================================
-#if defined(USE_CPU_FFTW) || defined(USE_CPU_MKL)
-#ifdef USE_CUDA
-    if (cuda_device_visible())
-    {
-        std::cout << "  [CUDA RS vs CPU " << (mixed_bc ? "RS" : "PS") << "] " << std::flush;
-        {
-            CudaComputationBox<T>* cb_cuda_rs = new CudaComputationBox<T>(nx, lx, bc);
-            PropagatorComputation<T>* solver_cuda_rs = make_propagator_computation<T>("cuda", false, cb_cuda_rs, &molecules, &prop_opt, "cn-adi2");
-
-            // Run CUDA real-space solver
-            solver_cuda_rs->compute_propagators({{"A", w.data()}}, {});
+            // Run real-space solver
+            run_rs.solver->compute_propagators({{"A", w.data()}}, {});
             q_rs = q_init;
             for (int step = 0; step < n_steps; ++step)
             {
-                solver_cuda_rs->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
+                run_rs.solver->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
+                std::swap(q_rs, q_out);
+            }
+
+            if (!mirror_oracle_passed<T>(platform, nx, lx, bc, q_init, q_rs, n_steps, molecules, prop_opt))
+                all_passed = false;
+
+            if (q_cpu_ref.empty())
+                q_cpu_ref = q_rs;  // Use CPU real-space as reference for CUDA
+        }
+        else if (platform != "cuda")
+        {
+            // Matching BCs: compare pseudo-spectral vs real-space
+            std::cout << "  [" << platform << " PS vs RS] " << std::flush;
+            PlatformRun<T> run_ps = make_platform_run<T>(platform, false, nx, lx, bc, &molecules, &prop_opt, "rqm4");
+            PlatformRun<T> run_rs = make_platform_run<T>(platform, false, nx, lx, bc, &molecules, &prop_opt, "cn-adi2");
+
+            // Run pseudo-spectral solver
+            run_ps.solver->compute_propagators({{"A", w.data()}}, {});
+            q_ps = q_init;
+            for (int step = 0; step < n_steps; ++step)
+            {
+                run_ps.solver->advance_propagator_single_segment(q_ps.data(), q_out.data(), 0, 0, 1);
+                std::swap(q_ps, q_out);
+            }
+
+            // Run real-space solver
+            run_rs.solver->compute_propagators({{"A", w.data()}}, {});
+            q_rs = q_init;
+            for (int step = 0; step < n_steps; ++step)
+            {
+                run_rs.solver->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
+                std::swap(q_rs, q_out);
+            }
+
+            max_diff = 0.0;
+            for (int i = 0; i < M; ++i)
+                { const double d = std::abs(q_ps[i] - q_rs[i]); if (std::isnan(d) || d > max_diff) max_diff = d; }  // a NaN stays
+            rel_err = max_diff / (max_or_nan(q_ps));
+
+            if (!(rel_err <= tolerance))
+            {
+                std::cout << "FAILED (rel_err=" << rel_err << ")" << std::endl;
+                all_passed = false;
+            }
+            else
+            {
+                std::cout << "PASSED (rel_err=" << rel_err << ")" << std::endl;
+            }
+
+            if (q_cpu_ref.empty())
+                q_cpu_ref = q_ps;  // Use CPU pseudo-spectral as reference for CUDA
+        }
+        else if (!q_cpu_ref.empty())
+        {
+            std::cout << "  [CUDA RS vs CPU " << (mixed_bc ? "RS" : "PS") << "] " << std::flush;
+            PlatformRun<T> run_rs = make_platform_run<T>(platform, false, nx, lx, bc, &molecules, &prop_opt, "cn-adi2");
+
+            // Run CUDA real-space solver
+            run_rs.solver->compute_propagators({{"A", w.data()}}, {});
+            q_rs = q_init;
+            for (int step = 0; step < n_steps; ++step)
+            {
+                run_rs.solver->advance_propagator_single_segment(q_rs.data(), q_out.data(), 0, 0, 1);
                 std::swap(q_rs, q_out);
             }
 
@@ -495,13 +373,8 @@ bool run_comparison_test(
             {
                 std::cout << "PASSED (rel_err=" << rel_err << ")" << std::endl;
             }
-
-            delete solver_cuda_rs;
-            delete cb_cuda_rs;
         }
     }
-#endif
-#endif
 
     return all_passed;
 }
@@ -637,7 +510,7 @@ int main()
         if (all_passed)
         {
             std::cout << "\nAll tests passed!" << std::endl;
-            return 0;
+            return cuda_part_missing() ? 1 : 0;
         }
         else
         {

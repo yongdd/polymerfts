@@ -23,6 +23,8 @@ def molecules(factory, model="continuous", fraction=1.0):
 
 
 def test_basis_lifetime(platform, reduced):
+    # A box has the basis of the space group it was made with (or the full grid) for its
+    # whole life, and its computations work in it
     fac = _core.PlatformSelector.create_factory(platform, reduced, "real")
     nx, n = [8]*3, 512
     mol = molecules(fac)
@@ -34,60 +36,73 @@ def test_basis_lifetime(platform, reduced):
     first.compute_concentrations()
     assert first.check_total_partition()
     assert abs(np.mean(sum(first.get_total_concentration(m) for m in "AB")) - 1) < 1e-10
-    sg = _core.SpaceGroup(nx, "Im-3m", 529)
-    cb.set_space_group(sg)
-    for call in (lambda: first.get_total_concentration("A"),
-                 lambda: first.get_total_concentration(0, "A"),
-                 lambda: first.get_total_concentration_gce(1.0, 0, "A"),
-                 lambda: first.get_block_concentration(0),
-                 lambda: first.get_chain_propagator(0, 0, 1, 2),
-                 first.compute_concentrations, first.compute_stress,
-                 first.check_total_partition, first.update_laplacian_operator):
-        rejects(call)
+    assert cb.get_space_group() is None and first.get_cb().get_n_basis() == n
 
-    second = fac.create_propagator_computation(cb, mol, opt, "rqm4", sg)
-    third = fac.create_propagator_computation(cb, mol, opt, "rqm4")
+    # The group's basis is frozen once a box holds it
+    sg = _core.SpaceGroup(nx, "Im-3m", 529)
+    sg_box = fac.create_computation_box(nx, [3.0]*3, space_group=sg)
+    assert sg_box.get_space_group() is sg and sg.in_use()
+    rejects(sg.enable_pmmm_physical_basis, "cannot be changed")
+
+    # Two computations of the box share its basis and have their own results
+    second = fac.create_propagator_computation(sg_box, mol, opt, "rqm4")
+    third = fac.create_propagator_computation(sg_box, mol, opt, "rqm4")
     rejects(lambda: second.get_total_concentration("A"))
-    # Restoring the original box basis makes its already computed buffers usable.
+    w = sg.to_reduced_basis(sg.symmetrize(rng.normal(0, 5, n)))
+    third.compute_propagators({"A": w, "B": -w})
+    third.compute_concentrations()
+    assert third.check_total_partition()
+    assert abs(sg_box.mean(sum(third.get_total_concentration(m) for m in "AB")) - 1) < 1e-10
+    assert second.get_cb().get_n_basis() == third.get_cb().get_n_basis() == sg.get_n_reduced_basis() < n
+    rejects(lambda: second.get_total_concentration("A"))
+    # The computations of another box keep their results
     assert np.all(np.isfinite(first.get_total_concentration("A")))
-    assert third.get_cb().get_n_basis() == n
 
 
 def test_failed_construction(platform):
     fac = _core.PlatformSelector.create_factory(platform, False, "real")
     mol = molecules(fac)
     opt = fac.create_propagator_computation_optimizer(mol, False)
-    cb = fac.create_computation_box([8]*3, [3.0]*3, [90.0, 90.0, 80.0])
     previous = _core.SpaceGroup([8]*3, "P1", 1)
-    replacement = _core.SpaceGroup([8]*3, "P1", 1)
     for old in (None, previous):
-        cb.set_space_group(old)
-        # The factory rejects cn-adi2 on an oblique cell before it attaches the group;
-        # the rollback after an attached group fails is checked with nx = 1 below.
-        rejects(lambda: fac.create_propagator_computation(cb, mol, opt, "cn-adi2", replacement),
+        cb = fac.create_computation_box([8]*3, [3.0]*3, [90.0, 90.0, 80.0], space_group=old)
+        # The factory rejects cn-adi2 on an oblique cell; the box keeps its basis
+        rejects(lambda: fac.create_propagator_computation(cb, mol, opt, "cn-adi2"),
                 "cn-adi2 requires an orthogonal computation box")
         assert cb.get_space_group() is old
-        assert not replacement.in_use()
         assert cb.get_n_basis() == 512
         assert abs(cb.integral(np.ones(512)) - cb.get_volume()) < 1e-10
+    # A box for complex fields refuses a space group before it takes the group
+    replacement = _core.SpaceGroup([8]*3, "P1", 1)
     complex_fac = _core.PlatformSelector.create_factory(platform, False, "complex")
-    complex_cb = complex_fac.create_computation_box([8]*3, [3.0]*3)
-    rejects(lambda: complex_fac.create_propagator_computation(complex_cb, mol, opt, "rqm4", replacement))
-    assert complex_cb.get_space_group() is None and not replacement.in_use()
+    rejects(lambda: complex_fac.create_computation_box([8]*3, [3.0]*3, space_group=replacement),
+            "only supported for real fields")
+    assert not replacement.in_use()
+    # PropagatorSolver refuses cn-adi2 and rs on an oblique cell before it makes the box, so the
+    # group it was given stays free to take another physical basis
+    for chain, method in (("continuous", "cn-adi2"), ("discrete", "rs")):
+        oblique = _core.SpaceGroup([8]*3, "P2/m", 57)
+        rejects(lambda: PropagatorSolver(nx=[8]*3, lx=[3.0]*3, angles=[90.0, 100.0, 90.0], ds=0.1,
+                                         bond_lengths={"A": 1.0}, bc=["periodic"]*6, chain_model=chain,
+                                         numerical_method=method, platform=platform, space_group=oblique),
+                f"{method} requires an orthogonal computation box")
+        assert not oblique.in_use()
 
-    # Rollback must preserve device integration weights as well as the host
-    # maps: these groups have different basis sizes, and CN-ADI rejects nx=1.
-    cb = fac.create_computation_box([1, 8, 8], [3.0]*3)
+    # A computation that fails in its backend (CN-ADI rejects nx=1) leaves the box, its
+    # device integration weights and host maps, and the other computations of the box
+    # as they were, and holds no orthogonal cell
     previous = _core.SpaceGroup([1, 8, 8], "P1", 1)
-    replacement = _core.SpaceGroup([1, 8, 8], "Pmmm", 227)
-    pc = fac.create_propagator_computation(cb, mol, opt, "rqm4", previous)
+    cb = fac.create_computation_box([1, 8, 8], [3.0]*3, space_group=previous)
+    pc = fac.create_propagator_computation(cb, mol, opt, "rqm4")
     w = {m: np.random.default_rng(36).normal(0, 5, 64) for m in "AB"}
     pc.compute_propagators(w)
     reference = pc.get_total_partition(0)
-    rejects(lambda: fac.create_propagator_computation(cb, mol, opt, "cn-adi2", replacement))
-    assert cb.get_space_group() is previous and not replacement.in_use()
+    rejects(lambda: fac.create_propagator_computation(cb, mol, opt, "cn-adi2"))
+    assert cb.get_space_group() is previous and cb.get_n_basis() == 64
     pc.compute_propagators(w)
     np.testing.assert_allclose(pc.get_total_partition(0), reference, rtol=1e-12)
+    cb.set_lattice_parameters([3.0]*3, [90.0, 90.0, 80.0])
+    assert not cb.is_orthogonal()
 
 
 def test_method_checks(platform, reduced):
@@ -283,10 +298,10 @@ def test_pmmm_singleton(platform):
     sg.enable_pmmm_physical_basis()
     values = []
     for group in (None, sg):
-        cb = fac.create_computation_box(nx, [2.0]*3)
+        cb = fac.create_computation_box(nx, [2.0]*3, space_group=group)
         mol = molecules(fac)
         opt = fac.create_propagator_computation_optimizer(mol, False)
-        pc = fac.create_propagator_computation(cb, mol, opt, "rqm4", group)
+        pc = fac.create_propagator_computation(cb, mol, opt, "rqm4")
         w = full if group is None else sg.to_reduced_basis(full)
         pc.compute_propagators({"A": w, "B": -w})
         pc.compute_concentrations()

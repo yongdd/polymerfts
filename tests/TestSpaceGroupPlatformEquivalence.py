@@ -10,7 +10,10 @@ and P6_3/mmc on a 9x9x8 cell whose odd in-plane sizes are allowed because the
 grid check is per axis: only nz is constrained by the 6_3 screw, and Fddd on
 8x8x16, the recursive-3m fold with nx = ny below the selector's nz/2 >= 8
 heuristic axis, and P2/m with unique axis c on an 11x10x8 cell with
-gamma = 100 degrees, an oblique cell for ObliqueZ that is not hexagonal),
+gamma = 100 degrees, an oblique cell for ObliqueZ that is not hexagonal,
+and Pmmm and Pmcm (Hall 243, the z mirror at z = 1/4: the half grid shifted
+by nz/4) on orthogonal 11x10x8 cells, whose odd nx leaves no octant: the
+irreducible basis with ObliqueZ),
 each chain model (continuous and
 discrete), and each available platform, this test verifies that turning
 space-group (SG) reduction on does not change the physics relative to a
@@ -38,17 +41,17 @@ full-grid computation with the identical symmetrized field:
      one that stages the expanded field must come last.
 
 Both space-group basis modes are covered:
-  - "physical" basis (m3 -> pmmm auto-enable for orthogonal cells, z-mirror
-    for the oblique cells, mirroring scft.py), which uses the CrysFFT
-    PmmmDct / Recursive3m / ObliqueZ solvers, and
+  - "physical" basis (SpaceGroup.enable_best_physical_basis, as scft.py: m3 ->
+    pmmm for orthogonal cells, z-mirror for the oblique cells), which uses the
+    CrysFFT Pmmm / Recursive3m / ObliqueZ solvers, and
   - "irreducible" basis (no physical basis enabled), where the solvers map
     the reduced basis to the CrysFFT physical grid by gather/scatter; the
-    oblique cells take ObliqueZ here as well.
+    oblique cells and Pmmm 11x10x8 take ObliqueZ here.
 
 ACTUAL mask + space-group contract encoded by this test
 -------------------------------------------------------
 Masks are stored on the full grid in ComputationBox; when a space group is
-set, ComputationBox::set_space_group converts the stored mask to the reduced
+given, the ComputationBox converts the stored mask to the reduced
 basis, and the solvers either apply it in the reduced basis (CrysFFT paths)
 or expand it back to the full grid (non-CrysFFT SG paths).
 
@@ -92,6 +95,8 @@ import numpy as np
 
 from polymerfts import _core
 from polymerfts.theory.propagator_solver import PropagatorSolver
+import checks
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 DS = 0.02  # 1/50 contour steps
@@ -102,15 +107,7 @@ TOL_STRESS_REL = 1e-8
 TOL_PHI_ABS = 1e-10
 TOL_CONSERVATION = 1e-12
 
-FAILURES = []
-
-
-def check(condition, message):
-    """Record a named assertion."""
-    status = "PASS" if condition else "FAIL"
-    print(f"    [{status}] {message}")
-    if not condition:
-        FAILURES.append(message)
+checks.indent = "    "   # the check lines print indented
 
 
 def create_space_group(case_name, nx):
@@ -122,34 +119,32 @@ def create_space_group(case_name, nx):
         return _core.SpaceGroup(nx, "P6_3/mmc", 488)
     if case_name == "Fddd":
         return _core.SpaceGroup(nx, "Fddd", 336)
+    if case_name == "Pmcm":
+        return _core.SpaceGroup(nx, 243)          # Hall 243: z mirror (x, y, -z + 1/2)
     if case_name == "P2/m":
         return _core.SpaceGroup(nx, "P2/m", 58)   # unique axis c: mirror (x, y, -z)
     return _core.SpaceGroup(nx, "Im-3m", 529)
 
 
+# Cases without a physical basis: their irreducible basis takes ObliqueZ
+NO_PHYSICAL_BASIS = [("Pmmm", [11, 10, 8]), ("Pmcm", [11, 10, 8])]
+
+
 def make_space_group(case_name, nx, physical):
-    """Create the SpaceGroup, optionally auto-enabling the physical basis
-    exactly like scft.py does for orthogonal cells (m3 -> pmmm)."""
+    """Create the SpaceGroup, optionally enabling the physical basis exactly
+    like scft.py does (m3 -> pmmm for orthogonal cells, z-mirror for the
+    oblique ones). Returns (sg, mode); mode None when the case has no
+    physical basis to test."""
     sg = create_space_group(case_name, nx)
     mode = "irreducible"
-    if physical and case_name in ("P6/mmm", "P6_3/mmc", "P2/m"):
-        sg.enable_z_mirror_physical_basis()   # oblique cell: z-mirror / ObliqueZ CrysFFT
-        mode = "z-mirror-physical"
-    elif physical:
-        try:
-            # like scft.py: the m3 basis only where the recursive 3m CrysFFT runs
-            if not sg.m3_crysfft_feasible():
-                raise RuntimeError("recursive 3m CrysFFT is not feasible on this grid")
-            sg.enable_m3_physical_basis()
-            mode = "m3-physical"
-        except Exception:
-            try:
-                sg.enable_pmmm_physical_basis()
-                mode = "pmmm-physical"
-            except Exception:
-                mode = "irreducible"
-        # Both test cases are known to support a physical basis; if the
-        # enable calls start throwing, the CrysFFT coverage would silently
+    if physical:
+        mode = {"m3": "m3-physical", "pmmm": "pmmm-physical",
+                "z-mirror": "z-mirror-physical"}.get(sg.enable_best_physical_basis(), "irreducible")
+        if (case_name, list(nx)) in NO_PHYSICAL_BASIS:
+            check(mode == "irreducible", f"{case_name} {nx}: no physical basis")
+            return sg, None
+        # The other cases are known to support a physical basis; if the
+        # enable calls stop choosing one, the CrysFFT coverage would silently
         # degrade to a duplicate irreducible run - fail loudly instead.
         check(mode != "irreducible",
               f"{case_name}: physical basis must be available "
@@ -354,6 +349,10 @@ def main():
         ("P6_3/mmc", [9, 9, 8], [1.8, 1.8, 2.0], [90.0, 90.0, 120.0]),
         # monoclinic oblique cell (cell-centered in-plane grid), ObliqueZ with odd nx
         ("P2/m", [11, 10, 8], [1.5, 1.3, 1.2], [90.0, 90.0, 100.0]),
+        # orthogonal cells with odd nx: no octant, ObliqueZ on the irreducible basis,
+        # with the mirror at z = 0 and at z = 1/4 (the half grid shifted by nz/4)
+        ("Pmmm", [11, 10, 8], [1.5, 1.3, 1.2], None),
+        ("Pmcm", [11, 10, 8], [1.5, 1.3, 1.2], None),
     ]
 
     for case_name, nx, lx, angles in cases:
@@ -362,6 +361,8 @@ def main():
         sg_full = create_space_group(case_name, nx)
         for physical in [True, False]:
             sg, mode = make_space_group(case_name, nx, physical)
+            if mode is None:
+                continue
             n_reduced = sg.get_n_reduced_basis()
             total_grid = int(np.prod(nx))
             print(f"\n=== Case {case_name} nx={nx} lx={lx} angles={angles} basis={mode} "
@@ -499,19 +500,8 @@ def main():
                               f"{tag}: {run_name} phi vanishes on blocked "
                               f"points (max {max_blocked_phi:.3e} < 1e-12)")
 
-    elapsed = time.time() - t_start
-    print("\n" + "=" * 64)
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} assertion(s) failed "
-              f"(runtime {elapsed:.1f} s):")
-        for f in FAILURES:
-            print(f"  - {f}")
-        return 1
-    if cuda_part_missing():
-        return 1
-    print(f"All space-group platform equivalence tests PASSED "
-          f"(runtime {elapsed:.1f} s)")
-    return 0
+    print(f"\nruntime {time.time() - t_start:.1f} s")
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

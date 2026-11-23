@@ -8,7 +8,9 @@
  *    allocation (its message names the caller and the size). The owning cuFFT
  *    plan handle CufftPlan: creation, replacement, moves, a failed creation,
  *    reset, lending and the destructor, by the live plan count, and plans created
- *    without a work area of their own that run in one shared area.
+ *    without a work area of their own that run in one shared area. The owning
+ *    stream handle CudaStream: creation, replacement, moves, reset, lending to a
+ *    kernel and a copy, and the destructor, by the live stream count.
  * 2. Every kind of CUDA object (propagator computations of all solvers, the CrysFFT
  *    engines, non-periodic transforms, complex fields, the Anderson mixers), built
  *    with 4 streams (reduce-memory computations use one), returns everything when
@@ -162,6 +164,13 @@ static std::vector<CudaDeviceBuffer<char>> hold_device_memory(size_t bytes)
     return chunks;
 }
 
+/// x *= 3 (the stream handle check)
+__global__ void ker_triple(double* x, int n)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        x[i] *= 3.0;
+}
+
 static bool check(bool cond, const std::string& what)
 {
     printf("  [%s] %s\n", cond ? "PASS" : "FAIL", what.c_str());
@@ -222,14 +231,13 @@ static void run_computation(const ComputationSpec& c)
         if (c.basis == "pmmm")     sg->enable_pmmm_physical_basis();
         if (c.basis == "z-mirror") sg->enable_z_mirror_physical_basis();
     }
-    std::unique_ptr<ComputationBox<T>> cb(c.angles.empty()
-        ? factory->create_computation_box(c.nx, c.lx, c.bc)
-        : factory->create_computation_box(c.nx, c.lx, c.bc, c.angles));
+    // The box allocates the device weights of its space group, the computation everything else
+    std::unique_ptr<ComputationBox<T>> cb(factory->create_computation_box(c.nx, c.lx, c.bc, c.angles, nullptr, sg.get()));
     std::unique_ptr<Molecules> molecules(factory->create_molecules_information(c.chain_model, 0.05, {{"A", 1.0}, {"B", 1.0}}));
     molecules->add_polymer(1.0, {{"A", 0.4, 0, 1}, {"B", 0.6, 1, 2}});
     std::unique_ptr<PropagatorComputationOptimizer> optimizer(factory->create_propagator_computation_optimizer(molecules.get(), true));
     std::unique_ptr<PropagatorComputation<T>> computation(
-        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), c.method, sg.get()));
+        factory->create_propagator_computation(cb.get(), molecules.get(), optimizer.get(), c.method));
     std::vector<T> w(cb->get_n_basis(), T(0.1));
     computation->compute_propagators({{"A", w.data()}, {"B", w.data()}});
     computation->compute_concentrations();
@@ -285,6 +293,8 @@ static std::vector<Case> cases()
     s = ComputationSpec(); s.method = "rk2"; s.nx = {12, 12, 16}; s.lx = {1.8, 1.8, 2.4}; s.angles = {90.0, 90.0, 120.0};
     s.sg_symbol = "P6_3/mmc"; s.sg_hall = 488; s.basis = "z-mirror";
     add("continuous rk2, P6_3/mmc z-mirror basis (ObliqueZ CrysFFT)", s);
+    s.method = "rqm4";
+    add("continuous rqm4, P6_3/mmc z-mirror basis (ObliqueZ CrysFFT)", s);
     s = ComputationSpec(); s.sg_symbol = "Im-3m"; s.sg_hall = 529;
     add("continuous rqm4, Im-3m irreducible basis", s);
     s = ComputationSpec(); s.nx = {16, 12, 8}; s.lx = {2.0, 1.5, 1.0};
@@ -673,6 +683,52 @@ int main(int argc, char** argv)
         }
         ok &= check(live_plans() == plans_start, "the destructor destroys the plan");
         ok &= check(no_cuda_error("the plan checks"), "no plan destroy failed (a double destroy would count)");
+    }
+
+    printf("--- CUDA stream handle ---\n");
+    {
+        auto live_streams = []() { return cuda_handle_counters().streams.load(); };
+        const long long streams_start = live_streams();
+        {
+            CudaStream a;
+            ok &= check(a.empty() && static_cast<cudaStream_t>(a) == nullptr && live_streams() == streams_start,
+                        "a new handle holds no stream");
+            ok &= check(a.create() == cudaSuccess && !a.empty() && live_streams() == streams_start + 1,
+                        "create() makes a stream and counts it");
+            ok &= check(a.create() == cudaSuccess && !a.empty() && live_streams() == streams_start + 1,
+                        "a second create() destroys the first stream");
+            CudaStream b(std::move(a));
+            ok &= check(a.empty() && !b.empty() && live_streams() == streams_start + 1, "move constructor transfers the stream");
+            CudaStream c;
+            CUDA_CHECK(c.create());
+            ok &= check(live_streams() == streams_start + 2, "a second handle counts its own stream");
+            const cudaStream_t held = b;
+            c = std::move(b);
+            ok &= check(b.empty() && static_cast<cudaStream_t>(c) == held && live_streams() == streams_start + 1,
+                        "move assignment over a stream destroys the stream it held");
+
+            // The handle is lent to a launch and a copy on the stream
+            CudaDeviceBuffer<double> x(256);
+            std::vector<double> ones(256, 1.0), back(256, 0.0);
+            CUDA_CHECK(cudaMemcpyAsync(x, ones.data(), x.bytes(), cudaMemcpyHostToDevice, c));
+            ker_triple<<<1, 256, 0, c>>>(x, 256);
+            CUDA_CHECK_LAUNCH();
+            CUDA_CHECK(cudaMemcpyAsync(back.data(), x, x.bytes(), cudaMemcpyDeviceToHost, c));
+            CUDA_CHECK(cudaStreamSynchronize(c));
+            ok &= check(std::all_of(back.begin(), back.end(), [](double v) { return v == 3.0; }),
+                        "a kernel and copies run on the lent stream");
+
+            c.reset();
+            ok &= check(c.empty() && live_streams() == streams_start, "reset() destroys the stream");
+            c.reset();
+            ok &= check(c.empty() && live_streams() == streams_start, "reset() of an empty handle does nothing");
+            std::vector<CudaStream> v(3);
+            for (CudaStream& s : v)
+                CUDA_CHECK(s.create());
+            ok &= check(live_streams() == streams_start + 3, "a vector of handles holds its streams");
+        }
+        ok &= check(live_streams() == streams_start, "the destructors destroy the streams");
+        ok &= check(no_cuda_error("the stream checks"), "no stream destroy failed (a double destroy would count)");
     }
 
     //--------------------------------------------------------------------------

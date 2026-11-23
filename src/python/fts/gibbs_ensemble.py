@@ -62,7 +62,7 @@ from ..theory.electrostatics import coulomb_coupling, homogeneous_potential, poi
 from ..utils.common import json_ready, input_hash
 from ..utils.validation import (METHOD_KEYS, ValidationError, _chain_charge, open_charges, parse_chi_n,
                                 point_ion_concentrations, polymer_block_copy_lengths, polymer_block_lengths,
-                                reference_segments, validate_gibbs_params, validate_lfts_params)
+                                reference_segments, validate_gibbs_params, validate_clfts_params)
 
 
 def cell_volume(lx, angles=None):
@@ -169,7 +169,7 @@ class GibbsEnsemble:
                     raise ValidationError(f"gibbs_ensemble.boxes[{b}] is not electroneutral; give its ion_concentrations")
         # Each box must be a valid CL-FTS input
         for b in range(2):
-            validate_lfts_params(self.box_params(b, self.amounts[b], 0), complex_fields=True)
+            validate_clfts_params(self.box_params(b, self.amounts[b], 0))
         self.history = None
 
     def settings(self):

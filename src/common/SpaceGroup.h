@@ -14,6 +14,8 @@
 #include <cmath>
 #include <string>
 
+struct CrysFFTBasisMapping;
+
 /// The fractional part v - floor(v) of a lattice coordinate (a translation modulo the lattice)
 inline double wrap01(double v)
 {
@@ -21,17 +23,18 @@ inline double wrap01(double v)
 }
 
 /**
- * @brief Physical (CrysFFT) basis layered on top of the irreducible basis.
+ * @brief The crystallographic FFT engines, and the physical bases that store their grids.
  *
- * At most one physical basis is active at a time; it selects which
- * crystallographic FFT fast path the solvers may use.
+ * The solvers choose an engine with plan_crysfft() (CrysFFTSelector.h). A SpaceGroup
+ * holds at most one physical basis on top of its irreducible orbits, named by the
+ * engine whose physical grid it stores.
  */
-enum class PhysicalBasis
+enum class CrysFFTEngine
 {
-    None,     ///< Irreducible (full-group) basis only
-    Pmmm,     ///< Pmmm mirror-plane basis (DCT CrysFFT)
-    M3,       ///< Recursive 3m basis
-    ZMirror   ///< z-mirror basis for hexagonal-axes settings (ObliqueZ CrysFFT)
+    None,         ///< No engine; as a basis: the irreducible (full-group) basis
+    Recursive3m,  ///< Recursive 3m fold; the m3 basis: the (N/2)^3 octant at even indices
+    Pmmm,         ///< Pmmm DCT; the Pmmm basis: the (N/2)^3 octant at consecutive indices
+    ObliqueZ      ///< DCT along z, FFT in-plane; the z-mirror basis: nz/2 planes along z from the mirror's shift
 };
 
 /**
@@ -42,34 +45,41 @@ enum class PhysicalBasis
  */
 class SpaceGroup
 {
-    template <typename T> friend class ComputationBox;
 private:
-    int hall_number_;                          ///< Hall number (1-530)
+    int hall_number_;                         ///< Hall number (1-530)
     int spacegroup_number_;                    ///< ITA space group number (1-230)
     std::string spacegroup_symbol_;            ///< ITA short symbol
     std::string crystal_system_;               ///< Crystal system name
 
     std::vector<int> nx_;                      ///< Grid dimensions [Nx, Ny, Nz]
     int total_grid_;                           ///< Total grid points (Nx * Ny * Nz)
-    int n_irreducible_;                        ///< Number of reduced-basis points
     int n_symmetry_ops_;                       ///< Number of symmetry operations
 
     // Symmetry operations from spglib
     std::vector<std::array<std::array<int, 3>, 3>> rotations_;    ///< Rotation matrices (n_ops x 3 x 3)
     std::vector<std::array<double, 3>> translations_;              ///< Translation vectors (n_ops x 3)
 
-    std::vector<int> reduced_basis_indices_;   ///< Flat indices of reduced-basis points (size: n_irreducible)
-    std::vector<int> full_to_reduced_map_;     ///< Map from full grid to irreducible index (size: total_grid)
-    std::vector<int> orbit_counts_;            ///< Number of points in each orbit (size: n_irreducible)
+    /// A symmetry operation acting on grid indices: i' = R i + c (mod N per axis), exact
+    struct GridMap
+    {
+        std::array<std::array<int, 3>, 3> R;   ///< Rotation (lattice coordinates)
+        std::array<int, 3> c;                  ///< Offset in grid points: the translation and the sampling convention
+    };
+    std::vector<GridMap> grid_maps_;           ///< One per symmetry operation, in their order
 
-    // Irreducible-basis snapshot (full space group) for enforcing symmetry
-    int n_irreducible_full_{0};
-    std::vector<int> full_to_reduced_map_full_;
-    std::vector<int> orbit_counts_full_;
-    std::vector<int> reduced_to_irreducible_map_; ///< Physical-basis index -> irreducible orbit index (empty without a physical basis)
+    // Irreducible orbits of the full space group (fixed at construction)
+    int n_orbits_{0};                          ///< Number of orbits
+    std::vector<int> orbit_of_;                ///< Full-grid point -> orbit (size: total_grid)
+    std::vector<int> orbit_sizes_;             ///< Points in each orbit (size: n_orbits)
 
-    // Physical basis flags
-    PhysicalBasis physical_basis_{PhysicalBasis::None};  ///< Active physical basis (at most one)
+    // Active basis: the irreducible orbits, or the physical basis that replaces them
+    int n_basis_{0};                           ///< Number of basis points
+    std::vector<int> basis_points_;            ///< Full-grid index of each basis point (size: n_basis)
+    std::vector<int> basis_of_;                ///< Full-grid point -> basis point (size: total_grid)
+    std::vector<int> basis_counts_;            ///< Full-grid points mapped to each basis point (size: n_basis)
+    std::vector<int> basis_to_orbit_;          ///< Basis point -> orbit (empty without a physical basis)
+
+    CrysFFTEngine physical_basis_{CrysFFTEngine::None};  ///< Engine whose grid the active basis stores (None: irreducible)
     mutable bool in_use_{false};  ///< set once a computation box or solver holds this group
 
     /// Initialize space group from Hall number.
@@ -78,8 +88,17 @@ private:
     /// Get symmetry operations from spglib database.
     void get_symmetry_operations();
 
-    /// Find irreducible mesh points using orbit algorithm.
-    void find_irreducible_mesh();
+    /// Build grid_maps_; throws when an operation does not map the grid onto itself.
+    void build_grid_maps();
+
+    /// The grid indices (ix, iy, iz) of a full-grid point.
+    std::array<int, 3> grid_indices(int point) const;
+
+    /// The full-grid index of the image of grid point i.
+    int map_point(const GridMap& op, const std::array<int, 3>& i) const;
+
+    /// Find the irreducible orbits and make them the active basis.
+    void find_irreducible_orbits();
 
     /// Determine crystal system from space group number.
     void determine_crystal_system();
@@ -94,8 +113,27 @@ private:
     /// the translation components of all symmetry operations along that axis.
     std::array<int, 3> get_required_grid_divisors() const;
 
-    /// Fill reduced_to_irreducible_map_ for the physical basis just built.
-    void map_reduced_to_irreducible();
+    /// Translations, each component wrapped to [0, 1), of the operations whose rotation
+    /// is diag(sign), in the order of the operations.
+    std::vector<std::array<double, 3>> translations_of(const std::array<int, 3>& sign) const;
+
+    /// The grid maps of the operations whose rotation and translation satisfy keep, in their order.
+    template <typename Keep>
+    std::vector<GridMap> grid_maps_where(Keep keep) const;
+
+    /// Throw once a computation box or solver holds this group (see mark_in_use()).
+    void check_basis_not_frozen() const;
+
+    /**
+     * @brief Make the points of a CrysFFT physical grid the active basis.
+     *
+     * @param grid  The physical grid built on the irreducible orbits: phys_to_full lists
+     *              the basis points, phys_to_reduced their orbits.
+     * @param folds Operations that map every other grid point onto the physical grid;
+     *              a point takes the basis point of the first fold that reaches it.
+     */
+    void adopt_physical_basis(CrysFFTEngine basis, const CrysFFTBasisMapping& grid,
+                              const std::vector<GridMap>& folds);
 
 public:
     /**
@@ -176,7 +214,9 @@ public:
     /// True for hexagonal/trigonal groups in a hexagonal-axes setting (every rotation
     /// is z-block-diagonal: the cell needs a = b, gamma = 120); false for the
     /// rhombohedral-axes settings of R groups (3-fold about [111]: a = b = c,
-    /// alpha = beta = gamma) and for every other crystal system.
+    /// alpha = beta = gamma) and for every other crystal system. A hexagonal-axes
+    /// setting samples x and y at the grid nodes i/N; every other axis and setting
+    /// samples the cell centers (i + 1/2)/N (see docs/theory/SpaceGroup.md).
     bool uses_hexagonal_axes() const;
 
     /**
@@ -212,12 +252,17 @@ public:
     std::array<double, 3> fixed_angles() const;
     const std::vector<int>& get_nx() const { return nx_; }
     int get_total_grid() const { return total_grid_; }
-    int get_n_reduced_basis() const { return n_irreducible_; }
-    int get_n_reduced_basis_full() const { return n_irreducible_full_; }
+    /// Size of the active basis: the irreducible orbits, or the enabled physical basis
+    int get_n_reduced_basis() const { return n_basis_; }
+    /// Number of irreducible orbits of the full space group, whichever basis is active
+    int get_n_reduced_basis_full() const { return n_orbits_; }
     int get_n_symmetry_ops() const { return n_symmetry_ops_; }
-    const std::vector<int>& get_reduced_basis_indices() const { return reduced_basis_indices_; }
-    const std::vector<int>& get_full_to_reduced_map() const { return full_to_reduced_map_; }
-    const std::vector<int>& get_orbit_counts() const { return orbit_counts_; }
+    /// Full-grid index of each point of the active basis
+    const std::vector<int>& get_reduced_basis_indices() const { return basis_points_; }
+    /// Active-basis point of each full-grid point
+    const std::vector<int>& get_full_to_reduced_map() const { return basis_of_; }
+    /// Full-grid points mapped to each point of the active basis (the orbit sizes on the irreducible basis)
+    const std::vector<int>& get_orbit_counts() const { return basis_counts_; }
 
     /**
      * @brief True when a full-grid field is constant (within tolerance) on every
@@ -226,12 +271,11 @@ public:
     bool is_invariant(const double* full_field, double tolerance) const;
 
     /**
-     * @brief Check for mirror planes perpendicular to x, y, and z axes.
-     *
-     * Returns true if symmetry operations include reflections x->-x,
-     * y->-y, and z->-z with zero translation (modulo lattice).
+     * @brief Whether the grid has the octant of the Pmmm DCT and of the Pmmm basis: an even
+     *        grid and mirror planes perpendicular to x, y and z through the origin
+     *        (x -> -x, y -> -y and z -> -z with lattice translations).
      */
-    bool has_mirror_planes_xyz(double tol = 1e-10) const;
+    bool has_pmmm_octant() const;
 
     /**
      * @brief Get translational parts for 3m symmetry planes (x,y,z).
@@ -247,10 +291,9 @@ public:
      * Values are normalized to [0, 1).
      *
      * @param g Output array of translational parts.
-     * @param tol Tolerance for matching rotations.
      * @return True if all three symmetry planes are found.
      */
-    bool get_m3_translations(std::array<double, 9>& g, double tol = 1e-10) const;
+    bool get_m3_translations(std::array<double, 9>& g) const;
 
     /**
      * @brief Get the translations of all pure-translation operations.
@@ -276,10 +319,9 @@ public:
      * Only pure z-mirrors with integer x/y translations are accepted.
      *
      * @param t_z Output translation along z in [0,1).
-     * @param tol Tolerance for translation matching.
      * @return True if a valid mirror is found.
      */
-    bool get_z_mirror_translation(double& t_z, double tol = 1e-10) const;
+    bool get_z_mirror_translation(double& t_z) const;
 
     /**
      * @brief The z offset, in grid points, of the half grid of a z-mirror basis; -1 without one.
@@ -293,7 +335,8 @@ public:
      */
     int z_mirror_half_grid_shift(std::string* why = nullptr) const;
 
-    PhysicalBasis physical_basis() const { return physical_basis_; }
+    /// The engine whose physical grid the active basis stores (None: the irreducible basis).
+    CrysFFTEngine physical_basis() const { return physical_basis_; }
     /// Human-readable name of the active basis ("irreducible", "pmmm", "m3", "z-mirror").
     std::string physical_basis_name() const;
     /// Print the group, its crystal system and the sizes of its bases (nothing else prints).
@@ -305,21 +348,36 @@ public:
     bool in_use() const { return in_use_; }
 
     /**
+     * @brief Enable the physical basis that SCFT uses, chosen from the angles the group
+     *        fixes (fixed_angles(): the cell has them and keeps them in a box relaxation).
+     *
+     * With alpha, beta and gamma fixed at 90 degrees: the m3 basis where the recursive
+     * 3m CrysFFT pays off (m3_crysfft_feasible()), else the Pmmm basis (has_pmmm_octant()).
+     * The z-mirror basis that some of these groups have would hold the propagators on
+     * half the grid, several times the irreducible mesh, so their solvers take ObliqueZ
+     * on the irreducible basis instead (plan_crysfft()).
+     * With alpha and beta fixed at 90 degrees and gamma free or fixed at another angle:
+     * the z-mirror basis (z_mirror_half_grid_shift() >= 0). Otherwise, or when no basis
+     * applies, the irreducible basis stays.
+     *
+     * @return The engine of the basis now active (None: the irreducible basis)
+     */
+    CrysFFTEngine enable_best_physical_basis();
+
+    /**
      * @brief Enable Pmmm physical basis (1/8 grid) mapping.
      *
      * Replaces the irreducible basis with the Pmmm physical basis
-     * (first octant, size Nx/2 * Ny/2 * Nz/2). Requires 3D even grid
-     * and mirror planes along x, y, z.
+     * (first octant, size Nx/2 * Ny/2 * Nz/2). Requires has_pmmm_octant().
      */
     void enable_pmmm_physical_basis();
-    bool using_pmmm_physical_basis() const { return physical_basis_ == PhysicalBasis::Pmmm; }
 
     /**
      * @brief Enable 3m physical basis (1/8 even-index grid) mapping.
      *
      * Replaces the irreducible basis with the 3m physical basis
      * (even indices, size Nx/2 * Ny/2 * Nz/2). Requires 3D even grid
-     * and valid 3m translations.
+     * and valid 3m translations, and nz/2 >= 2 for the recursive 3m CrysFFT.
      */
     void enable_m3_physical_basis();
     /**
@@ -327,10 +385,9 @@ public:
      *
      * Even sizes, nz/2 >= 8 and translations that fold onto the grid: the rule
      * by which SCFT chooses the m3 physical basis. An m3 basis enabled on a
-     * smaller grid runs with the recursive 3m CrysFFT all the same.
+     * smaller grid (nz/2 >= 2) runs with the recursive 3m CrysFFT all the same.
      */
     bool m3_crysfft_feasible() const;
-    bool using_m3_physical_basis() const { return physical_basis_ == PhysicalBasis::M3; }
 
     /**
      * @brief Enable z-mirror physical basis (half grid along z).
@@ -341,7 +398,6 @@ public:
      * For t_z = 1/2, Nz must be divisible by 4 to align the half-cell shift.
      */
     void enable_z_mirror_physical_basis();
-    bool using_z_mirror_physical_basis() const { return physical_basis_ == PhysicalBasis::ZMirror; }
 
 };
 

@@ -108,6 +108,7 @@ void check_grid(const std::array<int, 3>& n, const IndexMetric& g, bool expect_w
 {
     const Form form{g};
     const LibForm lib_form{g};
+    const AliasSearch search(n, g);
     const int W = 16;   // brute-force window in periods
     for (int i = 0; i < n[0]; ++i)
         for (int j = 0; j < n[1]; ++j)
@@ -128,13 +129,13 @@ void check_grid(const std::array<int, 3>& n, const IndexMetric& g, bool expect_w
                                 ++brute_ties;
 
                 std::array<int, 3> rep = m;
-                min_form_alias_rep(rep, n, g, lib_form);
+                min_form_alias_rep(rep, search, lib_form);
                 const double f = form(rep[0], rep[1], rep[2]);
                 std::array<int, 3> rep_neg = {centered((n[0] - i) % n[0], n[0]), centered((n[1] - j) % n[1], n[1]),
                                               centered((n[2] - k) % n[2], n[2])};
-                min_form_alias_rep(rep_neg, n, g, lib_form);
+                min_form_alias_rep(rep_neg, search, lib_form);
                 const double f_neg = form(rep_neg[0], rep_neg[1], rep_neg[2]);
-                const int ties = for_each_min_form_alias(m, n, g, lib_form, 1e-10, [](int, int, int) {});
+                const int ties = for_each_min_form_alias(m, search, lib_form, 1e-10, [](int, int, int) {});
                 const std::array<int, 3> window = one_period_rep(m, n, form);
 
                 ++s.modes;
@@ -171,7 +172,7 @@ bool check_separable_thin_cells()
             ++evaluations;
             return form(a, b, c);
         };
-        min_form_alias_rep(m, n, g, counted_form);
+        min_form_alias_rep(m, AliasSearch(n, g), counted_form);
         const double plane_min = m[x] * m[x] + m[y] * m[y] + m[x] * m[y];
         ok &= index_metric_has_coupling(g) && plane_min == 19.0 && m[thin] == 1 && evaluations < 200;
 
@@ -181,7 +182,7 @@ bool check_separable_thin_cells()
         m[x] = m[y] = m[thin] = 2;
         evaluations = 0;
         bool values_ok = true;
-        const int ties = for_each_min_form_alias(m, n, g, counted_form, 1e-10, [&](int a, int b, int c) {
+        const int ties = for_each_min_form_alias(m, AliasSearch(n, g), counted_form, 1e-10, [&](int a, int b, int c) {
             const std::array<int, 3> v{a, b, c};
             values_ok &= v[x] * v[x] + v[y] * v[y] + v[x] * v[y] == 12 && std::abs(v[thin]) == 2;
         });

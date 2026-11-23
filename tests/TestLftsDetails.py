@@ -41,21 +41,9 @@ from polymerfts import _core, LFTS, ValidationError
 from polymerfts.utils.common import atomic_savemat
 from polymerfts.fts.wtmd import WTMD
 from polymerfts.theory.smearing import Smearing
+from checks import check, summary
 from cuda_part import cpu_platform, cuda_part_missing
 from fts_checks import quiet
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def params(work_dir, nx, lx, max_step, **extra):
@@ -331,9 +319,8 @@ def main():
         test_file_permissions(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
-    print(f"\n{n_pass} passed, {n_fail} failed")
     # test_lr_walls also runs on CUDA
-    sys.exit(0 if n_fail == 0 and not cuda_part_missing() else 1)
+    sys.exit(summary() | cuda_part_missing())
 
 
 if __name__ == "__main__":

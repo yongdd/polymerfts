@@ -27,11 +27,12 @@
  *    recursive 3m); ObliqueZ has none and refuses to build one. Each engine
  *    reports which (has_multipliers()).
  * 4. A table of another size is refused.
- * 5. The z work arrays of the MKL ObliqueZ engine, which every engine on a thread
- *    shares, fit each grid just transformed: 24x24x24, then 16x16x64 and
- *    32x32x16, which have the same Nx*Ny*Nz but need 4352 and 5120 spectrum
- *    values. An undersized array would only show as heap corruption, which need
- *    not crash.
+ * 5. The thread-local scratch of the ObliqueZ engine, which every ObliqueZ engine
+ *    on a thread shares, serves each grid just transformed: one thread runs
+ *    24x24x24, then 16x16x64 and 32x32x16, which have the same Nx*Ny*Nz but need
+ *    4352 and 5120 spectrum values, then 12x12x8, which runs in the larger scratch
+ *    of the grids before, and each result equals that of a new thread, whose
+ *    scratch has never held another grid.
  *
  * "Equal" means a relative difference of at most 1e-14 (the thread and fresh
  * engine results run the same plans on other scratch arrays).
@@ -45,18 +46,13 @@
 #include <numbers>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "CpuCrysFFT.h"
+#include "CrysFFTObliqueZ.h"
 #include "CrysFFTPmmm.h"
-#ifdef USE_CPU_FFTW
-#include "FftwCrysFFTRecursive3m.h"
-#include "FftwCrysFFTObliqueZ.h"
-#endif
-#ifdef USE_CPU_MKL
-#include "MklCrysFFTRecursive3m.h"
-#include "MklCrysFFTObliqueZ.h"
-#endif
+#include "CrysFFTRecursive3m.h"
 #include "TestNanSafe.h"
 
 namespace {
@@ -91,13 +87,6 @@ std::vector<double> diffused(const CpuCrysFFT& engine, const std::vector<double>
 {
     std::vector<double> out(q.size());
     engine.diffusion(q.data(), out.data(), table);
-    return out;
-}
-
-std::vector<double> multiplied(const CpuCrysFFT& engine, const std::vector<double>& q, const std::vector<double>& table)
-{
-    std::vector<double> out(q.size());
-    engine.apply_multiplier(q.data(), out.data(), table);
     return out;
 }
 
@@ -154,7 +143,7 @@ bool check_engine(const std::string& name, const Make& make, std::array<double, 
         std::vector<double> fresh_multiplier;
         fresh->build_multiplier(fresh_multiplier, new_cell, 1, coeffs[1]);
         ok &= check(name, "multiplier rebuilt in place", multiplier.data() == multiplier_buffer);
-        err = relative_difference(multiplied(*engine, q, multiplier), multiplied(*fresh, q, fresh_multiplier));
+        err = relative_difference(diffused(*engine, q, multiplier), diffused(*fresh, q, fresh_multiplier));
         ok &= check_difference(name, "multiplier of the new cell against a fresh engine", err);
     }
     else
@@ -187,28 +176,29 @@ bool check_engine(const std::string& name, const Make& make, std::array<double, 
     return ok;
 }
 
-#ifdef USE_CPU_MKL
-/// 5. The z work arrays of this thread after a diffusion of the MKL ObliqueZ engine of grid nx
-bool check_mkl_z_work(const std::array<int, 3>& nx, const std::array<double, 6>& cell, std::mt19937_64& rng)
+/// 5. The ObliqueZ engines of the grids, one after another on this thread, against a new thread each
+bool check_obliquez_scratch(const std::string& name, FFTBackend backend, const std::vector<std::array<int, 3>>& grids,
+                            const std::array<double, 6>& cell, std::mt19937_64& rng)
 {
-    const MklCrysFFTObliqueZ engine(nx);
-    std::vector<double> table;
-    engine.build_boltzmann(table, cell, 0.004);
-    std::normal_distribution<double> normal(0.0, 5.0);
-    std::vector<double> q(engine.get_M_physical());
-    for (double& v : q)
-        v = normal(rng);
-    diffused(engine, q, table);
-
-    const std::array<size_t, 2> sizes = MklCrysFFTObliqueZ::thread_z_work_sizes();
-    const size_t need_real = static_cast<size_t>(nx[0]) * nx[1] * (nx[2] / 2);
-    const size_t need_freq = static_cast<size_t>(nx[0]) * nx[1] * (nx[2] / 4 + 1);
-    const std::string grid = std::to_string(nx[0]) + "x" + std::to_string(nx[1]) + "x" + std::to_string(nx[2]);
-    return check("MKL ObliqueZ", "z work arrays of " + grid + ": " + std::to_string(sizes[0]) + " real, "
-                 + std::to_string(sizes[1]) + " complex (need " + std::to_string(need_real) + ", "
-                 + std::to_string(need_freq) + ")", sizes[0] >= need_real && sizes[1] >= need_freq);
+    bool ok = true;
+    for (const std::array<int, 3>& nx : grids)
+    {
+        const CrysFFTObliqueZ engine(nx, backend);
+        std::vector<double> table;
+        engine.build_boltzmann(table, cell, 0.004);
+        std::normal_distribution<double> normal(0.0, 5.0);
+        std::vector<double> q(engine.get_M_physical());
+        for (double& v : q)
+            v = normal(rng);
+        const std::vector<double> here = diffused(engine, q, table);
+        std::vector<double> fresh;
+        std::thread([&] { fresh = diffused(engine, q, table); }).join();
+        const std::string grid = std::to_string(nx[0]) + "x" + std::to_string(nx[1]) + "x" + std::to_string(nx[2]);
+        ok &= check_difference(name, "scratch after the grids before, " + grid + ", against a new thread",
+                               relative_difference(here, fresh));
+    }
+    return ok;
 }
-#endif
 
 }  // namespace
 
@@ -221,26 +211,27 @@ int main()
         const std::array<double, 6> orthorhombic = {2.0, 1.7, 1.5, right, right, right};
         const std::array<double, 6> hexagonal = {4.0, 4.0, 3.0, right, right, 2.0 * std::numbers::pi / 3.0};
         const std::array<int, 3> nx = {16, 12, 8};
+        const std::array<double, 9> no_translations{};   // m3 mirrors through the origin
         const std::array<int, 3> nx_hex = {12, 12, 8};
+        const std::vector<std::array<int, 3>> z_work_grids = {{24, 24, 24}, {16, 16, 64}, {32, 32, 16}, {12, 12, 8}};
         bool ok = true;
 #ifdef USE_CPU_FFTW
         ok &= check_engine("FFTW Pmmm", [&] { return std::make_unique<CrysFFTPmmm>(nx, FFTBackend::FFTW); },
                            orthorhombic, true, rng);
-        ok &= check_engine("FFTW 3m", [&] { return std::make_unique<FftwCrysFFTRecursive3m>(nx); },
+        ok &= check_engine("FFTW 3m", [&] { return std::make_unique<CrysFFTRecursive3m>(nx, no_translations, FFTBackend::FFTW); },
                            orthorhombic, true, rng);
-        ok &= check_engine("FFTW ObliqueZ", [&] { return std::make_unique<FftwCrysFFTObliqueZ>(nx_hex); },
+        ok &= check_engine("FFTW ObliqueZ", [&] { return std::make_unique<CrysFFTObliqueZ>(nx_hex, FFTBackend::FFTW); },
                            hexagonal, false, rng);
+        ok &= check_obliquez_scratch("FFTW ObliqueZ", FFTBackend::FFTW, z_work_grids, hexagonal, rng);
 #endif
 #ifdef USE_CPU_MKL
         ok &= check_engine("MKL Pmmm", [&] { return std::make_unique<CrysFFTPmmm>(nx, FFTBackend::MKL); },
                            orthorhombic, true, rng);
-        ok &= check_engine("MKL 3m", [&] { return std::make_unique<MklCrysFFTRecursive3m>(nx); },
+        ok &= check_engine("MKL 3m", [&] { return std::make_unique<CrysFFTRecursive3m>(nx, no_translations, FFTBackend::MKL); },
                            orthorhombic, true, rng);
-        ok &= check_engine("MKL ObliqueZ", [&] { return std::make_unique<MklCrysFFTObliqueZ>(nx_hex); },
+        ok &= check_engine("MKL ObliqueZ", [&] { return std::make_unique<CrysFFTObliqueZ>(nx_hex, FFTBackend::MKL); },
                            hexagonal, false, rng);
-        for (const std::array<int, 3>& grid : {std::array<int, 3>{24, 24, 24}, std::array<int, 3>{16, 16, 64},
-                                               std::array<int, 3>{32, 32, 16}})
-            ok &= check_mkl_z_work(grid, hexagonal, rng);
+        ok &= check_obliquez_scratch("MKL ObliqueZ", FFTBackend::MKL, z_work_grids, hexagonal, rng);
 #endif
         std::cout << (ok ? "TestCpuCrysFFTTables passed" : "TestCpuCrysFFTTables FAILED") << std::endl;
         return ok ? 0 : -1;

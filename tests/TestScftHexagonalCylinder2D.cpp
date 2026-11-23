@@ -33,6 +33,7 @@
 #include <string>
 #include <array>
 #include <chrono>
+#include <vector>
 
 #include "Exception.h"
 #include "ComputationBox.h"
@@ -43,6 +44,7 @@
 #include "AndersonMixing.h"
 #include "AbstractFactory.h"
 #include "PlatformSelector.h"
+#include "TestAbScft.h"
 #include "TestCudaPart.h"
 
 int main()
@@ -53,12 +55,6 @@ int main()
 
         std::chrono::system_clock::time_point chrono_start, chrono_end;
         std::chrono::duration<double> time_duration;
-
-        double energy_total;
-        double error_level, old_error_level;
-        double *w, *w_out, *w_diff;
-        double *xi, *w_plus, *w_minus;
-        double *phi_a, *phi_b;
 
         std::streamsize default_precision = std::cout.precision();
         int idx;
@@ -150,14 +146,7 @@ int main()
             propagator_computation_optimizer->display_propagators();
 
             // -------------- Allocate arrays ------------
-            w       = new double[M * 2];
-            w_out   = new double[M * 2];
-            w_diff  = new double[M * 2];
-            xi      = new double[M];
-            phi_a   = new double[M];
-            phi_b   = new double[M];
-            w_plus  = new double[M];
-            w_minus = new double[M];
+            std::vector<double> w(M * 2), phi_a(M);
 
             // -------------- Initialize fields for cylinder phase ------------
             // Initialize with a single cylinder at the center of the hexagonal cell
@@ -225,72 +214,31 @@ int main()
             cb->zero_mean(&w[0]);
             cb->zero_mean(&w[M]);
 
-            // Initialize energy and error
-            energy_total = 1.0e20;
-            error_level = 1.0e20;
-
             // -------------- SCFT iteration ------------
             std::cout << "---------- SCFT Iteration ----------" << std::endl;
             std::cout << "iteration, mass error, total partition, energy, error level" << std::endl;
             chrono_start = std::chrono::system_clock::now();
 
+            AbScft scft(cb.get(), solver.get(), molecules.get(), chi_n);
             for (int iter = 0; iter < max_scft_iter; iter++)
             {
-                // Compute polymer statistics
-                solver->compute_propagators({{"A", &w[0]}, {"B", &w[M]}}, {});
-                solver->compute_concentrations();
-                solver->get_total_concentration("A", phi_a);
-                solver->get_total_concentration("B", phi_b);
-
-                // Calculate energy
-                for (int i = 0; i < M; i++)
-                {
-                    w_minus[i] = (w[i] - w[i + M]) / 2;
-                    w_plus[i]  = (w[i] + w[i + M]) / 2;
-                }
-
-                energy_total = cb->inner_product(w_minus, w_minus) / chi_n / cb->get_volume();
-                energy_total -= cb->integral(w_plus) / cb->get_volume();
-                for (int p = 0; p < molecules->get_n_polymer_types(); p++)
-                {
-                    Polymer& pc = molecules->get_polymer(p);
-                    energy_total -= pc.get_volume_fraction() / pc.get_alpha() * log(solver->get_total_partition(p));
-                }
-
-                // Calculate output fields
-                for (int i = 0; i < M; i++)
-                {
-                    xi[i] = 0.5 * (w[i] + w[i + M] - chi_n);
-                    w_out[i]     = chi_n * phi_b[i] + xi[i];
-                    w_out[i + M] = chi_n * phi_a[i] + xi[i];
-                }
-                cb->zero_mean(&w_out[0]);
-                cb->zero_mean(&w_out[M]);
-
-                // Calculate error
-                old_error_level = error_level;
-                for (int i = 0; i < 2 * M; i++)
-                    w_diff[i] = w_out[i] - w[i];
-                error_level = sqrt(cb->multi_inner_product(2, w_diff, w_diff) /
-                                (cb->multi_inner_product(2, w, w) + 1.0));
+                scft.step(w.data());
 
                 // Print progress
-                sum = (cb->integral(phi_a) + cb->integral(phi_b)) / cb->get_volume() - 1.0;
+                sum = scft.mass_error();
                 std::cout << std::setw(8) << iter;
                 std::cout << std::setw(13) << std::setprecision(3) << std::scientific << sum;
                 std::cout << std::setw(17) << std::setprecision(7) << std::scientific << solver->get_total_partition(0);
-                std::cout << std::setw(15) << std::setprecision(9) << std::fixed << energy_total;
-                std::cout << std::setw(15) << std::setprecision(9) << std::fixed << error_level << std::endl;
+                std::cout << std::setw(15) << std::setprecision(9) << std::fixed << scft.energy;
+                std::cout << std::setw(15) << std::setprecision(9) << std::fixed << scft.error_level << std::endl;
 
                 // Check convergence
-                if (error_level < tolerance)
+                if (scft.error_level < tolerance)
                 {
                     std::cout << "Converged at iteration " << iter << std::endl;
                     break;
                 }
-
-                // Anderson mixing
-                am->calculate_new_fields(w, w, w_diff, old_error_level, error_level);
+                scft.mix(am.get(), w.data());
             }
 
             chrono_end = std::chrono::system_clock::now();
@@ -301,7 +249,7 @@ int main()
             std::cout << "---------- Verification ----------" << std::endl;
 
             // Check mass conservation
-            double mass_error = std::abs((cb->integral(phi_a) + cb->integral(phi_b)) / cb->get_volume() - 1.0);
+            double mass_error = std::abs(scft.mass_error());
             std::cout << "Mass error: " << std::scientific << mass_error << std::endl;
             if (!(mass_error <= 1e-10))
             {
@@ -311,7 +259,7 @@ int main()
             std::cout << "Mass conservation: PASSED" << std::endl;
 
             // Check that phi_a integrates to f
-            double phi_a_avg = cb->integral(phi_a) / cb->get_volume();
+            double phi_a_avg = cb->integral(scft.phi_a.data()) / cb->get_volume();
             std::cout << "Average phi_A: " << phi_a_avg << " (target: " << f << ")" << std::endl;
             if (!(std::abs(phi_a_avg - f) <= 1e-6))
             {
@@ -321,27 +269,17 @@ int main()
             std::cout << "Volume fraction: PASSED" << std::endl;
 
             // Check convergence (allow slightly larger error for test to pass)
-            if (!std::isfinite(error_level) || error_level > 1e-5)
+            if (!std::isfinite(scft.error_level) || scft.error_level > 1e-5)
             {
                 std::cout << "ERROR: SCFT did not converge!" << std::endl;
                 return -1;
             }
-            std::cout << "Convergence: PASSED (error = " << std::scientific << error_level << ")" << std::endl;
+            std::cout << "Convergence: PASSED (error = " << std::scientific << scft.error_level << ")" << std::endl;
 
             // Check that energy is reasonable (should be negative for stable phase)
-            std::cout << "Free energy: " << std::fixed << energy_total << std::endl;
+            std::cout << "Free energy: " << std::fixed << scft.energy << std::endl;
 
             std::cout << "---------- All tests PASSED for " << platform << " ----------" << std::endl;
-
-            // -------------- Cleanup ------------
-            delete[] w;
-            delete[] w_out;
-            delete[] w_diff;
-            delete[] xi;
-            delete[] phi_a;
-            delete[] phi_b;
-            delete[] w_plus;
-            delete[] w_minus;
         }
 
         return cuda_part_missing() ? 1 : 0;

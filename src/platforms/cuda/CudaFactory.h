@@ -117,6 +117,7 @@ public :
      * @param bc     Boundary conditions
      * @param angles Lattice angles [alpha, beta, gamma] in degrees
      * @param mask   Optional mask for impenetrable regions
+     * @param space_group Optional space group of the reduced basis (see ComputationBox)
      * @return CudaComputationBox instance
      */
     std::unique_ptr<ComputationBox<T>> create_computation_box(
@@ -124,7 +125,8 @@ public :
         std::vector<double> lx,
         std::vector<std::string> bc,
         std::vector<double> angles,
-        const double* mask=nullptr) override;
+        const double* mask=nullptr,
+        SpaceGroup* space_group=nullptr) override;
 
     /**
      * @brief Create CUDA Anderson mixing optimizer.

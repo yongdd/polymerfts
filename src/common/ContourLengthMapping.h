@@ -230,17 +230,6 @@ public:
     int get_n_segment(double contour_length) const;
 
     /**
-     * @brief Get contour length from its index.
-     *
-     * @param index Integer index (1-based for actual blocks, 0 for aggregation slicing)
-     * @return Contour length value (0.0 for index=0)
-     *
-     * @note index=0 returns 0.0 (used for continuous chain aggregation slicing)
-     * @throws Exception if index out of range and not zero
-     */
-    double get_length_from_index(int index) const;
-
-    /**
      * @brief Get local Δs from its index.
      *
      * @param index Integer index (0-based)

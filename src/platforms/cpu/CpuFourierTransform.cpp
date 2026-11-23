@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-#include "ComputationCommon.h"   // ParallelErrors
+#include "ComputationSupport.h"   // ParallelErrors
 #include "CpuFourierTransform.h"
 #include "FFTFactory.h"
 
@@ -50,15 +50,10 @@ CpuFourierTransform<T>::CpuFourierTransform(
         // FFT of the grid (a mixed box has at least two axes)
         mixed_fft_ = std::make_unique<MakhoulTransform>(nx, bc, createRealFFT(nx, backend));
     }
-    else if (this->dim_ == 3)
-        fft_ = createFFT<T, 3>({nx[0], nx[1], nx[2]}, {bc[0], bc[1], bc[2]}, backend);
-    else if (this->dim_ == 2)
-        fft_ = createFFT<T, 2>({nx[0], nx[1]}, {bc[0], bc[1]}, backend);
-    else if (this->dim_ == 1)
-        fft_ = createFFT<T, 1>({nx[0]}, {bc[0]}, backend);
     else
-        throw_with_line_number("A Fourier transform supports 1D, 2D or 3D grids, got dim = "
-                               + std::to_string(this->dim_) + ".");
+    {
+        fft_ = createFFT<T>(nx, bc, backend);
+    }
 }
 
 template <typename T>

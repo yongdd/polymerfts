@@ -67,9 +67,9 @@ std::unique_ptr<ComputationBox<T>> CpuFactory<T>::create_computation_box(
 template <typename T>
 std::unique_ptr<ComputationBox<T>> CpuFactory<T>::create_computation_box(
     std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
-    std::vector<double> angles, const double *mask)
+    std::vector<double> angles, const double *mask, SpaceGroup* space_group)
 {
-    return std::make_unique<ComputationBox<T>>(nx, lx, bc, angles, mask);
+    return std::make_unique<ComputationBox<T>>(nx, lx, bc, angles, mask, space_group);
 }
 
 template <typename T>

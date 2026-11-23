@@ -26,17 +26,10 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 from scipy.io import loadmat
 from polymerfts import CLFTS, LFTS, PlatformSelector
+from checks import check, summary
 from cuda_part import cuda_part_missing
 
 LFTS.draw_architectures = CLFTS.draw_architectures = False   # no polymer_<id>.png of the runs
-
-failures = 0
-
-
-def check(name, ok, detail=""):
-    global failures
-    failures += not ok
-    print(f"[{'PASS' if ok else 'FAIL'}] {name} {detail}")
 
 
 def recorded_pairs(sf, complex_fields):
@@ -107,8 +100,9 @@ def lfts(platform, root, bc):
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "ABC"})
     gamma = (lambda name: sim.smearing.fourier) if bc == "periodic" else None
     worst, count, angles_ok = compare(sim, root, False, gamma)
-    check(f"{platform} L-FTS ABC {bc}{' with smearing' if gamma else ''}: recorded S_ij = recomputation",
-          worst < 1e-10 and count == 6 and angles_ok, f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
+    check(worst < 1e-10 and count == 6 and angles_ok,
+          f"{platform} L-FTS ABC {bc}{' with smearing' if gamma else ''}: recorded S_ij = recomputation "
+          f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
 
 
 def lfts_oblique(platform, root):
@@ -129,8 +123,8 @@ def lfts_oblique(platform, root):
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "ABC"})
     worst, count, angles_ok = compare(sim, root, False, None)
     recorded = np.atleast_1d(loadmat(os.path.join(root, "structure_function_000002.mat"), squeeze_me=True)["angles"])
-    check(f"{platform} L-FTS ABC periodic, gamma = 120: recorded S_ij = recomputation and the angles",
-          worst < 1e-10 and count == 6 and angles_ok and np.allclose(recorded, angles),
+    check(worst < 1e-10 and count == 6 and angles_ok and np.allclose(recorded, angles),
+          f"{platform} L-FTS ABC periodic, gamma = 120: recorded S_ij = recomputation and the angles "
           f"({count} pairs, max rel diff {worst:.1e}, angles {recorded})")
 
 
@@ -150,8 +144,9 @@ def clfts(platform, root, bc):
         sim.run(initial_fields={m: rng.normal(0.0, 1.0, int(np.prod(nx))) for m in "AB"})
     gamma = (lambda name: sim.smearing.kernel(name)) if bc == "periodic" else None
     worst, count, angles_ok = compare(sim, root, True, gamma)
-    check(f"{platform} CL-FTS AB {bc} with per-type smearing: recorded S_ij = recomputation",
-          worst < 1e-10 and count == 3 and angles_ok, f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
+    check(worst < 1e-10 and count == 3 and angles_ok,
+          f"{platform} CL-FTS AB {bc} with per-type smearing: recorded S_ij = recomputation "
+          f"({count} pairs, max rel diff {worst:.1e}, angles {angles_ok})")
 
 
 def main():
@@ -161,8 +156,7 @@ def main():
                 lfts(platform, os.path.join(tmp, f"l_{platform}_{bc}"), bc)
                 clfts(platform, os.path.join(tmp, f"cl_{platform}_{bc}"), bc)
             lfts_oblique(platform, os.path.join(tmp, f"l_{platform}_oblique"))
-    print(f"\n{failures} failed")
-    return 1 if cuda_part_missing() or failures else 0
+    return summary() | cuda_part_missing()
 
 
 if __name__ == "__main__":

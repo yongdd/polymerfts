@@ -29,7 +29,12 @@ that go with them.
    105-degree angle): the smearing takes |k|^2 from the transform of the solver.
    Until 2026-11 the kernel was rebuilt from the angles of get_angles_degrees(),
    a round trip through radians (5e-16 of the largest |k|^2 in the 3D cell; a
-   free angle differs only at some steps).
+   free angle differs only at some steps). A box changed by hand between two
+   runs of one SCFT object (set_lx, set_lattice_parameters) must give the second
+   run the kernel of the new box: its free energy and kernel must equal those of
+   an SCFT built at that box (1D and an oblique 2D cell, without electrostatics).
+   Until 2026-11 only the electrostatics refreshed the smearing at the start of
+   a run, so without it the second run kept the kernel of the first box.
 
 4. L-FTS and CL-FTS noise: sigma uses the cell volume (with the angle factor),
    not the product of the box lengths.
@@ -70,21 +75,9 @@ from polymerfts import _core, scft, LFTS, CLFTS
 from polymerfts.theory.smearing import Smearing
 from polymerfts.utils.common import calculate_sigma
 from polymerfts.theory.propagator_solver import PropagatorSolver
+from checks import check, summary
 from cuda_part import cpu_platform
 from fts_checks import quiet
-
-n_pass = 0
-n_fail = 0
-
-
-def check(cond, msg):
-    global n_pass, n_fail
-    if cond:
-        n_pass += 1
-        print(f"[PASS] {msg}")
-    else:
-        n_fail += 1
-        print(f"[FAIL] {msg}")
 
 
 def lattice_vectors(lx, angles):
@@ -392,6 +385,45 @@ def test_scft_relaxation_wavenumbers():
               f"(box moved: {moved}, max rel. diff {max(differences):.1e})")
 
 
+def test_scft_box_change_between_runs():
+    """A second run of one SCFT object after a box change by hand takes the smearing kernel of the new box:
+    its kernel and free energy equal those of an SCFT built at that box. A smearing that kept the kernel of
+    the first box gives a free energy off by orders of magnitude more than the tolerance."""
+    cases = (("1D, set_lx", [32], [1.6], None, [1.8], None),
+             ("2D oblique 105, set_lattice_parameters", [12, 14], [1.7, 1.8], [105.0], [1.8, 1.7], [90.0, 90.0, 100.0]))
+    for name, nx, lx, angles, new_lx, new_angles in cases:
+        def params(box_lx, box_angles):
+            p = {"nx": nx, "lx": box_lx, "relax_cell": False,
+                 "chain_model": "continuous", "ds": 1 / 40, "segment_lengths": {"A": 1.0, "B": 1.1},
+                 "chi_n": {"A,B": 20.0}, "platform": cpu_platform(),
+                 "polymers": [{"volume_fraction": 1.0, "blocks": [{"type": "A", "length": 0.5},
+                                                                   {"type": "B", "length": 0.5}]}],
+                 "smearing": {"type": "gaussian", "a_int": 0.15},
+                 "optimizer": {"name": "am", "max_hist": 20, "start_error": 1e-2, "mix_min": 0.1, "mix_init": 0.1},
+                 "max_iter": 300, "tolerance": 1e-9}
+            if box_angles is not None:
+                p["angles"] = box_angles
+            return p
+        # A lamella along the first axis, whose free energy depends on the kernel
+        x = np.meshgrid(*[np.arange(n) / n for n in nx], indexing="ij")[0].ravel()
+        fields = {"A": 5 * np.cos(2 * np.pi * x), "B": -5 * np.cos(2 * np.pi * x)}
+        calc = quiet(scft.SCFT, params=params(lx, angles))
+        quiet(calc.run, initial_fields=fields)
+        if new_angles is None:
+            calc.prop_solver.set_lx(new_lx)
+        else:
+            calc.prop_solver.set_lattice_parameters(new_lx, new_angles)
+        quiet(calc.run, initial_fields=fields)
+        fresh = quiet(scft.SCFT, params=params(new_lx, None if new_angles is None else [new_angles[2]]))
+        quiet(fresh.run, initial_fields=fields)
+        kernel_difference = np.max(np.abs(calc.smearing.kernel() - fresh.smearing.kernel()))
+        dF = abs(calc.free_energy - fresh.free_energy)
+        check(fresh.free_energy < -0.01 and kernel_difference < 1e-12 and dF < 1e-8,
+              f"SCFT, {name} between two runs: the second run takes the kernel of the new box "
+              f"(ordered, F {fresh.free_energy:.4f}; kernel difference {kernel_difference:.1e}, "
+              f"|F - F(fresh)| {dF:.1e})")
+
+
 def test_noise_volume():
     root = tempfile.mkdtemp()
     try:
@@ -461,10 +493,10 @@ def main():
     test_nyquist_derivatives()
     test_scft_box_relaxation()
     test_scft_relaxation_wavenumbers()
+    test_scft_box_change_between_runs()
     test_noise_volume()
     test_cell_checks()
-    print(f"\n{n_pass} passed, {n_fail} failed")
-    sys.exit(0 if n_fail == 0 else 1)
+    sys.exit(summary())
 
 
 if __name__ == "__main__":

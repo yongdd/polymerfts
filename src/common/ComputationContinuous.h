@@ -19,7 +19,7 @@
  * **Propagator storage:** propagator[key][n] for n = 0..max_n_segment, where
  * n = 0 is the initial condition.
  *
- * @see ComputationCommon for the shared concentration accessors
+ * @see PropagatorComputation for the shared concentration accessors
  * @see ComputationBackend for the platform operations
  */
 
@@ -32,24 +32,23 @@
 #include <tuple>
 #include <vector>
 
-#include "ComputationCommon.h"
+#include "PropagatorComputation.h"
 
 template <typename T>
-class ComputationContinuous : public ComputationCommon<T>
+class ComputationContinuous : public PropagatorComputation<T>
 {
 private:
-    std::map<std::string, std::vector<BackendArray<T>*>> propagator;  ///< propagator[key][n], n = 0..max_n_segment
+    /// propagator[key][n], n = 0..max_n_segment (in the backend memory of PropagatorComputation)
+    std::map<std::string, std::vector<BackendArray<T>*>> propagator;
 
     /// A job of the scheduler with what it reads, resolved once: the schedule and the
     /// storage are fixed after construction, and keys grow with the size of a polymer
     struct Job
     {
-        const std::string* key;       ///< Propagator key: '{' grafting point, '[' aggregated, '(' junction
-        const ComputationEdge* edge;  ///< Its monomer type and dependencies
+        const ComputationEdge* edge;  ///< Its start, monomer type, contour step and dependencies
         BackendArray<T>** q;          ///< propagator[key]
         int n_segment_from;           ///< The job computes q(n_segment_from+1) .. q(n_segment_to)
         int n_segment_to;
-        int ds_index;                 ///< Contour step of the propagator
         std::vector<std::pair<BackendArray<T>*, double>> sources;  ///< (q_i, n_i) of a junction or aggregation
     };
     std::vector<std::vector<Job>> schedule;  ///< The scheduler's groups of concurrent jobs
@@ -57,23 +56,18 @@ private:
     /// One segment per polymer for its partition function: (polymer, q, q†, n_aggregated)
     std::vector<std::tuple<int, BackendArray<T>*, BackendArray<T>*, double>> single_partition_segment;
 
-    /// Free the propagator storage (also on a failed construction).
-    void free_propagators();
-
 public:
     /**
-     * @param method         The numerical method (see ComputationCommon)
-     * @param create_backend Creates the platform backend (see ComputationCommon)
+     * @param method         The numerical method (see PropagatorComputation)
+     * @param create_backend Creates the platform backend (see PropagatorComputation)
      */
     ComputationContinuous(ComputationBox<T>* cb, Molecules* molecules,
                           PropagatorComputationOptimizer* propagator_computation_optimizer,
-                          const NumericalMethodInfo& method, SpaceGroup* space_group,
+                          const NumericalMethodInfo& method,
                           const std::function<std::unique_ptr<ComputationBackend<T>>()>& create_backend);
-    ~ComputationContinuous();
 
     void compute_propagators(std::map<std::string, const T*> w_input,
                              std::map<std::string, const T*> q_init = {}) override;
-    void advance_propagator_single_segment(T* q_init, T* q_out, int p, int v, int u) override;
     void compute_concentrations() override;
     void compute_stress() override;
     void get_chain_propagator(T* q_out, int polymer, int v, int u, int n) override;

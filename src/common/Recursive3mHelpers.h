@@ -1,15 +1,15 @@
 /**
  * @file Recursive3mHelpers.h
  * @brief Host-side pieces of the recursive 2x2y2z (3m) crystallographic FFT
- *        shared by the CPU (CrysFFTRecursive3mBase) and CUDA
+ *        shared by the CPU (CrysFFTRecursive3m) and CUDA
  *        (CudaCrysFFTRecursive3m) engines.
  *
  * The algorithm is described in "Accelerated pseudo-spectral method of
  * self-consistent field theory via crystallographic fast Fourier transform",
- * Macromolecules (2020). Both engines build their k-space tables with these
- * functions, so the fold, its twiddle factors and the stress multipliers have
- * one definition; the translation-parity permutation of the fold lives in
- * Recursive3mFoldParity.h.
+ * Macromolecules (2020). Recursive3mTables (CrysFFTTables.h) builds the k-space
+ * tables of both engines with these functions, so the fold and its twiddle
+ * factors have one definition; the translation-parity permutation of the fold
+ * lives in Recursive3mFoldParity.h.
  */
 
 #ifndef RECURSIVE_3M_HELPERS_H_

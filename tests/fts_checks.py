@@ -5,7 +5,8 @@ prints. cpu_platform() (of cuda_part) picks the one platform that runs a test of
 Python.
 compare_files() compares a file that two runs wrote key by key. exact_restart() checks that a
 run continued from the checkpoint of a shorter run ends where the uninterrupted run ends, bit for
-bit on the same backend. expect_error() expects an exception. The inputs that several tests run:
+bit on the same backend. expect_error() expects an exception. hamiltonian() is the H of a CL-FTS
+simulation with electrostatics, whose differences check its forces. The inputs that several tests run:
 diblock_parameters() and diblock_fields() (a 1D L-FTS or CL-FTS diblock melt), FailingLFTS (its
 saddle search fails at chosen calls), compressible_parameters() (a 4-point diblock with zeta_n)
 and scft_parameters() (an SCFT diblock on 8^3 points). The Langevin inputs are those of L-FTS,
@@ -108,6 +109,17 @@ def exact_restart(make, start, steps, split, files, inspect=None, exclude=(), sa
     for filename, prefixes in files.items():
         compare_files(recording_dir(sims["full"]), recording_dir(sims["continued"]), filename, prefixes, exclude)
     return sims
+
+
+def hamiltonian(sim, w_aux):
+    """H of the CL-FTS simulation sim with electrostatics at the auxiliary fields w_aux and the current
+    psi of sim.electrostatics, with the constant term, and the smeared concentrations."""
+    phi, _ = sim.compute_concentrations(w_aux)
+    phi_smeared = sim.smearing.apply_to_dict(phi)
+    partitions = [sim.prop_solver.get_partition_function(p) for p in range(sim.prop_solver.get_n_polymer_types())]
+    h = sim.mpt.compute_hamiltonian(sim.prop_solver.molecules, w_aux, partitions, sim.cb,
+                                    include_const_term=True, phi=phi_smeared)
+    return h + sim.electrostatics.hamiltonian(), phi_smeared
 
 
 def input_of(cls, params):

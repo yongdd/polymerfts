@@ -17,8 +17,9 @@
  *
  * **Propagator Key Assignment:**
  *
- * Each directed edge (v→u) is assigned a unique propagator key
- * using PropagatorCode::generate_codes() for efficient computation.
+ * PropagatorComputationOptimizer assigns each directed edge (v→u) a propagator
+ * key with PropagatorCode::generate_keys(), once the contour lengths of all
+ * polymers are known.
  *
  * @see PropagatorCode for key generation algorithm
  * @see Molecules for polymer container
@@ -45,8 +46,7 @@
 /**
  * @brief Construct polymer from block specification.
  *
- * Builds the polymer graph, validates acyclicity and connectivity,
- * then generates optimized propagator codes.
+ * Builds the polymer graph and validates acyclicity and connectivity.
  *
  * @param ds                  Contour step size
  * @param bond_lengths        Segment lengths by monomer type
@@ -57,11 +57,45 @@
  * @throws Exception if graph has cycles, is disconnected, or has invalid blocks
  */
 Polymer::Polymer(
-    double ds, std::map<std::string, double> bond_lengths, 
+    double ds, std::map<std::string, double> bond_lengths,
     double volume_fraction, std::vector<BlockInput> block_inputs,
     std::map<int, std::string> chain_end_to_q_init)
 {
+    check_inputs(bond_lengths, volume_fraction, block_inputs, chain_end_to_q_init);
+    this->chain_end_to_q_init = chain_end_to_q_init;
 
+    // Save variables
+    this->volume_fraction = volume_fraction;
+    for(size_t i=0; i<block_inputs.size(); i++){
+        const int n_segment = ContourLengthMapping::segment_count(block_inputs[i].contour_length, ds);
+
+        blocks.push_back({
+            block_inputs[i].monomer_type,                           // monomer_type
+            n_segment,                                              // n_segment
+            block_inputs[i].contour_length,                         // contour_length
+            block_inputs[i].v,                                      // starting node
+            block_inputs[i].u,                                      // ending node
+            block_inputs[i].multiplicity,                           // multiplicity
+            1.0});                                                  // n_copies, set below
+    }
+
+    // The graph of the blocks, which must be a tree, and the copies of each block
+    build_graph();
+    check_tree();
+    count_copies();
+
+    // Compute alpha, the sum of the relative contour lengths of all block copies
+    double alpha{0.0};
+    for(size_t i=0; i<blocks.size(); i++){
+        alpha += blocks[i].n_copies*blocks[i].contour_length;
+    }
+    this->alpha = alpha;
+}
+
+void Polymer::check_inputs(
+    const std::map<std::string, double>& bond_lengths, double volume_fraction,
+    const std::vector<BlockInput>& block_inputs, const std::map<int, std::string>& chain_end_to_q_init)
+{
     // Check the name of monomer_type. Only alphabets and underscore are allowed.
     for(const auto& item : bond_lengths)
     {
@@ -105,53 +139,25 @@ Polymer::Polymer(
             throw_with_line_number("\"" + item.second + "\" is an invalid initial condition label. Only alphabets, digits and underscore(_) are allowed.")
         }
     }
-    this->chain_end_to_q_init = chain_end_to_q_init;
+}
 
-    // Save variables
-    try
-    {
-        this->volume_fraction = volume_fraction;
-        for(size_t i=0; i<block_inputs.size(); i++){
-            const int n_segment = ContourLengthMapping::segment_count(block_inputs[i].contour_length, ds);
-
-            blocks.push_back({
-                block_inputs[i].monomer_type,                           // monomer_type
-                n_segment,                                              // n_segment
-                block_inputs[i].contour_length,                         // contour_length
-                block_inputs[i].v,                                      // starting node
-                block_inputs[i].u,                                      // ending node
-                block_inputs[i].multiplicity,                           // multiplicity
-                1.0});                                                  // n_copies, set below
-        }
-    }
-    catch(std::exception& exc)
-    {
-        throw_without_line_number(exc.what());
-    }
-
-    // Construct starting vertices 'v', ending vertices 'u',
-    std::vector<int> v;
-    std::vector<int> u;
-    for(size_t i=0; i<block_inputs.size(); i++)
-    {
-        v.push_back(block_inputs[i].v);
-        u.push_back(block_inputs[i].u);
-    }
-
+void Polymer::build_graph()
+{
     // Construct adjacent_nodes
-    for(size_t i=0; i<v.size(); i++)
+    for(size_t i=0; i<blocks.size(); i++)
     {
-        adjacent_nodes[v[i]].push_back(u[i]);
-        adjacent_nodes[u[i]].push_back(v[i]);
+        const int v = blocks[i].v;
+        const int u = blocks[i].u;
+        adjacent_nodes[v].push_back(u);
+        adjacent_nodes[u].push_back(v);
         // Node labels are non-negative integers
-        validation::require_non_negative(v[i], "v[" + std::to_string(i) + "]");
-        validation::require_non_negative(u[i], "u[" + std::to_string(i) + "]");
-        if( v[i] == u[i] )
+        validation::require_non_negative(v, "v[" + std::to_string(i) + "]");
+        validation::require_non_negative(u, "u[" + std::to_string(i) + "]");
+        if( v == u )
         {
             throw_with_line_number("v[" + std::to_string(i) + "] and u[" + std::to_string(i) + "] must be different integers.")
         }
     }
-
 
     for (const auto& [node, label] : chain_end_to_q_init)
     {
@@ -162,32 +168,37 @@ Polymer::Polymer(
     }
 
     // Construct edge nodes
-    for (size_t i=0; i<v.size(); i++)
+    for (size_t i=0; i<blocks.size(); i++)
     {
-        if (edge_to_block_index.count(std::make_pair(v[i], u[i])) > 0)
+        const int v = blocks[i].v;
+        const int u = blocks[i].u;
+        if (edge_to_block_index.count(std::make_pair(v, u)) > 0)
         {
             throw_with_line_number("There are duplicated edges. Please check the edge between ("
-                + std::to_string(v[i]) + ", " + std::to_string(u[i]) + ").");
+                + std::to_string(v) + ", " + std::to_string(u) + ").");
         }
         else
         {
-            edge_to_block_index[std::make_pair(v[i],u[i])] = i;
-            edge_to_block_index[std::make_pair(u[i],v[i])] = i;
+            edge_to_block_index[std::make_pair(v,u)] = i;
+            edge_to_block_index[std::make_pair(u,v)] = i;
         }
     }
+}
 
+void Polymer::check_tree() const
+{
     // The blocks must form a tree. Union-find over the blocks: every node starts as its own
     // group, and a block joins the groups of its two nodes. A block whose nodes are already in
     // one group closes a loop. Groups are merged by size and paths are halved during the
     // search, so each block costs nearly constant time.
     std::map<int, int> group_parent;
     std::map<int, int> group_size;
-    for (size_t i = 0; i < v.size(); i++)
+    for (const Block& block : blocks)
     {
-        group_parent.emplace(v[i], v[i]);
-        group_parent.emplace(u[i], u[i]);
-        group_size.emplace(v[i], 1);
-        group_size.emplace(u[i], 1);
+        group_parent.emplace(block.v, block.v);
+        group_parent.emplace(block.u, block.u);
+        group_size.emplace(block.v, 1);
+        group_size.emplace(block.u, 1);
     }
     auto find_group = [&group_parent](int node)
     {
@@ -198,14 +209,14 @@ Polymer::Polymer(
         }
         return node;
     };
-    for (size_t i = 0; i < v.size(); i++)
+    for (size_t i = 0; i < blocks.size(); i++)
     {
-        int group_v = find_group(v[i]);
-        int group_u = find_group(u[i]);
+        int group_v = find_group(blocks[i].v);
+        int group_u = find_group(blocks[i].u);
         if (group_v == group_u)
         {
-            throw_with_line_number("Block " + std::to_string(i) + " (nodes " + std::to_string(v[i])
-                + " and " + std::to_string(u[i]) + ") closes a loop with the preceding blocks. "
+            throw_with_line_number("Block " + std::to_string(i) + " (nodes " + std::to_string(blocks[i].v)
+                + " and " + std::to_string(blocks[i].u) + ") closes a loop with the preceding blocks. "
                 + "Only acyclic branched polymers are allowed.");
         }
         if (group_size[group_v] < group_size[group_u])
@@ -214,8 +225,8 @@ Polymer::Polymer(
         group_size[group_v] += group_size[group_u];
     }
 
-    // Without a loop, the blocks are connected if all nodes are in the group of v[0]
-    const int group_start = find_group(v[0]);
+    // Without a loop, the blocks are connected if all nodes are in the group of the first v
+    const int group_start = find_group(blocks[0].v);
     std::vector<int> isolated_nodes;
     for (const auto& [node, parent] : group_parent)
     {
@@ -224,13 +235,16 @@ Polymer::Polymer(
     }
     if (isolated_nodes.size() > 0)
     {
-        std::string error_message = "There is no route from node " + std::to_string(v[0]) + " to nodes: "
+        std::string error_message = "There is no route from node " + std::to_string(blocks[0].v) + " to nodes: "
             + std::to_string(isolated_nodes[0]);
         for (size_t i=1; i<isolated_nodes.size(); i++)
             error_message += ", " + std::to_string(isolated_nodes[i]);
         throw_with_line_number(error_message + ".");
     }
+}
 
+void Polymer::count_copies()
+{
     // Copies of each block. A block with a multiplicity replicates itself and every block on
     // its u side; the copies of a block are the product of the multiplicities replicating it.
     std::vector<int> multiplied;
@@ -280,24 +294,6 @@ Polymer::Polymer(
             if (replicated[m][i])
                 blocks[i].n_copies *= blocks[multiplied[m]].multiplicity;
     }
-
-    // Compute alpha, the sum of the relative contour lengths of all block copies
-    double alpha{0.0};
-    for(size_t i=0; i<blocks.size(); i++){
-        alpha += blocks[i].n_copies*blocks[i].contour_length;
-    }
-    this->alpha = alpha;
-
-    // Generate propagator codes and assign each of them to each of propagator
-    auto propagator_codes = PropagatorCode::generate_codes(*this, chain_end_to_q_init);
-    for(size_t i=0; i<propagator_codes.size(); i++)
-    {
-        int v = std::get<0>(propagator_codes[i]);
-        int u = std::get<1>(propagator_codes[i]);
-        std::string propagator_key = PropagatorCode::get_key_from_code(std::get<2>(propagator_codes[i]));
-        this->set_propagator_key(propagator_key, v, u);
-    }
-
 }
 int Polymer::get_n_blocks() const
 {
@@ -305,9 +301,7 @@ int Polymer::get_n_blocks() const
 }
 int Polymer::get_n_segment(const int idx) const
 {
-    if (idx < 0 || idx >= static_cast<int>(blocks.size()))
-        throw_with_line_number("Block index (" + std::to_string(idx) + ") must be in range [0, " +
-            std::to_string(static_cast<int>(blocks.size()) - 1) + "]");
+    validation::require_index(idx, static_cast<int>(blocks.size()), "Block index");
     return blocks[idx].n_segment;
 }
 double Polymer::get_n_segment_total() const
@@ -349,39 +343,6 @@ std::vector<Block>& Polymer::get_blocks()
 std::map<int, std::vector<int>>& Polymer::get_adjacent_nodes()
 {
     return adjacent_nodes;
-}
-void Polymer::set_propagator_key(const std::string code, const int v, const int u)
-{
-    edge_to_propagator_key[std::make_pair(v, u)] = code;
-}
-std::string Polymer::get_propagator_key(const int v, const int u) const {
-    validation::require_key(edge_to_propagator_key, std::make_pair(v,u),
-        "edge_to_propagator_key for (" + std::to_string(v) + ", " + std::to_string(u) + ")");
-    return edge_to_propagator_key.at(std::make_pair(v,u));
-}
-
-/**
- * @brief Regenerate propagator keys using contour length mapping.
- *
- * Replaces existing keys with new ones that use length indices.
- *
- * @param mapping Contour length mapping (must be finalized)
- */
-void Polymer::regenerate_propagator_keys(const ContourLengthMapping& mapping)
-{
-    // Clear existing keys
-    edge_to_propagator_key.clear();
-
-    // Generate new keys using the mapping
-    // Code format: DKN, Key format: DK+M
-    auto propagator_codes = PropagatorCode::generate_codes_with_mapping(*this, chain_end_to_q_init, mapping);
-    for(size_t i=0; i<propagator_codes.size(); i++)
-    {
-        int v = std::get<0>(propagator_codes[i]);
-        int u = std::get<1>(propagator_codes[i]);
-        std::string propagator_key = PropagatorCode::get_key_from_code(std::get<2>(propagator_codes[i]), mapping);
-        this->set_propagator_key(propagator_key, v, u);
-    }
 }
 
 /**

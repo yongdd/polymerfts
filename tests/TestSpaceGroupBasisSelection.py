@@ -25,17 +25,17 @@ def main():
     sg_pmmm = _core.SpaceGroup(nx, hall_nums[0])
 
     sg_pmmm.enable_pmmm_physical_basis()
-    assert sg_pmmm.using_pmmm_physical_basis(), "Pmmm basis not enabled"
+    assert sg_pmmm.physical_basis_name() == "pmmm", "Pmmm basis not enabled"
     assert sg_pmmm.get_n_reduced_basis() == (nx[0] // 2) * (nx[1] // 2) * (nx[2] // 2)
 
     sg_pmmm.enable_z_mirror_physical_basis()
-    assert sg_pmmm.using_z_mirror_physical_basis(), "Z-mirror basis not enabled"
+    assert sg_pmmm.physical_basis_name() == "z-mirror", "Z-mirror basis not enabled"
     assert sg_pmmm.get_n_reduced_basis() == nx[0] * nx[1] * (nx[2] // 2)
 
     # Im-3m: should allow M3 basis
     sg_m3 = _core.SpaceGroup(nx, "Im-3m", 529)
     sg_m3.enable_m3_physical_basis()
-    assert sg_m3.using_m3_physical_basis(), "M3 basis not enabled"
+    assert sg_m3.physical_basis_name() == "m3", "M3 basis not enabled"
     assert sg_m3.get_n_reduced_basis() == (nx[0] // 2) * (nx[1] // 2) * (nx[2] // 2)
 
     # I4_132: no 3m translations

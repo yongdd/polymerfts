@@ -73,18 +73,22 @@ private:
 
     /// @name Space Group Support
     /// @{
-    CudaDeviceBuffer<double> d_basis_weights_;  ///< Device copy of the reduced-basis integration weights (orbit counts times the mask)
+    CudaDeviceBuffer<double> d_basis_weights_;  ///< Device copy of the reduced-basis integration weights (orbit counts times the mask), made with the box
     /// @}
 
     /**
      * @brief Initialize GPU resources.
      *
-     * Allocates CUB temporary storage and device buffers.
+     * Allocates CUB temporary storage and device buffers, and copies the volume
+     * elements and the reduced-basis weights of a space group to the device.
      */
     void initialize();
 
     /// Sum of the first n values of d_sum (CUB, legacy default stream), returned to the host.
     T reduce_sum_to_host(int n);
+
+    /// integral_weights() with the weights in device memory
+    typename ComputationBox<T>::IntegralWeights device_integral_weights() const;
 
 public:
     /**
@@ -105,9 +109,10 @@ public:
      * @param bc     Boundary conditions
      * @param angles Lattice angles [alpha, beta, gamma] in degrees
      * @param mask   Optional mask for impenetrable regions
+     * @param space_group Optional space group of the reduced basis (see ComputationBox)
      */
     CudaComputationBox(std::vector<int> nx, std::vector<double> lx, std::vector<std::string> bc,
-                       std::vector<double> angles, const double* mask=nullptr);
+                       std::vector<double> angles, const double* mask=nullptr, SpaceGroup* space_group=nullptr);
 
     /// Destructor. Frees GPU memory.
     ~CudaComputationBox() override;
@@ -124,16 +129,6 @@ public:
      * @param new_angles New lattice angles [alpha, beta, gamma] in degrees
      */
     void set_lattice_parameters(std::vector<double> new_lx, std::vector<double> new_angles) override;
-
-    /**
-     * @brief Set space group for reduced basis operations.
-     *
-     * Copies the reduced-basis weights (orbit counts times the mask) to device
-     * memory for GPU-accelerated reductions.
-     *
-     * @param sg Space group pointer (nullptr to disable reduced basis)
-     */
-    void set_space_group(SpaceGroup* sg) override;
 
     /// @name Device-Side Operations
     /// @{

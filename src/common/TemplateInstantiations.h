@@ -18,11 +18,6 @@
  * INSTANTIATE_CLASS(MyTemplateClass);
  * @endcode
  *
- * For classes with multiple template parameters (e.g., FFT with dimension):
- * @code
- * INSTANTIATE_FFT_CLASS(FftwFFT);
- * @endcode
- *
  * **Maintenance:**
  *
  * To add a new supported type (e.g., float):
@@ -59,29 +54,5 @@
 #define INSTANTIATE_CLASS(ClassName) \
     template class ClassName<double>; \
     template class ClassName<std::complex<double>>;
-
-/**
- * @brief Instantiate FFT classes for all dimension and type combinations.
- *
- * Creates explicit instantiations for:
- * - ClassName<double, 1>, ClassName<double, 2>, ClassName<double, 3>
- * - ClassName<std::complex<double>, 1>, ClassName<std::complex<double>, 2>,
- *   ClassName<std::complex<double>, 3>
- *
- * @param ClassName The FFT template class to instantiate
- *
- * Example:
- * @code
- * // At end of FftwFFT.cpp
- * INSTANTIATE_FFT_CLASS(FftwFFT);
- * @endcode
- */
-#define INSTANTIATE_FFT_CLASS(ClassName) \
-    template class ClassName<double, 1>; \
-    template class ClassName<double, 2>; \
-    template class ClassName<double, 3>; \
-    template class ClassName<std::complex<double>, 1>; \
-    template class ClassName<std::complex<double>, 2>; \
-    template class ClassName<std::complex<double>, 3>;
 
 #endif // TEMPLATE_INSTANTIATIONS_H

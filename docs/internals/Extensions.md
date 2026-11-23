@@ -133,7 +133,8 @@ functions of k stored once with `set_multiplier` (on the GPU with CUDA) and appl
 
 With Coulomb coupling, CLFTS then passes ψ to `step` as the last of the m fields: its force
 is -δH/δψ, its mobility `psi_dt_scaling`, its noise imaginary and drawn from the ψ stream,
-and `evaluate_force` takes and returns all m fields. Without screening, CLFTS sets the
+and `evaluate_force` takes and returns all m fields (`CLFTS.evaluate_force` takes the auxiliary
+fields, and with electrostatics ψ as one more row). Without screening, CLFTS sets the
 uniform mode of the returned ψ to zero. Each simulation keeps its own copy (`copy.deepcopy`) of such
 an integrator, which holds the response of its system; multipliers of `fourier` cannot be copied, so
 an integrator that stores them defines `__deepcopy__` (the built-in one copies its settings without the response). The built-in `etd` integrator is such a method
