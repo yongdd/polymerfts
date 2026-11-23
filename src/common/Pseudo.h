@@ -65,6 +65,22 @@
 #include "ComputationBox.h"
 
 /**
+ * @brief |k|² of every mode of a grid with separable wavenumbers (an orthogonal cell),
+ *        row-major: on each axis of n points and length L, k = πm/L (REFLECTING, the
+ *        cosine series), π(m+1)/L (ABSORBING, the sine series) or 2πm/L with the signed
+ *        index m of the FFT (PERIODIC); m = 0, ..., n-1.
+ *
+ * The wavenumbers of the propagator solvers with walls (Pseudo) and of
+ * FourierTransform::get_k_squared() on boxes with walls.
+ *
+ * @param nx One to three grid sizes
+ * @param bc One boundary condition per axis
+ * @param lx One length per axis
+ */
+std::vector<double> separable_k_squared(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,
+                                        const std::vector<double>& lx);
+
+/**
  * @class Pseudo
  * @brief The Fourier-space tables of one cell for the pseudo-spectral method.
  *
@@ -126,11 +142,13 @@ protected:
     /// Check if all BCs are periodic.
     bool is_all_periodic() const;
 
-    /// The tables of periodic BC (the alias of least form of each mode on oblique cells).
-    void update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis);
+    /// The stress basis of periodic BC and f = |k|²/(4π²) of every mode (the alias of least
+    /// form on oblique cells); no f without contour steps.
+    std::vector<double> update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis);
 
-    /// The tables of reflecting and absorbing BC (orthogonal cells).
-    void update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis);
+    /// The stress basis of reflecting and absorbing BC and f = |k|²/(4π²) of every mode
+    /// (separable_k_squared, orthogonal cells); no f without contour steps.
+    std::vector<double> update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis);
 
     /// Fill negative_k_idx (complex fields with periodic BC).
     void update_negative_frequency_mapping();

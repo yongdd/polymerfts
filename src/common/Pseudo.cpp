@@ -186,18 +186,30 @@ void Pseudo<T>::update(const std::vector<double>& dx, const std::array<double, 6
     else
         std::vector<int>().swap(negative_k_idx);
 
-    // The Boltzmann tables of every contour step and monomer type
+    // The stress basis, and f = |k|²/(4π²) of every mode in the layout of the Boltzmann factors
+    const std::vector<double> forms = is_all_periodic() ? update_periodic(recip_metric, with_stress_basis)
+                                                         : update_nonperiodic(dx, with_stress_basis);
+
+    // The Boltzmann tables of every contour step and monomer type: exp(-b² |k|² ds / 6), |k|² = 4π² f
+    const double PI = std::numbers::pi;
     for (const auto& [ds_idx, local_ds] : ds_values)
+    {
         for (const auto& [monomer_type, bond_length] : bond_lengths)
         {
-            boltz_bond[ds_idx][monomer_type].resize(total_complex_grid);
-            boltz_bond_half[ds_idx][monomer_type].resize(total_complex_grid);
+            std::vector<double>& full = boltz_bond[ds_idx][monomer_type];
+            std::vector<double>& half = boltz_bond_half[ds_idx][monomer_type];
+            full.resize(total_complex_grid);
+            half.resize(total_complex_grid);
+            double bond_length_sq = bond_length * bond_length;
+            double prefactor = -bond_length_sq * 4.0 * PI * PI * local_ds / 6.0;
+            for (size_t idx = 0; idx < forms.size(); ++idx)
+            {
+                const double mag_q2 = prefactor * forms[idx];
+                full[idx] = std::exp(mag_q2);
+                half[idx] = std::exp(mag_q2 / 2.0);
+            }
         }
-
-    if (is_all_periodic())
-        update_periodic(recip_metric, with_stress_basis);
-    else
-        update_nonperiodic(dx, with_stress_basis);
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -238,16 +250,6 @@ void fill_periodic_stress_basis(
     const std::array<double*, 6>& tables, const std::array<int, 3>& grid,
     const std::array<int, 3>& shape, const IndexMetric& G, int last_axis)
 {
-    const double TWO_PI = 2.0 * std::numbers::pi;
-    auto store = [&](long long idx, const std::array<int, 3>& m, const std::array<double, 6>& vv) {
-        double weight = 1.0;
-        if constexpr (std::is_same<T, double>::value)
-            weight = (m[last_axis] != 0 && 2 * m[last_axis] != grid[last_axis]) ? 2.0 : 1.0;
-        for (int c = 0; c < 6; ++c)
-            if (tables[c] != nullptr)
-                tables[c][idx] = weight * vv[c];
-    };
-
     // The Boltzmann factor depends only on the minimum of the form over the aliases
     // m + N t, but v⊗v differs between representatives that tie for the minimum: the
     // Brillouin-zone boundary of an oblique cell (e.g. 2 m1 + m2 = N in a hexagonal
@@ -255,51 +257,59 @@ void fill_periodic_stress_basis(
     // averaged over the tied representatives (tied_alias_moments), which keeps the
     // stress invariant under the point group (sigma_a = sigma_b in a hexagonal cell);
     // for two tied representatives the average is the central difference of the minimum.
-    if (index_metric_has_coupling(G))
-    {
-        for_each_mode_tied_moments(grid, shape, G, TWO_PI, store);
-        return;
-    }
+    // The same moments give FourierTransform::get_alias_moments().
+    for_each_mode_tied_moments(grid, shape, G, 2.0 * std::numbers::pi,
+        [&](long long idx, const std::array<int, 3>& m, const std::array<double, 6>& vv) {
+            double weight = 1.0;
+            if constexpr (std::is_same<T, double>::value)
+                weight = (m[last_axis] != 0 && 2 * m[last_axis] != grid[last_axis]) ? 2.0 : 1.0;
+            for (int c = 0; c < 6; ++c)
+                if (tables[c] != nullptr)
+                    tables[c][idx] = weight * vv[c];
+        });
+}
 
-    // Orthogonal cells keep the componentwise representative for the diagonal terms
-    // (bit-identical); only their cross terms on the Nyquist planes are averaged.
-    auto deformation = [&](int m1, int m2, int m3, double& v1, double& v2, double& v3) {
-        v1 = TWO_PI * (G.g11 * m1 + G.g12 * m2 + G.g13 * m3);
-        v2 = TWO_PI * (G.g12 * m1 + G.g22 * m2 + G.g23 * m3);
-        v3 = TWO_PI * (G.g13 * m1 + G.g23 * m2 + G.g33 * m3);
-    };
-    for_each_centered_mode(grid, shape, [&](long long idx, const std::array<int, 3>& m) {
-        double v1, v2, v3;
-        deformation(m[0], m[1], m[2], v1, v2, v3);
-        std::array<double, 6> vv = {v1 * v1, v2 * v2, v3 * v3, v1 * v2, v1 * v3, v2 * v3};
-
-        // Nyquist components (index N/2 of an even N) and their aliases -N/2
-        const bool na = (grid[0] > 1 && 2 * m[0] == grid[0]);
-        const bool nb = (grid[1] > 1 && 2 * m[1] == grid[1]);
-        const bool nc = (grid[2] > 1 && 2 * m[2] == grid[2]);
-        if (na || nb || nc)
-        {
-            double cross[3] = {0.0, 0.0, 0.0};
-            int n_tied = 0;
-            for (int a = 0; a <= (na ? 1 : 0); ++a)
-                for (int b = 0; b <= (nb ? 1 : 0); ++b)
-                    for (int c = 0; c <= (nc ? 1 : 0); ++c)
-                    {
-                        deformation(m[0] - a * grid[0], m[1] - b * grid[1], m[2] - c * grid[2], v1, v2, v3);
-                        cross[0] += v1 * v2; cross[1] += v1 * v3; cross[2] += v2 * v3;
-                        ++n_tied;
-                    }
-            vv[3] = cross[0] / n_tied; vv[4] = cross[1] / n_tied; vv[5] = cross[2] / n_tied;
-        }
-        store(idx, m, vv);
-    });
+/// Index i of the wavenumber of mode m (0 <= m < n) of an axis with separable
+/// wavenumbers: k = πi/L on walls, i = m for the cosine series (REFLECTING) and
+/// m + 1 for the sine series (ABSORBING), and k = 2πi/L on periodic axes, i the
+/// signed index of the FFT
+int separable_wavenumber_index(int m, int n, BoundaryCondition bc)
+{
+    if (bc == BoundaryCondition::PERIODIC)
+        return centered_index(m, n);
+    return (bc == BoundaryCondition::ABSORBING) ? m + 1 : m;
 }
 }  // namespace
 
-template <typename T>
-void Pseudo<T>::update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis)
+std::vector<double> separable_k_squared(const std::vector<int>& nx, const std::vector<BoundaryCondition>& bc,
+                                        const std::vector<double>& lx)
 {
+    // The wavenumbers of each axis; the axes padded to three at the end have k = 0
     const double PI = std::numbers::pi;
+    const int dim = nx.size();
+    const std::array<int, 3> tnx = padded_grid(nx);
+    std::array<std::vector<double>, 3> k_axis;
+    for (int d = 0; d < 3; ++d)
+    {
+        k_axis[d].assign(tnx[d], 0.0);
+        if (d >= dim)
+            continue;
+        const double scale = (bc[d] == BoundaryCondition::PERIODIC) ? 2.0 * PI : PI;
+        for (int m = 0; m < tnx[d]; ++m)
+            k_axis[d][m] = scale * separable_wavenumber_index(m, tnx[d], bc[d]) / lx[d];
+    }
+    std::vector<double> k_sq(static_cast<size_t>(tnx[0]) * tnx[1] * tnx[2]);
+    for (int i = 0; i < tnx[0]; ++i)
+        for (int j = 0; j < tnx[1]; ++j)
+            for (int k = 0; k < tnx[2]; ++k)
+                k_sq[(static_cast<size_t>(i) * tnx[1] + j) * tnx[2] + k] =
+                    k_axis[0][i] * k_axis[0][i] + k_axis[1][j] * k_axis[1][j] + k_axis[2][k] * k_axis[2][k];
+    return k_sq;
+}
+
+template <typename T>
+std::vector<double> Pseudo<T>::update_periodic(const std::array<double, 6>& recip_metric, bool with_stress_basis)
+{
     const int DIM = nx.size();
 
     // The modes of the spectrum: the r2c half spectrum for real fields
@@ -321,85 +331,36 @@ void Pseudo<T>::update_periodic(const std::array<double, 6>& recip_metric, bool 
     }
 
     if (ds_values.empty())
-        return;
+        return {};
 
     // f = mᵀ G m of the alias of least form (first-Brillouin-zone representative;
-    // see MinimalFormAlias.h), |k|² = 4π² f, in the layout of the Boltzmann
-    // factors. One search serves every contour step and monomer type.
+    // see MinimalFormAlias.h), |k|² = 4π² f. One search serves every contour step
+    // and monomer type.
     const IndexForm form{G};
     std::vector<double> forms(total_complex_grid);
     for_each_mode_min_alias(grid, modes, G, form,
         [&](long long idx, const std::array<int, 3>& u) { forms[idx] = form(u[0], u[1], u[2]); });
-
-    for (const auto& [ds_idx, local_ds] : ds_values)
-    {
-        for (const auto& [monomer_type, bond_length] : bond_lengths)
-        {
-            double bond_length_sq = bond_length * bond_length;
-            double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
-            double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
-            double prefactor = -bond_length_sq * 4.0 * PI * PI * local_ds / 6.0;
-            for (size_t idx = 0; idx < forms.size(); ++idx)
-            {
-                const double mag_q2 = prefactor * forms[idx];
-                _boltz_bond[idx] = std::exp(mag_q2);
-                _boltz_bond_half[idx] = std::exp(mag_q2 / 2.0);
-            }
-        }
-    }
+    return forms;
 }
 
 //------------------------------------------------------------------------------
 // Reflecting and absorbing BC (orthogonal cells, no cross terms)
 //------------------------------------------------------------------------------
 template <typename T>
-void Pseudo<T>::update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis)
+std::vector<double> Pseudo<T>::update_nonperiodic(const std::vector<double>& dx, bool with_stress_basis)
 {
     const double PI = std::numbers::pi;
     const int DIM = nx.size();
-
-    // The box axes, padded at the end to three (a padded axis has one point and the
-    // wavenumber index 0)
-    const std::array<int, 3> tnx = padded_grid(nx);
-    std::array<double, 3> tdx = {1.0, 1.0, 1.0};
-    std::array<BoundaryCondition, 3> tbc = {BoundaryCondition::PERIODIC, BoundaryCondition::PERIODIC,
-                                            BoundaryCondition::PERIODIC};
+    std::vector<double> lx(DIM);
     for (int d = 0; d < DIM; ++d)
-    {
-        tdx[d] = dx[d];
-        tbc[d] = bc[d];
-    }
-
-    // Wavenumber index of each mode of each axis: k = π·index/L
-    std::array<std::vector<int>, 3> k_index;
-    for (int d = 0; d < 3; ++d)
-        for (int i = 0; i < tnx[d]; ++i)
-        {
-            if (tbc[d] == BoundaryCondition::PERIODIC)
-                k_index[d].push_back((i > tnx[d]/2) ? tnx[d] - i : i);   // padded axes only
-            else if (tbc[d] == BoundaryCondition::REFLECTING)
-                k_index[d].push_back(i);
-            else  // ABSORBING
-                k_index[d].push_back(i + 1);
-        }
+        lx[d] = nx[d] * dx[d];
 
     if (with_stress_basis)
     {
-        // Deformation vector factors v² (units 1/L⁴), consistent with the
-        // periodic-BC path where v = 2π g⁻¹ m and g⁻¹ = 1/L² for orthogonal boxes:
-        //   Periodic:      k = 2πm/L → v² = k²/L² = (2πm)²/L⁴
-        //   Reflecting:    k = πm/L  → v² = k²/L² = (πm)²/L⁴
-        //   Absorbing:     k = π(m+1)/L, same scaling
-        double xfactor[3];
-        for (int d = 0; d < 3; ++d)
-        {
-            double L = tnx[d] * tdx[d];
-            if (tbc[d] == BoundaryCondition::PERIODIC)
-                xfactor[d] = std::pow(2 * PI, 2) / (L * L * L * L);
-            else
-                xfactor[d] = PI * PI / (L * L * L * L);
-        }
-
+        // Deformation vector factors v² = k²/L² (units 1/L⁴) of the wavenumbers
+        // k = πi/L of each wall axis (separable_k_squared), consistent with the
+        // periodic-BC path where v = 2π g⁻¹ m and g⁻¹ = 1/L² for orthogonal boxes.
+        //
         // Per-mode Parseval weight, folded into the basis tables (mirroring the
         // periodic path, which folds the r2c conjugate-pair factor 2 into the
         // tables). With the textbook DCT-II/DST-II coefficients F(m) = Σ_j f_j φ_m(x_j)
@@ -409,71 +370,47 @@ void Pseudo<T>::update_nonperiodic(const std::vector<double>& dx, bool with_stre
         //   DST-II (absorbing):  w = 1 for k = m+1 = n, w = 2 otherwise
         // (the special basis functions cos(0) and sin(πn x/L) have squared norm n
         // on the cell-centered grid instead of n/2). Composed dimensions multiply
-        // their weights; padded singleton dimensions (n = 1, periodic, m = 0)
-        // contribute weight 1.
-        auto mode_weight = [&](int d, int m) -> double {
-            if (tbc[d] == BoundaryCondition::PERIODIC)
-                return 1.0;  // only padded n=1 dims reach here (mixed BC rejected)
-            if (tbc[d] == BoundaryCondition::REFLECTING)
-                return (m == 0) ? 1.0 : 2.0;
-            return (m == tnx[d] - 1) ? 1.0 : 2.0;  // absorbing: k = m+1 = n
-        };
+        // their weights; the axes padded to three at the end have one mode of weight 1.
+        const std::array<int, 3> tnx = padded_grid(nx);
+        std::array<std::vector<double>, 3> weight, v_sq;
+        for (int d = 0; d < 3; ++d)
+        {
+            weight[d].assign(tnx[d], 1.0);
+            if (d >= DIM)
+                continue;
+            const double xfactor = PI * PI / (lx[d] * lx[d] * lx[d] * lx[d]);
+            const int special = (bc[d] == BoundaryCondition::REFLECTING) ? 0 : nx[d] - 1;
+            for (int m = 0; m < nx[d]; ++m)
+            {
+                const int i = separable_wavenumber_index(m, nx[d], bc[d]);
+                weight[d][m] = (m == special) ? 1.0 : 2.0;
+                v_sq[d].push_back(i * i * xfactor);
+            }
+        }
 
         // The tables of the box axes (update())
         double* basis[3] = {fourier_basis_x.data(), fourier_basis_y.data(), fourier_basis_z.data()};
         for (int i = 0; i < tnx[0]; ++i)
-        {
-            const double wi = mode_weight(0, i);
             for (int j = 0; j < tnx[1]; ++j)
-            {
-                const double wij = wi * mode_weight(1, j);
                 for (int k = 0; k < tnx[2]; ++k)
                 {
-                    const int kd[3] = {k_index[0][i], k_index[1][j], k_index[2][k]};
-                    const double w = wij * mode_weight(2, k);
-                    const int idx = i * tnx[1] * tnx[2] + j * tnx[2] + k;
+                    const int m[3] = {i, j, k};
+                    const double w = weight[0][i] * weight[1][j] * weight[2][k];
+                    const size_t idx = (static_cast<size_t>(i) * tnx[1] + j) * tnx[2] + k;
                     for (int d = 0; d < DIM; ++d)
-                        basis[d][idx] = w * kd[d] * kd[d] * xfactor[d];
+                        basis[d][idx] = w * v_sq[d][m[d]];
                 }
-            }
-        }
     }
 
-    for (const auto& [ds_idx, local_ds] : ds_values)
-    {
-        for (const auto& [monomer_type, bond_length] : bond_lengths)
-        {
-            double bond_length_sq = bond_length * bond_length;
-            double* _boltz_bond = boltz_bond[ds_idx][monomer_type].data();
-            double* _boltz_bond_half = boltz_bond_half[ds_idx][monomer_type].data();
+    if (ds_values.empty())
+        return {};
 
-            // Prefactors of the axes
-            std::array<double, 3> xfactor;
-            for (int d = 0; d < 3; ++d)
-            {
-                double L = tnx[d] * tdx[d];
-                double k_scale = (tbc[d] == BoundaryCondition::PERIODIC) ? 2*PI/L : PI/L;
-                xfactor[d] = -bond_length_sq * k_scale * k_scale * local_ds / 6.0;
-            }
-
-            for (int i = 0; i < tnx[0]; ++i)
-            {
-                const int ki = k_index[0][i];
-                for (int j = 0; j < tnx[1]; ++j)
-                {
-                    const int kj = k_index[1][j];
-                    for (int k = 0; k < tnx[2]; ++k)
-                    {
-                        const int kk = k_index[2][k];
-                        const int idx = i*tnx[1]*tnx[2] + j*tnx[2] + k;
-                        double mag_q2 = ki*ki*xfactor[0] + kj*kj*xfactor[1] + kk*kk*xfactor[2];
-                        _boltz_bond[idx] = std::exp(mag_q2);
-                        _boltz_bond_half[idx] = std::exp(mag_q2/2.0);
-                    }
-                }
-            }
-        }
-    }
+    // f = k²/(4π²) of the separable wavenumbers
+    std::vector<double> forms = separable_k_squared(nx, bc, lx);
+    const double four_pi_sq = 4.0 * PI * PI;
+    for (double& f : forms)
+        f /= four_pi_sq;
+    return forms;
 }
 
 //------------------------------------------------------------------------------

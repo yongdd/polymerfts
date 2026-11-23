@@ -87,6 +87,9 @@ private:
     /// Sum of the first n values of d_sum (CUB, legacy default stream), returned to the host.
     T reduce_sum_to_host(int n);
 
+    /// integral_weights() with the weights in device memory
+    typename ComputationBox<T>::IntegralWeights device_integral_weights() const;
+
 public:
     /**
      * @brief Construct CUDA computation box.

@@ -582,6 +582,23 @@ inline void for_each_mode_min_alias(
     });
 }
 
+namespace min_form_alias_detail
+{
+/// tied_alias_moments without coupled axes, where the ties are those of the Nyquist planes
+/// (a small function of its own, so that the loops over a grid inline it)
+inline std::array<double, 6> uncoupled_tied_moments(const std::array<int, 3>& m, const std::array<int, 3>& n,
+                                                    const IndexMetric& g, double scale)
+{
+    MomentSum moments{g, scale};
+    const int s[3] = {n[0] > 1 && 2 * m[0] == n[0], n[1] > 1 && 2 * m[1] == n[1], n[2] > 1 && 2 * m[2] == n[2]};
+    for (int a = 0; a <= s[0]; ++a)
+        for (int b = 0; b <= s[1]; ++b)
+            for (int c = 0; c <= s[2]; ++c)
+                moments.add(m[0] - a * n[0], m[1] - b * n[1], m[2] - c * n[2]);
+    return moments.mean();
+}
+}  // namespace min_form_alias_detail
+
 /**
  * @brief <v_a v_b> with v = scale · G u, averaged over the aliases u of m tied
  *        for the least form, in the order xx, yy, zz, xy, xz, yz.
@@ -594,21 +611,11 @@ inline void for_each_mode_min_alias(
  */
 inline std::array<double, 6> tied_alias_moments(const std::array<int, 3>& m, const AliasSearch& search, double scale)
 {
-    const std::array<int, 3>& n = search.n;
+    if (!search.coupled)
+        return min_form_alias_detail::uncoupled_tied_moments(m, search.n, search.g, scale);
     min_form_alias_detail::MomentSum moments{search.g, scale};
-    if (search.coupled)
-    {
-        for_each_min_form_alias(m, search, IndexForm{search.g}, min_form_alias_detail::tie_tolerance,
-                                [&](int a, int b, int c) { moments.add(a, b, c); });
-    }
-    else
-    {
-        const int s[3] = {n[0] > 1 && 2 * m[0] == n[0], n[1] > 1 && 2 * m[1] == n[1], n[2] > 1 && 2 * m[2] == n[2]};
-        for (int a = 0; a <= s[0]; ++a)
-            for (int b = 0; b <= s[1]; ++b)
-                for (int c = 0; c <= s[2]; ++c)
-                    moments.add(m[0] - a * n[0], m[1] - b * n[1], m[2] - c * n[2]);
-    }
+    for_each_min_form_alias(m, search, IndexForm{search.g}, min_form_alias_detail::tie_tolerance,
+                            [&](int a, int b, int c) { moments.add(a, b, c); });
     return moments.mean();
 }
 
@@ -627,7 +634,14 @@ inline void for_each_mode_tied_moments(
     const std::array<int, 3>& n, const std::array<int, 3>& shape, const IndexMetric& g, double scale, Visit&& visit)
 {
     const AliasSearch search(n, g);
-    if (!search.coupled || search.n_components < 2)
+    if (!search.coupled)
+    {
+        for_each_centered_mode(n, shape, [&](long long index, const std::array<int, 3>& m) {
+            visit(index, m, min_form_alias_detail::uncoupled_tied_moments(m, n, g, scale));
+        });
+        return;
+    }
+    if (search.n_components < 2)
     {
         for_each_centered_mode(n, shape, [&](long long index, const std::array<int, 3>& m) {
             visit(index, m, tied_alias_moments(m, search, scale));

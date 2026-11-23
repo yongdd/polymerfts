@@ -256,6 +256,20 @@ private:
      */
     void use_space_group(SpaceGroup* sg);
 
+    /// Store checked angles (three, in degrees) in radians with the orthogonality flags
+    void set_angles(const std::vector<double>& full_angles);
+
+protected:
+    /// The weights of the integrals in the basis of the fields: ∫ g dV = scale Σ_i weight[i] g[i]
+    /// over n points (the reduced-basis weights and dv_base_ while a space group is set, dv and 1 otherwise)
+    struct IntegralWeights
+    {
+        int n;
+        const double* weight;
+        double scale;
+    };
+    IntegralWeights integral_weights() const;
+
 public:
     /**
      * @brief Keep the cell orthogonal while a computation needs it.

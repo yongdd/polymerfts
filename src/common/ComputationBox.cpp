@@ -101,6 +101,16 @@ namespace {
         }
     }
 
+    /// expand_angles(), each angle within (0, 180) degrees
+    std::vector<double> checked_angles(const std::vector<double>& angles, int dim)
+    {
+        std::vector<double> full_angles = expand_angles(angles, dim);
+        for (int i = 0; i < 3; i++)
+            validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
+                "angles[" + std::to_string(i) + "]");
+        return full_angles;
+    }
+
     /// True when a boundary is a wall (reflecting or absorbing)
     bool has_wall(const std::vector<BoundaryCondition>& bc)
     {
@@ -214,25 +224,10 @@ ComputationBox<T>::ComputationBox(std::vector<int> new_nx, std::vector<double> n
 
         const int DIM = this->dim;
 
-        // Expand angles to full 3-element array (handles 1-element gamma for 2D)
-        std::vector<double> full_angles = expand_angles(angles, DIM);
-
-        // Validate angles
-        for (int i = 0; i < 3; i++) {
-            validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
-                "angles[" + std::to_string(i) + "]");
-        }
+        // The angles, expanded to three and checked
+        const std::vector<double> full_angles = checked_angles(angles, DIM);
         require_cell_volume(full_angles);
-
-        // Convert angles from degrees to radians and store
-        angles_.resize(3);
-        const double deg_to_rad = std::numbers::pi / 180.0;
-        for (int d = 0; d < 3; d++)
-            angles_[d] = full_angles[d] * deg_to_rad;
-
-        // Orthogonal: all angles are 90 degrees within tolerance
-        is_orthogonal_ = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
-        is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
+        set_angles(full_angles);
 
         // Check before multiplication: three valid int dimensions can overflow even 64 bits.
         total_grid = checked_grid_points(nx);
@@ -507,14 +502,8 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
     validation::require_same_size(new_lx.size(), (size_t)dim, "new lx", "dim");
     validation::require_all_positive(new_lx, "new lx");
 
-    // Expand angles to full 3-element array (handles 1-element gamma for 2D)
-    std::vector<double> full_angles = expand_angles(new_angles, dim);
-
-    // Validate angles
-    for (int i = 0; i < 3; i++) {
-        validation::require_in_range(full_angles[i], 0.0 + 1e-10, 180.0 - 1e-10,
-            "angles[" + std::to_string(i) + "]");
-    }
+    // The angles, expanded to three and checked, and against the box before anything changes
+    const std::vector<double> full_angles = checked_angles(new_angles, dim);
     const bool orthogonal = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
     require_orthogonal_with_walls(bc, orthogonal);
     if (orthogonal_cell_holders_ > 0 && !orthogonal)
@@ -525,17 +514,23 @@ void ComputationBox<T>::set_lattice_parameters(std::vector<double> new_lx, std::
 
     // Validate that the angles form a unit cell before anything changes
     require_cell_volume(full_angles);
-    const double deg_to_rad = std::numbers::pi / 180.0;
 
     lx = new_lx;
+    set_angles(full_angles);
+    update_cell();
+}
 
-    // Convert angles from degrees to radians and store
+template <typename T>
+void ComputationBox<T>::set_angles(const std::vector<double>& full_angles)
+{
+    const double deg_to_rad = std::numbers::pi / 180.0;
+    angles_.resize(3);
     for (int d = 0; d < 3; d++)
         angles_[d] = full_angles[d] * deg_to_rad;
 
-    is_orthogonal_ = orthogonal;
+    // Orthogonal: all angles are 90 degrees within tolerance
+    is_orthogonal_ = std::all_of(full_angles.begin(), full_angles.end(), is_right_angle);
     is_z_axis_orthogonal_ = is_right_angle(full_angles[0]) && is_right_angle(full_angles[1]);
-    update_cell();
 }
 // ==================== Space Group Methods ====================
 
@@ -610,6 +605,20 @@ const std::vector<int>& ComputationBox<T>::get_orbit_counts() const
 // ==================== Field Operations ====================
 
 /**
+ * @brief The weights of the integrals in the basis of the fields.
+ *
+ * With a space group the reduced-basis weights (orbit counts times the mask) and
+ * dv_base_ as the common factor; otherwise dv (dv_base_ times the mask) and 1.
+ */
+template <typename T>
+typename ComputationBox<T>::IntegralWeights ComputationBox<T>::integral_weights() const
+{
+    if (space_group_ != nullptr)
+        return {n_basis_, basis_weights_.data(), dv_base_};
+    return {total_grid, dv.data(), 1.0};
+}
+
+/**
  * @brief Compute volume integral of a field.
  *
  * When space_group_ is set, operates on reduced basis (size n_basis).
@@ -618,22 +627,11 @@ const std::vector<int>& ComputationBox<T>::get_orbit_counts() const
 template <typename T>
 T ComputationBox<T>::integral(const T *g)
 {
+    const IntegralWeights weights = integral_weights();
     T sum{0.0};
-
-    if (space_group_ != nullptr)
-    {
-        // Reduced basis mode
-        for (int i = 0; i < n_basis_; i++)
-            sum += static_cast<T>(basis_weights_[i]) * g[i];
-        return sum * static_cast<T>(dv_base_);
-    }
-    else
-    {
-        // Full grid mode
-        for (int i = 0; i < total_grid; i++)
-            sum += dv[i] * g[i];
-        return sum;
-    }
+    for (int i = 0; i < weights.n; i++)
+        sum += weights.weight[i] * g[i];
+    return sum * weights.scale;
 }
 
 /**
@@ -653,22 +651,11 @@ T ComputationBox<T>::mean(const T *g)
 template <typename T>
 T ComputationBox<T>::inner_product(const T *g, const T *h)
 {
+    const IntegralWeights weights = integral_weights();
     T sum{0.0};
-
-    if (space_group_ != nullptr)
-    {
-        // Reduced basis mode
-        for (int i = 0; i < n_basis_; i++)
-            sum += static_cast<T>(basis_weights_[i]) * g[i] * h[i];
-        return sum * static_cast<T>(dv_base_);
-    }
-    else
-    {
-        // Full grid mode
-        for (int i = 0; i < total_grid; i++)
-            sum += dv[i] * g[i] * h[i];
-        return sum;
-    }
+    for (int i = 0; i < weights.n; i++)
+        sum += weights.weight[i] * g[i] * h[i];
+    return sum * weights.scale;
 }
 
 /**
@@ -680,31 +667,17 @@ template <typename T>
 T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const T *w)
 {
     // A masked point adds nothing, whatever w is there; the mask is tested once, outside the sums
+    const IntegralWeights weights = integral_weights();
     const double* active_mask = get_mask();
-    auto sum = [active_mask](int n, auto term)
-    {
-        T total{0.0};
-        if (active_mask == nullptr)
-            for (int i = 0; i < n; i++)
-                total += term(i);
-        else
-            for (int i = 0; i < n; i++)
-                if (active_mask[i] != 0.0)
-                    total += term(i);
-        return total;
-    };
-
-    if (space_group_ != nullptr)
-    {
-        // Reduced basis mode
-        return sum(n_basis_, [&](int i) { return static_cast<T>(basis_weights_[i]) * g[i] * h[i] / w[i]; })
-               * static_cast<T>(dv_base_);
-    }
+    T sum{0.0};
+    if (active_mask == nullptr)
+        for (int i = 0; i < weights.n; i++)
+            sum += weights.weight[i] * g[i] * h[i] / w[i];
     else
-    {
-        // Full grid mode
-        return sum(total_grid, [&](int i) { return dv[i] * g[i] * h[i] / w[i]; });
-    }
+        for (int i = 0; i < weights.n; i++)
+            if (active_mask[i] != 0.0)
+                sum += weights.weight[i] * g[i] * h[i] / w[i];
+    return sum * weights.scale;
 }
 
 /**
@@ -713,21 +686,19 @@ T ComputationBox<T>::inner_product_inverse_weight(const T *g, const T *h, const 
 template <typename T>
 double ComputationBox<T>::absolute_inner_product(const T *g, const T *h, const T *divisor)
 {
+    const IntegralWeights weights = integral_weights();
     const double* active_mask = get_mask();
-    const bool reduced = space_group_ != nullptr;
-    const int n = reduced ? n_basis_ : total_grid;
-    const double* weight = reduced ? basis_weights_.data() : dv.data();
     double sum = 0.0;
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < weights.n; i++)
     {
         if (active_mask != nullptr && active_mask[i] == 0.0)
             continue;
         T product = g[i] * h[i];
         if (divisor != nullptr)
             product /= divisor[i];
-        sum += weight[i] * std::abs(product);
+        sum += weights.weight[i] * std::abs(product);
     }
-    return reduced ? sum * dv_base_ : sum;
+    return sum * weights.scale;
 }
 
 /**
@@ -738,31 +709,16 @@ double ComputationBox<T>::absolute_inner_product(const T *g, const T *h, const T
 template <typename T>
 T ComputationBox<T>::multi_inner_product(int n_comp, const T *g, const T *h)
 {
+    const IntegralWeights weights = integral_weights();
     T sum{0.0};
-
-    if (space_group_ != nullptr)
+    for (int n = 0; n < n_comp; n++)
     {
-        // Reduced basis mode
-        for (int n = 0; n < n_comp; n++)
-        {
-            const size_t offset = static_cast<size_t>(n) * n_basis_;
-            for (int i = 0; i < n_basis_; i++)
-                sum += static_cast<T>(basis_weights_[i]) * g[offset + i] * h[offset + i];
-        }
-        return sum * static_cast<T>(dv_base_);
+        // n*n_points may exceed int for large grids; offset in 64 bits
+        const size_t offset = static_cast<size_t>(n) * weights.n;
+        for (int i = 0; i < weights.n; i++)
+            sum += weights.weight[i] * g[offset + i] * h[offset + i];
     }
-    else
-    {
-        // Full grid mode
-        for (int n = 0; n < n_comp; n++)
-        {
-            // n*total_grid may exceed int for large grids; offset in 64 bits
-            const size_t offset = static_cast<size_t>(n) * total_grid;
-            for (int i = 0; i < total_grid; i++)
-                sum += dv[i] * g[offset + i] * h[offset + i];
-        }
-        return sum;
-    }
+    return sum * weights.scale;
 }
 
 /**
