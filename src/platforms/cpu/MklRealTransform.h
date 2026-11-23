@@ -1,15 +1,16 @@
 /**
  * @file MklRealTransform.h
- * @brief MKL real-to-real DCT/DST (types 1-4) for 1D/2D/3D arrays.
+ * @brief MKL real-to-real DCT/DST (types 1-4) along the axes of a 1D-3D array.
  *
  * The solvers do not use it (they run MakhoulTransform); tests and the MKL/FFTW
- * benchmark use it for every DCT/DST type.
- * The transforms are unnormalized (FFTW-style); use get_normalization()
- * to obtain the round-trip scale factor.
+ * benchmark use it for every DCT/DST type. The transforms are unnormalized, in
+ * FFTW's conventions, and run one line at a time, the last axis first.
  *
- * Implementation and Performance:
- *   - DCT-II, DCT-III, DST-II, DST-III: N-point FFT with twiddle factors, O(N log N)
- *   - DCT-I, DST-I: FFT-based via symmetric/antisymmetric extension, O(N log N)
+ * Implementation of a line of N points:
+ *   - DCT-I, DST-I: real FFT of the symmetric or antisymmetric extension
+ *     (2(N-1) or 2(N+1) points), O(N log N)
+ *   - DCT-II, DCT-III, DST-II, DST-III: MakhoulTransform over the N-point real
+ *     FFT of MKL (MklRealFFT), O(N log N)
  *   - DCT-IV, DST-IV: MKL TT interface, O(N log N)
  *
  * MKL TT to FFTW mapping (empirically verified):
@@ -20,13 +21,8 @@
 #ifndef MKL_REAL_TRANSFORM_H_
 #define MKL_REAL_TRANSFORM_H_
 
-#include <array>
 #include <memory>
 #include <vector>
-#include "Exception.h"
-
-class MklTTHandle;
-class MklFFTHandle;
 
 /**
  * Transform Type enumeration for DCT and DST.
@@ -48,22 +44,6 @@ enum MklTransformType {
     MKL_DST_4 = 7
 };
 
-inline bool isDCT(MklTransformType type) {
-    return type <= MKL_DCT_4;
-}
-
-inline bool isDST(MklTransformType type) {
-    return type >= MKL_DST_1;
-}
-
-inline bool isType1(MklTransformType type) {
-    return type == MKL_DCT_1 || type == MKL_DST_1;
-}
-
-inline bool isType4(MklTransformType type) {
-    return type == MKL_DCT_4 || type == MKL_DST_4;
-}
-
 inline const char* getTransformName(MklTransformType type) {
     switch (type) {
         case MKL_DCT_1: return "DCT-1";
@@ -78,134 +58,32 @@ inline const char* getTransformName(MklTransformType type) {
     }
 }
 
-//==============================================================================
-// MklRealTransform1D
-//==============================================================================
-
-class MklRealTransform1D
+/**
+ * @class MklRealTransform
+ * @brief A DCT or DST of any type along each axis of a row-major array.
+ */
+class MklRealTransform
 {
 public:
-    MklRealTransform1D(int N, MklTransformType type);
-    ~MklRealTransform1D();
+    /**
+     * @param nx    Grid dimensions (one to three axes, each of at least two points)
+     * @param types The transform of each axis
+     */
+    MklRealTransform(const std::vector<int>& nx, const std::vector<MklTransformType>& types);
+    ~MklRealTransform();
 
     // Non-copyable
-    MklRealTransform1D(const MklRealTransform1D&) = delete;
-    MklRealTransform1D& operator=(const MklRealTransform1D&) = delete;
+    MklRealTransform(const MklRealTransform&) = delete;
+    MklRealTransform& operator=(const MklRealTransform&) = delete;
 
+    /// The transform of every axis of data, in place: along the last axis first, the first axis last.
     void execute(double* data);
 
-    int get_size() const { return N_; }
-    MklTransformType get_type() const { return type_; }
-    double get_normalization() const;
-
 private:
-    int N_;
-    MklTransformType type_;
-    bool initialized_{false};
+    class Line;   ///< The transform of one line of an axis
 
-    // MKL TT handle for DCT-4, DST-4
-    std::unique_ptr<MklTTHandle> tt_handle_;
-
-    // FFT handle for the other types (O(N log N) algorithms)
-    std::unique_ptr<MklFFTHandle> fft_handle_;
-
-    // Twiddle factors for DCT-2, DCT-3, DST-2, DST-3 (cuHelmholtz algorithm)
-    std::vector<double> cos_tbl_;
-    std::vector<double> sin_tbl_;
-
-    void init();
+    std::vector<int> nx_;
+    std::vector<std::unique_ptr<Line>> lines_;   ///< One per axis
 };
-
-//==============================================================================
-// MklRealTransform2D
-//==============================================================================
-
-class MklRealTransform2D
-{
-public:
-    MklRealTransform2D(int Nx, int Ny, MklTransformType type);
-    MklRealTransform2D(int Nx, int Ny, MklTransformType type_x, MklTransformType type_y);
-    ~MklRealTransform2D();
-
-    // Non-copyable
-    MklRealTransform2D(const MklRealTransform2D&) = delete;
-    MklRealTransform2D& operator=(const MklRealTransform2D&) = delete;
-
-    void execute(double* data);
-
-    void get_dims(int& nx, int& ny) const { nx = nx_[0]; ny = nx_[1]; }
-    void get_types(MklTransformType& type_x, MklTransformType& type_y) const {
-        type_x = type_x_;
-        type_y = type_y_;
-    }
-    double get_normalization() const;
-
-private:
-    std::array<int, 2> nx_;
-    MklTransformType type_x_;
-    MklTransformType type_y_;
-    bool initialized_{false};
-
-    std::unique_ptr<MklRealTransform1D> transform_x_;
-    std::unique_ptr<MklRealTransform1D> transform_y_;
-
-    void init();
-    void getStrides(int dim, int& stride, int& num_transforms) const;
-    void apply1D(double* data, int dim, MklRealTransform1D* transform) const;
-};
-
-//==============================================================================
-// MklRealTransform3D
-//==============================================================================
-
-class MklRealTransform3D
-{
-public:
-    MklRealTransform3D(int Nx, int Ny, int Nz, MklTransformType type);
-    MklRealTransform3D(int Nx, int Ny, int Nz,
-                       MklTransformType type_x,
-                       MklTransformType type_y,
-                       MklTransformType type_z);
-    ~MklRealTransform3D();
-
-    // Non-copyable
-    MklRealTransform3D(const MklRealTransform3D&) = delete;
-    MklRealTransform3D& operator=(const MklRealTransform3D&) = delete;
-
-    void execute(double* data);
-
-    void get_dims(int& nx, int& ny, int& nz) const { nx = nx_[0]; ny = nx_[1]; nz = nx_[2]; }
-    void get_types(MklTransformType& type_x, MklTransformType& type_y, MklTransformType& type_z) const {
-        type_x = type_x_;
-        type_y = type_y_;
-        type_z = type_z_;
-    }
-    double get_normalization() const;
-
-private:
-    std::array<int, 3> nx_;
-    MklTransformType type_x_;
-    MklTransformType type_y_;
-    MklTransformType type_z_;
-    bool initialized_{false};
-
-    std::unique_ptr<MklRealTransform1D> transform_x_;
-    std::unique_ptr<MklRealTransform1D> transform_y_;
-    std::unique_ptr<MklRealTransform1D> transform_z_;
-
-    void init();
-    void getStrides(int dim, int& stride, int& num_transforms) const;
-    void apply1D(double* data, int dim, MklRealTransform1D* transform) const;
-};
-
-// Type aliases for convenience
-typedef MklRealTransform1D MklDCT;
-typedef MklRealTransform1D MklDST;
-typedef MklRealTransform2D MklDCT2D;
-typedef MklRealTransform2D MklDST2D;
-typedef MklRealTransform2D MklMixedTransform2D;
-typedef MklRealTransform3D MklDCT3D;
-typedef MklRealTransform3D MklDST3D;
-typedef MklRealTransform3D MklMixedTransform3D;
 
 #endif  // MKL_REAL_TRANSFORM_H_

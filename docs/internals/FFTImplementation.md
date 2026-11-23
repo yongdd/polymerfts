@@ -328,7 +328,7 @@ With `PropagatorSolver`, enable a basis on the `SpaceGroup` before passing it
 
 - `MklFFT<T>`: Periodic FFT using MKL DFTI (grids of one to three axes)
 - `MklRealFFT`: the real FFT of the grid under `MakhoulTransform` (Section 2.4)
-- `MklRealTransform1D/2D/3D`: DCT/DST of all types (FFT-based algorithms + MKL TT interface, see Section 8.2)
+- `MklRealTransform`: DCT/DST of every type along each axis, one line at a time (type 1: real FFT of the extended line; types 2 and 3: `MakhoulTransform` over `MklRealFFT`; type 4: MKL TT interface; see Section 8.2)
 - `MklCrysFFTRecursive3m`: Recursive 3m algorithm (`CrysFFTRecursive3mBase`) over the real FFT of the physical grid
 
 **Both backends**:
@@ -466,16 +466,16 @@ The processor decides which library leads. On the Intel Xeon 6737P MKL loads its
 
 `MklRealTransform`, which the solvers do not use, provides DCT and DST of types 1 to 4 for internal use. `tests/BenchmarkMklFftw` compares it with FFTW plans made with `FFTW_ESTIMATE` (the solvers time their plans with `FFTW_MEASURE` or `FFTW_PATIENT`) on 3D transforms, single-threaded, on the AMD EPYC 7543:
 - **DCT-IV, DST-IV**: MKL TT interface, O(N log N)
-- **DCT-II, DCT-III, DST-II, DST-III**: FFT-based N-point algorithm with precomputed twiddle factors (Makhoul), O(N log N)
+- **DCT-II, DCT-III, DST-II, DST-III**: `MakhoulTransform` of each line over the N-point real FFT of MKL (`MklRealFFT`), O(N log N)
 - **DCT-I, DST-I**: FFT-based via symmetric/antisymmetric extension (for N points: 2(N-1)- and 2(N+1)-point FFTs), O(N log N)
 
 | Transform | 32³ | 48³ | 64³ |
 |-----------|-----|-----|-----|
 | DFT | 0.54× | 1.09× | 0.77× |
-| DCT-2 | 0.80× | 1.23× | 1.04× |
-| DCT-3 | 0.78× | 1.17× | 1.08× |
-| DST-2 | 0.78× | 1.28× | 1.02× |
-| DST-3 | 0.74× | 1.12× | 0.95× |
+| DCT-2 | 0.65× | 1.09× | 0.93× |
+| DCT-3 | 0.63× | 1.10× | 0.98× |
+| DST-2 | 0.66× | 1.12× | 0.94× |
+| DST-3 | 0.64× | 1.10× | 1.00× |
 
 Speedup = FFTW time / MKL time (>1× means MKL is faster)
 

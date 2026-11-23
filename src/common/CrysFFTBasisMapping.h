@@ -15,7 +15,6 @@
 #define CRYSFFT_BASIS_MAPPING_H_
 
 #include <array>
-#include <string>
 #include <vector>
 
 struct CrysFFTBasisMapping
@@ -124,25 +123,6 @@ inline CrysFFTBasisMapping build_crysfft_mapping_z_mirror(
     }
     crysfft_mapping_detail::finish(map, full_to_reduced);
     return map;
-}
-
-/**
- * @brief Axis groups of the CrysFFT stress fast path, as bit masks (1: x, 2: y, 4: z).
- *
- * A per-axis multiplier k_d² is not invariant under point-group operations
- * that permute axes (cubic: x, y, z; tetragonal: x, y), so on the reduced basis
- * only its sum over such a group of axes is well defined. The stress routines
- * apply one multiplier Σ_{d in group} k_d² per group and give every axis of the
- * group the group sum divided by the group size; the kernel q1·q2 is symmetric,
- * so this is the exact value of each diagonal component.
- */
-inline std::vector<int> crysfft_stress_axis_groups(const std::string& crystal_system)
-{
-    if (crystal_system == "Cubic")
-        return {7};
-    if (crystal_system == "Tetragonal")
-        return {3, 4};
-    return {1, 2, 4};
 }
 
 #endif  // CRYSFFT_BASIS_MAPPING_H_

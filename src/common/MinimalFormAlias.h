@@ -364,11 +364,11 @@ struct AliasComponent
         return strides;
     }
 
-    /// Append the period shifts (a, b, c) of the aliases of sub_m (a mode of this component)
-    /// tied for its least form, in (a, b, c) order: those within rel_tol times the least form
-    template <typename Form>
-    void append_ties(const std::array<int, 3>& sub_m, Form&& form, double rel_tol,
-                     std::vector<std::array<int, 3>>& ties) const
+    /// Visit the period shifts (a, b, c) of the aliases of sub_m (a mode of this component) tied
+    /// for its least form, in (a, b, c) order: those within rel_tol times the least form.
+    /// Returns the number visited.
+    template <typename Form, typename Visit>
+    int for_each_tie(const std::array<int, 3>& sub_m, Form&& form, double rel_tol, Visit&& visit) const
     {
         const double f_center = form(sub_m[0], sub_m[1], sub_m[2]);
         std::array<int, 3> lo{0, 0, 0}, hi{0, 0, 0};
@@ -376,8 +376,8 @@ struct AliasComponent
             min_form_alias_detail::search_box(sub_m, n, box, f_center, lo, hi);
         if (lo == hi)
         {
-            ties.push_back({0, 0, 0});
-            return;
+            visit(0, 0, 0);
+            return 1;
         }
         double best = f_center;
         for (int a = lo[0]; a <= hi[0]; ++a)
@@ -385,11 +385,24 @@ struct AliasComponent
                 for (int c = lo[2]; c <= hi[2]; ++c)
                     best = std::min(best, form(sub_m[0] + a * n[0], sub_m[1] + b * n[1], sub_m[2] + c * n[2]));
         const double limit = best + rel_tol * best;
+        int count = 0;
         for (int a = lo[0]; a <= hi[0]; ++a)
             for (int b = lo[1]; b <= hi[1]; ++b)
                 for (int c = lo[2]; c <= hi[2]; ++c)
                     if (form(sub_m[0] + a * n[0], sub_m[1] + b * n[1], sub_m[2] + c * n[2]) <= limit)
-                        ties.push_back({a, b, c});
+                    {
+                        visit(a, b, c);
+                        ++count;
+                    }
+        return count;
+    }
+
+    /// for_each_tie appending the shifts to `ties`
+    template <typename Form>
+    void append_ties(const std::array<int, 3>& sub_m, Form&& form, double rel_tol,
+                     std::vector<std::array<int, 3>>& ties) const
+    {
+        for_each_tie(sub_m, form, rel_tol, [&](int a, int b, int c) { ties.push_back({a, b, c}); });
     }
 };
 
@@ -464,12 +477,6 @@ inline void for_each_tie_combination(const AliasSearch& search, const std::array
 template <typename Form>
 inline void min_form_alias_rep(std::array<int, 3>& m, const AliasSearch& search, Form&& form)
 {
-    if (search.n_components == 1)
-    {
-        const AliasComponent& component = search.components[0];
-        min_form_alias_detail::component_min_alias(m, search.n, component.box, form, component.unique_below);
-        return;
-    }
     for (int i = 0; i < search.n_components; ++i)
     {
         const AliasComponent& component = search.components[i];
@@ -479,14 +486,6 @@ inline void min_form_alias_rep(std::array<int, 3>& m, const AliasSearch& search,
             if (component.mask & (1 << d))
                 m[d] = sub_m[d];
     }
-}
-
-/// min_form_alias_rep for a single mode of a grid
-template <typename Form>
-inline void min_form_alias_rep(
-    std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g, Form&& form)
-{
-    min_form_alias_rep(m, AliasSearch(n, g), form);
 }
 
 /**
@@ -502,66 +501,29 @@ inline int for_each_min_form_alias(
     const std::array<int, 3>& m, const AliasSearch& search, Form&& form, double rel_tol, Visit&& visit)
 {
     const std::array<int, 3>& n = search.n;
-    if (search.n_components > 1)
-    {
-        // Two components on a coupled grid (three would need three mutually uncoupled axes,
-        // whose ties tied_alias_moments finds on the Nyquist planes): the pairs of their ties
-        if (search.n_components > 2)
-            throw_with_line_number("for_each_min_form_alias needs a grid of at most two components.");
-        std::array<std::vector<std::array<int, 3>>, 2> ties;
-        for (int i = 0; i < 2; ++i)
-            search.components[i].append_ties(search.components[i].part(m), form, rel_tol, ties[i]);
-        int count = 0;
-        for_each_tie_combination(search, ties[0].data(), ties[0].size(), ties[1].data(), ties[1].size(),
-            [&](int a, int b, int c) {
-                visit(m[0] + a * n[0], m[1] + b * n[1], m[2] + c * n[2]);
-                ++count;
-            });
-        return count;
-    }
-    const double f_center = form(m[0], m[1], m[2]);
-    if (search.n_components == 0 || f_center < search.components[0].unique_below)
+    auto visit_shift = [&](int a, int b, int c) { visit(m[0] + a * n[0], m[1] + b * n[1], m[2] + c * n[2]); };
+    if (search.n_components == 0)
     {
         visit(m[0], m[1], m[2]);
         return 1;
     }
-    std::array<int, 3> lo, hi;
-    min_form_alias_detail::search_box(m, n, search.components[0].box, f_center, lo, hi);
+    if (search.n_components == 1)
+        return search.components[0].for_each_tie(search.components[0].part(m), form, rel_tol, visit_shift);
 
-    double best = f_center;
-    for (int a = lo[0]; a <= hi[0]; ++a)
-        for (int b = lo[1]; b <= hi[1]; ++b)
-            for (int c = lo[2]; c <= hi[2]; ++c)
-            {
-                const double f = form(m[0] + a * n[0], m[1] + b * n[1], m[2] + c * n[2]);
-                if (f < best)
-                    best = f;
-            }
-
-    const double tol = rel_tol * best;
+    // Two components on a coupled grid (three would need three mutually uncoupled axes,
+    // whose ties tied_alias_moments finds on the Nyquist planes): the pairs of their ties
+    if (search.n_components > 2)
+        throw_with_line_number("for_each_min_form_alias needs a grid of at most two components.");
+    std::array<std::vector<std::array<int, 3>>, 2> ties;
+    for (int i = 0; i < 2; ++i)
+        search.components[i].append_ties(search.components[i].part(m), form, rel_tol, ties[i]);
     int count = 0;
-    for (int a = lo[0]; a <= hi[0]; ++a)
-        for (int b = lo[1]; b <= hi[1]; ++b)
-            for (int c = lo[2]; c <= hi[2]; ++c)
-            {
-                const int t1 = m[0] + a * n[0];
-                const int t2 = m[1] + b * n[1];
-                const int t3 = m[2] + c * n[2];
-                if (form(t1, t2, t3) > best + tol)
-                    continue;
-                visit(t1, t2, t3);
-                ++count;
-            }
+    for_each_tie_combination(search, ties[0].data(), ties[0].size(), ties[1].data(), ties[1].size(),
+        [&](int a, int b, int c) {
+            visit_shift(a, b, c);
+            ++count;
+        });
     return count;
-}
-
-/// for_each_min_form_alias for a single mode of a grid
-template <typename Form, typename Visit>
-inline int for_each_min_form_alias(
-    const std::array<int, 3>& m, const std::array<int, 3>& n, const IndexMetric& g,
-    Form&& form, double rel_tol, Visit&& visit)
-{
-    return for_each_min_form_alias(m, AliasSearch(n, g), form, rel_tol, visit);
 }
 
 /**

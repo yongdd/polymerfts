@@ -315,9 +315,9 @@ Metadata is exposed through getter methods (not attributes):
 | `physical_basis_name()` | Active physical basis: `'irreducible'`, `'pmmm'`, `'m3'` or `'z-mirror'` |
 | `m3_crysfft_feasible()` | True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 ≥ 8, translations that fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller grid (Nz/2 ≥ 2) runs with the recursive 3m CrysFFT all the same; `enable_m3_physical_basis()` refuses Nz/2 < 2 |
 | `enable_best_physical_basis()` | Enable the physical basis SCFT uses (see [Physical Bases for CrysFFT](#physical-bases-for-crysfft)) and return its name; the irreducible basis stays when none applies |
-| `enable_pmmm_physical_basis()` / `using_pmmm_physical_basis()` | Switch the reduced basis to the Pmmm physical sub-grid (1/8 grid) / query whether it is active |
-| `enable_m3_physical_basis()` / `using_m3_physical_basis()` | Switch to the M3 physical sub-grid (1/8 even-index grid) / query whether it is active |
-| `enable_z_mirror_physical_basis()` / `using_z_mirror_physical_basis()` | Switch to the z-mirror physical basis (half grid along z) / query whether it is active |
+| `enable_pmmm_physical_basis()` | Switch the reduced basis to the Pmmm physical sub-grid (1/8 grid) |
+| `enable_m3_physical_basis()` | Switch to the M3 physical sub-grid (1/8 even-index grid) |
+| `enable_z_mirror_physical_basis()` | Switch to the z-mirror physical basis (half grid along z) |
 | `get_reduced_basis_indices()` | Flat grid indices of the reduced-basis points (the irreducible points, or the physical sub-grid when a physical basis is enabled) |
 | `get_full_to_reduced_map()` | Map from full grid index to reduced-basis index |
 | `get_orbit_counts()` | Number of grid points mapped to each reduced-basis point (the orbit size on the irreducible basis) |

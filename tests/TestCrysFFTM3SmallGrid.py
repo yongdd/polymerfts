@@ -77,7 +77,7 @@ def main():
         nx, lx = [n] * 3, [1.6] * 3
         sg_full = make_space_group(nx, m3_basis=False)
         sg = make_space_group(nx, m3_basis=True)
-        check(sg.using_m3_physical_basis(), f"Im-3m {n}^3: the m3 basis is enabled")
+        check(sg.physical_basis_name() == "m3", f"Im-3m {n}^3: the m3 basis is enabled")
         check(not sg_full.m3_crysfft_feasible(),
               f"Im-3m {n}^3: m3_crysfft_feasible() keeps the size heuristic (SCFT does not choose m3 here)")
         w_full = {}

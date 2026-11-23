@@ -45,7 +45,6 @@ enum class CrysFFTEngine
  */
 class SpaceGroup
 {
-    template <typename T> friend class ComputationBox;
 private:
     int hall_number_;                         ///< Hall number (1-530)
     int spacegroup_number_;                    ///< ITA space group number (1-230)
@@ -272,12 +271,11 @@ public:
     bool is_invariant(const double* full_field, double tolerance) const;
 
     /**
-     * @brief Check for mirror planes perpendicular to x, y, and z axes.
-     *
-     * Returns true if symmetry operations include reflections x->-x,
-     * y->-y, and z->-z with zero translation (modulo lattice).
+     * @brief Whether the grid has the octant of the Pmmm DCT and of the Pmmm basis: an even
+     *        grid and mirror planes perpendicular to x, y and z through the origin
+     *        (x -> -x, y -> -y and z -> -z with lattice translations).
      */
-    bool has_mirror_planes_xyz(double tol = 1e-10) const;
+    bool has_pmmm_octant() const;
 
     /**
      * @brief Get translational parts for 3m symmetry planes (x,y,z).
@@ -293,10 +291,9 @@ public:
      * Values are normalized to [0, 1).
      *
      * @param g Output array of translational parts.
-     * @param tol Tolerance for matching rotations.
      * @return True if all three symmetry planes are found.
      */
-    bool get_m3_translations(std::array<double, 9>& g, double tol = 1e-10) const;
+    bool get_m3_translations(std::array<double, 9>& g) const;
 
     /**
      * @brief Get the translations of all pure-translation operations.
@@ -322,10 +319,9 @@ public:
      * Only pure z-mirrors with integer x/y translations are accepted.
      *
      * @param t_z Output translation along z in [0,1).
-     * @param tol Tolerance for translation matching.
      * @return True if a valid mirror is found.
      */
-    bool get_z_mirror_translation(double& t_z, double tol = 1e-10) const;
+    bool get_z_mirror_translation(double& t_z) const;
 
     /**
      * @brief The z offset, in grid points, of the half grid of a z-mirror basis; -1 without one.
@@ -356,10 +352,10 @@ public:
      *        fixes (fixed_angles(): the cell has them and keeps them in a box relaxation).
      *
      * With alpha, beta and gamma fixed at 90 degrees: the m3 basis where the recursive
-     * 3m CrysFFT pays off (m3_crysfft_feasible()), else the Pmmm basis (an even grid and
-     * the mirrors along x, y and z). The z-mirror basis that some of these groups have
-     * would hold the propagators on half the grid, several times the irreducible mesh,
-     * so their solvers take ObliqueZ on the irreducible basis instead (plan_crysfft()).
+     * 3m CrysFFT pays off (m3_crysfft_feasible()), else the Pmmm basis (has_pmmm_octant()).
+     * The z-mirror basis that some of these groups have would hold the propagators on
+     * half the grid, several times the irreducible mesh, so their solvers take ObliqueZ
+     * on the irreducible basis instead (plan_crysfft()).
      * With alpha and beta fixed at 90 degrees and gamma free or fixed at another angle:
      * the z-mirror basis (z_mirror_half_grid_shift() >= 0). Otherwise, or when no basis
      * applies, the irreducible basis stays.
@@ -372,11 +368,9 @@ public:
      * @brief Enable Pmmm physical basis (1/8 grid) mapping.
      *
      * Replaces the irreducible basis with the Pmmm physical basis
-     * (first octant, size Nx/2 * Ny/2 * Nz/2). Requires 3D even grid
-     * and mirror planes along x, y, z.
+     * (first octant, size Nx/2 * Ny/2 * Nz/2). Requires has_pmmm_octant().
      */
     void enable_pmmm_physical_basis();
-    bool using_pmmm_physical_basis() const { return physical_basis_ == CrysFFTEngine::Pmmm; }
 
     /**
      * @brief Enable 3m physical basis (1/8 even-index grid) mapping.
@@ -394,7 +388,6 @@ public:
      * smaller grid (nz/2 >= 2) runs with the recursive 3m CrysFFT all the same.
      */
     bool m3_crysfft_feasible() const;
-    bool using_m3_physical_basis() const { return physical_basis_ == CrysFFTEngine::Recursive3m; }
 
     /**
      * @brief Enable z-mirror physical basis (half grid along z).
@@ -405,7 +398,6 @@ public:
      * For t_z = 1/2, Nz must be divisible by 4 to align the half-cell shift.
      */
     void enable_z_mirror_physical_basis();
-    bool using_z_mirror_physical_basis() const { return physical_basis_ == CrysFFTEngine::ObliqueZ; }
 
 };
 

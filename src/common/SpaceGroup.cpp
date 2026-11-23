@@ -60,6 +60,18 @@ double wrap_half(double v)
 /// The rotations of the mirrors perpendicular to z, y and x (the order of get_m3_translations)
 constexpr std::array<std::array<int, 3>, 3> MIRRORS = {{{1, 1, -1}, {1, -1, 1}, {-1, 1, 1}}};
 
+/// Name of the basis an engine stores (physical_basis_name())
+std::string basis_name(CrysFFTEngine basis)
+{
+    switch (basis)
+    {
+        case CrysFFTEngine::Pmmm:        return "pmmm";
+        case CrysFFTEngine::Recursive3m: return "m3";
+        case CrysFFTEngine::ObliqueZ:    return "z-mirror";
+        default:                         return "irreducible";
+    }
+}
+
 /// Index of the shortest translation (components taken in [-1/2, 1/2)): the first one
 /// unless a later one is shorter by more than tol; -1 for none.
 int shortest_translation(const std::vector<std::array<double, 3>>& translations, double tol)
@@ -227,8 +239,7 @@ void SpaceGroup::display_info() const
     const std::string octant = std::to_string((nx_[0] / 2) * (nx_[1] / 2) * (nx_[2] / 2));
     std::array<double, 9> m3_part{};
     const bool has_m3 = even_grid && get_m3_translations(m3_part);
-    std::cout << "Pmmm physical basis size (if enabled): " << (even_grid && has_mirror_planes_xyz() ? octant : "n/a")
-              << std::endl;
+    std::cout << "Pmmm physical basis size (if enabled): " << (has_pmmm_octant() ? octant : "n/a") << std::endl;
     std::cout << "M3 physical basis size (if enabled): " << (has_m3 ? octant : "n/a") << std::endl;
 }
 
@@ -700,27 +711,29 @@ std::vector<std::array<double, 3>> SpaceGroup::translations_of(const std::array<
     return result;
 }
 
-bool SpaceGroup::has_mirror_planes_xyz(double tol) const
+bool SpaceGroup::has_pmmm_octant() const
 {
+    if (nx_[0] % 2 != 0 || nx_[1] % 2 != 0 || nx_[2] % 2 != 0)
+        return false;
     // The mirrors perpendicular to x, y and z through the origin (lattice translations)
     for (const auto& sign : MIRRORS)
     {
         const auto translations = translations_of(sign);
         if (std::none_of(translations.begin(), translations.end(),
-                         [tol](const auto& t) { return is_lattice_translation(t, tol); }))
+                         [](const auto& t) { return is_lattice_translation(t, 1e-10); }))
             return false;
     }
     return true;
 }
 
-bool SpaceGroup::get_m3_translations(std::array<double, 9>& g, double tol) const
+bool SpaceGroup::get_m3_translations(std::array<double, 9>& g) const
 {
     // The shortest translation of each mirror (z, y, x)
     bool found_all = true;
     for (int m = 0; m < 3; ++m)
     {
         const auto translations = translations_of(MIRRORS[m]);
-        const int k = shortest_translation(translations, tol);
+        const int k = shortest_translation(translations, 1e-10);
         if (k < 0)
         {
             found_all = false;
@@ -737,12 +750,12 @@ void SpaceGroup::get_pure_translations(std::vector<std::array<double, 3>>& trans
     translations = translations_of({1, 1, 1});
 }
 
-bool SpaceGroup::get_z_mirror_translation(double& t_z, double tol) const
+bool SpaceGroup::get_z_mirror_translation(double& t_z) const
 {
     // The shortest (x, y, -z) + t with lattice translations along x and y
     auto translations = translations_of(MIRRORS[0]);
-    std::erase_if(translations, [tol](const auto& t) { return !is_zero_mod1(t[0], tol) || !is_zero_mod1(t[1], tol); });
-    const int k = shortest_translation(translations, tol);
+    std::erase_if(translations, [](const auto& t) { return !is_zero_mod1(t[0], 1e-10) || !is_zero_mod1(t[1], 1e-10); });
+    const int k = shortest_translation(translations, 1e-10);
     if (k < 0)
         return false;
     t_z = translations[k][2];
@@ -813,10 +826,7 @@ void SpaceGroup::adopt_physical_basis(CrysFFTEngine basis, const CrysFFTBasisMap
                 b = grid_index[map_point(folds[k], i)];
         }
         if (b < 0)
-        {
-            const char* name = basis == CrysFFTEngine::Recursive3m ? "M3" : (basis == CrysFFTEngine::Pmmm ? "Pmmm" : "Z-mirror");
-            throw_with_line_number(std::string("Failed to map grid point to ") + name + " physical basis.");
-        }
+            throw_with_line_number("Failed to map grid point to the " + basis_name(basis) + " physical basis.");
         basis_of[point] = b;
         basis_counts[b] += 1;
     }
@@ -835,11 +845,9 @@ void SpaceGroup::enable_pmmm_physical_basis()
         return;
     check_basis_not_frozen();
 
-    if ((nx_[0] % 2) != 0 || (nx_[1] % 2) != 0 || (nx_[2] % 2) != 0)
-        throw_with_line_number("Pmmm physical basis requires even grid dimensions.");
-
-    if (!has_mirror_planes_xyz())
-        throw_with_line_number("Space group does not contain mirror planes along x, y, z (Pmmm).");
+    if (!has_pmmm_octant())
+        throw_with_line_number("Pmmm physical basis requires an even grid and mirror planes perpendicular to "
+            "x, y and z through the origin.");
 
     // The octant at consecutive indices; the mirrors through the origin fold the grid onto it
     const std::array<int, 3> nx3 = {nx_[0], nx_[1], nx_[2]};
@@ -906,12 +914,11 @@ CrysFFTEngine SpaceGroup::enable_best_physical_basis()
     // Each predicate below implies that its enable function succeeds (for m3: a bijective
     // fold permutation maps every grid point onto an even index, Recursive3mFoldParity.h)
     const std::array<double, 3> angles = fixed_angles();
-    const bool even_grid = (nx_[0] % 2 == 0) && (nx_[1] % 2 == 0) && (nx_[2] % 2 == 0);
     if (angles[0] == 90.0 && angles[1] == 90.0 && angles[2] == 90.0)
     {
         if (m3_crysfft_feasible())
             enable_m3_physical_basis();
-        else if (even_grid && has_mirror_planes_xyz())
+        else if (has_pmmm_octant())
             enable_pmmm_physical_basis();
     }
     else if (angles[0] == 90.0 && angles[1] == 90.0)
@@ -1025,11 +1032,5 @@ bool SpaceGroup::uses_hexagonal_axes() const
 
 std::string SpaceGroup::physical_basis_name() const
 {
-    switch (physical_basis_)
-    {
-        case CrysFFTEngine::Pmmm:        return "pmmm";
-        case CrysFFTEngine::Recursive3m: return "m3";
-        case CrysFFTEngine::ObliqueZ:    return "z-mirror";
-        default:                         return "irreducible";
-    }
+    return basis_name(physical_basis_);
 }

@@ -57,7 +57,7 @@ static void check_1d(int N, MklTransformType type, double tol)
     fftw_execute(plan);
     fftw_destroy_plan(plan);
 
-    MklRealTransform1D mkl(N, type);
+    MklRealTransform mkl({N}, {type});
     mkl.execute(mkl_out.data());
 
     double err = max_abs_diff(fftw_out, mkl_out);
@@ -87,7 +87,7 @@ static void check_2d(int Nx, int Ny, MklTransformType type, double tol)
     fftw_execute(plan);
     fftw_destroy_plan(plan);
 
-    MklRealTransform2D mkl(Nx, Ny, type);
+    MklRealTransform mkl({Nx, Ny}, {type, type});
     mkl.execute(mkl_out.data());
 
     double err = max_abs_diff(fftw_out, mkl_out);
@@ -119,7 +119,7 @@ static void check_3d(int Nx, int Ny, int Nz, MklTransformType type, double tol)
     fftw_execute(plan);
     fftw_destroy_plan(plan);
 
-    MklRealTransform3D mkl(Nx, Ny, Nz, type);
+    MklRealTransform mkl({Nx, Ny, Nz}, {type, type, type});
     mkl.execute(mkl_out.data());
 
     double err = max_abs_diff(fftw_out, mkl_out);

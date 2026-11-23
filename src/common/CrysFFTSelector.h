@@ -106,7 +106,7 @@ struct CrysFFTPlan
  *
  * The recursive 3m engine applies where crysfft_recursive_3m_feasible() holds (its
  * nz/2 >= 8 size rule only chooses: an enabled m3 basis takes the engine on any grid
- * of nz/2 >= 2), the Pmmm DCT to an even grid with the mirrors along x, y and z, and
+ * of nz/2 >= 2), the Pmmm DCT where the grid has its octant (SpaceGroup::has_pmmm_octant()), and
  * ObliqueZ to a z mirror with a half grid along z (SpaceGroup::z_mirror_half_grid_shift()).
  */
 inline CrysFFTPlan plan_crysfft(
@@ -142,7 +142,6 @@ inline CrysFFTPlan plan_crysfft(
     }
 
     // 3. The first that applies and whose physical grid reaches the active basis
-    const bool even_grid = (nx[0] % 2 == 0) && (nx[1] % 2 == 0) && (nx[2] % 2 == 0);
     const int M_reduced = sg->get_n_reduced_basis();
     const auto& full_to_reduced = sg->get_full_to_reduced_map();
     for (const CrysFFTEngine engine : candidates)
@@ -159,7 +158,7 @@ inline CrysFFTPlan plan_crysfft(
         else if (engine == CrysFFTEngine::Pmmm)
         {
             // The octant at consecutive indices
-            if (!even_grid || !sg->has_mirror_planes_xyz())
+            if (!sg->has_pmmm_octant())
                 continue;
             map = build_crysfft_mapping_octant(nx, full_to_reduced, M_reduced, /*even_indices=*/false);
         }

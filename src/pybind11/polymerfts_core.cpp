@@ -274,7 +274,7 @@ void bind_computation_box(py::module &m, const std::string &type_name) {
         .def("set_lx", &ComputationBox<T>::set_lx)
         .def("set_lattice_parameters", overload_cast_<std::vector<double>, std::vector<double>>()(&ComputationBox<T>::set_lattice_parameters))
         // The reduced basis of the space group given at creation
-        .def("get_space_group", &ComputationBox<T>::get_space_group, py::return_value_policy::reference_internal)
+        .def("get_space_group", &ComputationBox<T>::get_space_group, py::return_value_policy::reference)  // kept alive by the box (keep_alive at creation)
         .def("get_n_basis", &ComputationBox<T>::get_n_basis)
         .def("get_orbit_counts", &ComputationBox<T>::get_orbit_counts)
         // Field operations: use get_n_basis() for size (n_reduced if space group set, else total_grid)
@@ -900,26 +900,18 @@ Example:
         {
             sg.enable_best_physical_basis();
             return sg.physical_basis_name();
-        }, "Enable the physical basis that SCFT uses, from the angles the group fixes (fixed_angles()): with all "
-           "three at 90 degrees m3 where the recursive 3m CrysFFT pays off (m3_crysfft_feasible()), else Pmmm; with "
-           "alpha and beta at 90 degrees z-mirror; otherwise, or when none applies, the irreducible basis stays. "
-           "Returns physical_basis_name().")
+        }, "Enable the physical basis that SCFT uses (m3, Pmmm or z-mirror, chosen from the angles the group fixes; "
+           "see docs/theory/SpaceGroup.md); the irreducible basis stays when none applies. Returns physical_basis_name().")
         .def("enable_pmmm_physical_basis", &SpaceGroup::enable_pmmm_physical_basis,
              "Enable Pmmm physical basis (1/8 grid) mapping.")
-        .def("using_pmmm_physical_basis", &SpaceGroup::using_pmmm_physical_basis,
-             "Return True if Pmmm physical basis is enabled.")
         .def("m3_crysfft_feasible", &SpaceGroup::m3_crysfft_feasible,
              "True when the recursive 3m CrysFFT pays off on this grid (even sizes, Nz/2 >= 8, translations that "
              "fold onto the grid): the rule by which SCFT chooses the m3 basis. An m3 basis enabled on a smaller "
              "grid (Nz/2 >= 2) runs with the recursive 3m CrysFFT all the same.")
         .def("enable_m3_physical_basis", &SpaceGroup::enable_m3_physical_basis,
              "Enable M3 physical basis (1/8 even-index grid) mapping.")
-        .def("using_m3_physical_basis", &SpaceGroup::using_m3_physical_basis,
-             "Return True if M3 physical basis is enabled.")
         .def("enable_z_mirror_physical_basis", &SpaceGroup::enable_z_mirror_physical_basis,
              "Enable z-mirror physical basis (half grid along z).")
-        .def("using_z_mirror_physical_basis", &SpaceGroup::using_z_mirror_physical_basis,
-             "Return True if z-mirror physical basis is enabled.")
         .def("to_reduced_basis", [](SpaceGroup& obj, real_in full_field)
         {
             py::buffer_info buf = full_field.request();

@@ -107,12 +107,8 @@ class FieldGrid:
             raise ValidationError("Box relaxation is not supported for rhombohedral-axes settings; "
                                   "use the hexagonal-axes setting of the space group.")
 
-        # The physical basis, from the angles the group fixes (the cell has them, to the orthogonality
-        # test of the box, and keeps them during box relaxation). With all three at 90 degrees: m3 where
-        # the recursive 3m CrysFFT pays off on the grid, else Pmmm. With alpha and beta at 90 degrees and
-        # gamma free or fixed at another angle (hexagonal groups, trigonal groups on hexagonal axes and
-        # monoclinic groups with the unique axis c): z-mirror. Otherwise, or where the group or the grid
-        # allows none, the irreducible basis (SpaceGroup::enable_best_physical_basis).
+        # The physical basis (m3, Pmmm or z-mirror) from the angles the group fixes, which the cell keeps
+        # in box relaxation; else the irreducible basis (SpaceGroup::enable_best_physical_basis)
         sg.enable_best_physical_basis()
         sg.display_info()
         return sg
@@ -203,13 +199,7 @@ class FieldGrid:
         """Expand a field of the working basis to the full grid (a copy without a space group)."""
         if self.sg is None:
             return np.array(field, dtype=np.float64)
-        # self.w and self.phi are stored in the irreducible basis. With a physical
-        # basis the reduced ordering differs even when the sizes coincide (mmm
-        # orthorhombic groups with the m3 basis), so the conversion is gated on
-        # the basis, not on the sizes.
-        if self.sg.physical_basis_name() != "irreducible":
-            field = self.sg.irreducible_to_reduced(field)
-        return self.sg.from_reduced_basis(field)
+        return self.sg.from_reduced_basis(self.sg.irreducible_to_reduced(field))
 
     def full_grid_fields(self, w):
         """The fields w (M, n) of the working basis as {monomer type: array on the full grid}, as SCFTResult.w."""
